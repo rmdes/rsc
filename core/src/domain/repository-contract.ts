@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest'
 import type { Repository } from './repository.ts'
 import { HandleTakenError } from './types.ts'
-import type { Subscription } from './types.ts'
+import type { Subscription, PushSubscription } from './types.ts'
+import { randomUUID } from 'node:crypto'
 
 export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
   describe('Repository contract', () => {
@@ -188,6 +189,56 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.insertPost({ id: 'b1', authorId: b.id, source: 'local', guid: 'gb1', title: null, content: 'bob 1', url: null, publishedAt: '2026-01-09T00:00:00.000Z', createdAt: '2026-01-09T00:00:00.000Z' })
       const posts = await repo.getPostsByAuthor(a.id, 2)
       expect(posts.map((p) => p.id)).toEqual(['a3', 'a2'])
+    })
+
+    function pushSub(over: Partial<PushSubscription>, userId: string): PushSubscription {
+      return { id: randomUUID(), userId, mode: 'websub', endpoint: 'https://hub.example.com/hub', topic: 'https://blog.example.com/feed.xml', callbackToken: 'tok-' + randomUUID(), secret: 's3cret', state: 'pending', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over }
+    }
+
+    test('upsertPushSubscription keys on (user, mode) and NEVER overwrites token or secret', async () => {
+      const repo = await makeRepo()
+      const u = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://blog.example.com/feed.xml' })
+      await repo.upsertPushSubscription(pushSub({ callbackToken: 'original-token', secret: 'original-secret' }, u.id))
+      await repo.upsertPushSubscription(pushSub({ callbackToken: 'SHOULD-NOT-LAND', secret: 'SHOULD-NOT-LAND', state: 'active', expiresAt: '2028-01-01T00:00:00.000Z', endpoint: 'https://hub2.example.com/hub' }, u.id))
+      const row = await repo.findPushSubscription({ userId: u.id, mode: 'websub' })
+      expect(row?.callbackToken).toBe('original-token') // H4 pin
+      expect(row?.secret).toBe('original-secret')
+      expect(row?.state).toBe('active')
+      expect(row?.endpoint).toBe('https://hub2.example.com/hub')
+    })
+
+    test('findPushSubscription filters by token, user+mode, mode+topic, expiry, and state', async () => {
+      const repo = await makeRepo()
+      const u = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://blog.example.com/feed.xml' })
+      await repo.upsertPushSubscription(pushSub({ callbackToken: 'tok-1', state: 'active', expiresAt: '2027-01-01T00:00:00.000Z' }, u.id))
+      await repo.upsertPushSubscription(pushSub({ mode: 'rsscloud', callbackToken: 'tok-2', topic: 'https://blog.example.com/rss.xml', state: 'pending', expiresAt: '2026-01-01T00:10:00.000Z' }, u.id))
+      expect((await repo.findPushSubscription({ token: 'tok-1' }))?.mode).toBe('websub')
+      expect((await repo.findPushSubscription({ userId: u.id, mode: 'rsscloud' }))?.callbackToken).toBe('tok-2')
+      expect((await repo.findPushSubscription({ mode: 'rsscloud', topic: 'https://blog.example.com/rss.xml' }))?.userId).toBe(u.id)
+      expect(await repo.findPushSubscription({ userId: u.id }, { unexpiredAt: '2026-06-01T00:00:00.000Z' })).toMatchObject({ mode: 'websub' }) // pending one expired
+      expect(await repo.findPushSubscription({ userId: u.id }, { state: 'pending' })).toMatchObject({ mode: 'rsscloud' })
+      expect(await repo.findPushSubscription({ token: 'nope' })).toBeUndefined()
+    })
+
+    test('listRenewablePushSubscriptions returns only active rows expiring before the horizon', async () => {
+      const repo = await makeRepo()
+      const u = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://blog.example.com/feed.xml' })
+      await repo.upsertPushSubscription(pushSub({ state: 'active', expiresAt: '2026-06-01T00:00:00.000Z' }, u.id))
+      await repo.upsertPushSubscription(pushSub({ mode: 'rsscloud', callbackToken: 'tok-rc', state: 'pending', expiresAt: '2026-06-01T00:00:00.000Z' }, u.id))
+      const due = await repo.listRenewablePushSubscriptions('2026-07-01T00:00:00.000Z')
+      expect(due.length).toBe(1)
+      expect(due[0].mode).toBe('websub')
+      expect((await repo.listRenewablePushSubscriptions('2026-05-01T00:00:00.000Z')).length).toBe(0)
+    })
+
+    test('deletePushSubscription removes the row', async () => {
+      const repo = await makeRepo()
+      const u = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://blog.example.com/feed.xml' })
+      const s = pushSub({}, u.id)
+      await repo.upsertPushSubscription(s)
+      const row = await repo.findPushSubscription({ userId: u.id, mode: 'websub' })
+      await repo.deletePushSubscription(row!.id)
+      expect(await repo.findPushSubscription({ userId: u.id, mode: 'websub' })).toBeUndefined()
     })
   })
 }

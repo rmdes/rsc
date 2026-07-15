@@ -2,13 +2,14 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushProtocol } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
-interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable }
+interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
+interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable }
 
 function rowToUser(r: UsersTable): User {
   return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at }
@@ -20,6 +21,10 @@ function rowToPost(r: PostsTable): Post {
 
 function rowToSubscription(r: SubscriptionsTable): Subscription {
   return { id: r.id, protocol: r.protocol, topic: r.topic, callback: r.callback, callbackHost: r.callback_host, secret: r.secret, expiresAt: r.expires_at, createdAt: r.created_at }
+}
+
+function rowToPushSubscription(r: PushSubscriptionsTable): PushSubscription {
+  return { id: r.id, userId: r.user_id, mode: r.mode, endpoint: r.endpoint, topic: r.topic, callbackToken: r.callback_token, secret: r.secret, state: r.state, expiresAt: r.expires_at, createdAt: r.created_at }
 }
 
 type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string }
@@ -146,6 +151,33 @@ export class SqliteRepository implements Repository {
   async purgeExpiredSubscriptions(now: string) {
     await this.db.deleteFrom('subscriptions').where('expires_at', '<=', now).execute()
   }
+
+  async upsertPushSubscription(s: PushSubscription) {
+    await this.db
+      .insertInto('push_subscriptions')
+      .values({ id: s.id, user_id: s.userId, mode: s.mode, endpoint: s.endpoint, topic: s.topic, callback_token: s.callbackToken, secret: s.secret, state: s.state, expires_at: s.expiresAt, created_at: s.createdAt })
+      // H4: token and secret are IDENTITY across renewals — never updated on conflict.
+      .onConflict((oc) => oc.columns(['user_id', 'mode']).doUpdateSet({ endpoint: s.endpoint, topic: s.topic, state: s.state, expires_at: s.expiresAt }))
+      .execute()
+  }
+  async findPushSubscription(filter: { token?: string; userId?: string; mode?: PushProtocol; topic?: string }, opts?: { unexpiredAt?: string; state?: 'pending' | 'active' }): Promise<PushSubscription | undefined> {
+    let q = this.db.selectFrom('push_subscriptions').selectAll()
+    if (filter.token !== undefined) q = q.where('callback_token', '=', filter.token)
+    if (filter.userId !== undefined) q = q.where('user_id', '=', filter.userId)
+    if (filter.mode !== undefined) q = q.where('mode', '=', filter.mode)
+    if (filter.topic !== undefined) q = q.where('topic', '=', filter.topic)
+    if (opts?.unexpiredAt !== undefined) q = q.where('expires_at', '>', opts.unexpiredAt)
+    if (opts?.state !== undefined) q = q.where('state', '=', opts.state)
+    const r = await q.executeTakeFirst()
+    return r ? rowToPushSubscription(r) : undefined
+  }
+  async listRenewablePushSubscriptions(before: string): Promise<PushSubscription[]> {
+    const rows = await this.db.selectFrom('push_subscriptions').selectAll().where('state', '=', 'active').where('expires_at', '<', before).execute()
+    return rows.map(rowToPushSubscription)
+  }
+  async deletePushSubscription(id: string) {
+    await this.db.deleteFrom('push_subscriptions').where('id', '=', id).execute()
+  }
 }
 
 // index N-1 holds the statements that bring the schema to version N.
@@ -188,6 +220,22 @@ const MIGRATIONS: string[][] = [
     )`,
     'CREATE INDEX subscriptions_topic_idx ON subscriptions (topic, expires_at)',
     'CREATE INDEX subscriptions_host_idx ON subscriptions (callback_host, expires_at)',
+  ],
+  [
+    `CREATE TABLE push_subscriptions (
+      id text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES users(id),
+      mode text NOT NULL,
+      endpoint text NOT NULL,
+      topic text NOT NULL,
+      callback_token text NOT NULL UNIQUE,
+      secret text,
+      state text NOT NULL,
+      expires_at text NOT NULL,
+      created_at text NOT NULL,
+      CONSTRAINT push_subscriptions_user_mode_uq UNIQUE (user_id, mode)
+    )`,
+    'CREATE INDEX push_subscriptions_expires_idx ON push_subscriptions (state, expires_at)',
   ],
 ]
 

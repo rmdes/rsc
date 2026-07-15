@@ -43,3 +43,16 @@ export interface Subscription {
   expiresAt: string
   createdAt: string
 }
+
+export interface PushSubscription {
+  id: string
+  userId: string
+  mode: PushProtocol
+  endpoint: string
+  topic: string
+  callbackToken: string
+  secret: string | null
+  state: 'pending' | 'active'
+  expiresAt: string
+  createdAt: string
+}

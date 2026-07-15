@@ -16,7 +16,7 @@ test('a fresh database migrates to the current version and works', async () => {
   expect((await repo.getTimeline(10)).length).toBe(0)
   expect(u.handle).toBe('alice')
   const raw = new Database(file, { readonly: true })
-  expect(raw.pragma('user_version', { simple: true })).toBe(2)
+  expect(raw.pragma('user_version', { simple: true })).toBe(3)
   raw.close()
 })
 
@@ -83,6 +83,40 @@ test('a version-1 database upgrades in place to version 2 with data preserved', 
   expect((await repo.getTimeline(10)).map((e) => e.content)).toEqual(['kept'])
   await repo.upsertSubscription({ id: 'x1', protocol: 'websub', topic: 't', callback: 'c', callbackHost: 'h', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(2)
+  expect(check.pragma('user_version', { simple: true })).toBe(3)
+  check.close()
+})
+
+const V2_ADDITIONS = [
+  `CREATE TABLE subscriptions (
+      id text PRIMARY KEY,
+      protocol text NOT NULL,
+      topic text NOT NULL,
+      callback text NOT NULL,
+      callback_host text NOT NULL,
+      secret text,
+      expires_at text NOT NULL,
+      created_at text NOT NULL,
+      CONSTRAINT subscriptions_triple_uq UNIQUE (protocol, topic, callback)
+    )`,
+  'CREATE INDEX subscriptions_topic_idx ON subscriptions (topic, expires_at)',
+  'CREATE INDEX subscriptions_host_idx ON subscriptions (callback_host, expires_at)',
+]
+
+test('a version-2 database upgrades in place to version 3 with data preserved', async () => {
+  const file = tempDb()
+  const raw = new Database(file)
+  for (const stmt of [...V1_SCHEMA, ...V2_ADDITIONS]) raw.exec(stmt)
+  raw.prepare("INSERT INTO users VALUES ('u1','remote','blog','Blog','https://blog.example.com/feed.xml','2026-01-01T00:00:00.000Z')").run()
+  raw.prepare("INSERT INTO subscriptions VALUES ('s1','websub','t','c','h',NULL,'2027-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run()
+  raw.pragma('user_version = 2')
+  raw.close()
+
+  const repo = await createSqliteRepository(file)
+  expect((await repo.getUserByHandle('blog'))?.feedUrl).toBe('https://blog.example.com/feed.xml')
+  expect(await repo.countActiveSubscriptions({ topic: 't' }, '2026-06-01T00:00:00.000Z')).toBe(1)
+  await repo.upsertPushSubscription({ id: 'p1', userId: 'u1', mode: 'websub', endpoint: 'e', topic: 't2', callbackToken: 'tok', secret: null, state: 'pending', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const check = new Database(file, { readonly: true })
+  expect(check.pragma('user_version', { simple: true })).toBe(3)
   check.close()
 })
