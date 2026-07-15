@@ -23,6 +23,7 @@ export const MAX_SUBS_PER_HOST = 20
 export const MAX_SUBS_PER_TOPIC = 500
 export const DEFAULT_LEASE_SECONDS = 864000 // 10 days
 export const MAX_LEASE_SECONDS = 2592000 // 30 days
+export const RSSCLOUD_LEASE_SECONDS = 90000 // 25 hours; subscribers re-register daily
 
 export interface RegistrationResult { status: 202 | 400 | 404 | 429; error?: string }
 
@@ -96,6 +97,61 @@ export async function handleWebSubRequest(deps: PushDeps & { lookupFn?: LookupFn
   return { status: 202 }
 }
 
+export async function handleRssCloudRequest(deps: PushDeps & { lookupFn?: LookupFn }, form: Record<string, string>, requesterIp: string | null): Promise<RegistrationResult> {
+  const { repo, config } = deps
+  const fetchFn = deps.fetchFn ?? fetch
+  if (!config.publicUrl) return { status: 404, error: 'push not configured' }
+  if (form.protocol !== 'http-post') return { status: 400, error: 'only http-post is supported' }
+  const topic = form.url1 ?? ''
+  const resolved = await resolveLocalTopic(repo, config.publicUrl, topic)
+  if (!resolved || resolved.format !== 'xml') return { status: 404, error: 'unknown topic' } // rssCloud is RSS-only
+  const port = Number(form.port)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return { status: 400, error: 'port invalid' }
+  const path = form.path ?? ''
+  if (!path.startsWith('/')) return { status: 400, error: 'path invalid' }
+  const host = form.domain || requesterIp
+  if (!host) return { status: 400, error: 'no domain and no requester address' }
+  const callback = `http://${host}:${port}${path}`
+  const gate = await checkCallbackUrl(callback, deps.lookupFn)
+  if (!gate.ok) return { status: 400, error: gate.reason }
+  const now = new Date().toISOString()
+  // Same renewal exemption as websub: a daily re-registering rssCloud
+  // subscriber at a full host/topic cap must not be locked out.
+  const isRenewal = (await repo.listActiveSubscriptions(topic, now)).some((s) => s.protocol === 'rsscloud' && s.callback === callback)
+  if (!isRenewal) {
+    if ((await repo.countActiveSubscriptions({ callbackHost: gate.host }, now)) >= MAX_SUBS_PER_HOST) return { status: 429, error: 'too many subscriptions for this callback host' }
+    if ((await repo.countActiveSubscriptions({ topic }, now)) >= MAX_SUBS_PER_TOPIC) return { status: 429, error: 'too many subscriptions for this topic' }
+  }
+  void verifyRssCloud({ repo, fetchFn }, topic, callback, gate.host)
+  return { status: 202 }
+}
+
+// Deliberate deviation from rssCloud convention: EVERY registration is
+// challenge-verified, including the no-domain path (spec H2 rule 1). A
+// compliant subscriber answers; a coerced third-party server does not.
+async function verifyRssCloud(deps: { repo: Repository; fetchFn: typeof fetch }, topic: string, callback: string, callbackHost: string): Promise<void> {
+  try {
+    const challenge = randomBytes(16).toString('hex')
+    const url = new URL(callback)
+    url.searchParams.set('url', topic)
+    url.searchParams.set('challenge', challenge)
+    const res = await deps.fetchFn(url.toString(), { signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
+    if (!res.ok || !(await res.text()).includes(challenge)) return // rssCloud convention: body CONTAINS the challenge
+    await deps.repo.upsertSubscription({
+      id: crypto.randomUUID(),
+      protocol: 'rsscloud',
+      topic,
+      callback,
+      callbackHost,
+      secret: null,
+      expiresAt: new Date(Date.now() + RSSCLOUD_LEASE_SECONDS * 1000).toISOString(),
+      createdAt: new Date().toISOString(),
+    })
+  } catch (err) {
+    console.error('rsscloud verification failed:', err instanceof Error ? err.message : err)
+  }
+}
+
 async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string, headers: Record<string, string>): Promise<void> {
   // Best-effort: one attempt + one immediate retry, then drop (spec ceiling).
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -164,6 +220,15 @@ export function createPush(deps: PushDeps): Push {
               if (sub.secret) headers['x-hub-signature'] = 'sha256=' + createHmac('sha256', sub.secret).update(body).digest('hex')
               await deliverOnce(fetchFn, sub.callback, body, headers)
             }
+          }
+        }
+
+        if (config.rssCloud) {
+          const now = new Date().toISOString()
+          const subs = (await repo.listActiveSubscriptions(topics.xml, now)).filter((s) => s.protocol === 'rsscloud')
+          for (const sub of subs) {
+            // Thin ping: subscriber re-fetches the feed itself.
+            await deliverOnce(fetchFn, sub.callback, new URLSearchParams({ url: topics.xml }).toString(), { 'content-type': 'application/x-www-form-urlencoded' })
           }
         }
       } catch (err) {

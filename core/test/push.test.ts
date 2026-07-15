@@ -2,7 +2,7 @@ import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
-import { createPush, handleWebSubRequest, resolveLocalTopic } from '../src/domain/push.ts'
+import { createPush, handleWebSubRequest, handleRssCloudRequest, resolveLocalTopic } from '../src/domain/push.ts'
 import { loadConfig } from '../src/config.ts'
 
 const EXT_ENV = { TEXTCASTER_TOKEN: 't', TEXTCASTER_PUBLIC_URL: 'https://cast.example.com', TEXTCASTER_WEBSUB: 'https://hub.example.com/hub' }
@@ -174,4 +174,82 @@ test('renewing an existing subscription is not blocked by the per-host cap', asy
   })
   // a genuinely new callback on the same host is still capped
   expect((await handleWebSubRequest(deps, subForm({ 'hub.callback': 'https://full.example.com/brand-new' }))).status).toBe(429)
+})
+
+const CLOUD_ENV = { TEXTCASTER_TOKEN: 't', TEXTCASTER_PUBLIC_URL: 'https://cast.example.com', TEXTCASTER_RSSCLOUD: 'on' }
+
+function cloudForm(over: Record<string, string> = {}): Record<string, string> {
+  return { notifyProcedure: '', port: '5337', path: '/rsscloud/notify', protocol: 'http-post', url1: 'https://cast.example.com/users/alice/feed.xml', domain: 'cb.example.com', ...over }
+}
+
+test('rsscloud registration is challenge-verified even without domain (spec deviation, deliberate)', async () => {
+  const { repo, service, config } = await setup(CLOUD_ENV)
+  await service.createLocalPostAs('alice', 'Alice', 'seed')
+  const echo = vi.fn(async (url: string | URL | Request) => {
+    const u = new URL(String(url))
+    return new Response('confirming challenge ' + u.searchParams.get('challenge'), { status: 200 })
+  })
+  const deps = { repo, config, fetchFn: echo as unknown as typeof fetch, lookupFn: publicLookup }
+  // with domain
+  expect((await handleRssCloudRequest(deps, cloudForm(), null)).status).toBe(202)
+  await vi.waitFor(async () => expect(await repo.countActiveSubscriptions({ callbackHost: 'cb.example.com' }, '2020-01-01T00:00:00.000Z')).toBe(1))
+  // without domain: requester IP becomes the callback host — still challenged
+  expect((await handleRssCloudRequest(deps, cloudForm({ domain: '' }), '93.184.216.34')).status).toBe(202)
+  await vi.waitFor(async () => expect(await repo.countActiveSubscriptions({ callbackHost: '93.184.216.34' }, '2020-01-01T00:00:00.000Z')).toBe(1))
+  // registered callback shape: http://host:port/path
+  const subs = await repo.listActiveSubscriptions('https://cast.example.com/users/alice/feed.xml', '2020-01-01T00:00:00.000Z')
+  expect(subs.map((s) => s.callback).sort()).toEqual(['http://93.184.216.34:5337/rsscloud/notify', 'http://cb.example.com:5337/rsscloud/notify'])
+  // 25h expiry
+  const in24h = new Date(Date.now() + 24 * 3600 * 1000).toISOString()
+  const in26h = new Date(Date.now() + 26 * 3600 * 1000).toISOString()
+  expect(await repo.countActiveSubscriptions({ topic: 'https://cast.example.com/users/alice/feed.xml' }, in24h)).toBe(2)
+  expect(await repo.countActiveSubscriptions({ topic: 'https://cast.example.com/users/alice/feed.xml' }, in26h)).toBe(0)
+})
+
+test('rsscloud rejects non-http-post, unknown topics, and missing ip+domain', async () => {
+  const { repo, service, config } = await setup(CLOUD_ENV)
+  await service.createLocalPostAs('alice', 'Alice', 'seed')
+  const deps = { repo, config, fetchFn: (async () => new Response('')) as unknown as typeof fetch, lookupFn: publicLookup }
+  expect((await handleRssCloudRequest(deps, cloudForm({ protocol: 'xml-rpc' }), null)).status).toBe(400)
+  expect((await handleRssCloudRequest(deps, cloudForm({ url1: 'https://cast.example.com/users/alice/feed.json' }), null)).status).toBe(404) // rssCloud is RSS-only
+  expect((await handleRssCloudRequest(deps, cloudForm({ domain: '' }), null)).status).toBe(400)
+})
+
+test('rsscloud thin ping goes to xml-topic subscribers on a local post', async () => {
+  const { repo, service, config } = await setup(CLOUD_ENV)
+  const entry = await service.createLocalPostAs('alice', 'Alice', 'ping me thin')
+  await repo.upsertSubscription({ id: 'rc1', protocol: 'rsscloud', topic: 'https://cast.example.com/users/alice/feed.xml', callback: 'http://cb.example.com:5337/rsscloud/notify', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const fetchFn = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('', { status: 200 }))
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(entry)
+  const call = fetchFn.mock.calls.find((c2) => String(c2[0]) === 'http://cb.example.com:5337/rsscloud/notify')
+  expect(call).toBeTruthy()
+  const init = call![1] as RequestInit
+  expect(new URLSearchParams(String(init.body)).get('url')).toBe('https://cast.example.com/users/alice/feed.xml')
+})
+
+test('renewing an existing rsscloud subscription is not blocked by the per-host cap', async () => {
+  const { repo, service, config } = await setup(CLOUD_ENV)
+  await service.createLocalPostAs('alice', 'Alice', 'seed')
+  const topic = 'https://cast.example.com/users/alice/feed.xml'
+  // fill the host cap, with cb0 being the one we will renew
+  for (let i = 0; i < 20; i++) {
+    await repo.upsertSubscription({ id: `cap${i}`, protocol: 'rsscloud', topic, callback: `http://full.example.com:5337/cb${i}`, callbackHost: 'full.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  }
+  const echo = vi.fn(async (url: string | URL | Request) => {
+    const u = new URL(String(url))
+    return new Response('confirming challenge ' + u.searchParams.get('challenge'), { status: 200 })
+  })
+  const deps = { repo, config, fetchFn: echo as unknown as typeof fetch, lookupFn: publicLookup }
+  // renewal of an existing triple: allowed despite the full cap
+  const renew = await handleRssCloudRequest(deps, cloudForm({ domain: 'full.example.com', path: '/cb0' }), null)
+  expect(renew.status).toBe(202)
+  await vi.waitFor(async () => {
+    const subs = await repo.listActiveSubscriptions(topic, '2020-01-01T00:00:00.000Z')
+    const renewed = subs.find((s) => s.callback === 'http://full.example.com:5337/cb0')
+    expect(renewed).toBeTruthy()
+    expect(new Date(renewed!.expiresAt).getTime()).toBeGreaterThan(Date.now() + 20 * 3600 * 1000) // fresh 25h lease
+  })
+  // a genuinely new callback on the same host is still capped
+  expect((await handleRssCloudRequest(deps, cloudForm({ domain: 'full.example.com', path: '/brand-new' }), null)).status).toBe(429)
 })

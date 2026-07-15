@@ -111,6 +111,15 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json(result.error ? { error: result.error } : { ok: true }, result.status)
   })
 
+  app.post('/rsscloud/pleaseNotify', async (c) => {
+    if (!deps.pushApi?.rsscloud) return c.json({ error: 'not found' }, 404)
+    const parsed = await c.req.parseBody()
+    const form = Object.fromEntries(Object.entries(parsed).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+    const requesterIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+    const result = await deps.pushApi.rsscloud(form, requesterIp)
+    return c.json(result.error ? { error: result.error } : { ok: true }, result.status)
+  })
+
   app.get('/timeline', async (c) => {
     const beforeRaw = c.req.query('before')
     let before
