@@ -47,7 +47,7 @@ async function verifyWebSub(deps: Required<Pick<PushDeps, 'repo'>> & { fetchFn: 
     url.searchParams.set('hub.topic', topic)
     url.searchParams.set('hub.challenge', challenge)
     if (mode === 'subscribe') url.searchParams.set('hub.lease_seconds', String(leaseSeconds)) // H7: omitted on unsubscribe
-    const res = await deps.fetchFn(url.toString(), { signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
+    const res = await deps.fetchFn(url.toString(), { redirect: 'manual', signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
     if (!res.ok || (await res.text()) !== challenge) return // no state change
     if (mode === 'subscribe') {
       await deps.repo.upsertSubscription({
@@ -135,7 +135,7 @@ async function verifyRssCloud(deps: { repo: Repository; fetchFn: typeof fetch },
     const url = new URL(callback)
     url.searchParams.set('url', topic)
     url.searchParams.set('challenge', challenge)
-    const res = await deps.fetchFn(url.toString(), { signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
+    const res = await deps.fetchFn(url.toString(), { redirect: 'manual', signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
     if (!res.ok || !(await res.text()).includes(challenge)) return // rssCloud convention: body CONTAINS the challenge
     await deps.repo.upsertSubscription({
       id: crypto.randomUUID(),
@@ -156,7 +156,7 @@ async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string
   // Best-effort: one attempt + one immediate retry, then drop (spec ceiling).
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await fetchFn(callback, { method: 'POST', headers, body, signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
+      await fetchFn(callback, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(PUSH_TIMEOUT_MS) })
       return
     } catch (err) {
       if (attempt === 1) console.error(`delivery to ${callback} dropped:`, err instanceof Error ? err.message : err)
@@ -165,6 +165,8 @@ async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string
 }
 
 async function publishPing(hubUrl: string, topic: string, fetchFn: typeof fetch): Promise<void> {
+  // Intentionally allows default redirect: 'follow' — hubUrl is operator-configured,
+  // not attacker-controlled like callback URLs in verification/delivery paths.
   await fetchFn(hubUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },

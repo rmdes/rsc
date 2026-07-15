@@ -265,3 +265,35 @@ test('rsscloud registration whose callback fails the challenge is never stored',
   await new Promise((res) => setImmediate(res)) // ...and its rejection settled
   expect(await repo.countActiveSubscriptions({ callbackHost: 'never-consented.example.com' }, '2020-01-01T00:00:00.000Z')).toBe(0)
 })
+
+test('all callback-bound fetches opt out of redirect following (SSRF bypass guard)', async () => {
+  const seen: Array<{ url: string; redirect: RequestRedirect | undefined }> = []
+  const recorder = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    seen.push({ url: String(url), redirect: init?.redirect })
+    const u = new URL(String(url))
+    return new Response(u.searchParams.get('hub.challenge') ?? 'confirming ' + (u.searchParams.get('challenge') ?? ''), { status: 200 })
+  })
+
+  // websub challenge GET
+  const ws = await setup(SELF_ENV)
+  await ws.service.createLocalPostAs('alice', 'Alice', 'seed')
+  await handleWebSubRequest({ repo: ws.repo, config: ws.config, fetchFn: recorder as unknown as typeof fetch, lookupFn: publicLookup }, subForm())
+  await vi.waitFor(() => expect(seen.length).toBeGreaterThanOrEqual(1))
+
+  // rsscloud challenge GET
+  const rc = await setup(CLOUD_ENV)
+  await rc.service.createLocalPostAs('alice', 'Alice', 'seed')
+  await handleRssCloudRequest({ repo: rc.repo, config: rc.config, fetchFn: recorder as unknown as typeof fetch, lookupFn: publicLookup }, cloudForm(), null)
+  await vi.waitFor(() => expect(seen.length).toBeGreaterThanOrEqual(2))
+
+  // delivery POST (fat ping via self mode)
+  const topic = 'https://cast.example.com/users/alice/feed.xml'
+  await ws.repo.upsertSubscription({ id: 'rd1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const entry = await ws.service.createLocalPostAs('alice', 'Alice', 'redirect-guard post')
+  const push = createPush({ repo: ws.repo, config: ws.config, fetchFn: recorder as unknown as typeof fetch })
+  await push.onLocalPost(entry)
+
+  const callbackCalls = seen.filter((c) => c.url.includes('cb.example.com'))
+  expect(callbackCalls.length).toBeGreaterThanOrEqual(3) // 2 challenges + at least 1 delivery
+  for (const call of callbackCalls) expect(call.redirect).toBe('manual')
+})
