@@ -45,6 +45,30 @@ test('POST /users rejects a non-http(s) feedUrl', async () => {
   expect(res.status).toBe(400)
 })
 
+test('POST /posts with missing content returns 400', async () => {
+  const app = await makeApp()
+  const res = await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'alice', displayName: 'Alice' }) })
+  expect(res.status).toBe(400)
+})
+
+test('POST /posts with oversized content returns 400', async () => {
+  const app = await makeApp()
+  const res = await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'alice', displayName: 'Alice', content: 'x'.repeat(100001) }) })
+  expect(res.status).toBe(400)
+})
+
+test('POST /posts with malformed JSON returns 400, not 500', async () => {
+  const app = await makeApp()
+  const res = await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: '{ not json' })
+  expect(res.status).toBe(400)
+})
+
+test('POST /users with malformed JSON returns 400, not 500', async () => {
+  const app = await makeApp()
+  const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: '{ not json' })
+  expect(res.status).toBe(400)
+})
+
 test('POST /posts with a handle belonging to a remote user returns 400 with a JSON error', async () => {
   const app = await makeApp()
   await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) })
