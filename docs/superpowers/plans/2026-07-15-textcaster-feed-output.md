@@ -390,15 +390,30 @@ function rowToSubscription(r: SubscriptionsTable): Subscription {
   }
 ```
 
-- [ ] **Step 5: Run — verify GREEN**
+- [ ] **Step 5: Repair the racy Repository stub (plan-review P1 — REQUIRED for typecheck)**
+
+`core/test/service.test.ts` (~line 51) has a structurally-typed `const racy: Repository = { ...ten explicit delegations... }` stub. Growing the interface breaks it at `tsc --noEmit`. Replace the whole `racy` literal with a prototype-inheritance override so interface growth never breaks it again (NOTE: `{ ...repo }` spread does NOT work here — `repo` is a class instance and spread drops prototype methods):
+
+```ts
+  let firstLookup = true
+  const racy: Repository = Object.assign(Object.create(repo), {
+    getUserByHandle: async (h: string) => {
+      if (firstLookup) { firstLookup = false; return undefined } // simulate pre-race view
+      return repo.getUserByHandle(h)
+    },
+  })
+```
+(All other methods — current and future — are inherited from `repo` via the prototype chain; `this.db` still resolves through it. Delete the ten explicit delegation lines. The `import type { Repository }` stays.)
+
+- [ ] **Step 6: Run — verify GREEN**
 
 Run: `npm test -w core` then `npm run typecheck -w core`
-Expected: all pass — 5 new contract tests, both migration changes, everything prior. Typecheck exit 0.
+Expected: all pass — 5 new contract tests, both migration changes, the repaired race test, everything prior. Typecheck exit 0.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add core/src/domain/types.ts core/src/domain/repository.ts core/src/storage/sqlite.ts core/src/domain/repository-contract.ts core/test/migrations.test.ts
+git add core/src/domain/types.ts core/src/domain/repository.ts core/src/storage/sqlite.ts core/src/domain/repository-contract.ts core/test/migrations.test.ts core/test/service.test.ts
 git commit -m "$(printf 'core: migration 2 — subscriptions registry in the Repository contract\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>')"
 ```
 
@@ -1056,7 +1071,8 @@ test('websub subscribe: challenge echoed -> stored; wrong echo -> not stored', a
   const badFetch = vi.fn(async () => new Response('nope', { status: 200 }))
   const r2 = await handleWebSubRequest({ repo, config, fetchFn: badFetch as unknown as typeof fetch, lookupFn: publicLookup }, subForm({ 'hub.callback': 'https://cb2.example.com/x' }))
   expect(r2.status).toBe(202) // 202 first, verification decides later
-  await new Promise((res) => setTimeout(res, 20))
+  await vi.waitFor(() => expect(badFetch).toHaveBeenCalledTimes(1)) // verification GET happened...
+  await new Promise((res) => setImmediate(res)) // ...and its rejection settled
   expect(await repo.countActiveSubscriptions({ callbackHost: 'cb2.example.com' }, '2020-01-01T00:00:00.000Z')).toBe(0)
 })
 
@@ -1120,7 +1136,7 @@ test('self mode delivers the fat ping with HMAC signature; expired subs skipped;
 ```
 Append to `core/test/api.test.ts`:
 ```ts
-test('POST /hub is 404 when no pushApi is wired, and forwards to the handler when it is', async () => {
+test('POST /hub is 404 when no pushApi is wired', async () => {
   const app = await makeApp()
   expect((await app.request('/hub', { method: 'POST', body: new URLSearchParams({ 'hub.mode': 'subscribe' }) })).status).toBe(404)
 })
@@ -1224,19 +1240,7 @@ async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string
   }
 }
 ```
-Extend `onLocalPost` — inside the existing outer try, after the external-mode block:
-```ts
-        if (config.websub.mode === 'self') {
-          const now = new Date().toISOString()
-          const hub = hubLinkUrl(config.websub, config.publicUrl)
-          const bodies: Record<'xml' | 'json', { topic: string; render: () => string; contentType: string }> = {
-            xml: { topic: topics.xml, render: () => renderRssFeed(entry.author, [], ctxPlaceholder), contentType: 'application/rss+xml; charset=utf-8' },
-            json: { topic: topics.json, render: () => renderJsonFeed(entry.author, [], ctxPlaceholder), contentType: 'application/feed+json; charset=utf-8' },
-          }
-          void bodies // replaced below — see note
-        }
-```
-**Note to implementer:** the placeholder block above is illustrative of the shape ONLY — implement it concretely as follows (this is the real code; the fat ping must carry the CURRENT feed, so fetch the author's posts once per event):
+Extend `onLocalPost` — inside the existing outer try, after the external-mode block (the fat ping must carry the CURRENT feed, so fetch the author's posts once per event):
 ```ts
         if (config.websub.mode === 'self') {
           const now = new Date().toISOString()
