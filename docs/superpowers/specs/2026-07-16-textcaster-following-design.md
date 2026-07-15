@@ -1,7 +1,8 @@
 # Textcaster — following/filtering design
 
-Date: 2026-07-16
-Status: design approved (brainstorm); spec pending review
+Date: 2026-07-16 (rev 2 — folds in
+`docs/superpowers/reviews/2026-07-16-following-spec-review.md` H1–H6 + pins)
+Status: design approved (brainstorm); rev 2 pending review
 Author: Ricardo (rmdes) with Claude Code
 Prior art: `2026-07-15-textcaster-design.md` (deferred item 2: "Following /
 filtering (beyond the everyone-timeline)"); OPML named there as "the
@@ -33,7 +34,13 @@ CREATE TABLE follows (
   created_at  TEXT NOT NULL,
   PRIMARY KEY (follower_id, followed_id)
 ) WITHOUT ROWID;
+
+CREATE INDEX posts_author_pub_idx ON posts (author_id, published_at, id);
 ```
+
+The index ships with this migration (review pin): the filtered lenses are
+correct without it but would scan the whole `published_at` index; one line
+now beats a migration later.
 
 - Follower MUST be a `local` user — enforced in the domain layer (service),
   not by the schema.
@@ -73,8 +80,9 @@ getTimeline(limit: number, before?: TimelineCursor,
 Writes (bearer-authed, like `POST /posts`):
 
 - `POST /users/:handle/follows` body `{ "handle": "<target>" }` →
-  `200 { ok: true }`. Errors: 404 unknown handle (either side), 400 when
-  `:handle` is not a local user.
+  `200 { ok: true }` — deliberately 200, not 201: the operation is
+  idempotent and "created vs already existed" is not signaled. Errors: 404
+  unknown handle (either side), 400 when `:handle` is not a local user.
 - `DELETE /users/:handle/follows/:target` → `200 { ok: true }`, idempotent
   (deleting a non-follow still 200). 404 only for unknown handles.
 - `POST /users/:handle/follows/opml` — OPML import, see below.
@@ -85,8 +93,11 @@ Reads (public, like `GET /timeline`):
   with no follows — including remote users, no special case).
 - `GET /timeline?followed_by=<handle>` and `GET /timeline?author=<handle>`
   — the two lenses on the existing route, same `limit`/`cursor` params and
-  cursor wire format. `followed_by` and `author` together → 400. Unknown
-  handle → 404.
+  cursor wire format. `followed_by` and `author` together → 400, checked
+  BEFORE handle resolution (cheap check first; deterministic even when the
+  handles are also unknown). Unknown handle → 404. The author lens works
+  for remote authors too — the repo filter is kind-agnostic; this is
+  intended and gets its own test.
 - `GET /users/:handle/following.opml` — OPML export.
 
 ## OPML
@@ -100,31 +111,52 @@ xmlUrl="<url>">` per followed user:
 
 - remote user → their `feedUrl`
 - local user → `<PUBLIC_URL>/users/<handle>/feed.xml`; without
-  `TEXTCASTER_PUBLIC_URL` the path is emitted relative (`/users/<h>/feed.xml`)
-  — a documented degradation, not an error.
+  `TEXTCASTER_PUBLIC_URL`, local-user outlines are **omitted** (H4) — a
+  relative URL is junk to every external aggregator, so the export carries
+  only the outlines that are usable everywhere.
 
 **Import** — `POST /users/:handle/follows/opml`, bearer-authed, raw OPML
 body, `bodyLimit` **1 MB** (subscription lists outgrow the 64 KB form cap;
-still bounded). For each outline carrying an `xmlUrl`:
+still bounded). Content-type is not checked — read the body as text and
+hand it to `parseOpml` (readers disagree on OPML MIME types).
+
+**Walk the outline tree recursively (H1)**: `parseOpml` returns NESTED
+`outlines` arrays for folder groups, and folders are the norm in real
+reader exports (Feedly, NetNewsWire). Flatten the tree; folder outlines
+themselves (no `xmlUrl`) are structure, not feeds — they don't count as
+skipped. At most **1000** feed outlines are processed per import (H5 —
+same caps philosophy as M1's 20/host, 500/topic: one constant stops an
+operator self-inflicting a poller DoS); outlines beyond the cap count as
+skipped.
+
+For each flattened outline carrying an `xmlUrl`:
 
 1. A user with that `feedUrl` already exists → follow it.
 2. The URL is one of **this instance's own** local feeds (`PUBLIC_URL` is
-   set and the URL equals `<PUBLIC_URL>/users/<h>/feed.xml` for an existing
-   local `<h>`) → follow that local user — re-importing your own export
-   must not create remote shadows of local users.
+   set and the URL exactly equals EITHER minted URL — `feed.xml` or
+   `feed.json`, the pair `feedUrls()` returns (H2)) → follow that local
+   user — re-importing your own export must not create remote shadows of
+   local users. Exact equality only, matching M1: hand-mangled URLs
+   (trailing slash, case) degrade to case 3, accepted.
 3. Unknown → create a remote user via the existing `addRemoteUser` path
    (same validation the manual form gets), then follow it. Handle: slugify
    the outline `text`/`title` (lowercase; every run of characters outside
-   `[a-z0-9]` becomes one `-`; trim `-`; truncate to 64; empty → `feed`),
-   and on collision suffix `-2`, `-3`, … (retrying through
-   `HandleTakenError`).
+   `[a-z0-9]` becomes one `-`; trim `-`; empty → `feed`), truncated to
+   **64 minus suffix room** (H3: `-2`…`-50` needs up to 3 chars, so
+   truncate the base to 61) so a suffixed handle never violates
+   `HANDLE_RE {1,64}`. Collisions: consult an in-batch `Set` of handles
+   assigned this import (two same-slug outlines in one file dedup by
+   `xmlUrl` only — they WILL collide on handle) plus `HandleTakenError`
+   from the DB, suffixing `-2`, `-3`, … up to **50 attempts**, after which
+   the outline counts as skipped.
 4. Outline without `xmlUrl`, duplicate `xmlUrl` within the file, or a
    create/follow that errors → count as skipped, keep going.
 
 Response: `200 { followed: n, created: n, skipped: n }`. Import creates
 users only — **no synchronous feed fetching**; the poller picks new users
 up on its next cycle exactly like manually added remotes (backfill rules,
-SSRF guards, and push-in discovery all apply unchanged, for free).
+SSRF guards — garbage `xmlUrl`s fail the http(s) scheme check and skip —
+and push-in discovery all apply unchanged, for free).
 
 ## Web UI
 
@@ -149,8 +181,11 @@ untouched:
 - Author lens: drop events where `post.author.id !== page.authorId`.
 - Followed lens: drop events where `post.author.id` is not in the follow-id
   set delivered by the page's server `load`.
-- Known, accepted staleness: a follow made after page load doesn't join the
-  live set until refresh. No-JS behavior is unchanged (refresh).
+- Known, accepted staleness — both directions (H6): a follow made after
+  page load doesn't join the live set until refresh, and an unfollowed
+  author's posts keep appearing live until refresh (EventSource reconnects
+  don't re-run `load`). Do NOT "fix" this with a refetch loop. No-JS
+  behavior is unchanged (refresh).
 
 ## Interaction with polling / push
 
@@ -160,11 +195,15 @@ subscriptions.
 
 ## Testing
 
-- Repository contract suite: add/remove idempotency, `listFollowing` order,
-  both timeline filters with cursor pagination across page boundaries.
-- HTTP: route auth, error codes (400 non-local follower, 400 both filters,
-  404s), lens pagination, OPML export shape, import happy path + skip
-  accounting + 1 MB cap (413).
+- Repository contract suite: add/remove idempotency, self-follow (one pin),
+  `listFollowing` order, both timeline filters with cursor pagination
+  across page boundaries.
+- HTTP: route auth, error codes (400 non-local follower, 400 both filters —
+  asserted with unknown handles to pin the check order, 404s), lens
+  pagination, author lens on a REMOTE author (pin), OPML export shape (and
+  local-outline omission without PUBLIC_URL), import happy path + foldered
+  (nested) OPML + feed.json self-URL + same-slug collision batch + outline
+  cap + skip accounting + 1 MB cap (413).
 - OPML round-trip: export user A's follows from instance 1, import into a
   fresh in-memory instance 2, assert the recreated remote users + follows.
 - Web: form-action tests per existing pattern; island filtering unit-tested
