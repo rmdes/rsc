@@ -16,7 +16,19 @@ export function isPrivateIp(ip: string): boolean {
   if (v6 === '::1' || v6 === '::') return true
   if (v6.startsWith('fc') || v6.startsWith('fd')) return true // ULA fc00::/7
   if (v6.startsWith('fe8') || v6.startsWith('fe9') || v6.startsWith('fea') || v6.startsWith('feb')) return true // link-local fe80::/10
-  if (v6.startsWith('::ffff:')) return isPrivateIp(v6.slice(7)) // v4-mapped
+  if (v6.startsWith('::ffff:')) {
+    const rest = v6.slice(7)
+    if (isIP(rest) === 4) return isPrivateIp(rest) // dotted-quad form
+    // URL canonicalizes mapped addresses to hex-group form (::ffff:7f00:1);
+    // decode the two 16-bit groups back into a dotted quad.
+    const groups = rest.split(':')
+    if (groups.length === 2 && groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) {
+      const hi = parseInt(groups[0], 16)
+      const lo = parseInt(groups[1], 16)
+      return isPrivateIp(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`)
+    }
+    return true // unrecognized mapped form: fail closed
+  }
   return false
 }
 

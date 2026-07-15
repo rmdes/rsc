@@ -31,3 +31,15 @@ test('checkCallbackUrl rejects when DNS resolution fails', async () => {
   const failing = async () => { throw new Error('ENOTFOUND') }
   expect((await checkCallbackUrl('https://nx.example.com/x', failing)).ok).toBe(false)
 })
+
+test('v4-mapped IPv6 literals cannot bypass the guard (URL canonicalizes to hex groups)', async () => {
+  // URL turns ::ffff:127.0.0.1 into ::ffff:7f00:1 — the guard must catch BOTH forms
+  expect(isPrivateIp('::ffff:7f00:1')).toBe(true) // 127.0.0.1
+  expect(isPrivateIp('::ffff:a00:5')).toBe(true) // 10.0.0.5
+  expect(isPrivateIp('::ffff:c0a8:101')).toBe(true) // 192.168.1.1
+  expect(isPrivateIp('::ffff:5db8:d822')).toBe(false) // 93.184.216.34, public
+  expect(isPrivateIp('::ffff:127.0.0.1')).toBe(true) // dotted form still handled
+  expect((await checkCallbackUrl('http://[::ffff:127.0.0.1]/x', publicLookup)).ok).toBe(false)
+  expect((await checkCallbackUrl('http://[::ffff:10.0.0.5]/x', publicLookup)).ok).toBe(false)
+  expect((await checkCallbackUrl('http://[::ffff:5db8:d822]/x', publicLookup)).ok).toBe(true)
+})
