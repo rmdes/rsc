@@ -45,3 +45,32 @@ test('GET forwards upstream error status', async () => {
 
 	expect(res.status).toBe(500)
 })
+
+test('GET forwards the Last-Event-ID header upstream', async () => {
+	const body = new ReadableStream({
+		start(controller) {
+			controller.close()
+		}
+	})
+	const fetchMock = vi.fn(async () => new Response(body, { status: 200 }))
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	const request = new Request('http://x/stream', { headers: { 'Last-Event-ID': 'post-42' } })
+	await GET({ request } as never)
+
+	const init = (fetchMock as any).mock.calls[0][1] as RequestInit
+	expect(new Headers(init.headers).get('Last-Event-ID')).toBe('post-42')
+})
+
+test('GET keeps the upstream content-type on error responses', async () => {
+	const fetchMock = vi.fn(
+		async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } })
+	)
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	const request = new Request('http://x/stream')
+	const res = await GET({ request } as never)
+
+	expect(res.status).toBe(500)
+	expect(res.headers.get('content-type')).toBe('application/json')
+})
