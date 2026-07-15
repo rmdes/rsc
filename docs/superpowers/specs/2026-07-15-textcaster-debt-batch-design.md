@@ -4,7 +4,7 @@ Date: 2026-07-15
 Status: design approved (brainstorm); implementation not started
 Author: Ricardo (rmdes) with Claude Code
 Basis: spine complete at `addb889`; debt items from
-`docs/2026-07-15-spine-improvement-suggestions.md` (#12, #14, #15, #20) and
+`docs/superpowers/reviews/2026-07-15-spine-improvement-suggestions.md` (#12, #14, #15, #20) and
 the spine run's review ledger.
 
 ## What this is

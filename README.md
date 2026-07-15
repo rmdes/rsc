@@ -12,7 +12,7 @@ both and leaves the ideological blocks behind.
 
 > **Status: the spine is runnable end to end.** Local posts and remote feed
 > items live in one timeline, server-rendered and updating live over SSE. See
-> [`docs/RUNNING.md`](docs/RUNNING.md) to run it. The founding design is in
+> [`docs/superpowers/documentation/RUNNING.md`](docs/superpowers/documentation/RUNNING.md) to run it. The founding design is in
 > [`docs/superpowers/specs/2026-07-15-textcaster-design.md`](docs/superpowers/specs/2026-07-15-textcaster-design.md).
 
 ## The idea in one paragraph
