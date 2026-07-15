@@ -130,3 +130,8 @@ test('a blank displayName falls back to the handle', async () => {
   const body = await (await app.request('/timeline')).json()
   expect(body.timeline[0].author.displayName).toBe('alice')
 })
+
+test('POST /hub is 404 when no pushApi is wired', async () => {
+  const app = await makeApp()
+  expect((await app.request('/hub', { method: 'POST', body: new URLSearchParams({ 'hub.mode': 'subscribe' }) })).status).toBe(404)
+})

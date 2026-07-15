@@ -7,7 +7,7 @@ import { createEventBus } from './domain/bus.ts'
 import { createService } from './domain/service.ts'
 import { createApp } from './api/app.ts'
 import { hubLinkUrl } from './domain/feed.ts'
-import { createPush } from './domain/push.ts'
+import { createPush, handleWebSubRequest } from './domain/push.ts'
 import { pollAll } from './domain/ingest.ts'
 
 const config = loadConfig()
@@ -22,6 +22,7 @@ const app = createApp({
   bus,
   token: config.token,
   feeds: { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud },
+  pushApi: config.websub.mode === 'self' ? { websub: (form) => handleWebSubRequest({ repo, config }, form) } : undefined,
 })
 
 // H4 seam: onLocalPost never rejects; void is safe here by contract.

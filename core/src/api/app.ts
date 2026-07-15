@@ -33,7 +33,12 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown> | null>
 
 const REPLAY_CAP = 100
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string; feeds?: FeedContext }): Hono {
+export interface PushApi {
+  websub?: (form: Record<string, string>) => Promise<{ status: 202 | 400 | 404 | 429; error?: string }>
+  rsscloud?: (form: Record<string, string>, requesterIp: string | null) => Promise<{ status: 202 | 400 | 404 | 429; error?: string }>
+}
+
+export function createApp(deps: { service: Service; bus: EventBus; token: string; feeds?: FeedContext; pushApi?: PushApi }): Hono {
   const { service, bus, token } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const app = new Hono()
@@ -96,6 +101,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (r instanceof Response) return r
     const posts = await service.getPostsByAuthor(r.user.id, FEED_LIMIT)
     return c.body(renderJsonFeed(r.user, posts, feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
+  })
+
+  app.post('/hub', async (c) => {
+    if (!deps.pushApi?.websub) return c.json({ error: 'not found' }, 404)
+    const parsed = await c.req.parseBody()
+    const form = Object.fromEntries(Object.entries(parsed).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+    const result = await deps.pushApi.websub(form)
+    return c.json(result.error ? { error: result.error } : { ok: true }, result.status)
   })
 
   app.get('/timeline', async (c) => {
