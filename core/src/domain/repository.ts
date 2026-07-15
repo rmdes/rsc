@@ -1,4 +1,4 @@
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor } from './types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushProtocol } from './types.ts'
 
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
@@ -13,4 +13,9 @@ export interface Repository {
    *  design (same-ms batches re-deliver in full); consumers dedup by id. */
   getTimelineAfter(sinceCreatedAt: string, limit: number): Promise<TimelineEntry[]>
   getPost(id: string): Promise<Post | undefined>
+  upsertSubscription(s: Subscription): Promise<void>
+  deleteSubscription(protocol: PushProtocol, topic: string, callback: string): Promise<void>
+  listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]>
+  countActiveSubscriptions(filter: { callbackHost?: string; topic?: string }, now: string): Promise<number>
+  purgeExpiredSubscriptions(now: string): Promise<void>
 }

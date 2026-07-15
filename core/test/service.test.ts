@@ -48,21 +48,12 @@ test('a first post that loses the create race retries the lookup and succeeds', 
   const repo = await createSqliteRepository(':memory:')
   await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' }) // the "winner" of the race
   let firstLookup = true
-  const racy: Repository = {
-    createLocalUser: (u) => repo.createLocalUser(u),
-    createRemoteUser: (u) => repo.createRemoteUser(u),
-    getUser: (id) => repo.getUser(id),
-    getUserByHandle: async (h) => {
+  const racy: Repository = Object.assign(Object.create(repo), {
+    getUserByHandle: async (h: string) => {
       if (firstLookup) { firstLookup = false; return undefined } // simulate pre-race view
       return repo.getUserByHandle(h)
     },
-    listRemoteUsers: () => repo.listRemoteUsers(),
-    insertPost: (p) => repo.insertPost(p),
-    hasPostsByAuthor: (a) => repo.hasPostsByAuthor(a),
-    getTimeline: (l, b) => repo.getTimeline(l, b),
-    getTimelineAfter: (s, l) => repo.getTimelineAfter(s, l),
-    getPost: (id) => repo.getPost(id),
-  }
+  })
   const svc = createService(racy, createEventBus())
   const entry = await svc.createLocalPostAs('alice', 'Alice', 'raced post')
   expect(entry.author.handle).toBe('alice')

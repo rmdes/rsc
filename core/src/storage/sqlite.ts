@@ -2,12 +2,13 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushProtocol } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string }
-interface DB { users: UsersTable; posts: PostsTable }
+interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
+interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable }
 
 function rowToUser(r: UsersTable): User {
   return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at }
@@ -15,6 +16,10 @@ function rowToUser(r: UsersTable): User {
 
 function rowToPost(r: PostsTable): Post {
   return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at }
+}
+
+function rowToSubscription(r: SubscriptionsTable): Subscription {
+  return { id: r.id, protocol: r.protocol, topic: r.topic, callback: r.callback, callbackHost: r.callback_host, secret: r.secret, expiresAt: r.expires_at, createdAt: r.created_at }
 }
 
 type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string }
@@ -109,6 +114,33 @@ export class SqliteRepository implements Repository {
     const r = await this.db.selectFrom('posts').selectAll().where('id', '=', id).executeTakeFirst()
     return r ? rowToPost(r) : undefined
   }
+
+  async upsertSubscription(s: Subscription) {
+    await this.db
+      .insertInto('subscriptions')
+      .values({ id: s.id, protocol: s.protocol, topic: s.topic, callback: s.callback, callback_host: s.callbackHost, secret: s.secret, expires_at: s.expiresAt, created_at: s.createdAt })
+      // Explicit conflict target + DO UPDATE: refreshes replace secret/expiry.
+      // (The posts-table bare doNothing() pattern must not be copied here.)
+      .onConflict((oc) => oc.columns(['protocol', 'topic', 'callback']).doUpdateSet({ secret: s.secret, expires_at: s.expiresAt, callback_host: s.callbackHost }))
+      .execute()
+  }
+  async deleteSubscription(protocol: PushProtocol, topic: string, callback: string) {
+    await this.db.deleteFrom('subscriptions').where('protocol', '=', protocol).where('topic', '=', topic).where('callback', '=', callback).execute()
+  }
+  async listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]> {
+    const rows = await this.db.selectFrom('subscriptions').selectAll().where('topic', '=', topic).where('expires_at', '>', now).execute()
+    return rows.map(rowToSubscription)
+  }
+  async countActiveSubscriptions(filter: { callbackHost?: string; topic?: string }, now: string): Promise<number> {
+    let q = this.db.selectFrom('subscriptions').select(({ fn }) => fn.countAll().as('n')).where('expires_at', '>', now)
+    if (filter.callbackHost !== undefined) q = q.where('callback_host', '=', filter.callbackHost)
+    if (filter.topic !== undefined) q = q.where('topic', '=', filter.topic)
+    const row = await q.executeTakeFirst()
+    return Number(row?.n ?? 0)
+  }
+  async purgeExpiredSubscriptions(now: string) {
+    await this.db.deleteFrom('subscriptions').where('expires_at', '<=', now).execute()
+  }
 }
 
 // index N-1 holds the statements that bring the schema to version N.
@@ -136,6 +168,21 @@ const MIGRATIONS: string[][] = [
     )`,
     'CREATE INDEX posts_published_idx ON posts (published_at, id)',
     'CREATE INDEX posts_created_idx ON posts (created_at, id)',
+  ],
+  [
+    `CREATE TABLE subscriptions (
+      id text PRIMARY KEY,
+      protocol text NOT NULL,
+      topic text NOT NULL,
+      callback text NOT NULL,
+      callback_host text NOT NULL,
+      secret text,
+      expires_at text NOT NULL,
+      created_at text NOT NULL,
+      CONSTRAINT subscriptions_triple_uq UNIQUE (protocol, topic, callback)
+    )`,
+    'CREATE INDEX subscriptions_topic_idx ON subscriptions (topic, expires_at)',
+    'CREATE INDEX subscriptions_host_idx ON subscriptions (callback_host, expires_at)',
   ],
 ]
 

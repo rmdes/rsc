@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest'
 import type { Repository } from './repository.ts'
 import { HandleTakenError } from './types.ts'
+import type { Subscription } from './types.ts'
 
 export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
   describe('Repository contract', () => {
@@ -126,6 +127,55 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
       await expect(repo.createLocalUser({ handle: 'alice', displayName: 'Alice 2' })).rejects.toThrow(HandleTakenError)
       await expect(repo.createRemoteUser({ handle: 'alice', displayName: 'A', feedUrl: 'https://ex.com/f.xml' })).rejects.toThrow(HandleTakenError)
+    })
+
+    function sub(over: Partial<Subscription>): Subscription {
+      return { id: crypto.randomUUID(), protocol: 'websub', topic: 'https://ex.com/users/alice/feed.xml', callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over }
+    }
+
+    test('upsertSubscription inserts, and refreshes secret/expiry on the same triple', async () => {
+      const repo = await makeRepo()
+      await repo.upsertSubscription(sub({}))
+      await repo.upsertSubscription(sub({ secret: 's3cret', expiresAt: '2028-01-01T00:00:00.000Z' }))
+      const active = await repo.listActiveSubscriptions('https://ex.com/users/alice/feed.xml', '2026-06-01T00:00:00.000Z')
+      expect(active.length).toBe(1)
+      expect(active[0].secret).toBe('s3cret')
+      expect(active[0].expiresAt).toBe('2028-01-01T00:00:00.000Z')
+    })
+
+    test('listActiveSubscriptions filters expired rows and returns both protocols', async () => {
+      const repo = await makeRepo()
+      await repo.upsertSubscription(sub({ callback: 'https://cb1.example.com/a', callbackHost: 'cb1.example.com' }))
+      await repo.upsertSubscription(sub({ protocol: 'rsscloud', callback: 'http://cb2.example.com:5337/notify', callbackHost: 'cb2.example.com' }))
+      await repo.upsertSubscription(sub({ callback: 'https://cb3.example.com/x', callbackHost: 'cb3.example.com', expiresAt: '2026-01-02T00:00:00.000Z' }))
+      const active = await repo.listActiveSubscriptions('https://ex.com/users/alice/feed.xml', '2026-06-01T00:00:00.000Z')
+      expect(active.map((s) => s.callbackHost).sort()).toEqual(['cb1.example.com', 'cb2.example.com'])
+    })
+
+    test('deleteSubscription removes exactly the triple', async () => {
+      const repo = await makeRepo()
+      await repo.upsertSubscription(sub({}))
+      await repo.deleteSubscription('websub', 'https://ex.com/users/alice/feed.xml', 'https://cb.example.com/receive')
+      expect(await repo.listActiveSubscriptions('https://ex.com/users/alice/feed.xml', '2026-06-01T00:00:00.000Z')).toEqual([])
+    })
+
+    test('countActiveSubscriptions counts by callbackHost and by topic, excluding expired', async () => {
+      const repo = await makeRepo()
+      await repo.upsertSubscription(sub({ callback: 'https://cb.example.com/a' }))
+      await repo.upsertSubscription(sub({ callback: 'https://cb.example.com/b' }))
+      await repo.upsertSubscription(sub({ callback: 'https://cb.example.com/dead', expiresAt: '2026-01-02T00:00:00.000Z' }))
+      await repo.upsertSubscription(sub({ topic: 'https://ex.com/users/bob/feed.xml', callback: 'https://other.example.com/x', callbackHost: 'other.example.com' }))
+      const now = '2026-06-01T00:00:00.000Z'
+      expect(await repo.countActiveSubscriptions({ callbackHost: 'cb.example.com' }, now)).toBe(2)
+      expect(await repo.countActiveSubscriptions({ topic: 'https://ex.com/users/alice/feed.xml' }, now)).toBe(2)
+    })
+
+    test('purgeExpiredSubscriptions deletes only expired rows', async () => {
+      const repo = await makeRepo()
+      await repo.upsertSubscription(sub({}))
+      await repo.upsertSubscription(sub({ callback: 'https://cb.example.com/dead', expiresAt: '2026-01-02T00:00:00.000Z' }))
+      await repo.purgeExpiredSubscriptions('2026-06-01T00:00:00.000Z')
+      expect(await repo.countActiveSubscriptions({ callbackHost: 'cb.example.com' }, '2020-01-01T00:00:00.000Z')).toBe(1)
     })
   })
 }
