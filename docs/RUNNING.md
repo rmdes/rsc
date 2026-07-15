@@ -88,6 +88,15 @@ Then open <http://localhost:5173>.
 - Feeds are polled every `TEXTCASTER_POLL_SECONDS` (default 60). A feed
   added just now shows its content within one poll interval.
 
+## Deployment note
+
+The `/stream` route proxies core's SSE endpoint and needs a streaming-capable
+host. `adapter-auto`'s static/serverless targets are fine for local dev but
+don't hold a long-lived response open in production. If you deploy the web
+app for real (Docker/self-host/etc.), switch to `@sveltejs/adapter-node`
+first — dev mode (`npm run dev -w web`) streams fine as-is regardless of
+adapter.
+
 ## Manual verification
 
 ### Two-tab live test
