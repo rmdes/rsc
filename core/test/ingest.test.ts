@@ -1,7 +1,7 @@
 import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
-import { ingestRemoteUser } from '../src/domain/ingest.ts'
+import { ingestRemoteUser, pollAll } from '../src/domain/ingest.ts'
 
 const RSS = `<?xml version="1.0"?><rss version="2.0"><channel><title>News</title>
 <item><title>Hello</title><link>https://ex.com/1</link><guid>https://ex.com/1</guid><description>Body one</description><pubDate>Wed, 01 Jan 2026 00:00:00 GMT</pubDate></item>
@@ -41,4 +41,24 @@ test('parses JSON Feed items too', async () => {
   expect(n).toBe(1)
   const tl = await repo.getTimeline(10)
   expect(tl[0].guid).toBe('a1')
+})
+
+function fakeFetchOversized() {
+  return async () => new Response(RSS, { headers: { 'content-type': 'application/rss+xml', 'content-length': String(10 * 1024 * 1024) } })
+}
+
+test('ingestRemoteUser rejects a feed whose content-length exceeds the size cap', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const user = await repo.createRemoteUser({ handle: 'huge', displayName: 'Huge', feedUrl: 'https://ex.com/huge.xml' })
+  await expect(ingestRemoteUser(repo, bus, user, fakeFetchOversized())).rejects.toThrow()
+})
+
+test('pollAll swallows an oversized feed and leaves the timeline unchanged', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  await repo.createRemoteUser({ handle: 'huge', displayName: 'Huge', feedUrl: 'https://ex.com/huge.xml' })
+  await pollAll(repo, bus, fakeFetchOversized())
+  const tl = await repo.getTimeline(10)
+  expect(tl).toEqual([])
 })

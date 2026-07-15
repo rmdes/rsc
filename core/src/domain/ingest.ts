@@ -8,6 +8,9 @@ export interface ParsedItem { guid: string; content: string; url: string | null;
 
 const rss = new Parser()
 
+const FETCH_TIMEOUT_MS = 10_000
+const MAX_FEED_BYTES = 5 * 1024 * 1024
+
 export async function parseFeed(body: string, contentType: string): Promise<ParsedItem[]> {
   const now = new Date().toISOString()
   if (contentType.includes('json')) {
@@ -33,8 +36,11 @@ export async function parseFeed(body: string, contentType: string): Promise<Pars
 
 export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: User, fetchFn: typeof fetch = fetch): Promise<number> {
   if (!user.feedUrl) return 0
-  const res = await fetchFn(user.feedUrl)
+  const res = await fetchFn(user.feedUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+  const contentLength = Number(res.headers.get('content-length') ?? '0')
+  if (contentLength > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${contentLength} bytes`)
   const body = await res.text()
+  if (body.length > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${body.length} bytes`)
   const contentType = res.headers.get('content-type') ?? ''
   const items = await parseFeed(body, contentType)
   let inserted = 0
