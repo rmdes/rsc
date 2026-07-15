@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ponytail-review-nudge.sh",
+            "timeout": 10,
+            "statusMessage": "Checking if the diff needs a ponytail review..."
+          }
+        ]
+      }
+    ]
+  }
+}
