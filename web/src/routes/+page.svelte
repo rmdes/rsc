@@ -3,6 +3,7 @@
 	import type { TimelineEntry } from '$lib/types'
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
+	import { plaintext } from '$lib/plaintext'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -63,7 +64,7 @@
 						<time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time>
 					</div>
 					{#if post.title}<h2 class="title">{post.title}</h2>{/if}
-					<p>{post.content}</p>
+					<p>{plaintext(post.content)}</p>
 					{#if post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
 				</li>
 			{/each}
