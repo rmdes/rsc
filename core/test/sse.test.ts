@@ -97,3 +97,17 @@ test('an unknown Last-Event-ID skips replay silently and goes live', async () =>
   const buf = await readUntil(res, 'live post')
   expect(buf).toContain('event: post')
 })
+
+test('a replay query failure degrades to live-only instead of killing the stream', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus)
+  const broken = { ...service, getPost: async () => { throw new Error('db exploded') } }
+  const app = createApp({ service: broken as typeof service, bus, token: 'secret' })
+
+  const res = await app.request('/timeline/stream', { headers: { 'Last-Event-ID': 'whatever' } })
+  await new Promise((r) => setTimeout(r, 20))
+  await service.createLocalPostAs('alice', 'Alice', 'live despite replay failure')
+  const buf = await readUntil(res, 'live despite replay failure')
+  expect(buf).toContain('event: post')
+})

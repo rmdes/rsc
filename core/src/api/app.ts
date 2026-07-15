@@ -97,17 +97,22 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       stream.onAbort(off)
       const lastEventId = c.req.header('Last-Event-ID')
       if (lastEventId) {
-        const anchorPost = await service.getPost(lastEventId)
-        if (anchorPost) {
-          // Inclusive scan (spec R1): the anchor and its same-created_at batch
-          // re-deliver in full; the cap count includes the anchor row.
-          const missed = await service.getTimelineAfter(anchorPost.createdAt, REPLAY_CAP + 1)
-          if (missed.length <= REPLAY_CAP) {
-            for (const entry of missed) {
-              await stream.writeSSE({ event: 'post', id: entry.id, data: JSON.stringify(entry) })
+        try {
+          const anchorPost = await service.getPost(lastEventId)
+          if (anchorPost) {
+            // Inclusive scan (spec R1): the anchor and its same-created_at batch
+            // re-deliver in full; the cap count includes the anchor row.
+            const missed = await service.getTimelineAfter(anchorPost.createdAt, REPLAY_CAP + 1)
+            if (missed.length <= REPLAY_CAP) {
+              for (const entry of missed) {
+                await stream.writeSSE({ event: 'post', id: entry.id, data: JSON.stringify(entry) })
+              }
             }
+            // else: too stale for patch-up — skip replay entirely; SSR is the recovery path (spec H4).
           }
-          // else: too stale for patch-up — skip replay entirely; SSR is the recovery path (spec H4).
+        } catch (err) {
+          // Replay is best-effort: a failed catch-up must never block going live.
+          console.error('SSE replay failed:', err instanceof Error ? err.message : err)
         }
       }
       while (!stream.aborted) { await stream.sleep(15000); await stream.writeSSE({ event: 'ping', data: '' }) }
