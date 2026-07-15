@@ -1,12 +1,10 @@
 import { randomUUID, createHash } from 'node:crypto'
-import Parser from 'rss-parser'
+import { parseFeed as parseFeedDocument } from 'feedsmith'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import type { User, Post } from './types.ts'
 
 export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string }
-
-const rss = new Parser()
 
 // Hashes only fields that are stable across polls of the same feed item. The
 // raw date string (as it appeared in the feed, or '' if absent) is used here —
@@ -19,10 +17,6 @@ function fallbackGuid(title: string | null, content: string, rawDate: string): s
 const FETCH_TIMEOUT_MS = 10_000
 const MAX_FEED_BYTES = 5 * 1024 * 1024
 
-function looksLikeJson(body: string): boolean {
-  return body.trimStart().startsWith('{')
-}
-
 // A garbage or unparseable raw date must not throw and kill the whole feed —
 // it degrades to "now", same as a missing date. Callers still hash the raw
 // string (not this return value) for the fallback guid, so determinism is unaffected.
@@ -32,33 +26,31 @@ function toIsoOrNow(raw: string, now: string): string {
   return Number.isNaN(d.getTime()) ? now : d.toISOString()
 }
 
-export async function parseFeed(body: string, _contentType: string): Promise<ParsedItem[]> {
+function toParsedItem(guid: string | undefined, title: string | null, content: string, url: string | null, rawDate: string, now: string): ParsedItem {
+  return { guid: guid ?? url ?? fallbackGuid(title, content, rawDate), title, content, url, publishedAt: toIsoOrNow(rawDate, now) }
+}
+
+export async function parseFeed(body: string): Promise<ParsedItem[]> {
+  // feedsmith's format detection chokes on a BOM, so strip it first.
   const cleanBody = body.charCodeAt(0) === 0xfeff ? body.slice(1) : body
   const now = new Date().toISOString()
-  if (looksLikeJson(cleanBody)) {
-    const feed = JSON.parse(cleanBody) as { items?: Array<Record<string, unknown>> }
-    return (feed.items ?? []).map((it) => {
-      const title = typeof it.title === 'string' ? it.title : null
-      const text = typeof it.content_text === 'string' ? it.content_text : typeof it.content_html === 'string' ? it.content_html : ''
-      const url = typeof it.url === 'string' ? it.url : null
-      const rawDate = typeof it.date_published === 'string' ? it.date_published : ''
-      const date = toIsoOrNow(rawDate, now)
-      const guid = typeof it.id === 'string' ? it.id : url ?? fallbackGuid(title, text, rawDate)
-      return { guid, title, content: text, url, publishedAt: date }
+  const parsed = parseFeedDocument(cleanBody)
+  if (parsed.format === 'json') {
+    return (parsed.feed.items ?? []).map((it) =>
+      toParsedItem(it.id, it.title ?? null, it.content_text ?? it.content_html ?? '', it.url ?? null, it.date_published ?? '', now))
+  }
+  if (parsed.format === 'atom') {
+    return (parsed.feed.entries ?? []).map((it) => {
+      const url = it.links?.find((l) => l.href && (!l.rel || l.rel === 'alternate'))?.href ?? null
+      return toParsedItem(it.id, it.title ?? null, it.content ?? it.summary ?? '', url, it.published ?? it.updated ?? '', now)
     })
   }
-  const feed = await rss.parseString(cleanBody)
-  return (feed.items ?? []).map((it) => {
-    const url = it.link ?? null
-    const title = it.title ?? null
-    const text = it.contentSnippet ?? it.content ?? ''
-    const rawDate = it.isoDate ?? ''
-    const date = toIsoOrNow(rawDate, now)
-    // RSS <guid> maps to it.guid; Atom's <id> has no RSS equivalent and
-    // shows up only as it.id, so it must be checked before falling back to the link.
-    const guid = it.guid ?? (it as { id?: string }).id ?? url ?? fallbackGuid(title, text, rawDate)
-    return { guid, title, content: text, url, publishedAt: date }
-  })
+  if (parsed.format === 'rdf') {
+    return (parsed.feed.items ?? []).map((it) =>
+      toParsedItem(undefined, it.title ?? null, it.description ?? '', it.link ?? null, it.dc?.dates?.[0] ?? '', now))
+  }
+  return (parsed.feed.items ?? []).map((it) =>
+    toParsedItem(it.guid?.value, it.title ?? null, it.description ?? it.content?.encoded ?? '', it.link ?? null, it.pubDate ?? '', now))
 }
 
 export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: User, fetchFn: typeof fetch = fetch): Promise<number> {
@@ -69,8 +61,7 @@ export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: Us
   // ponytail: cap rejects oversized bodies but only after buffering them; stream + abort past the cap if memory ever matters
   const body = await res.text()
   if (Buffer.byteLength(body) > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${Buffer.byteLength(body)} bytes`)
-  const contentType = res.headers.get('content-type') ?? ''
-  const items = await parseFeed(body, contentType)
+  const items = await parseFeed(body)
   const backfill = !(await repo.hasPostsByAuthor(user.id))
   let inserted = 0
   for (const item of items) {

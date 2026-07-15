@@ -11,9 +11,9 @@
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "better-sqlite3": "^11.3.0",
+    "feedsmith": "^2.9.6",
     "hono": "^4.6.0",
-    "kysely": "^0.27.0",
-    "rss-parser": "^3.13.0"
+    "kysely": "^0.27.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

@@ -205,7 +205,7 @@ test('fallback guids for (ab,c) and (a,bc) do not collide', async () => {
     { title: 'ab', content_text: 'c' },
     { title: 'a', content_text: 'bc' },
   ] })
-  const items = await parseFeed(json, 'application/feed+json')
+  const items = await parseFeed(json)
   expect(items[0].guid).not.toBe(items[1].guid)
 })
 
@@ -219,7 +219,7 @@ test('an XML feed mislabeled as JSON still parses as RSS', async () => {
 
 test('a BOM-prefixed JSON Feed served as text/plain parses as JSON Feed', async () => {
   const json = '﻿' + JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', items: [{ id: 'bom1', content_text: 'bom body' }] })
-  const items = await parseFeed(json, 'text/plain')
+  const items = await parseFeed(json)
   expect(items[0].guid).toBe('bom1')
 })
 
@@ -229,7 +229,7 @@ test('backfill stays silent when the first sync was empty (pin, not a change)', 
   const user = await repo.createRemoteUser({ handle: 'slowstart', displayName: 'S', feedUrl: 'https://ex.com/f.json' })
   const seen = vi.fn()
   bus.onNewPost(seen)
-  const empty = JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', items: [] })
+  const empty = JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', title: 'Slow Start', items: [] })
   expect(await ingestRemoteUser(repo, bus, user, fakeFetch(empty, 'application/feed+json'))).toBe(0)
   const two = JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', items: [
     { id: 's1', content_text: 'one' }, { id: 's2', content_text: 'two' },
