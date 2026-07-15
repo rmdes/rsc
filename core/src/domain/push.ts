@@ -5,7 +5,7 @@ import type { TimelineEntry } from './types.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
 import { feedUrls, renderRssFeed, renderJsonFeed, hubLinkUrl } from './feed.ts'
-import type { User, Subscription } from './types.ts'
+import type { User } from './types.ts'
 
 const PUSH_TIMEOUT_MS = 10_000
 
@@ -83,8 +83,13 @@ export async function handleWebSubRequest(deps: PushDeps & { lookupFn?: LookupFn
   const leaseSeconds = Math.min(Number(form['hub.lease_seconds']) > 0 ? Math.floor(Number(form['hub.lease_seconds'])) : DEFAULT_LEASE_SECONDS, MAX_LEASE_SECONDS)
   if (mode === 'subscribe') {
     const now = new Date().toISOString()
-    if ((await repo.countActiveSubscriptions({ callbackHost: gate.host }, now)) >= MAX_SUBS_PER_HOST) return { status: 429, error: 'too many subscriptions for this callback host' }
-    if ((await repo.countActiveSubscriptions({ topic }, now)) >= MAX_SUBS_PER_TOPIC) return { status: 429, error: 'too many subscriptions for this topic' }
+    // A renewal of an existing (protocol, topic, callback) upserts in place —
+    // it cannot increase any count, so the caps must not block it.
+    const isRenewal = (await repo.listActiveSubscriptions(topic, now)).some((s) => s.protocol === 'websub' && s.callback === callback)
+    if (!isRenewal) {
+      if ((await repo.countActiveSubscriptions({ callbackHost: gate.host }, now)) >= MAX_SUBS_PER_HOST) return { status: 429, error: 'too many subscriptions for this callback host' }
+      if ((await repo.countActiveSubscriptions({ topic }, now)) >= MAX_SUBS_PER_TOPIC) return { status: 429, error: 'too many subscriptions for this topic' }
+    }
   }
   // 202 first, verification decides asynchronously (spec).
   void verifyWebSub({ repo, fetchFn }, mode, topic, callback, gate.host, secret, leaseSeconds)

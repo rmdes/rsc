@@ -154,3 +154,24 @@ test('self mode delivers the fat ping with HMAC signature; expired subs skipped;
   await expect(push2.onLocalPost(entrySeed)).resolves.toBeUndefined()
   expect(flaky.mock.calls.length).toBe(2) // 1 attempt + 1 retry for the one live xml-topic subscriber
 })
+
+test('renewing an existing subscription is not blocked by the per-host cap', async () => {
+  const { repo, service, config } = await setup(SELF_ENV)
+  await service.createLocalPostAs('alice', 'Alice', 'seed')
+  const topic = 'https://cast.example.com/users/alice/feed.xml'
+  // fill the host cap, with cb0 being the one we will renew
+  for (let i = 0; i < 20; i++) {
+    await repo.upsertSubscription({ id: `cap${i}`, protocol: 'websub', topic, callback: `https://full.example.com/cb${i}`, callbackHost: 'full.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  }
+  const echo = vi.fn(async (url: string | URL | Request) => new Response(new URL(String(url)).searchParams.get('hub.challenge') ?? '', { status: 200 }))
+  const deps = { repo, config, fetchFn: echo as unknown as typeof fetch, lookupFn: publicLookup }
+  // renewal of an existing triple: allowed despite the full cap
+  const renew = await handleWebSubRequest(deps, subForm({ 'hub.callback': 'https://full.example.com/cb0', 'hub.secret': 'renewed' }))
+  expect(renew.status).toBe(202)
+  await vi.waitFor(async () => {
+    const subs = await repo.listActiveSubscriptions(topic, '2020-01-01T00:00:00.000Z')
+    expect(subs.find((s) => s.callback === 'https://full.example.com/cb0')?.secret).toBe('renewed')
+  })
+  // a genuinely new callback on the same host is still capped
+  expect((await handleWebSubRequest(deps, subForm({ 'hub.callback': 'https://full.example.com/brand-new' }))).status).toBe(429)
+})
