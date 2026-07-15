@@ -2,6 +2,7 @@ import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { DomainError } from '../src/domain/types.ts'
 
 async function setup() {
   const repo = await createSqliteRepository(':memory:')
@@ -19,4 +20,19 @@ test('createLocalPost stores, emits, and appears in the timeline', async () => {
   const tl = await svc.getTimeline()
   expect(tl.map((e) => e.content)).toContain('hello world')
   expect(tl[0].author.kind).toBe('local')
+})
+
+test('handles are lowercased, so posting as Alice then alice is one user', async () => {
+  const { svc } = await setup()
+  await svc.createLocalPostAs('Alice', 'Alice', 'first')
+  await svc.createLocalPostAs('alice', 'Alice', 'second')
+  const tl = await svc.getTimeline()
+  const authorIds = new Set(tl.map((e) => e.authorId))
+  expect(authorIds.size).toBe(1)
+  expect(tl[0].author.handle).toBe('alice')
+})
+
+test('addRemoteUser rejects a handle with invalid characters', async () => {
+  const { svc } = await setup()
+  await expect(svc.addRemoteUser({ handle: 'Bad Handle!', displayName: 'Bad', feedUrl: 'https://ex.com/f.xml' })).rejects.toThrow(DomainError)
 })

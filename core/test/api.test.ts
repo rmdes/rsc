@@ -76,6 +76,12 @@ test('POST /users with malformed JSON returns 400, not 500', async () => {
   expect(res.status).toBe(400)
 })
 
+test('POST /posts with an invalid handle returns 400', async () => {
+  const app = await makeApp()
+  const res = await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'Bad Handle!', displayName: 'Bad', content: 'hi' }) })
+  expect(res.status).toBe(400)
+})
+
 test('POST /posts with a handle belonging to a remote user returns 400 with a JSON error', async () => {
   const app = await makeApp()
   await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) })
