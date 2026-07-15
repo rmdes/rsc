@@ -15,9 +15,13 @@ function fallbackGuid(title: string | null, content: string, publishedAt: string
 const FETCH_TIMEOUT_MS = 10_000
 const MAX_FEED_BYTES = 5 * 1024 * 1024
 
+function looksLikeJson(body: string): boolean {
+  return body.trimStart().startsWith('{')
+}
+
 export async function parseFeed(body: string, contentType: string): Promise<ParsedItem[]> {
   const now = new Date().toISOString()
-  if (contentType.includes('json')) {
+  if (contentType.includes('json') || looksLikeJson(body)) {
     const feed = JSON.parse(body) as { items?: Array<Record<string, unknown>> }
     return (feed.items ?? []).map((it) => {
       const title = typeof it.title === 'string' ? it.title : null

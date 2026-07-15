@@ -100,6 +100,18 @@ test('an item with no guid and no link gets a deterministic fallback guid, so re
   expect(n2).toBe(0)
 })
 
+test('sniffs JSON Feed body even when served with a non-JSON content-type', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const user = await repo.createRemoteUser({ handle: 'jf2', displayName: 'JF2', feedUrl: 'https://ex.com/f2.json' })
+  const json = JSON.stringify({ version: 'https://jsonfeed.org/version/1.1', items: [{ id: 'b1', url: 'https://ex.com/b1', title: 'Sniffed', content_text: 'sniffed body', date_published: '2026-01-01T00:00:00Z' }] })
+  const n = await ingestRemoteUser(repo, bus, user, fakeFetch(json, 'text/plain'))
+  expect(n).toBe(1)
+  const tl = await repo.getTimeline(10)
+  expect(tl[0].guid).toBe('b1')
+  expect(tl[0].title).toBe('Sniffed')
+})
+
 function fakeFetchOversized() {
   return async () => new Response(RSS, { headers: { 'content-type': 'application/rss+xml', 'content-length': String(10 * 1024 * 1024) } })
 }
