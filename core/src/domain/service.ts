@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
-import type { NewRemoteUser, TimelineEntry, User, Post } from './types.ts'
+import type { NewRemoteUser, TimelineEntry, TimelineCursor, User, Post } from './types.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 
@@ -44,8 +44,8 @@ export function createService(repo: Repository, bus: EventBus) {
       bus.emitNewPost(entry)
       return entry
     },
-    getTimeline(limit = 100) {
-      return repo.getTimeline(limit)
+    getTimeline(limit = 100, before?: TimelineCursor) {
+      return repo.getTimeline(limit, before)
     },
   }
 }

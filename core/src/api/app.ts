@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { bearerAuth } from './auth.ts'
+import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError } from '../domain/types.ts'
 import type { Service } from '../domain/service.ts'
 import type { EventBus } from '../domain/bus.ts'
@@ -63,8 +64,26 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   })
 
   app.get('/timeline', async (c) => {
-    const timeline = await service.getTimeline(100)
-    return c.json({ timeline })
+    const beforeRaw = c.req.query('before')
+    let before
+    if (beforeRaw !== undefined) {
+      const parsed = parseCursor(beforeRaw)
+      if (!parsed) return c.json({ error: 'before invalid' }, 400)
+      before = parsed
+    }
+    const limitRaw = c.req.query('limit')
+    let limit = 100
+    if (limitRaw !== undefined) {
+      const n = Number(limitRaw)
+      if (!Number.isInteger(n)) return c.json({ error: 'limit invalid' }, 400)
+      limit = Math.min(Math.max(n, 1), 100)
+    }
+    const timeline = await service.getTimeline(limit, before)
+    const last = timeline[timeline.length - 1]
+    // Known accepted edge: an exactly-limit final page yields a non-null cursor
+    // whose next page is empty.
+    const nextCursor = timeline.length === limit && last ? formatCursor({ publishedAt: last.publishedAt, id: last.id }) : null
+    return c.json({ timeline, nextCursor })
   })
 
   app.get('/timeline/stream', (c) =>
