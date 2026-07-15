@@ -13,7 +13,9 @@
 	}
 </script>
 
-<LiveTimeline {onPost} />
+{#if data.isFirstPage}
+	<LiveTimeline {onPost} />
+{/if}
 
 <h1>Textcaster</h1>
 
@@ -49,3 +51,7 @@
 		</li>
 	{/each}
 </ul>
+
+{#if data.nextCursor}
+	<a class="older" href="/?before={encodeURIComponent(data.nextCursor)}">Older posts</a>
+{/if}

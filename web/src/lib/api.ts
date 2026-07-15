@@ -4,10 +4,28 @@ import type { TimelineEntry } from './types.ts'
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 const token = () => env.CORE_API_TOKEN ?? ''
 
-export async function getTimeline(f: typeof fetch): Promise<TimelineEntry[]> {
-	const res = await f(`${base()}/timeline`)
-	if (!res.ok) throw new Error(`timeline ${res.status}`)
-	return (await res.json()).timeline
+export interface TimelinePage {
+	timeline: TimelineEntry[]
+	nextCursor: string | null
+}
+
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+	try {
+		const body = (await res.json()) as { error?: unknown }
+		if (typeof body.error === 'string') return body.error
+	} catch {
+		// non-JSON body — use the fallback
+	}
+	return fallback
+}
+
+export async function getTimeline(f: typeof fetch, before?: string): Promise<TimelinePage> {
+	const url = new URL(`${base()}/timeline`)
+	if (before) url.search = `before=${encodeURIComponent(before)}`
+	const res = await f(url.toString())
+	if (!res.ok) throw new Error(await errorMessage(res, `timeline ${res.status}`))
+	const body = (await res.json()) as { timeline: TimelineEntry[]; nextCursor?: string | null }
+	return { timeline: body.timeline, nextCursor: body.nextCursor ?? null }
 }
 
 export async function createPost(
@@ -19,7 +37,7 @@ export async function createPost(
 		headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
 		body: JSON.stringify(input)
 	})
-	if (!res.ok) throw new Error(`createPost ${res.status}`)
+	if (!res.ok) throw new Error(await errorMessage(res, `createPost ${res.status}`))
 }
 
 export async function addRemoteUser(
@@ -31,5 +49,5 @@ export async function addRemoteUser(
 		headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
 		body: JSON.stringify(input)
 	})
-	if (!res.ok) throw new Error(`addRemoteUser ${res.status}`)
+	if (!res.ok) throw new Error(await errorMessage(res, `addRemoteUser ${res.status}`))
 }
