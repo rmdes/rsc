@@ -125,8 +125,14 @@ Each `tick` (the current self-rescheduling loop in `server.ts`):
    counter).
 2. **Discovery → subscribe** for polled feeds with no UNEXPIRED
    pending/active subscription (when push-in is effective; H3):
-   - WebSub: generate token (32 hex) + secret (32 hex); upsert `pending`
-     row; form-POST the hub: `hub.mode=subscribe`, `hub.topic=<topic>`,
+   - WebSub: **read the existing `(user, mode)` row first — generate
+     token (32 hex) + secret (32 hex) ONLY when none exists; on any
+     retry or renewal, the hub POST is built from the STORED row's
+     token/secret** (re-review R1: composing H4's non-overwriting upsert
+     with a freshly generated token would register a callback URL whose
+     token isn't in our DB — verification and every subsequent ping
+     would 404). Then upsert the `pending` row and form-POST the hub:
+     `hub.mode=subscribe`, `hub.topic=<topic>`,
      `hub.callback=<PUBLIC_URL>/websub/callback/<token>`,
      `hub.lease_seconds=864000`, `hub.secret=<secret>`. Row flips to
      `active` only when the hub's verification GET arrives (§5).
@@ -145,8 +151,10 @@ Each `tick` (the current self-rescheduling loop in `server.ts`):
 ## 5. Callback surface (new public routes)
 
 - `GET /websub/callback/:token` — token must match a known subscription
-  AND `hub.topic` must equal its topic. `hub.mode=subscribe`: echo
-  `hub.challenge` (200, body = challenge), flip `pending → active`,
+  AND `hub.topic` must equal its topic — **regardless of the row's
+  current state** (renewal re-verifications arrive while the row is
+  `active`; gating on `pending` would 404 them). `hub.mode=subscribe`:
+  echo `hub.challenge` (200, body = challenge), set state `active`,
   store expiry from the hub's granted `hub.lease_seconds`.
   `hub.mode=denied`: delete the row, 200. Unknown token/topic mismatch →
   404 / no echo.
@@ -195,7 +203,10 @@ protocol } | null } }` — ONE parse yields both the items and the
 discovery metadata (`parseFeed` remains as a thin `.items` wrapper for
 existing callers/tests). `ingestRemoteUser` returns the discovery
 metadata alongside its insert count so the poller's subscribe engine
-consumes it without re-parsing. Fat pings call `parseFeedWithMeta` +
+consumes it without re-parsing — and it MERGES the `Link`-header
+discovery (read off its fetch Response) into that returned metadata,
+since body-parse discovery alone would silently lose header-only
+publishers (the exact common case §1 names). Fat pings call `parseFeedWithMeta` +
 `ingestItems` directly (no fetch); thin pings and polls use
 `ingestRemoteUser` unchanged.
 
