@@ -5,21 +5,20 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "dev": "node --watch --env-file-if-exists=.env src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "better-sqlite3": "^11.3.0",
+    "better-sqlite3": "^12.11.1",
     "feedsmith": "^2.9.6",
     "hono": "^4.6.0",
-    "kysely": "^0.27.0"
+    "kysely": "^0.29.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
+    "@types/node": "^24.13.3",
     "typescript": "^6.0.3",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.10"
   }
 }

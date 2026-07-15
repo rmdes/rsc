@@ -27,7 +27,13 @@ function joinedRowToEntry(r: JoinedRow): TimelineEntry {
 }
 
 export class SqliteRepository implements Repository {
-  constructor(private db: Kysely<DB>) {}
+  private db: Kysely<DB>
+
+  // Plain assignment instead of a parameter property: Node's native type
+  // stripping (which replaced tsx) can't erase parameter properties.
+  constructor(db: Kysely<DB>) {
+    this.db = db
+  }
 
   private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null): Promise<User> {
     const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString() }
