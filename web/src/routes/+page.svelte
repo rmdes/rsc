@@ -1,8 +1,19 @@
 <script lang="ts">
 	import type { PageData } from './$types'
+	import type { TimelineEntry } from '$lib/types.ts'
+	import LiveTimeline from '$lib/LiveTimeline.svelte'
 
 	let { data }: { data: PageData } = $props()
+
+	let live = $state<TimelineEntry[]>([])
+	const posts = $derived([...live, ...data.timeline])
+
+	function onPost(entry: TimelineEntry) {
+		if (!posts.some((p) => p.id === entry.id)) live = [entry, ...live]
+	}
 </script>
+
+<LiveTimeline {onPost} />
 
 <h1>Textcaster</h1>
 
@@ -21,7 +32,7 @@
 </form>
 
 <ul class="timeline">
-	{#each data.timeline as post (post.id)}
+	{#each posts as post (post.id)}
 		<li class="post" class:remote={post.source === 'remote'}>
 			<strong>{post.author.displayName}</strong>
 			<span class="handle">@{post.author.handle}</span>
