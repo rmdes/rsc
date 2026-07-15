@@ -1,0 +1,7 @@
+{
+  "name": "textcaster",
+  "private": true,
+  "type": "module",
+  "workspaces": ["core", "web"],
+  "engines": { "node": ">=20" }
+}
