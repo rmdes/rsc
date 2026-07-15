@@ -23,6 +23,15 @@ function looksLikeJson(body: string): boolean {
   return body.trimStart().startsWith('{')
 }
 
+// A garbage or unparseable raw date must not throw and kill the whole feed —
+// it degrades to "now", same as a missing date. Callers still hash the raw
+// string (not this return value) for the fallback guid, so determinism is unaffected.
+function toIsoOrNow(raw: string, now: string): string {
+  if (!raw) return now
+  const d = new Date(raw)
+  return Number.isNaN(d.getTime()) ? now : d.toISOString()
+}
+
 export async function parseFeed(body: string, contentType: string): Promise<ParsedItem[]> {
   const now = new Date().toISOString()
   if (contentType.includes('json') || looksLikeJson(body)) {
@@ -32,7 +41,7 @@ export async function parseFeed(body: string, contentType: string): Promise<Pars
       const text = typeof it.content_text === 'string' ? it.content_text : typeof it.content_html === 'string' ? it.content_html : ''
       const url = typeof it.url === 'string' ? it.url : null
       const rawDate = typeof it.date_published === 'string' ? it.date_published : ''
-      const date = rawDate ? new Date(rawDate).toISOString() : now
+      const date = toIsoOrNow(rawDate, now)
       const guid = typeof it.id === 'string' ? it.id : url ?? fallbackGuid(title, text, rawDate)
       return { guid, title, content: text, url, publishedAt: date }
     })
@@ -43,7 +52,7 @@ export async function parseFeed(body: string, contentType: string): Promise<Pars
     const title = it.title ?? null
     const text = it.contentSnippet ?? it.content ?? ''
     const rawDate = it.isoDate ?? ''
-    const date = rawDate ? new Date(rawDate).toISOString() : now
+    const date = toIsoOrNow(rawDate, now)
     // RSS <guid> maps to it.guid; Atom's <id> has no RSS equivalent and
     // shows up only as it.id, so it must be checked before falling back to the link.
     const guid = it.guid ?? (it as { id?: string }).id ?? url ?? fallbackGuid(title, text, rawDate)
@@ -56,6 +65,7 @@ export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: Us
   const res = await fetchFn(user.feedUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
   const contentLength = Number(res.headers.get('content-length') ?? '0')
   if (contentLength > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${contentLength} bytes`)
+  // ponytail: cap rejects oversized bodies but only after buffering them; stream + abort past the cap if memory ever matters
   const body = await res.text()
   if (Buffer.byteLength(body) > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${Buffer.byteLength(body)} bytes`)
   const contentType = res.headers.get('content-type') ?? ''
