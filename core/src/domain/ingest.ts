@@ -38,7 +38,9 @@ export async function parseFeed(body: string, contentType: string): Promise<Pars
     const title = it.title ?? null
     const text = it.contentSnippet ?? it.content ?? ''
     const date = it.isoDate ? new Date(it.isoDate).toISOString() : now
-    const guid = it.guid ?? url ?? fallbackGuid(title, text, date)
+    // RSS <guid> maps to it.guid; Atom's <id> has no RSS equivalent and
+    // shows up only as it.id, so it must be checked before falling back to the link.
+    const guid = it.guid ?? (it as { id?: string }).id ?? url ?? fallbackGuid(title, text, date)
     return { guid, title, content: text, url, publishedAt: date }
   })
 }

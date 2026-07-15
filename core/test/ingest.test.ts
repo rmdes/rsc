@@ -33,6 +33,31 @@ test('ingests RSS items as remote posts, once (idempotent), and emits new ones',
   expect(tl[0].content).toBe('Body one')
 })
 
+const ATOM = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom News</title>
+  <entry>
+    <id>urn:uuid:atom-1</id>
+    <link href="https://ex.com/atom-1"/>
+    <title>Atom Title</title>
+    <content type="html">Atom body</content>
+    <updated>2026-01-01T00:00:00Z</updated>
+  </entry>
+</feed>`
+
+test('parses Atom feed items, taking guid from the Atom id', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const user = await repo.createRemoteUser({ handle: 'atom', displayName: 'Atom', feedUrl: 'https://ex.com/f.atom' })
+  const n = await ingestRemoteUser(repo, bus, user, fakeFetch(ATOM, 'application/atom+xml'))
+  expect(n).toBe(1)
+  const tl = await repo.getTimeline(10)
+  expect(tl[0].guid).toBe('urn:uuid:atom-1')
+  expect(tl[0].title).toBe('Atom Title')
+  expect(tl[0].content).toBe('Atom body')
+  expect(tl[0].url).toBe('https://ex.com/atom-1')
+})
+
 test('parses JSON Feed items too', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
