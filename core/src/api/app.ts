@@ -38,7 +38,16 @@ export interface PushApi {
   rsscloud?: (form: Record<string, string>, requesterIp: string | null) => Promise<{ status: 202 | 400 | 404 | 429; error?: string }>
 }
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string; feeds?: FeedContext; pushApi?: PushApi }): Hono {
+export interface PushInApi {
+  websubVerify: (token: string, query: Record<string, string>) => Promise<{ status: number; body: string }>
+  websubDeliver: (token: string, body: string, signature: string | null) => Promise<number>
+  rsscloudChallenge?: (url: string, challenge: string) => Promise<{ status: number; body: string }>
+  rsscloudPing?: (url: string) => Promise<number>
+}
+
+const MAX_FAT_PING_BYTES = 5 * 1024 * 1024
+
+export function createApp(deps: { service: Service; bus: EventBus; token: string; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi }): Hono {
   const { service, bus, token } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const app = new Hono()
@@ -118,6 +127,24 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const requesterIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null
     const result = await deps.pushApi.rsscloud(form, requesterIp)
     return c.json(result.error ? { error: result.error } : { ok: true }, result.status)
+  })
+
+  app.get('/websub/callback/:token', async (c) => {
+    if (!deps.pushInApi) return c.json({ error: 'not found' }, 404)
+    const query: Record<string, string> = {}
+    for (const [k, v] of Object.entries(c.req.query())) if (typeof v === 'string') query[k] = v
+    const r = await deps.pushInApi.websubVerify(c.req.param('token') ?? '', query)
+    return c.text(r.body, r.status as 200 | 404)
+  })
+
+  app.post('/websub/callback/:token', async (c) => {
+    if (!deps.pushInApi) return c.json({ error: 'not found' }, 404)
+    const contentLength = Number(c.req.header('content-length') ?? '0')
+    if (contentLength > MAX_FAT_PING_BYTES) return c.json({ error: 'too large' }, 413)
+    const body = await c.req.text()
+    if (Buffer.byteLength(body) > MAX_FAT_PING_BYTES) return c.json({ error: 'too large' }, 413)
+    const status = await deps.pushInApi.websubDeliver(c.req.param('token') ?? '', body, c.req.header('x-hub-signature') ?? null)
+    return c.json({ ok: status === 202 }, status as 202 | 404)
   })
 
   app.get('/timeline', async (c) => {

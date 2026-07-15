@@ -1,5 +1,6 @@
 import { test, expect, vi } from 'vitest'
-import { choosePushTarget, createPushIn, runPollCycle, pushInEffective } from '../src/domain/push-in.ts'
+import { createHmac } from 'node:crypto'
+import { choosePushTarget, createPushIn, runPollCycle, pushInEffective, verifySignature } from '../src/domain/push-in.ts'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { loadConfig } from '../src/config.ts'
@@ -138,4 +139,61 @@ test('runPollCycle slow-polls push-active feeds and discovers on polled ones', a
   fetched.length = 0
   await runPollCycle({ repo, bus, config, pushIn, fetchFn: fetchFn as unknown as typeof fetch }, 10)
   expect(fetched).toContain('https://pushed.example.com/feed.xml') // 10th tick polls everything
+})
+
+test('verifySignature accepts all four W3C algorithms and rejects tampering (H1)', () => {
+  const body = 'the payload'
+  for (const algo of ['sha1', 'sha256', 'sha384', 'sha512'] as const) {
+    const sig = `${algo}=` + createHmac(algo, 'sec').update(body).digest('hex')
+    expect(verifySignature(body, 'sec', sig)).toBe(true)
+    expect(verifySignature(body + 'x', 'sec', sig)).toBe(false)
+  }
+  expect(verifySignature(body, 'sec', null)).toBe(false)
+  expect(verifySignature(body, 'sec', 'md5=abc')).toBe(false)
+  expect(verifySignature(body, 'sec', 'sha256=zzzz')).toBe(false)
+})
+
+test('websub verification GET is state-agnostic, flips to active with granted lease, handles denied', async () => {
+  const { repo, config } = await pushInSetup()
+  const u = await repo.createRemoteUser({ handle: 'blog', displayName: 'B', feedUrl: 'https://blog.example.com/feed.xml' })
+  await repo.upsertPushSubscription({ id: 'v1', userId: u.id, mode: 'websub', endpoint: 'https://hub.example.com/hub', topic: 'https://blog.example.com/feed.xml', callbackToken: 'tok-v', secret: 'sec-v', state: 'pending', expiresAt: new Date(Date.now() + 600000).toISOString(), createdAt: '2026-01-01T00:00:00.000Z' })
+  const pushIn = createPushIn({ repo, config, lookupFn: publicLookup })
+
+  const ok = await pushIn.handleWebSubVerification('tok-v', { 'hub.mode': 'subscribe', 'hub.topic': 'https://blog.example.com/feed.xml', 'hub.challenge': 'chal-123', 'hub.lease_seconds': '432000' })
+  expect(ok).toEqual({ status: 200, body: 'chal-123' })
+  const row = await repo.findPushSubscription({ token: 'tok-v' })
+  expect(row?.state).toBe('active')
+  expect(Date.parse(row!.expiresAt)).toBeGreaterThan(Date.now() + 4 * 86400 * 1000)
+
+  // re-verification while ACTIVE (renewal) still echoes — state-agnostic
+  const again = await pushIn.handleWebSubVerification('tok-v', { 'hub.mode': 'subscribe', 'hub.topic': 'https://blog.example.com/feed.xml', 'hub.challenge': 'chal-456', 'hub.lease_seconds': '432000' })
+  expect(again.status).toBe(200)
+
+  expect((await pushIn.handleWebSubVerification('tok-v', { 'hub.mode': 'subscribe', 'hub.topic': 'https://WRONG.example.com/x', 'hub.challenge': 'c' })).status).toBe(404)
+  expect((await pushIn.handleWebSubVerification('unknown', { 'hub.mode': 'subscribe', 'hub.topic': 'https://blog.example.com/feed.xml', 'hub.challenge': 'c' })).status).toBe(404)
+
+  expect((await pushIn.handleWebSubVerification('tok-v', { 'hub.mode': 'denied', 'hub.topic': 'https://blog.example.com/feed.xml' })).status).toBe(200)
+  expect(await repo.findPushSubscription({ token: 'tok-v' })).toBeUndefined()
+})
+
+test('fat ping with a valid signature ingests and emits; invalid → 202 discard (H2)', async () => {
+  const { repo, bus, config } = await pushInSetup()
+  const u = await repo.createRemoteUser({ handle: 'blog', displayName: 'B', feedUrl: 'https://blog.example.com/feed.xml' })
+  await repo.insertPost({ id: 'seed2', authorId: u.id, source: 'remote', guid: 'sg', title: null, content: 'seed', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  await repo.upsertPushSubscription({ id: 'f1', userId: u.id, mode: 'websub', endpoint: 'https://hub.example.com/hub', topic: 'https://blog.example.com/feed.xml', callbackToken: 'tok-f', secret: 'sec-f', state: 'active', expiresAt: new Date(Date.now() + 86400000).toISOString(), createdAt: '2026-01-01T00:00:00.000Z' })
+  const pushIn = createPushIn({ repo, config, lookupFn: publicLookup })
+  const seen = vi.fn()
+  bus.onNewPost(seen)
+  const feedBody = '<?xml version="1.0"?><rss version="2.0"><channel><title>P</title><link>https://blog.example.com</link><description>d</description><item><guid>fat-1</guid><description>pushed content</description></item></channel></rss>'
+  const goodSig = 'sha1=' + createHmac('sha1', 'sec-f').update(feedBody).digest('hex')
+
+  expect(await pushIn.handleFatPing('tok-f', feedBody, goodSig, { bus })).toBe(202)
+  expect(seen).toHaveBeenCalledTimes(1)
+  expect((await repo.getTimeline(10)).map((e) => e.guid)).toContain('fat-1')
+
+  const tampered = feedBody.replace('pushed content', 'evil content')
+  expect(await pushIn.handleFatPing('tok-f', tampered, goodSig, { bus })).toBe(202) // H2: silent discard, not 4xx
+  expect((await repo.getTimeline(10)).some((e) => e.content === 'evil content')).toBe(false)
+  expect(await pushIn.handleFatPing('tok-f', feedBody, null, { bus })).toBe(202) // missing sig: same
+  expect(await pushIn.handleFatPing('unknown-token', feedBody, goodSig, { bus })).toBe(404)
 })

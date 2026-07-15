@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHmac, timingSafeEqual } from 'node:crypto'
 import type { FeedDiscovery } from './ingest.ts'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
@@ -6,7 +6,22 @@ import type { Config } from '../config.ts'
 import type { User, PushSubscription, PushProtocol } from './types.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
-import { ingestRemoteUser } from './ingest.ts'
+import { ingestRemoteUser, parseFeedWithMeta, ingestItems } from './ingest.ts'
+
+const SIGNATURE_ALGOS = new Set(['sha1', 'sha256', 'sha384', 'sha512'])
+
+// H1: the hub picks the algorithm. H2 handling lives at the caller.
+export function verifySignature(body: string, secret: string, header: string | null): boolean {
+  if (!header) return false
+  const i = header.indexOf('=')
+  if (i <= 0) return false
+  const algo = header.slice(0, i).toLowerCase()
+  const hex = header.slice(i + 1)
+  if (!SIGNATURE_ALGOS.has(algo) || !/^[0-9a-f]+$/i.test(hex)) return false
+  const expected = createHmac(algo, secret).update(body).digest()
+  const given = Buffer.from(hex, 'hex')
+  return given.length === expected.length && timingSafeEqual(given, expected)
+}
 
 export interface PushTarget { mode: PushProtocol; endpoint: string; topic: string }
 
@@ -36,6 +51,8 @@ export interface PushIn {
   maybeSubscribe(user: User, discovery: FeedDiscovery): Promise<void>
   renewDue(): Promise<void>
   hasActivePush(userId: string): Promise<boolean>
+  handleWebSubVerification(token: string, query: Record<string, string>): Promise<{ status: number; body: string }>
+  handleFatPing(token: string, body: string, signatureHeader: string | null, io: { bus: EventBus }): Promise<number>
 }
 
 export interface PushInDeps {
@@ -154,6 +171,38 @@ export function createPushIn(deps: PushInDeps): PushIn {
     },
     async hasActivePush(userId: string): Promise<boolean> {
       return (await repo.findPushSubscription({ userId }, { unexpiredAt: new Date().toISOString(), state: 'active' })) !== undefined
+    },
+    async handleWebSubVerification(token: string, query: Record<string, string>): Promise<{ status: number; body: string }> {
+      // State-agnostic (spec rev 3): renewal re-verifications arrive while active.
+      const sub = await repo.findPushSubscription({ token, mode: 'websub' })
+      if (!sub || query['hub.topic'] !== sub.topic) return { status: 404, body: 'unknown subscription' }
+      if (query['hub.mode'] === 'denied') {
+        await repo.deletePushSubscription(sub.id)
+        return { status: 200, body: 'ok' }
+      }
+      if (query['hub.mode'] !== 'subscribe' || !query['hub.challenge']) return { status: 404, body: 'bad verification' }
+      const granted = Number(query['hub.lease_seconds'])
+      const leaseSeconds = Number.isInteger(granted) && granted > 0 ? granted : WEBSUB_LEASE_SECONDS
+      await repo.upsertPushSubscription({ ...sub, state: 'active', expiresAt: new Date(Date.now() + leaseSeconds * 1000).toISOString() })
+      return { status: 200, body: query['hub.challenge'] }
+    },
+    async handleFatPing(token: string, body: string, signatureHeader: string | null, io: { bus: EventBus }): Promise<number> {
+      const sub = await repo.findPushSubscription({ token, mode: 'websub' })
+      if (!sub) return 404
+      try {
+        // H2: verification failures are silent — 202, discard, log. Never 4xx.
+        if (!sub.secret || !verifySignature(body, sub.secret, signatureHeader)) {
+          console.error(`fat ping discarded for ${sub.topic}: bad or missing signature`)
+          return 202
+        }
+        const user = await repo.getUser(sub.userId)
+        if (!user) return 202
+        const { items } = await parseFeedWithMeta(body)
+        await ingestItems(repo, io.bus, user, items)
+      } catch (err) {
+        console.error(`fat ping ingest failed for ${sub.topic}:`, err instanceof Error ? err.message : err)
+      }
+      return 202
     },
   }
 }

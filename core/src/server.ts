@@ -8,7 +8,7 @@ import { createService } from './domain/service.ts'
 import { createApp } from './api/app.ts'
 import { hubLinkUrl } from './domain/feed.ts'
 import { createPush, handleWebSubRequest, handleRssCloudRequest } from './domain/push.ts'
-import { createPushIn, runPollCycle } from './domain/push-in.ts'
+import { createPushIn, runPollCycle, pushInEffective } from './domain/push-in.ts'
 
 const config = loadConfig()
 if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive: true })
@@ -31,6 +31,12 @@ const app = createApp({
           ...(config.rssCloud ? { rsscloud: (form: Record<string, string>, ip: string | null) => handleRssCloudRequest({ repo, config }, form, ip) } : {}),
         }
       : undefined,
+  pushInApi: pushInEffective(config)
+    ? {
+        websubVerify: (token: string, query: Record<string, string>) => pushIn.handleWebSubVerification(token, query),
+        websubDeliver: (token: string, body: string, signature: string | null) => pushIn.handleFatPing(token, body, signature, { bus }),
+      }
+    : undefined,
 })
 
 // H4 seam: onLocalPost never rejects; void is safe here by contract.

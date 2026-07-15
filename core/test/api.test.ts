@@ -135,3 +135,9 @@ test('POST /hub is 404 when no pushApi is wired', async () => {
   const app = await makeApp()
   expect((await app.request('/hub', { method: 'POST', body: new URLSearchParams({ 'hub.mode': 'subscribe' }) })).status).toBe(404)
 })
+
+test('websub callback routes are 404 when pushInApi is not wired', async () => {
+  const app = await makeApp()
+  expect((await app.request('/websub/callback/some-token?hub.mode=subscribe')).status).toBe(404)
+  expect((await app.request('/websub/callback/some-token', { method: 'POST', body: 'x' })).status).toBe(404)
+})
