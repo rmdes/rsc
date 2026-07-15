@@ -1,5 +1,6 @@
 import { test, expect, vi } from 'vitest'
 import { load } from './+page.server.ts'
+import type { TimelineEntry } from '$lib/types'
 
 test('load returns the timeline from the core API', async () => {
 	const fetch = vi.fn(
@@ -30,8 +31,16 @@ test('load returns the timeline from the core API', async () => {
 				{ status: 200 }
 			)
 	)
-	const result = await load({ fetch } as never)
+	const result = (await load({ fetch } as never)) as { timeline: TimelineEntry[] }
 	expect(result.timeline[0].content).toBe('hello')
 	expect(result.timeline[0].title).toBeNull()
 	expect(result.timeline[1].title).toBe('A title')
+})
+
+test('load returns an empty timeline with coreDown when the core is unreachable', async () => {
+	const fetch = vi.fn(async () => {
+		throw new Error('fetch failed')
+	})
+	const result = await load({ fetch } as never)
+	expect(result).toEqual({ timeline: [], coreDown: true })
 })

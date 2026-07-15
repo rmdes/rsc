@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { PageData } from './$types'
-	import type { TimelineEntry } from '$lib/types.ts'
+	import type { PageData, ActionData } from './$types'
+	import type { TimelineEntry } from '$lib/types'
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 
-	let { data }: { data: PageData } = $props()
+	let { data, form }: { data: PageData; form: ActionData } = $props()
 
 	let live = $state<TimelineEntry[]>([])
 	const posts = $derived([...live, ...data.timeline])
@@ -16,6 +16,12 @@
 <LiveTimeline {onPost} />
 
 <h1>Textcaster</h1>
+
+{#if data.coreDown}
+	<p class="notice" role="alert">Core API unreachable — is the core server running?</p>
+{/if}
+
+{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 <form method="POST" action="?/compose" class="composer">
 	<input name="handle" placeholder="your handle" required />

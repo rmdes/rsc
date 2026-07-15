@@ -1,10 +1,14 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getTimeline, createPost, addRemoteUser } from '$lib/api.ts'
+import { getTimeline, createPost, addRemoteUser } from '$lib/api'
 
 export const load: PageServerLoad = async ({ fetch }) => {
-	const timeline = await getTimeline(fetch)
-	return { timeline }
+	try {
+		const timeline = await getTimeline(fetch)
+		return { timeline }
+	} catch {
+		return { timeline: [], coreDown: true }
+	}
 }
 
 export const actions = {
