@@ -10,8 +10,10 @@ Textcaster deliberately unites two traditions that have kept their distance:
 Webmention, IndieAuth, microformats). It takes the useful building blocks from
 both and leaves the ideological blocks behind.
 
-> **Status: early design.** Nothing is implemented yet. The founding design is
-> in [`docs/superpowers/specs/2026-07-15-textcaster-design.md`](docs/superpowers/specs/2026-07-15-textcaster-design.md).
+> **Status: the spine is runnable end to end.** Local posts and remote feed
+> items live in one timeline, server-rendered and updating live over SSE. See
+> [`docs/RUNNING.md`](docs/RUNNING.md) to run it. The founding design is in
+> [`docs/superpowers/specs/2026-07-15-textcaster-design.md`](docs/superpowers/specs/2026-07-15-textcaster-design.md).
 
 ## The idea in one paragraph
 
