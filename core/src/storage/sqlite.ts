@@ -65,7 +65,9 @@ export class SqliteRepository implements Repository {
 }
 
 export async function createSqliteRepository(filename: string): Promise<SqliteRepository> {
-  const db = new Kysely<DB>({ dialect: new SqliteDialect({ database: new Database(filename) }) })
+  const sqlite = new Database(filename)
+  sqlite.pragma('foreign_keys = ON')
+  const db = new Kysely<DB>({ dialect: new SqliteDialect({ database: sqlite }) })
   await db.schema.createTable('users').ifNotExists()
     .addColumn('id', 'text', (c) => c.primaryKey())
     .addColumn('kind', 'text', (c) => c.notNull())

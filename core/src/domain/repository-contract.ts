@@ -67,5 +67,10 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.insertPost({ id: 'p1', authorId: a.id, source: 'remote', guid: 'g1', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
       expect(await repo.hasPostsByAuthor(a.id)).toBe(true)
     })
+
+    test('inserting a post whose authorId does not exist rejects', async () => {
+      const repo = await makeRepo()
+      await expect(repo.insertPost({ id: 'p1', authorId: 'no-such-user', source: 'remote', guid: 'g1', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })).rejects.toThrow()
+    })
   })
 }
