@@ -69,7 +69,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   app.get('/timeline/stream', (c) =>
     streamSSE(c, async (stream) => {
-      const off = bus.onNewPost((entry) => { void stream.writeSSE({ event: 'post', data: JSON.stringify(entry) }) })
+      const off = bus.onNewPost((entry) => { void stream.writeSSE({ event: 'post', id: entry.id, data: JSON.stringify(entry) }) })
       stream.onAbort(off)
       while (!stream.aborted) { await stream.sleep(15000); await stream.writeSSE({ event: 'ping', data: '' }) }
     }),

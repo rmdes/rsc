@@ -28,4 +28,5 @@ test('GET /timeline/stream emits an SSE "post" frame when a post is created', as
   await reader.cancel()
   expect(buf).toContain('event: post')
   expect(buf).toContain('live post')
+  expect(buf).toContain('id: ')
 })
