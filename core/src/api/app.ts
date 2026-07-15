@@ -4,6 +4,8 @@ import { streamSSE } from 'hono/streaming'
 import { bearerAuth } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError } from '../domain/types.ts'
+import { renderRssFeed, renderJsonFeed } from '../domain/feed.ts'
+import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
 import type { EventBus } from '../domain/bus.ts'
 
@@ -31,8 +33,9 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown> | null>
 
 const REPLAY_CAP = 100
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string }): Hono {
+export function createApp(deps: { service: Service; bus: EventBus; token: string; feeds?: FeedContext }): Hono {
   const { service, bus, token } = deps
+  const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const app = new Hono()
 
   app.onError((err, c) => {
@@ -65,6 +68,34 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const effectiveDisplayName = typeof displayName === 'string' && displayName.trim() !== '' ? displayName : handle
     const post = await service.createLocalPostAs(handle, effectiveDisplayName, content)
     return c.json({ post }, 201)
+  })
+
+  const FEED_LIMIT = 50
+
+  async function resolveFeedUser(c: Context): Promise<{ user: import('../domain/types.ts').User } | Response> {
+    const handle = (c.req.param('handle') ?? '').toLowerCase()
+    const user = await service.getUserByHandle(handle)
+    if (!user) return c.json({ error: 'unknown user' }, 404)
+    if (user.kind === 'remote') {
+      // Pass-through, not republishing. 302 (not 301): feedUrl is mutable.
+      if (!user.feedUrl) return c.json({ error: 'unknown user' }, 404)
+      return c.redirect(user.feedUrl, 302)
+    }
+    return { user }
+  }
+
+  app.get('/users/:handle/feed.xml', async (c) => {
+    const r = await resolveFeedUser(c)
+    if (r instanceof Response) return r
+    const posts = await service.getPostsByAuthor(r.user.id, FEED_LIMIT)
+    return c.body(renderRssFeed(r.user, posts, feeds), 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
+  })
+
+  app.get('/users/:handle/feed.json', async (c) => {
+    const r = await resolveFeedUser(c)
+    if (r instanceof Response) return r
+    const posts = await service.getPostsByAuthor(r.user.id, FEED_LIMIT)
+    return c.body(renderJsonFeed(r.user, posts, feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
   })
 
   app.get('/timeline', async (c) => {

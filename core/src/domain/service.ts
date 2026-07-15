@@ -53,6 +53,12 @@ export function createService(repo: Repository, bus: EventBus) {
     getTimelineAfter(sinceCreatedAt: string, limit: number) {
       return repo.getTimelineAfter(sinceCreatedAt, limit)
     },
+    getUserByHandle(handle: string) {
+      return repo.getUserByHandle(handle)
+    },
+    getPostsByAuthor(authorId: string, limit: number) {
+      return repo.getPostsByAuthor(authorId, limit)
+    },
   }
 }
 
