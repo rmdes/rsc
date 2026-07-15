@@ -5,6 +5,16 @@ import { DomainError } from '../domain/types.ts'
 import type { Service } from '../domain/service.ts'
 import type { EventBus } from '../domain/bus.ts'
 
+function isValidFeedUrl(feedUrl: unknown): feedUrl is string {
+  if (typeof feedUrl !== 'string') return false
+  try {
+    const protocol = new URL(feedUrl).protocol
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function createApp(deps: { service: Service; bus: EventBus; token: string }): Hono {
   const { service, bus, token } = deps
   const app = new Hono()
@@ -17,8 +27,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   app.get('/health', (c) => c.json({ ok: true }))
 
-  app.post('/users', async (c) => {
+  app.post('/users', bearerAuth(token), async (c) => {
     const { handle, displayName, feedUrl } = await c.req.json()
+    if (!isValidFeedUrl(feedUrl)) return c.json({ error: 'feedUrl invalid' }, 400)
     const user = await service.addRemoteUser({ handle, displayName, feedUrl })
     return c.json({ user }, 201)
   })

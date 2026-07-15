@@ -33,6 +33,18 @@ test('POST /users adds a remote user', async () => {
   expect((await res.json()).user.kind).toBe('remote')
 })
 
+test('POST /users requires the bearer token', async () => {
+  const app = await makeApp()
+  const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) })
+  expect(res.status).toBe(401)
+})
+
+test('POST /users rejects a non-http(s) feedUrl', async () => {
+  const app = await makeApp()
+  const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'news', displayName: 'News', feedUrl: 'file:///etc/passwd' }) })
+  expect(res.status).toBe(400)
+})
+
 test('POST /posts with a handle belonging to a remote user returns 400 with a JSON error', async () => {
   const app = await makeApp()
   await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) })
