@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
-import { DomainError } from './types.ts'
+import { DomainError, HandleTakenError } from './types.ts'
 import type { NewRemoteUser, TimelineEntry, User, Post } from './types.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
@@ -15,20 +15,25 @@ function normalizeHandle(handle: string): string {
 export function createService(repo: Repository, bus: EventBus) {
   async function ensureLocalUser(handle: string, displayName: string): Promise<User> {
     const normalized = normalizeHandle(handle)
-    const existing = await repo.getUserByHandle(normalized)
-    if (existing) {
-      if (existing.kind !== 'local') throw new DomainError('handle belongs to a remote user')
-      return existing
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const existing = await repo.getUserByHandle(normalized)
+      if (existing) {
+        if (existing.kind !== 'local') throw new DomainError('handle belongs to a remote user')
+        return existing
+      }
+      try {
+        return await repo.createLocalUser({ handle: normalized, displayName })
+      } catch (err) {
+        if (err instanceof HandleTakenError && attempt === 0) continue // lost the race; re-read
+        throw err
+      }
     }
-    return repo.createLocalUser({ handle: normalized, displayName })
+    throw new DomainError('handle lookup raced') // unreachable in practice
   }
 
   return {
     async addRemoteUser(input: NewRemoteUser) {
-      const handle = normalizeHandle(input.handle)
-      // ponytail: TOCTOU race between this check and the insert below is acceptable at spine scale.
-      if (await repo.getUserByHandle(handle)) throw new DomainError('handle already taken')
-      return repo.createRemoteUser({ ...input, handle })
+      return repo.createRemoteUser({ ...input, handle: normalizeHandle(input.handle) })
     },
     async createLocalPostAs(handle: string, displayName: string, content: string): Promise<TimelineEntry> {
       const author = await ensureLocalUser(handle, displayName)

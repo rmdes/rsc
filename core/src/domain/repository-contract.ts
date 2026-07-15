@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest'
 import type { Repository } from './repository.ts'
+import { HandleTakenError } from './types.ts'
 
 export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
   describe('Repository contract', () => {
@@ -118,6 +119,13 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.insertPost({ id: 'p1', authorId: a.id, source: 'local', guid: 'g1', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
       expect((await repo.getPost('p1'))?.guid).toBe('g1')
       expect(await repo.getPost('nope')).toBeUndefined()
+    })
+
+    test('creating a user with a taken handle throws HandleTakenError (both kinds)', async () => {
+      const repo = await makeRepo()
+      await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      await expect(repo.createLocalUser({ handle: 'alice', displayName: 'Alice 2' })).rejects.toThrow(HandleTakenError)
+      await expect(repo.createRemoteUser({ handle: 'alice', displayName: 'A', feedUrl: 'https://ex.com/f.xml' })).rejects.toThrow(HandleTakenError)
     })
   })
 }

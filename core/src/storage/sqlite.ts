@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor } from '../domain/types.ts'
+import { HandleTakenError } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string }
@@ -30,7 +31,13 @@ export class SqliteRepository implements Repository {
 
   private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null): Promise<User> {
     const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString() }
-    await this.db.insertInto('users').values(row).execute()
+    try {
+      await this.db.insertInto('users').values(row).execute()
+    } catch (err) {
+      // In the createUser paths the only reachable UNIQUE constraint is users.handle (ids are fresh UUIDs).
+      if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new HandleTakenError('handle already taken')
+      throw err
+    }
     return rowToUser(row)
   }
   createLocalUser(u: NewLocalUser) { return this.insertUser('local', u.handle, u.displayName, null) }

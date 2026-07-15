@@ -3,6 +3,7 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { DomainError } from '../src/domain/types.ts'
+import type { Repository } from '../src/domain/repository.ts'
 
 async function setup() {
   const repo = await createSqliteRepository(':memory:')
@@ -41,4 +42,28 @@ test('addRemoteUser rejects a handle that is already taken', async () => {
   const { svc } = await setup()
   await svc.addRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
   await expect(svc.addRemoteUser({ handle: 'news', displayName: 'News Again', feedUrl: 'https://ex.com/g.xml' })).rejects.toThrow(DomainError)
+})
+
+test('a first post that loses the create race retries the lookup and succeeds', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' }) // the "winner" of the race
+  let firstLookup = true
+  const racy: Repository = {
+    createLocalUser: (u) => repo.createLocalUser(u),
+    createRemoteUser: (u) => repo.createRemoteUser(u),
+    getUser: (id) => repo.getUser(id),
+    getUserByHandle: async (h) => {
+      if (firstLookup) { firstLookup = false; return undefined } // simulate pre-race view
+      return repo.getUserByHandle(h)
+    },
+    listRemoteUsers: () => repo.listRemoteUsers(),
+    insertPost: (p) => repo.insertPost(p),
+    hasPostsByAuthor: (a) => repo.hasPostsByAuthor(a),
+    getTimeline: (l, b) => repo.getTimeline(l, b),
+    getTimelineAfter: (s, l) => repo.getTimelineAfter(s, l),
+    getPost: (id) => repo.getPost(id),
+  }
+  const svc = createService(racy, createEventBus())
+  const entry = await svc.createLocalPostAs('alice', 'Alice', 'raced post')
+  expect(entry.author.handle).toBe('alice')
 })

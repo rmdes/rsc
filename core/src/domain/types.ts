@@ -1,5 +1,7 @@
 export class DomainError extends Error {}
 
+export class HandleTakenError extends DomainError {}
+
 export type UserKind = 'local' | 'remote'
 export type PostSource = 'local' | 'remote'
 
