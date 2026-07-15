@@ -3,5 +3,5 @@
   "private": true,
   "type": "module",
   "workspaces": ["core", "web"],
-  "engines": { "node": ">=20" }
+  "engines": { "node": ">=22.18" }
 }
