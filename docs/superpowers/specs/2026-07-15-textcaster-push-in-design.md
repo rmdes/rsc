@@ -39,12 +39,15 @@ Decisions taken at design time:
 
 From the poll's response:
 
-- Feed body via feedsmith's parsed metadata (probed, all formats): RSS
+- HTTP `Link` headers (`rel="hub"`, `rel="self"`) — NOT a fallback:
+  W3C WebSub requires subscribers to support header discovery, and
+  header-only publishers are common. Simple comma-split parse.
+- Feed body via feedsmith's parsed metadata (probed, all formats —
+  note the format discriminator is `parsed.format`): RSS
   `feed.atom.links` (`rel="self"`/`rel="hub"`) + `feed.cloud`; Atom
-  `feed.links`; JSON Feed `feed.hubs` + `feed.feed_url`.
-- Plus an HTTP `Link` header fallback (`rel="hub"`, `rel="self"`) —
-  header-only WebSub publishers are common; simple comma-split parse,
-  nothing more.
+  `feed.links`; JSON Feed `feed.hubs` + `feed.feed_url`. Discovery
+  metadata comes from the SAME parse that yields the items (§6) — the
+  poll body is parsed once, not twice.
 - Topic = advertised `rel="self"` when present, else the stored
   `feedUrl`.
 - WebSub preferred when both WebSub and `<cloud>` are advertised;
@@ -85,21 +88,33 @@ CREATE TABLE push_subscriptions (
 -- indexes: (user_id), (expires_at)
 ```
 
-Repository methods (contract-pinned, adapter-neutral):
+Repository methods (contract-pinned, adapter-neutral; the three
+single-row lookups collapse into one filter-object finder — ponytail):
 
 - `upsertPushSubscription(s: PushSubscription): Promise<void>` — keyed on
   `(user_id, mode)`: one outbound subscription per user per mode
-  (explicit conflict target, DO UPDATE endpoint/topic/token/secret/state/
-  expires_at).
-- `getPushSubscriptionByToken(token): Promise<PushSubscription | undefined>`
-- `getActivePushSubscriptionForUser(userId, now):
-  Promise<PushSubscription | undefined>` — active AND unexpired, either
-  mode.
-- `getPushSubscriptionByTopic(mode, topic, now):
-  Promise<PushSubscription | undefined>` — the rssCloud thin-ping lookup.
+  (explicit conflict target, DO UPDATE endpoint/topic/state/expires_at —
+  **NOT token or secret**; see H4 below).
+- `findPushSubscription(filter: { token?: string; userId?: string;
+  mode?: PushProtocol; topic?: string }, opts?: { unexpiredAt?: string;
+  state?: 'pending' | 'active' }): Promise<PushSubscription | undefined>`
+  — covers token lookup (callback routes), active-for-user (slow-poll
+  gate), and mode+topic (thin-ping lookup).
 - `listRenewablePushSubscriptions(before): Promise<PushSubscription[]>` —
   active rows with `expires_at < before`.
 - `deletePushSubscription(id): Promise<void>`
+
+**Token/secret stability (H4)**: WebSub subscription identity is
+`(topic, callback)` — a renewal that rotated the callback token would
+leave the hub holding two subscriptions, with the old one's pings
+404ing against our DB. `callback_token` and `secret` are generated ONCE
+per `(user, mode)` and reused across renewals and re-subscribes; the
+upsert never overwrites them.
+
+**Pending expiry (H3)**: `pending` rows carry `expires_at = now + 10
+minutes`. Discovery's "no pending/active subscription" gate reads "no
+UNEXPIRED pending/active row" — a hub that never delivers its
+verification GET cannot block retries forever.
 
 ## 4. Scheduler = the existing poller
 
@@ -108,8 +123,8 @@ Each `tick` (the current self-rescheduling loop in `server.ts`):
 1. **Polls**: feeds WITHOUT an active unexpired push subscription poll
    every tick; feeds WITH one poll only every 10th tick (in-memory
    counter).
-2. **Discovery → subscribe** for polled feeds with no pending/active
-   subscription (when push-in is effective):
+2. **Discovery → subscribe** for polled feeds with no UNEXPIRED
+   pending/active subscription (when push-in is effective; H3):
    - WebSub: generate token (32 hex) + secret (32 hex); upsert `pending`
      row; form-POST the hub: `hub.mode=subscribe`, `hub.topic=<topic>`,
      `hub.callback=<PUBLIC_URL>/websub/callback/<token>`,
@@ -138,47 +153,74 @@ Each `tick` (the current self-rescheduling loop in `server.ts`):
 - `POST /websub/callback/:token` — the fat ping:
   - Body cap 5MB (reuse `MAX_FEED_BYTES` semantics: content-length
     pre-check + post-read check).
-  - **Signature required**: we always request a secret, so a missing or
-    invalid `X-Hub-Signature` (sha256 HMAC over the raw body,
-    timing-safe compare) → 403, body discarded.
-  - `parseFeed` the body; ingest via the shared item path (§6) for the
-    subscription's user — same guid dedup, same backfill rule, live bus
-    emits for a user with existing posts.
+  - **Signature required, hub picks the algorithm (H1)**: we always
+    request a secret, and `X-Hub-Signature` arrives as
+    `<algo>=<hex>` where the HUB chooses the algorithm — the biggest
+    real hubs (Google's pubsubhubbub, Superfeedr) sign with `sha1=`.
+    Accept all four W3C algorithms (`sha1`, `sha256`, `sha384`,
+    `sha512`), HMAC over the raw body with our secret, timing-safe
+    compare.
+  - **Verification failure is silent per the W3C spec (H2)**: a missing
+    or invalid signature → **202, body discarded, logged** — never a
+    4xx. Non-2xx responses invite the hub to drop the subscription, and
+    a 403 doubles as a signature-validity oracle.
+  - On a valid signature: `parseFeed` the body; ingest via the shared
+    item path (§6) for the subscription's user — same guid dedup, same
+    backfill rule, live bus emits for a user with existing posts.
   - Ingest/parse failures never 5xx the hub: log + 202. Success → 202.
+  - Consequence, accepted: a non-signing (spec-violating) hub has all
+    its pings discarded; the slow-poll backstop keeps the feed working
+    at 10× latency.
 - `GET /rsscloud/notify` — remote cloud's registration challenge:
   respond 200 with a body containing `challenge` iff `url` equals one of
   our rssCloud subscription topics (pending or active); else 404.
 - `POST /rsscloud/notify` — the thin ping: exact-match the `url` param
-  against our rssCloud subscription topics
-  (`getPushSubscriptionByTopic`); on match, immediately run the normal
-  `ingestRemoteUser` for that user (re-fetch of OUR stored `feedUrl` —
-  the ping's content is never fetched or trusted beyond the lookup key).
-  Unknown topic → 200 and ignore (no subscription-list oracle).
+  against our rssCloud subscription topics (`findPushSubscription`); on
+  match, immediately run the normal `ingestRemoteUser` for that user
+  (re-fetch of OUR stored `feedUrl` — the ping's content is never
+  fetched or trusted beyond the lookup key). Unknown topic → 200 and
+  ignore (no subscription-list oracle). **Amplification floor (H5)**: an
+  in-memory `Map<topic, lastFetchAt>` enforces a 30-second minimum
+  between ping-triggered re-fetches per topic — a ping storm costs the
+  attacker requests and us nothing; the poll backstop covers anything
+  coalesced away.
 
-## 6. One refactor: split `ingestRemoteUser`
+## 6. One refactor: split `ingestRemoteUser`, one parse per body
 
 Extract `ingestItems(repo, bus, user, items): Promise<number>` (the
-insert/dedup/backfill/emit loop) from `ingestRemoteUser`, which becomes
-fetch + parse + `ingestItems`. Fat pings call `parseFeed` +
+insert/dedup/backfill/emit loop) from `ingestRemoteUser`. The parse step
+becomes `parseFeedWithMeta(body): { items: ParsedItem[]; discovery: {
+hubs: string[]; self: string | null; cloud: { domain; port; path;
+protocol } | null } }` — ONE parse yields both the items and the
+discovery metadata (`parseFeed` remains as a thin `.items` wrapper for
+existing callers/tests). `ingestRemoteUser` returns the discovery
+metadata alongside its insert count so the poller's subscribe engine
+consumes it without re-parsing. Fat pings call `parseFeedWithMeta` +
 `ingestItems` directly (no fetch); thin pings and polls use
-`ingestRemoteUser` unchanged. Only touch to existing ingest code.
+`ingestRemoteUser` unchanged.
 
 ## 7. The money test — real-time federation, no polling
 
 Two in-process instances: A runs its M1 self-hosted hub
 (`TEXTCASTER_WEBSUB=self`); B follows A's user feed, discovers A's hub,
 subscribes over a fetch bridge; A's hub challenge-verifies B's callback
-through the bridge; then **A posts, and B's timeline gains the post via
-the fat ping alone** — B performs no further poll in the test, and B's
-bus emits the entry live. A sibling test tampers the fat-ping body and
-asserts B's 403 (signature verification is real). An rssCloud variant
-covers thin ping → re-fetch. M1's hub gets its first real subscriber:
-us.
+through the bridge (**A's hub must be built with an injected `lookupFn`
+resolving B's bridge host to a public address — otherwise A's own SSRF
+guard rejects B's callback before verification; the seam exists in M1's
+code**); then **A posts, and B's timeline gains the post via the fat
+ping alone** — B performs no further poll in the test, and B's bus
+emits the entry live. A sibling test tampers the fat-ping body and
+asserts B discards it silently (202, nothing ingested — H2 semantics).
+An rssCloud variant covers thin ping → re-fetch. M1's hub gets its
+first real subscriber: us.
 
 ## Non-goals
 
 - Unsubscribe flows (rows lapse or are deleted manually; no
   `hub.mode=unsubscribe` initiation from our side).
+- rssCloud receiving stays in scope but is the NAMED DEFER CANDIDATE if
+  the batch needs slimming mid-run; re-add signal: a followed feed
+  actually advertising `<cloud>`.
 - Retry backoff, multi-hub failover (first valid hub wins), per-feed
   push opt-out, WebSub denial semantics beyond row deletion.
 - `Link` header parsing beyond a simple `rel=hub/self` grab.
@@ -189,9 +231,10 @@ us.
 
 TDD throughout:
 
-- Contract suite: the six `push_subscriptions` methods (upsert keyed on
-  user+mode with DO UPDATE; token lookup; active-for-user with expiry;
-  topic lookup; renewable listing; delete).
+- Contract suite: the four `push_subscriptions` methods (upsert keyed on
+  user+mode with DO UPDATE that preserves token/secret — H4 pinned;
+  `findPushSubscription` across all filter shapes and expiry/state
+  opts; renewable listing; delete).
 - Discovery: unit tests over parsed-feed fixtures (all three formats +
   Link header fallback + cloud http-post-only + self-vs-feedUrl topic
   choice); endpoint guard rejection (private hub advertised → no
@@ -201,9 +244,11 @@ TDD throughout:
   thresholds; kill-switch and no-PUBLIC_URL dormancy.
 - Callbacks: challenge echo flips pending→active with granted lease;
   topic mismatch → no echo; denied → row gone; fat ping happy path
-  ingests + emits; bad/missing signature → 403 + nothing ingested;
-  oversized body rejected; thin ping re-fetches stored feedUrl only;
-  unknown thin-ping topic → 200 no-op.
+  ingests + emits; signatures verify for ALL FOUR algorithms (sha1 case
+  pinned — real hubs use it); bad/missing signature → 202 + nothing
+  ingested + logged (H2); oversized body rejected; thin ping re-fetches
+  stored feedUrl only; unknown thin-ping topic → 200 no-op; thin-ping
+  30s floor coalesces a ping storm (H5).
 - Poller: slow-poll cadence (subscribed feed skipped on non-10th ticks);
   discovery only fires for feeds without pending/active rows.
 - End-to-end: the two-instance real-time loop (§7) + tampered-signature
