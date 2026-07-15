@@ -75,6 +75,25 @@ Notes:
 - Delivery is best-effort (one retry). Subscribers that miss a ping catch
   up on their next poll.
 
+### Receiving push (push-in)
+
+When a followed feed advertises WebSub (`rel="hub"`, also honored from HTTP
+`Link` headers) or an rssCloud `<cloud>` element, core subscribes
+automatically and new items arrive by push instead of waiting for the next
+poll. Push-subscribed feeds still poll as a safety net, at 10× the normal
+interval.
+
+| Variable | Values | Meaning |
+|---|---|---|
+| `TEXTCASTER_PUSH_IN` | `on` (default) \| `off` | Kill-switch. Effective only when `TEXTCASTER_PUBLIC_URL` is set (subscriber callbacks need a public address); without it, push-in stays dormant and polling continues. |
+
+Callback endpoints (public, no auth — verified by construction):
+`GET|POST /websub/callback/<token>` (token is per-subscription and
+unguessable; fat pings must carry a valid `X-Hub-Signature`, any of
+sha1/sha256/sha384/sha512 — invalid pings are discarded silently) and
+`GET|POST /rsscloud/notify` (thin pings only trigger a re-fetch of the
+already-stored feed URL, floored at once per 30 seconds per feed).
+
 ## Stale DB warning
 
 **Schema changes are now migration-gated.** Core refuses to start against a
