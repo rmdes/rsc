@@ -173,12 +173,18 @@ curl http://localhost:8787/timeline?author=alice
 curl http://localhost:8787/timeline?followed_by=alice
 ```
 
-OPML import and export endpoints (both bearer-authed with `TEXTCASTER_TOKEN`):
+OPML routes (import requires bearer auth; export is public):
 
 | Method | Route | Notes |
 |---|---|---|
 | `GET` | `/users/<handle>/following.opml` | Export followed feeds as OPML. Public (no auth). |
-| `POST` | `/users/<handle>/follows/opml` | Import OPML. 1 MB cap. Bearer auth required. Flattens nested outlines (H1/H2) and skips duplicates. |
+| `POST` | `/users/<handle>/follows/opml` | Import OPML. Bearer auth required. Core accepts up to 1 MB, flattens nested outlines, skips duplicates and non-`http(s)` feed URLs. |
+
+**Web import upload size:** the browser import form POSTs through the
+SvelteKit server, whose body limit (`BODY_SIZE_LIMIT`, ~512 KB by default
+under `adapter-node`) can be smaller than core's 1 MB. Raise it on the web
+host if operators need to import very large OPML files through the UI;
+posting OPML directly to the core route is unaffected.
 
 ## Deployment note
 
