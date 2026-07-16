@@ -6,4 +6,7 @@ export interface TimelineEntry {
 	publishedAt: string
 	source: 'local' | 'remote'
 	author: { id: string; handle: string; displayName: string; kind: 'local' | 'remote' }
+	inReplyTo?: string | null
+	inReplyToPostId?: string | null
+	threadRootId?: string | null
 }

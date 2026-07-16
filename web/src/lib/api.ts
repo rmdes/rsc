@@ -73,7 +73,7 @@ export async function importOpml(f: typeof fetch, handle: string, opml: string):
 
 export async function createPost(
 	f: typeof fetch,
-	input: { handle: string; displayName: string; content: string }
+	input: { handle: string; displayName: string; content: string; inReplyTo?: string }
 ): Promise<void> {
 	const res = await f(`${base()}/posts`, {
 		method: 'POST',
@@ -81,6 +81,12 @@ export async function createPost(
 		body: JSON.stringify(input)
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, `createPost ${res.status}`))
+}
+
+export async function getThread(f: typeof fetch, id: string): Promise<TimelineEntry[]> {
+	const res = await f(`${base()}/post/${encodeURIComponent(id)}/thread`)
+	if (!res.ok) throw new Error(await errorMessage(res, `thread ${res.status}`))
+	return (await res.json()).thread
 }
 
 export async function addRemoteUser(

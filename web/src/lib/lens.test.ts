@@ -14,3 +14,10 @@ test('followed lens keeps only authors in the follow set', () => {
   expect(keepEvent(entry('a'), lens)).toBe(true)
   expect(keepEvent(entry('c'), lens)).toBe(false)
 })
+
+test('thread lens keeps the root and its descendants only', () => {
+  const lens = { kind: 'thread' as const, rootId: 'root' }
+  expect(keepEvent({ ...entry('a'), id: 'root' }, lens)).toBe(true)
+  expect(keepEvent({ ...entry('a'), threadRootId: 'root' }, lens)).toBe(true)
+  expect(keepEvent(entry('a'), lens)).toBe(false)
+})

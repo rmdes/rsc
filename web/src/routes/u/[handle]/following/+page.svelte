@@ -86,6 +86,10 @@
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
 					<p>{plaintext(post.content)}</p>
+					<a class="source" href="/post/{post.id}">{post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
+					{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
+						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
+					{/if}
 					{#if post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
 				</li>
 			{:else}
