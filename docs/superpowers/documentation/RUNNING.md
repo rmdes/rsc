@@ -80,9 +80,11 @@ Notes:
 A followed URL returning an HTML page is automatically resolved to its
 `<link rel="alternate">` feed, and the stored feed URL is rewritten to it.
 IndieWeb pages with `h-entry` microformats but no feed link are ingested
-directly, with the page re-parsed on each poll. Discovery runs at poll time,
-is one-hop only (no redirect chains for feed discovery), and private-address
-links are rejected whether direct or via redirect — SSRF-guarded.
+directly, with the page re-parsed on each poll. Discovery runs at poll time
+and is one-hop in the sense that the page is checked for a feed link once (no
+discovery-of-discovery); the resulting feed fetch itself may still follow HTTP
+redirects, each hop re-validated. Private-address links are rejected whether
+direct or via redirect — SSRF-guarded.
 
 ### Receiving push (push-in)
 
