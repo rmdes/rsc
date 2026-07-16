@@ -6,6 +6,7 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import PostBody from '$lib/PostBody.svelte'
+	import MarkdownComposer from '$lib/MarkdownComposer.svelte'
 	import { keepEvent } from '$lib/lens'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -73,7 +74,7 @@
 		<summary>Reply</summary>
 		<form method="POST" action="?/reply" class="composer">
 			<input name="handle" placeholder="your handle" required />
-			<textarea name="content" placeholder="write a reply" required></textarea>
+			<MarkdownComposer placeholder="write a reply" />
 			<button>Reply</button>
 		</form>
 	</details>

@@ -595,3 +595,46 @@ button:hover {
 .post .body ul, .post .body ol {
 	padding-left: var(--space-lg);
 }
+
+/* Carta composer — skin the editor with our tokens (both themes come from
+   the variables themselves). Arrives only on composer pages (dynamic import). */
+
+.carta-editor {
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: 8px;
+	font-family: inherit;
+}
+
+.carta-toolbar {
+	border-bottom: 1px solid var(--color-border);
+	color: var(--color-secondary);
+}
+
+.carta-toolbar .carta-active {
+	color: var(--color-accent);
+}
+
+.carta-icon:hover {
+	background: var(--color-muted);
+	color: var(--color-foreground);
+}
+
+.carta-input,
+.carta-renderer {
+	color: var(--color-foreground);
+	padding: var(--space-sm);
+	min-height: 7rem;
+}
+
+.carta-input textarea {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.9375rem;
+	color: inherit;
+	background: none;
+	border: 0;
+}
+
+.carta-renderer {
+	font-size: 0.9375rem;
+}
