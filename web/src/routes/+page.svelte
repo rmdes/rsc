@@ -65,7 +65,7 @@
 					</div>
 					{#if post.title}<h2 class="title">{post.title}</h2>{/if}
 					<p>{plaintext(post.content)}</p>
-					{#if post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
+					{#if post.url}<a class="source" href={post.url} rel="noreferrer">{URL.parse(post.url)?.hostname ?? 'source'}</a>{/if}
 				</li>
 			{/each}
 		</ul>
