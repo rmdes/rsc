@@ -44,6 +44,8 @@
 				<p>{plaintext(post.content)}</p>
 				{#if post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
 			</li>
+		{:else}
+			<li class="timeline-empty">@{data.handle} hasn't posted anything yet.</li>
 		{/each}
 	</ul>
 

@@ -381,6 +381,32 @@ button:hover {
 	font-size: 0.875rem;
 }
 
+/* Accessibility: label text available to screen readers, hidden visually */
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* Lens timeline empty-state row */
+
+.timeline-empty {
+	list-style: none;
+	color: var(--color-secondary);
+	background: var(--color-surface);
+	border: 1px dashed var(--color-border);
+	border-radius: 12px;
+	padding: var(--space-lg);
+	text-align: center;
+}
+
 /* Notices */
 
 .notice,

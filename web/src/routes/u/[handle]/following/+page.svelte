@@ -40,7 +40,8 @@
 	<details class="panel" open>
 		<summary>Follow someone</summary>
 		<form method="POST" action="?/follow" class="follow-form">
-			<input name="target" placeholder="handle to follow" required />
+			<label class="visually-hidden" for="follow-target">Handle to follow</label>
+			<input id="follow-target" name="target" placeholder="handle to follow" required />
 			<button>Follow</button>
 		</form>
 	</details>
@@ -48,7 +49,8 @@
 	<details class="panel">
 		<summary>Import OPML</summary>
 		<form method="POST" action="?/import" enctype="multipart/form-data" class="import-form">
-			<input type="file" name="opml" accept=".opml,.xml,text/xml" required />
+			<label class="visually-hidden" for="import-opml">OPML file to import</label>
+			<input id="import-opml" type="file" name="opml" accept=".opml,.xml,text/xml" required />
 			<button>Import OPML</button>
 		</form>
 	</details>
@@ -78,12 +80,16 @@
 			{#each posts as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
-						<a href="/u/{post.author.handle}">@{post.author.handle}</a>
+						<strong>{post.author.displayName}</strong>
+						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						<span class="kind">{post.source}</span>
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
 					<p>{plaintext(post.content)}</p>
 					{#if post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
 				</li>
+			{:else}
+				<li class="timeline-empty">Nothing here yet — posts from the people you follow will appear as they arrive.</li>
 			{/each}
 		</ul>
 
