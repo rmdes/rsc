@@ -59,7 +59,7 @@
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
 						<strong>{post.author.displayName}</strong>
-						<span class="handle">@{post.author.handle}</span>
+						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
 						<time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time>
 					</div>
