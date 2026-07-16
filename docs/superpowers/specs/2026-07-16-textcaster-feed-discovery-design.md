@@ -221,17 +221,22 @@ are ingested, and `feedUrl` is unchanged.
   `<link rel="alternate" href="file:…">` or `itpc:` garbage link is rejected
   for free. The DNS-rebind residual ledgered in milestone 1 applies equally
   and is not re-litigated.
-- **Redirect posture (R2): the discovered feed fetch FOLLOWS redirects**
-  (default `fetch` behavior), unlike push-in's hub/callback fetches which use
-  `redirect: 'manual'`. The difference is deliberate: feeds legitimately
-  301/302, so `manual` would break real feeds, whereas a hub callback never
-  should redirect. The accepted residual — a public redirector could point the
-  post-guard fetch at a private address — is **strictly no worse than the
-  primary feed fetch**, which already fetches member-supplied `feedUrl`s with
-  no guard at all; the guard's job here is only to stop *direct* private-address
-  links in page content, and the redirector case is the same class as the
-  already-ledgered DNS rebind. Stated so neither an implementer nor a future
-  reviewer relitigates it.
+- **Redirect posture (R2 — UPGRADED during implementation).** The spec
+  originally accepted following redirects with a documented residual (a public
+  redirector could point the post-guard fetch at a private address). An
+  automated security review flagged this HIGH, and the operator chose to close
+  it on **both** fetch paths rather than accept the residual. Implemented:
+  `fetchFeedBody` uses `redirect: 'manual'` and re-validates **every** hop's
+  resolved `Location` through `checkCallbackUrl` before following (capped at 5
+  hops), so legitimate feed 301/302s still work while a redirect to a private
+  address is refused. And the **primary `user.feedUrl` fetch is now guarded
+  too** (it was previously unguarded — a member could point `feedUrl` straight
+  at an internal address); both fetches route through the one guarded
+  `fetchFeedBody`, so no fetch path bypasses the SSRF check. The only residual
+  is DNS-rebinding (TOCTOU between resolve and connect), which stays ledgered
+  from milestone 1. (This exposed and fixed a real prod gap: push-in's
+  `runPollCycle`/`handleThinPing` were dropping `lookupFn` before
+  `ingestRemoteUser`.)
 - One-hop limit bounds amplification: a malicious page cannot chain us
   through many fetches; discovery issues at most one extra request.
 - The 10s fetch timeout and `MAX_FEED_BYTES` cap apply to the discovered
