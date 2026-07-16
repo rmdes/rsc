@@ -334,8 +334,8 @@ test('ingestItems is the shared insert path (no fetch involved)', async () => {
   await repo.insertPost({ id: 'seed', authorId: user.id, source: 'remote', guid: 'seed-g', title: null, content: 'seed', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' }) // author has posts → emits live
   const seen = vi.fn()
   bus.onNewPost(seen)
-  const n = await ingestItems(repo, bus, user, [{ guid: 'fp1', title: null, content: 'pushed body', url: null, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: null, sourceName: null, sourceFeedUrl: null }])
+  const n = await ingestItems(repo, bus, user, [{ guid: 'fp1', title: null, content: 'pushed body', url: null, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: null, sourceName: null, sourceFeedUrl: null, contentMarkdown: null }])
   expect(n).toBe(1)
   expect(seen).toHaveBeenCalledTimes(1)
-  expect(await ingestItems(repo, bus, user, [{ guid: 'fp1', title: null, content: 'pushed body', url: null, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: null, sourceName: null, sourceFeedUrl: null }])).toBe(0)
+  expect(await ingestItems(repo, bus, user, [{ guid: 'fp1', title: null, content: 'pushed body', url: null, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: null, sourceName: null, sourceFeedUrl: null, contentMarkdown: null }])).toBe(0)
 })

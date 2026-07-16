@@ -6,7 +6,7 @@ import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCu
 import { HandleTakenError } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string }
-interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null }
+interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
 interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
@@ -17,7 +17,7 @@ function rowToUser(r: UsersTable): User {
 }
 
 function rowToPost(r: PostsTable): Post {
-  return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at, inReplyTo: r.in_reply_to, inReplyToPostId: r.in_reply_to_post_id, threadRootId: r.thread_root_id, sourceName: r.source_name, sourceFeedUrl: r.source_feed_url }
+  return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at, inReplyTo: r.in_reply_to, inReplyToPostId: r.in_reply_to_post_id, threadRootId: r.thread_root_id, sourceName: r.source_name, sourceFeedUrl: r.source_feed_url, contentMarkdown: r.content_markdown }
 }
 
 function rowToSubscription(r: SubscriptionsTable): Subscription {
@@ -133,7 +133,7 @@ export class SqliteRepository implements Repository {
   async insertPost(p: Post) {
     const [result] = await this.db
       .insertInto('posts')
-      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt, in_reply_to: p.inReplyTo ?? null, in_reply_to_post_id: p.inReplyToPostId ?? null, thread_root_id: p.threadRootId ?? null, source_name: p.sourceName ?? null, source_feed_url: p.sourceFeedUrl ?? null })
+      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt, in_reply_to: p.inReplyTo ?? null, in_reply_to_post_id: p.inReplyToPostId ?? null, thread_root_id: p.threadRootId ?? null, source_name: p.sourceName ?? null, source_feed_url: p.sourceFeedUrl ?? null, content_markdown: p.contentMarkdown ?? null })
       // Relies on posts_author_guid_uq being the ONLY unique constraint on posts;
       // a future second unique constraint would need an explicit conflict target.
       .onConflict((oc) => oc.doNothing())
@@ -246,15 +246,18 @@ export class SqliteRepository implements Repository {
     }
   }
 
-  async backfillSourceAttribution(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null) {
-    // Pre-migration-6 rows were ingested before <source> attribution existed and
-    // dedup never re-inserts them — fill attribution in place, but never flap an
-    // already-attributed post when a feed later edits its <source>.
+  async backfillItemExtras(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null, contentMarkdown: string | null) {
+    // Pre-existing rows never re-insert (dedup), so extras fill in place —
+    // PER COLUMN (COR-1): a post attributed at migration 6 must still gain
+    // markdown at migration 7. COALESCE keeps the first-seen value (no flapping).
     await this.db.updateTable('posts')
-      .set({ source_name: sourceName, source_feed_url: sourceFeedUrl })
+      .set((eb) => ({
+        source_name: eb.fn.coalesce('source_name', eb.val(sourceName)),
+        source_feed_url: eb.fn.coalesce('source_feed_url', eb.val(sourceFeedUrl)),
+        content_markdown: eb.fn.coalesce('content_markdown', eb.val(contentMarkdown)),
+      }))
       .where('author_id', '=', authorId)
       .where('guid', '=', guid)
-      .where('source_name', 'is', null)
       .execute()
   }
   async countRepliesByPostIds(ids: string[]): Promise<Map<string, number>> {
@@ -410,6 +413,10 @@ const MIGRATIONS: string[][] = [
     // Per-item attribution from aggregate feeds (RSS core <source url>name</source>)
     'ALTER TABLE posts ADD COLUMN source_name text',
     'ALTER TABLE posts ADD COLUMN source_feed_url text',
+  ],
+  [
+    // Incoming source:markdown, verbatim — the Textcasting preferred display source
+    'ALTER TABLE posts ADD COLUMN content_markdown text',
   ],
 ]
 

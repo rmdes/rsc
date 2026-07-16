@@ -310,18 +310,18 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over,
     })
 
-    test('backfillSourceAttribution fills only null attribution on existing posts', async () => {
+    test('backfillItemExtras fills each column independently, only where null (COR-1)', async () => {
       const repo = await makeRepo()
       const a = await repo.createRemoteUser({ handle: 'agg', displayName: 'Agg', feedUrl: 'https://agg.ex/f' })
       await repo.insertPost(mkPost({ id: 'p1', authorId: a.id, guid: 'g1' }))
-      await repo.backfillSourceAttribution(a.id, 'g1', 'Dave Winer', 'https://rss.chat/users/dave/rss.xml')
+      // first pass: attribution only (the migration-6 world)
+      await repo.backfillItemExtras(a.id, 'g1', 'Dave Winer', 'https://rss.chat/users/dave/rss.xml', null)
+      // second pass: markdown arrives later (the migration-7 world) — must still fill
+      await repo.backfillItemExtras(a.id, 'g1', 'Someone Else', 'https://other.ex/f', '**md**')
       const p = await repo.getPost('p1')
-      expect([p?.sourceName, p?.sourceFeedUrl]).toEqual(['Dave Winer', 'https://rss.chat/users/dave/rss.xml'])
-      // already attributed → untouched (no flapping when a feed edits attribution)
-      await repo.backfillSourceAttribution(a.id, 'g1', 'Someone Else', 'https://other.ex/f.xml')
-      expect((await repo.getPost('p1'))?.sourceName).toBe('Dave Winer')
-      // unknown guid → silent no-op
-      await repo.backfillSourceAttribution(a.id, 'nope', 'X', null)
+      expect(p?.sourceName).toBe('Dave Winer') // no flapping
+      expect(p?.contentMarkdown).toBe('**md**') // filled despite source_name being set
+      await repo.backfillItemExtras(a.id, 'nope', 'X', null, null) // unknown guid → no-op
     })
 
     test('findPostByRef: unique url wins; duplicated url resolves to NOTHING (Hole A)', async () => {

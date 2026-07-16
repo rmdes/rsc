@@ -16,7 +16,7 @@ test('a fresh database migrates to the current version and works', async () => {
   expect((await repo.getTimeline(10)).length).toBe(0)
   expect(u.handle).toBe('alice')
   const raw = new Database(file, { readonly: true })
-  expect(raw.pragma('user_version', { simple: true })).toBe(6)
+  expect(raw.pragma('user_version', { simple: true })).toBe(7)
   raw.close()
 })
 
@@ -83,7 +83,7 @@ test('a version-1 database upgrades in place to version 2 with data preserved', 
   expect((await repo.getTimeline(10)).map((e) => e.content)).toEqual(['kept'])
   await repo.upsertSubscription({ id: 'x1', protocol: 'websub', topic: 't', callback: 'c', callbackHost: 'h', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(6)
+  expect(check.pragma('user_version', { simple: true })).toBe(7)
   check.close()
 })
 
@@ -117,6 +117,6 @@ test('a version-2 database upgrades in place to version 3 with data preserved', 
   expect(await repo.countActiveSubscriptions({ topic: 't' }, '2026-06-01T00:00:00.000Z')).toBe(1)
   await repo.upsertPushSubscription({ id: 'p1', userId: 'u1', mode: 'websub', endpoint: 'e', topic: 't2', callbackToken: 'tok', secret: null, state: 'pending', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(6)
+  expect(check.pragma('user_version', { simple: true })).toBe(7)
   check.close()
 })

@@ -7,7 +7,7 @@ import { discoverFeed } from './discovery.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
 
-export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string; inReplyTo: string | null; sourceName: string | null; sourceFeedUrl: string | null }
+export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string; inReplyTo: string | null; sourceName: string | null; sourceFeedUrl: string | null; contentMarkdown: string | null }
 
 export interface FeedDiscovery {
   hubs: string[]
@@ -53,7 +53,7 @@ function itemInReplyTo(it: { sourceNs?: { inReplyTo?: { value?: string } }; thr?
 
 const httpOnly = (u: string | null | undefined) => (u && /^https?:\/\//i.test(u) ? u : null)
 
-export function toParsedItem(guid: string | undefined, title: string | null, content: string, url: string | null, rawDate: string, now: string, inReplyTo: string | null = null, source?: { title?: string; url?: string }): ParsedItem {
+export function toParsedItem(guid: string | undefined, title: string | null, content: string, url: string | null, rawDate: string, now: string, inReplyTo: string | null = null, source?: { title?: string; url?: string }, contentMarkdown: string | null = null): ParsedItem {
   // Item links come from remote feed content and end up as <a href> in the web
   // client — only http(s) survives (a javascript: link would be click-to-XSS).
   // The guid fallback chain keeps the RAW value: it's an opaque dedup id, and
@@ -69,6 +69,7 @@ export function toParsedItem(guid: string | undefined, title: string | null, con
     // feeds (rss.chat's firehose). The url renders as an href: http(s) only.
     sourceName: source?.title ?? null,
     sourceFeedUrl: httpOnly(source?.url),
+    contentMarkdown,
   }
 }
 
@@ -104,7 +105,7 @@ export async function parseFeedWithMeta(body: string): Promise<{ items: ParsedIt
     return { items, discovery: NO_DISCOVERY }
   }
   const items = (parsed.feed.items ?? []).map((it) =>
-    toParsedItem(it.guid?.value, it.title ?? null, it.description ?? it.content?.encoded ?? '', it.link ?? null, it.pubDate ?? '', now, itemInReplyTo(it), it.source))
+    toParsedItem(it.guid?.value, it.title ?? null, it.description ?? it.content?.encoded ?? '', it.link ?? null, it.pubDate ?? '', now, itemInReplyTo(it), it.source, it.sourceNs?.markdown ?? null))
   const c = parsed.feed.cloud
   const cloud = c && typeof c.domain === 'string' && typeof c.path === 'string' && c.protocol === 'http-post' && typeof c.port === 'number'
     ? { domain: c.domain, port: c.port, path: c.path, protocol: c.protocol }
@@ -145,14 +146,15 @@ export async function ingestItems(repo: Repository, bus: EventBus, user: User, i
       inReplyTo: item.inReplyTo, inReplyToPostId: target?.id ?? null,
       threadRootId: target ? target.threadRootId ?? target.id : null,
       sourceName: item.sourceName, sourceFeedUrl: item.sourceFeedUrl,
+      contentMarkdown: item.contentMarkdown,
     }
     if (await repo.insertPost(post)) {
       await repo.adoptOrphans(post)
       if (!backfill) bus.emitNewPost({ ...post, author: user })
       inserted++
-    } else if (item.sourceName || item.sourceFeedUrl) {
-      // Existing post from before attribution landed: fill it in silently.
-      await repo.backfillSourceAttribution(user.id, item.guid, item.sourceName, item.sourceFeedUrl)
+    } else if (item.sourceName || item.sourceFeedUrl || item.contentMarkdown) {
+      // Existing post from before attribution/markdown landed: fill it in silently.
+      await repo.backfillItemExtras(user.id, item.guid, item.sourceName, item.sourceFeedUrl, item.contentMarkdown)
     }
   }
   return inserted

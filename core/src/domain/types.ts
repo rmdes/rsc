@@ -29,6 +29,7 @@ export interface Post {
   threadRootId?: string | null
   sourceName?: string | null      // per-item attribution from aggregate feeds (RSS <source url>name</source>)
   sourceFeedUrl?: string | null
+  contentMarkdown?: string | null // incoming source:markdown, verbatim (remote); null otherwise
 }
 
 export interface NewLocalUser { handle: string; displayName: string }
