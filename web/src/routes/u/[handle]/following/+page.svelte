@@ -4,12 +4,10 @@
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import { keepEvent } from '$lib/lens'
-	import { plaintext } from '$lib/plaintext'
-	import { toggleClamp } from '$lib/expand'
-	import Linkified from '$lib/Linkified.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import Avatar from '$lib/Avatar.svelte'
+	import PostBody from '$lib/PostBody.svelte'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -104,10 +102,7 @@
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
-					<!-- click-to-expand is a pointer convenience; keyboard/AT users reach the full text via the conversation link -->
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-					<p class="body" onclick={toggleClamp}><Linkified text={plaintext(post.content)} /></p>
+					<PostBody {post} />
 					{#if post.replyCount}
 						<a
 							class="wedge"

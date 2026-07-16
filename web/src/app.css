@@ -507,9 +507,10 @@ button:hover {
 	height: 0.75rem;
 }
 
-/* Long posts clamp in timeline contexts; clicking the text unfolds them
-   (thread pages never clamp — they are the reading view). The decision
-   whether a post is actually clipped happens at click time, in JS. */
+/* Long posts clamp; clicking the text unfolds them. The decision whether a
+   post is actually clipped happens at click time, in JS. PostBody applies
+   this uniformly, including the thread page's root post (deliberate
+   unification — task 3). */
 
 .post .body {
 	max-height: 14rem;
@@ -543,4 +544,57 @@ button:hover {
 .post.highlight {
 	box-shadow: -3px 0 0 var(--color-accent);
 	padding-left: var(--space-sm);
+}
+
+/* Rich post bodies (rss.chat 7/6-7/7 lessons: quotes read as quotes,
+   headings have hierarchy, code reads as code). Scoped inside .body so
+   page chrome is untouched. div.body replaces the old p.body — same clamp. */
+
+.post .body {
+	cursor: default;
+}
+
+.post .body blockquote {
+	margin: var(--space-sm) 0;
+	padding-left: var(--space-md);
+	border-left: 2px solid var(--color-border);
+	color: var(--color-secondary);
+}
+
+.post .body h1, .post .body h2, .post .body h3, .post .body h4 {
+	margin: var(--space-sm) 0 var(--space-xs);
+	line-height: 1.25;
+}
+.post .body h1 { font-size: 1.25rem; }
+.post .body h2 { font-size: 1.125rem; }
+.post .body h3 { font-size: 1rem; }
+.post .body h4 { font-size: 0.9375rem; }
+
+.post .body code {
+	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 0.875em;
+	background: var(--color-muted);
+	padding: 0.0625rem 0.25rem;
+	border-radius: 4px;
+}
+
+.post .body pre {
+	background: var(--color-muted);
+	padding: var(--space-sm);
+	border-radius: 8px;
+	overflow-x: auto;
+}
+
+.post .body pre code {
+	background: none;
+	padding: 0;
+}
+
+.post .body img {
+	max-width: 100%;
+	height: auto;
+}
+
+.post .body ul, .post .body ol {
+	padding-left: var(--space-lg);
 }

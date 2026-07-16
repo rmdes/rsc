@@ -2,6 +2,8 @@ export interface TimelineEntry {
 	id: string
 	title: string | null
 	content: string
+	contentMarkdown?: string | null
+	contentHtml?: string
 	url: string | null
 	publishedAt: string
 	source: 'local' | 'remote'

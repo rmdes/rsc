@@ -5,9 +5,8 @@
 	import Avatar from '$lib/Avatar.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import PostBody from '$lib/PostBody.svelte'
 	import { keepEvent } from '$lib/lens'
-	import { plaintext } from '$lib/plaintext'
-	import Linkified from '$lib/Linkified.svelte'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 	let live = $state<TimelineEntry[]>([])
@@ -61,7 +60,7 @@
 					<span class="kind">{root.source}</span>
 				</div>
 				{#if root.title}<h2 class="title">{root.title}</h2>{/if}
-				<p><Linkified text={plaintext(root.content)} /></p>
+				<PostBody post={root} />
 				{#if root.url}<a class="source" href={root.url} rel="noreferrer">source</a>{/if}
 				<ReplyTree thread={posts} parentId={root.id} openAll={true} highlightId={data.postId} />
 			</li>
