@@ -6,7 +6,7 @@ import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCu
 import { HandleTakenError } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string }
-interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string }
+interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
 interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
@@ -17,7 +17,7 @@ function rowToUser(r: UsersTable): User {
 }
 
 function rowToPost(r: PostsTable): Post {
-  return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at }
+  return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at, inReplyTo: r.in_reply_to, inReplyToPostId: r.in_reply_to_post_id, threadRootId: r.thread_root_id }
 }
 
 function rowToSubscription(r: SubscriptionsTable): Subscription {
@@ -101,7 +101,7 @@ export class SqliteRepository implements Repository {
   async insertPost(p: Post) {
     const [result] = await this.db
       .insertInto('posts')
-      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt })
+      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt, in_reply_to: p.inReplyTo ?? null, in_reply_to_post_id: p.inReplyToPostId ?? null, thread_root_id: p.threadRootId ?? null })
       // Relies on posts_author_guid_uq being the ONLY unique constraint on posts;
       // a future second unique constraint would need an explicit conflict target.
       .onConflict((oc) => oc.doNothing())
@@ -157,6 +157,29 @@ export class SqliteRepository implements Repository {
   async getPostsByAuthor(authorId: string, limit: number): Promise<Post[]> {
     const rows = await this.db.selectFrom('posts').selectAll().where('author_id', '=', authorId).orderBy('published_at', 'desc').orderBy('id', 'desc').limit(limit).execute()
     return rows.map(rowToPost)
+  }
+
+  async findPostByRef(ref: string): Promise<Post | undefined> {
+    // Pinned rule (spec H2 + Hole A): each arm matches ONLY when exactly one
+    // row holds the ref — ambiguity resolves to nothing, never to an arbitrary row.
+    const byUrl = await this.db.selectFrom('posts').selectAll().where('url', '=', ref).limit(2).execute()
+    if (byUrl.length === 1) return rowToPost(byUrl[0])
+    if (byUrl.length > 1) return undefined
+    const byGuid = await this.db.selectFrom('posts').selectAll().where('guid', '=', ref).limit(2).execute()
+    return byGuid.length === 1 ? rowToPost(byGuid[0]) : undefined
+  }
+
+  async getThread(rootId: string): Promise<TimelineEntry[]> {
+    const rows = await this.db
+      .selectFrom('posts')
+      .innerJoin('users', 'users.id', 'posts.author_id')
+      .selectAll('posts')
+      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at'])
+      .where((eb) => eb.or([eb('posts.id', '=', rootId), eb('posts.thread_root_id', '=', rootId)]))
+      .orderBy('posts.published_at', 'asc')
+      .orderBy('posts.id', 'asc')
+      .execute()
+    return rows.map(joinedRowToEntry)
   }
 
   async upsertSubscription(s: Subscription) {
@@ -279,6 +302,14 @@ const MIGRATIONS: string[][] = [
       PRIMARY KEY (follower_id, followed_id)
     ) WITHOUT ROWID`,
     'CREATE INDEX posts_author_pub_idx ON posts (author_id, published_at, id)',
+  ],
+  [
+    'ALTER TABLE posts ADD COLUMN in_reply_to text',
+    'ALTER TABLE posts ADD COLUMN in_reply_to_post_id text',
+    'ALTER TABLE posts ADD COLUMN thread_root_id text',
+    'CREATE INDEX posts_thread_idx ON posts (thread_root_id)',
+    'CREATE INDEX posts_reply_to_idx ON posts (in_reply_to)',
+    'CREATE INDEX posts_parent_idx ON posts (in_reply_to_post_id)',
   ],
 ]
 

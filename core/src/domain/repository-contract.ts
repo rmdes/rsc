@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest'
 import type { Repository } from './repository.ts'
 import { HandleTakenError } from './types.ts'
-import type { Subscription, PushSubscription } from './types.ts'
+import type { Subscription, PushSubscription, Post } from './types.ts'
 import { randomUUID } from 'node:crypto'
 
 export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
@@ -303,6 +303,54 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.insertPost({ id: 'y1', authorId: y.id, source: 'remote', guid: 'y1', title: null, content: 'y1', url: null, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z' })
       const tl = await repo.getTimeline(10, undefined, { authorId: x.id })
       expect(tl.map((e) => e.id)).toEqual(['x1'])
+    })
+
+    const mkPost = (over: Partial<Post> & { id: string; authorId: string }): Post => ({
+      source: 'remote', guid: over.id, title: null, content: over.id, url: null,
+      publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over,
+    })
+
+    test('findPostByRef: unique url wins; duplicated url resolves to NOTHING (Hole A)', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
+      const b = await repo.createRemoteUser({ handle: 'b', displayName: 'B', feedUrl: 'https://b.ex/f' })
+      await repo.insertPost(mkPost({ id: 'p1', authorId: a.id, url: 'https://a.ex/1' }))
+      expect((await repo.findPostByRef('https://a.ex/1'))?.id).toBe('p1')
+      await repo.insertPost(mkPost({ id: 'p2', authorId: b.id, url: 'https://a.ex/1' })) // syndicated duplicate
+      expect(await repo.findPostByRef('https://a.ex/1')).toBeUndefined()
+    })
+
+    test('findPostByRef: unique guid matches; guid shared by two posts resolves to NOTHING (H2)', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
+      const b = await repo.createRemoteUser({ handle: 'b', displayName: 'B', feedUrl: 'https://b.ex/f' })
+      await repo.insertPost(mkPost({ id: 'g1', authorId: a.id, guid: 'shared-guid' }))
+      expect((await repo.findPostByRef('shared-guid'))?.id).toBe('g1')
+      await repo.insertPost(mkPost({ id: 'g2', authorId: b.id, guid: 'shared-guid' })) // guid unique per (author,guid) only
+      expect(await repo.findPostByRef('shared-guid')).toBeUndefined()
+      expect(await repo.findPostByRef('nope')).toBeUndefined()
+    })
+
+    test('reply fields round-trip through insertPost/getPost and default to null', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
+      await repo.insertPost(mkPost({ id: 'root', authorId: a.id }))
+      await repo.insertPost(mkPost({ id: 're', authorId: a.id, inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
+      const re = await repo.getPost('re')
+      expect([re?.inReplyTo, re?.inReplyToPostId, re?.threadRootId]).toEqual(['root', 'root', 'root'])
+      const root = await repo.getPost('root')
+      expect([root?.inReplyTo, root?.inReplyToPostId, root?.threadRootId]).toEqual([null, null, null])
+    })
+
+    test('getThread returns root + all descendants flat, (published_at, id) ASC', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
+      const day = (d: string) => `2026-01-0${d}T00:00:00.000Z`
+      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, publishedAt: day('1') }))
+      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: day('2'), inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
+      await repo.insertPost(mkPost({ id: 'r2', authorId: a.id, publishedAt: day('3'), inReplyTo: 'r1', inReplyToPostId: 'r1', threadRootId: 'root' }))
+      await repo.insertPost(mkPost({ id: 'other', authorId: a.id, publishedAt: day('4') }))
+      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'r1', 'r2'])
     })
   })
 }

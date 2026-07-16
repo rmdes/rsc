@@ -24,6 +24,9 @@ export interface Post {
   url: string | null
   publishedAt: string
   createdAt: string
+  inReplyTo?: string | null
+  inReplyToPostId?: string | null
+  threadRootId?: string | null
 }
 
 export interface NewLocalUser { handle: string; displayName: string }
