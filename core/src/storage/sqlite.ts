@@ -9,7 +9,8 @@ interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; dis
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
-interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable }
+interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
+interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable; follows: FollowsTable }
 
 function rowToUser(r: UsersTable): User {
   return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at }
@@ -70,6 +71,28 @@ export class SqliteRepository implements Repository {
   async listRemoteUsers() {
     const rs = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').execute()
     return rs.map(rowToUser)
+  }
+  async addFollow(followerId: string, followedId: string) {
+    await this.db
+      .insertInto('follows')
+      .values({ follower_id: followerId, followed_id: followedId, created_at: new Date().toISOString() })
+      // follows has only the PK constraint, so bare doNothing() targets it.
+      .onConflict((oc) => oc.doNothing())
+      .execute()
+  }
+  async removeFollow(followerId: string, followedId: string) {
+    await this.db.deleteFrom('follows').where('follower_id', '=', followerId).where('followed_id', '=', followedId).execute()
+  }
+  async listFollowing(followerId: string): Promise<User[]> {
+    const rows = await this.db
+      .selectFrom('follows')
+      .innerJoin('users', 'users.id', 'follows.followed_id')
+      .select(['users.id as id', 'users.kind as kind', 'users.handle as handle', 'users.display_name as display_name', 'users.feed_url as feed_url', 'users.created_at as created_at'])
+      .where('follows.follower_id', '=', followerId)
+      .orderBy('follows.created_at', 'asc')
+      .orderBy('users.handle', 'asc') // deterministic tiebreak for same-ms follows (P2)
+      .execute()
+    return rows.map(rowToUser)
   }
   async insertPost(p: Post) {
     const [result] = await this.db
@@ -236,6 +259,15 @@ const MIGRATIONS: string[][] = [
       CONSTRAINT push_subscriptions_user_mode_uq UNIQUE (user_id, mode)
     )`,
     'CREATE INDEX push_subscriptions_expires_idx ON push_subscriptions (state, expires_at)',
+  ],
+  [
+    `CREATE TABLE follows (
+      follower_id text NOT NULL REFERENCES users(id),
+      followed_id text NOT NULL REFERENCES users(id),
+      created_at text NOT NULL,
+      PRIMARY KEY (follower_id, followed_id)
+    ) WITHOUT ROWID`,
+    'CREATE INDEX posts_author_pub_idx ON posts (author_id, published_at, id)',
   ],
 ]
 

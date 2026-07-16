@@ -240,5 +240,37 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.deletePushSubscription(row!.id)
       expect(await repo.findPushSubscription({ userId: u.id, mode: 'websub' })).toBeUndefined()
     })
+
+    test('addFollow is idempotent and listFollowing returns follows in created_at order', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      const b = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
+      const c = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://ex.com/b.xml' })
+      await repo.addFollow(a.id, b.id)
+      await repo.addFollow(a.id, c.id)
+      await repo.addFollow(a.id, b.id) // duplicate — no throw, no second row
+      const following = await repo.listFollowing(a.id)
+      // created_at ASC is the primary order (spec); the two adds land in the same
+      // millisecond, so a handle-ASC tiebreak makes the result deterministic (P2).
+      expect(following.map((u) => u.handle)).toEqual(['blog', 'news'])
+    })
+
+    test('removeFollow is idempotent (removing a non-follow is a no-op)', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      const b = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
+      await repo.removeFollow(a.id, b.id) // never followed — no throw
+      await repo.addFollow(a.id, b.id)
+      await repo.removeFollow(a.id, b.id)
+      await repo.removeFollow(a.id, b.id) // already gone — no throw
+      expect(await repo.listFollowing(a.id)).toEqual([])
+    })
+
+    test('self-follow is allowed and needs no special-casing', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      await repo.addFollow(a.id, a.id)
+      expect((await repo.listFollowing(a.id)).map((u) => u.id)).toEqual([a.id])
+    })
   })
 }

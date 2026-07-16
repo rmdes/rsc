@@ -6,6 +6,9 @@ export interface Repository {
   getUser(id: string): Promise<User | undefined>
   getUserByHandle(handle: string): Promise<User | undefined>
   listRemoteUsers(): Promise<User[]>
+  addFollow(followerId: string, followedId: string): Promise<void>
+  removeFollow(followerId: string, followedId: string): Promise<void>
+  listFollowing(followerId: string): Promise<User[]>
   insertPost(p: Post): Promise<boolean>
   hasPostsByAuthor(authorId: string): Promise<boolean>
   getTimeline(limit: number, before?: TimelineCursor): Promise<TimelineEntry[]>
