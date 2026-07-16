@@ -47,17 +47,29 @@ CREATE INDEX posts_parent_idx ON posts (in_reply_to_post_id);
 **Resolve once, key on the id (H2).** Ref matching happens exactly once per
 reply — at insert (or adoption) — and stores `in_reply_to_post_id`. The
 comments feed, the `count` attribute, and the thread derivation all key on
-the resolved id, never by re-matching refs at render time. A guid collision
-can therefore at worst leave a reply UNRESOLVED (honest orphan) — it can
-never mis-thread, mis-count, or leak into the wrong comments feed.
+the resolved id, never by re-matching refs at render time. A ref collision
+visible at resolution time therefore at worst leaves a reply UNRESOLVED
+(honest orphan) — no mis-thread, mis-count, or wrong comments feed. The one
+exception is temporal (see the named residual below the rule).
 
 **Ref-resolution rule (pinned):** given wire ref R —
-1. a post with `url = R` wins (permalinks are the trusted identifier);
+1. posts with `url = R`: match ONLY if exactly one exists — two followed
+   feeds syndicating the same article each ingest a row claiming that
+   permalink, and a duplicated url must resolve to NOTHING (honest orphan),
+   not an arbitrary row. Same guard as the guid arm, for the same reason.
 2. else posts with `guid = R`: match ONLY if exactly one exists — `guid` is
-   unique per `(author_id, guid)` only, and real feed guids collide, so an
-   ambiguous guid resolves to NOTHING rather than to whichever row a query
-   returns first;
+   unique per `(author_id, guid)` only, and real feed guids collide;
 3. else unresolved: `in_reply_to` kept, both id columns null.
+
+**Named residual (accepted, no machinery):** the exactly-one checks run at
+resolution/adoption time and cannot see FUTURE collisions. An orphan
+referencing ref X, adopted by the first post carrying X, stays attached to
+it even if a second post carrying X arrives later (re-adoption is refused —
+now ambiguous — but there is no re-orphaning). Narrow by construction
+(guid-only or syndicated-url refs AND orphan-before-both-holders arrival
+order); re-orphaning machinery is not worth its weight. So the honest
+guarantee is: **a reply never mis-threads at resolution time; a temporal
+collision can leave one attached to the first claimant.**
 
 Semantics:
 
@@ -69,9 +81,9 @@ Semantics:
   orphan root at the orphan (`P.thread_root_id ?? P.id` covers this).
 - **Adoption:** when any post P arrives (insert time, local or ingested),
   orphans whose `in_reply_to` matches P under the ref-resolution rule are
-  adopted. The guid arm honors the same ambiguity rule: adopt via
-  `in_reply_to = P.guid` only when no OTHER post carries that guid (one
-  existence check before the update).
+  adopted. Both arms honor the ambiguity rule: adopt via `in_reply_to =
+  P.url` (or `= P.guid`) only when no OTHER post carries that url (guid) —
+  one existence check per arm before the update.
   1. one adopt UPDATE: set `in_reply_to_post_id = P.id` and
      `thread_root_id = <P.thread_root_id ?? P.id>` on the matching orphans;
   2. then **one re-root UPDATE per adopted orphan O** (a loop — several
@@ -233,6 +245,7 @@ non-goal forever; emission IS in scope).
   string-vs-array `in-reply-to`).
 - Contract: the H2 pins — a guid shared by two posts resolves to NOTHING
   (orphan, not a first-match thread) and is excluded from adoption; a url
+  shared by two posts likewise resolves to nothing (Hole A); a unique url
   match beats a guid match; counts/comments key on resolved ids only.
 - HTTP: `POST /posts` with `inReplyTo` happy/404; `GET /post/:id/thread`
   content + order + 404.
