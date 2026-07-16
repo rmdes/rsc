@@ -3,6 +3,9 @@ import { parseFeed as parseFeedDocument } from 'feedsmith'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import type { User, Post } from './types.ts'
+import { discoverFeed } from './discovery.ts'
+import { checkCallbackUrl } from './push-guard.ts'
+import type { LookupFn } from './push-guard.ts'
 
 export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string }
 
@@ -115,23 +118,74 @@ export async function ingestItems(repo: Repository, bus: EventBus, user: User, i
   return inserted
 }
 
-export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: User, fetchFn: typeof fetch = fetch): Promise<{ inserted: number; discovery: FeedDiscovery }> {
-  if (!user.feedUrl) return { inserted: 0, discovery: NO_DISCOVERY }
-  const res = await fetchFn(user.feedUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: FEED_FETCH_HEADERS })
+async function fetchFeedBody(url: string, fetchFn: typeof fetch): Promise<{ body: string; res: Response }> {
+  const res = await fetchFn(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: FEED_FETCH_HEADERS })
   const contentLength = Number(res.headers.get('content-length') ?? '0')
   if (contentLength > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${contentLength} bytes`)
   // ponytail: cap rejects oversized bodies but only after buffering them; stream + abort past the cap if memory ever matters
   const body = await res.text()
   if (Buffer.byteLength(body) > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${Buffer.byteLength(body)} bytes`)
-  const { items, discovery } = await parseFeedWithMeta(body)
+  return { body, res }
+}
+
+function looksLikeHtml(body: string): boolean {
+  return body.trimStart().startsWith('<')
+}
+
+// lookupFn is DI-only (mirrors push-in.ts's PushInDeps.lookupFn): omitted, checkCallbackUrl
+// falls back to real DNS — unchanged behavior for every existing production caller.
+export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: User, fetchFn: typeof fetch = fetch, lookupFn?: LookupFn): Promise<{ inserted: number; discovery: FeedDiscovery }> {
+  if (!user.feedUrl) return { inserted: 0, discovery: NO_DISCOVERY }
+  const { body, res } = await fetchFeedBody(user.feedUrl, fetchFn)
+
+  let parsed
+  try {
+    parsed = await parseFeedWithMeta(body)
+  } catch (err) {
+    // Primary parse failed. If the body is HTML, try discovery; else re-throw.
+    if (!looksLikeHtml(body)) throw err
+    return await ingestViaDiscovery(repo, bus, user, user.feedUrl, body, fetchFn, lookupFn)
+  }
+
+  const inserted = await ingestItems(repo, bus, user, parsed.items)
+  return { inserted, discovery: mergeDiscovery(res, parsed.discovery) }
+}
+
+function mergeDiscovery(res: Response, discovery: FeedDiscovery): FeedDiscovery {
   const header = parseLinkHeader(res.headers.get('link'))
-  const merged: FeedDiscovery = {
-    hubs: [...new Set([...header.hubs, ...discovery.hubs])], // header first (W3C-required channel), deduped
+  return {
+    hubs: [...new Set([...header.hubs, ...discovery.hubs])],
     self: header.self ?? discovery.self,
     cloud: discovery.cloud,
   }
-  const inserted = await ingestItems(repo, bus, user, items)
-  return { inserted, discovery: merged }
+}
+
+async function ingestViaDiscovery(repo: Repository, bus: EventBus, user: User, pageUrl: string, html: string, fetchFn: typeof fetch, lookupFn?: LookupFn): Promise<{ inserted: number; discovery: FeedDiscovery }> {
+  const { feedUrl, hentries } = discoverFeed(html, pageUrl)
+
+  // 1. Autodiscovery: a real feed link, one hop.
+  if (feedUrl && feedUrl !== pageUrl) {
+    const guard = await checkCallbackUrl(feedUrl, lookupFn)
+    if (guard.ok) {
+      const { body, res } = await fetchFeedBody(feedUrl, fetchFn) // follows redirects (feeds 301/302)
+      const parsed = await parseFeedWithMeta(body) // may throw → bounded by pollAll's per-user catch
+      const inserted = await ingestItems(repo, bus, user, parsed.items)
+      // R1: persist only if no OTHER user already holds this feedUrl.
+      const taken = (await repo.listRemoteUsers()).some((u) => u.id !== user.id && u.feedUrl === feedUrl)
+      if (!taken) await repo.updateFeedUrl(user.id, feedUrl)
+      return { inserted, discovery: mergeDiscovery(res, parsed.discovery) }
+    }
+    // guard rejected → fall through to h-feed
+  }
+
+  // 2. h-feed: the page is the feed; ingest its items, leave feedUrl unchanged.
+  if (hentries.length > 0) {
+    const inserted = await ingestItems(repo, bus, user, hentries)
+    return { inserted, discovery: NO_DISCOVERY }
+  }
+
+  // 3. Neither.
+  throw new Error('no feed found (no alternate link, no h-feed)')
 }
 
 export async function pollAll(repo: Repository, bus: EventBus, fetchFn: typeof fetch = fetch): Promise<void> {
