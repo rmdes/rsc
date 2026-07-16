@@ -197,6 +197,32 @@ under `adapter-node`) can be smaller than core's 1 MB. Raise it on the web
 host if operators need to import very large OPML files through the UI;
 posting OPML directly to the core route is unaffected.
 
+## Replies & conversations
+
+Every post in the timeline links to its own `/post/<id>` page, labeled
+"Reply" (for a post with no thread yet) or "View conversation" (once it's
+part of one). That page is a plain HTML form — replying needs no JS. A
+locally-composed reply whose target has no resolvable `url` shows "in reply
+to ↗" pointing at the raw ref instead, when the ref itself is an http(s) URL.
+
+Replies federate over the same plain feeds as everything else:
+
+- Outgoing: a reply's feed item carries both `<source:inReplyTo>`
+  (Textcasting) and `<thr:in-reply-to>` (RFC 4685) — dual-emit, no reader
+  left behind.
+- Incoming: ingest reads `source:`/`thr:` from RSS and Atom feeds (Atom
+  exposes `thr:` only), and `u-in-reply-to` from IndieWeb `h-entry`
+  microformats — a reply resolves to its parent by matching the parent's
+  `url` (or, failing that, its `guid`) across instances.
+
+Every post with at least one reply advertises the conversation in its own
+feed item as `<source:comments count="N" feedUrl="…"/>`, pointing at:
+
+| Method | Route | Notes |
+|---|---|---|
+| `GET` | `/post/<id>/comments.xml` | RSS feed of direct replies to `<id>` — the Winer-native "threadwalker" pull side. Needs `TEXTCASTER_PUBLIC_URL`; omitted without it. |
+| `GET` | `/post/<id>/thread` | The whole conversation (root + all descendants) as JSON. |
+
 ## Deployment note
 
 The `/stream` route proxies core's SSE endpoint and needs a streaming-capable

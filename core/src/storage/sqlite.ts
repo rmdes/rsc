@@ -37,6 +37,34 @@ function joinedRowToEntry(r: JoinedRow): TimelineEntry {
   }
 }
 
+// A flat thread must never show a reply before the post it replies to. RSS's
+// pubDate (RFC-822) truncates sub-second precision, so a reply that round-trips
+// through a feed can carry a published_at that sorts EARLIER than its own,
+// finer-grained parent even though it was written later — a plain ORDER BY
+// published_at inverts that pair. Walk the resolved reply graph (inReplyToPostId)
+// depth-first instead: entries arrive pre-sorted by (published_at, id) from the
+// query below, so that ordering still governs SIBLINGS, but a child can never
+// sort before its parent regardless of clock/precision skew.
+function orderThread(entries: TimelineEntry[], rootId: string): TimelineEntry[] {
+  const byId = new Map(entries.map((e) => [e.id, e]))
+  const childrenOf = new Map<string, TimelineEntry[]>()
+  for (const e of entries) {
+    if (e.id === rootId) continue
+    const parentId = e.inReplyToPostId && byId.has(e.inReplyToPostId) ? e.inReplyToPostId : rootId
+    const siblings = childrenOf.get(parentId)
+    if (siblings) siblings.push(e)
+    else childrenOf.set(parentId, [e])
+  }
+  const out: TimelineEntry[] = []
+  const walk = (id: string) => {
+    const node = byId.get(id)
+    if (node) out.push(node)
+    for (const child of childrenOf.get(id) ?? []) walk(child.id)
+  }
+  walk(rootId)
+  return out
+}
+
 export class SqliteRepository implements Repository {
   private db: Kysely<DB>
 
@@ -179,7 +207,7 @@ export class SqliteRepository implements Repository {
       .orderBy('posts.published_at', 'asc')
       .orderBy('posts.id', 'asc')
       .execute()
-    return rows.map(joinedRowToEntry)
+    return orderThread(rows.map(joinedRowToEntry), rootId)
   }
 
   async adoptOrphans(parent: Post) {
