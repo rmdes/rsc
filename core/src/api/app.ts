@@ -279,7 +279,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       if (!u) return c.json({ error: 'unknown user' }, 404)
       filter = { authorId: u.id }
     }
-    const timeline = await service.getTimeline(limit, before, filter)
+    const entries = await service.getTimeline(limit, before, filter)
+    // Wedge shading needs to know, per page, which posts have replies — one
+    // grouped query on resolved ids (resolve-once: never re-matching refs).
+    const counts = await service.countRepliesByPostIds(entries.map((e) => e.id))
+    const timeline = entries.map((e) => ({ ...e, replyCount: counts.get(e.id) ?? 0 }))
     const last = timeline[timeline.length - 1]
     // Known accepted edge: an exactly-limit final page yields a non-null cursor
     // whose next page is empty.

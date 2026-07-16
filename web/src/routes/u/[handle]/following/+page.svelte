@@ -5,6 +5,8 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import { keepEvent } from '$lib/lens'
 	import { plaintext } from '$lib/plaintext'
+	import ReplyTree from '$lib/ReplyTree.svelte'
+	import { hiddenIds, fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 	const followSet = $derived(new Set(data.followIds))
@@ -13,6 +15,13 @@
 
 	function onPost(entry: TimelineEntry) {
 		if (keepEvent(entry, { kind: 'followed', followIds: followSet }) && !posts.some((p) => p.id === entry.id)) live = [entry, ...live]
+	}
+
+	let expanded = $state<Record<string, TimelineEntry[]>>({})
+	const hidden = $derived(hiddenIds(expanded))
+	async function toggleWedge(id: string) {
+		if (expanded[id]) delete expanded[id]
+		else expanded[id] = await fetchThread(id)
 	}
 </script>
 
@@ -77,20 +86,39 @@
 	<section>
 		<h2>Timeline</h2>
 		<ul class="timeline">
-			{#each posts as post (post.id)}
+			{#each posts.filter((p) => !hidden.has(p.id)) as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
+						{#if post.replyCount}
+							<a
+								class="wedge"
+								class:light={!!expanded[post.id]}
+								href="/post/{post.id}"
+								role="button"
+								aria-expanded={!!expanded[post.id]}
+								aria-label="{expanded[post.id] ? 'Hide' : 'Show'} {post.replyCount} {post.replyCount === 1 ? 'reply' : 'replies'}"
+								onclick={(e) => {
+									e.preventDefault()
+									toggleWedge(post.id)
+								}}>▸</a
+							>
+						{:else}
+							<span class="wedge light" aria-hidden="true">▸</span>
+						{/if}
 						<strong>{post.author.displayName}</strong>
 						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
 					<p>{plaintext(post.content)}</p>
-					<a class="source" href="/post/{post.id}">{post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
+					<a class="source" href="/post/{post.id}">{post.replyCount || post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
 					{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 					{/if}
 					{#if post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
+					{#if expanded[post.id]}
+						<ReplyTree thread={expanded[post.id]} parentId={post.id} />
+					{/if}
 				</li>
 			{:else}
 				<li class="timeline-empty">Nothing here yet — posts from the people you follow will appear as they arrive.</li>

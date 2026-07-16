@@ -30,6 +30,17 @@ test('reply compose: stores refs, resolves parent, thread endpoint returns the c
   }
 })
 
+test('timeline entries carry replyCount (roots with replies > 0, replies 0, plain posts 0)', async () => {
+  const { app } = await makeApp()
+  const root = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ handle: 'alice', content: 'root' }) })).json()
+  await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ handle: 'bob', content: 're one', inReplyTo: root.post.id }) })
+  await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ handle: 'carol', content: 're two', inReplyTo: root.post.id }) })
+  const { timeline } = await (await app.request('/timeline')).json()
+  const byContent = (c: string) => timeline.find((e: { content: string }) => e.content === c)
+  expect(byContent('root').replyCount).toBe(2)
+  expect(byContent('re one').replyCount).toBe(0)
+})
+
 test('reply compose errors: unknown target 404; thread of unknown post 404', async () => {
   const { app } = await makeApp()
   const res = await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ handle: 'a', content: 'x', inReplyTo: 'ghost' }) })

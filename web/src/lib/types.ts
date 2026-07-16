@@ -9,4 +9,5 @@ export interface TimelineEntry {
 	inReplyTo?: string | null
 	inReplyToPostId?: string | null
 	threadRootId?: string | null
+	replyCount?: number
 }

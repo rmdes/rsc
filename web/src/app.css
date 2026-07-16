@@ -439,3 +439,42 @@ button:hover {
 	padding: var(--space-sm) var(--space-md);
 	margin: 0 0 var(--space-md);
 }
+
+/* Outliner wedge — the shade is the whole signal: dark means there are
+   replies you aren't seeing; light means nothing hidden (none, or all open). */
+
+.wedge {
+	display: inline-block;
+	background: none;
+	border: 0;
+	color: var(--color-foreground);
+	text-decoration: none;
+	font-size: 0.75rem;
+	line-height: 1;
+	padding: var(--space-xs) var(--space-sm);
+	margin-left: calc(-1 * var(--space-sm));
+	cursor: pointer;
+}
+
+.wedge.light {
+	color: var(--color-border);
+	cursor: default;
+}
+
+a.wedge.light {
+	cursor: pointer; /* still a link to the thread page */
+}
+
+/* Nested replies unfold indented under their parent, level by level. */
+
+.replies {
+	list-style: none;
+	margin: var(--space-sm) 0 0;
+	padding-left: var(--space-md);
+	border-left: 1px solid var(--color-border);
+}
+
+.replies .post {
+	padding: var(--space-sm) 0;
+	border: 0;
+}
