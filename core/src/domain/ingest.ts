@@ -52,7 +52,12 @@ function itemInReplyTo(it: { sourceNs?: { inReplyTo?: { value?: string } }; thr?
 }
 
 export function toParsedItem(guid: string | undefined, title: string | null, content: string, url: string | null, rawDate: string, now: string, inReplyTo: string | null = null): ParsedItem {
-  return { guid: guid ?? url ?? fallbackGuid(title, content, rawDate), title, content, url, publishedAt: toIsoOrNow(rawDate, now), inReplyTo }
+  // Item links come from remote feed content and end up as <a href> in the web
+  // client — only http(s) survives (a javascript: link would be click-to-XSS).
+  // The guid fallback chain keeps the RAW value: it's an opaque dedup id, and
+  // changing its derivation would re-ingest every existing item under a new id.
+  const safeUrl = url && /^https?:\/\//i.test(url) ? url : null
+  return { guid: guid ?? url ?? fallbackGuid(title, content, rawDate), title, content, url: safeUrl, publishedAt: toIsoOrNow(rawDate, now), inReplyTo }
 }
 
 type ChannelLink = { href?: string; rel?: string }

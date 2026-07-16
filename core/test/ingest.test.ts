@@ -117,6 +117,15 @@ test('first sync of a feed inserts posts but stays silent on the bus; later sync
   expect(seen).toHaveBeenCalledTimes(1)
 })
 
+test('a non-http(s) item link is dropped from url but still feeds the guid chain raw', async () => {
+  const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
+<item><title>x</title><link>javascript:alert(1)</link><description>d</description></item>
+</channel></rss>`
+  const { items } = await parseFeedWithMeta(rss)
+  expect(items[0].url).toBeNull() // never renders as an <a href>
+  expect(items[0].guid).toBe('javascript:alert(1)') // opaque dedup id — unchanged derivation
+})
+
 test('an item dated in the future is clamped to now', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()

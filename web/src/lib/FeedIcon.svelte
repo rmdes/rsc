@@ -5,8 +5,13 @@
 	// after the byline linking to the author's feed. Remote authors link to
 	// their canonical feed; local authors to our proxied RSS.
 	let { author }: { author: TimelineEntry['author'] } = $props()
+	// Scheme guard (defense in depth): every feedUrl write path is http(s)-only
+	// already, but a javascript: URL here would be click-to-XSS if that ever slips.
+	const safeFeed = $derived(
+		author.feedUrl && /^https?:\/\//i.test(author.feedUrl) ? author.feedUrl : null
+	)
 	const href = $derived(
-		author.kind === 'remote' && author.feedUrl ? author.feedUrl : `/u/${author.handle}/feed.xml`
+		author.kind === 'remote' && safeFeed ? safeFeed : `/u/${author.handle}/feed.xml`
 	)
 	const label = $derived(`${author.displayName}'s feed`)
 </script>
