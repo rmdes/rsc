@@ -154,6 +154,15 @@ Then open <http://localhost:5173>.
   new items appear live, the same as local posts.
 - Feeds are polled every `TEXTCASTER_POLL_SECONDS` (default 60). A feed
   added just now shows its content within one poll interval.
+- Local composes are **Markdown** (GFM — bare URLs autolink). Feeds emit the
+  Textcasting dual contract: `<source:markdown>` carries your source
+  verbatim, `<description>`/`content_html` the rendered (and sanitized)
+  HTML, so readers that don't know `source:markdown` still see rich posts.
+- Incoming `source:markdown` is preferred for display, per the Textcasting
+  contract. Post bodies render a safe HTML subset — paragraphs, links,
+  emphasis, quotes, headings, code, lists, lazy images — everything else is
+  stripped at render time, server-side. Feeds always re-emit remote
+  content untouched (pass-through); only display is sanitized.
 
 ## Following & lenses
 
