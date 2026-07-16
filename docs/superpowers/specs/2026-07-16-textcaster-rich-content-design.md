@@ -1,7 +1,9 @@
 # Textcaster — rich content rendering design (UI-6)
 
-Date: 2026-07-16
-Status: design approved (brainstorm); spec pending review
+Date: 2026-07-16 (rev 2 — folds in
+`docs/superpowers/reviews/2026-07-16-rich-content-spec-review.md`:
+SEC-1 third ingress, COR-1..4, SEC-4, transformTags gotcha)
+Status: design approved (brainstorm); rev 2 pending review
 Author: Ricardo (rmdes) with Claude Code
 Basis: Textcasting contract (Markdown+HTML dual content;
 source.scripting.com: a presenter that understands Markdown SHOULD prefer
@@ -23,8 +25,20 @@ Decisions (brainstormed):
 - **Full dual contract**: incoming `source:markdown` is the preferred
   display source; local composes are Markdown; our feeds emit
   `source:markdown` + rendered `<description>`.
-- **New dependencies (user-approved)**: `sanitize-html` (web only) and
-  `marked` (core + web, same version; GFM so bare URLs autolink).
+- **New dependencies (user-approved; core scope widened at review)**:
+  `marked` (core + web, same version; GFM so bare URLs autolink) and
+  `sanitize-html` (web AND core — see SEC-4).
+- **marked-in-core confirmed (review question)**: `<description>` must
+  carry rendered HTML because pre-`source:markdown` readers — the entire
+  legacy ecosystem plain-RSS federation exists for — render description
+  only; Dave's docs define `source:markdown` as the SOURCE of the
+  description, i.e. description is the rendered form.
+- **SEC-4**: core sanitizes its OWN outbound rendered HTML — the same
+  allowlist config, applied to `marked(content)` before it enters
+  `<description>`/`content_html`. A member typing raw `<script>` in a
+  compose must not ship in our feed. Raw remote content still re-emits
+  untouched (pass-through applies to OTHERS' content, not to HTML we
+  ourselves generate).
 - **Images allowed** in post bodies (rss.chat posts carry them; the clamp
   bounds jank), http(s)-only + `loading="lazy"`.
 
@@ -36,13 +50,27 @@ ALTER TABLE posts ADD COLUMN content_markdown TEXT; -- source:markdown verbatim 
 
 - Remote items: `ParsedItem` gains `contentMarkdown: string | null` from
   `item.sourceNs.markdown` (RSS path; other formats null). Stored verbatim.
-  Backfill on re-poll: the existing `backfillSourceAttribution` method is
-  renamed `backfillItemExtras` and gains the field — one method, one
-  UPDATE, filling `source_name`/`source_feed_url`/`content_markdown`
-  only where currently null (same no-flapping rule, contract-pinned).
+  Backfill on re-poll: `backfillSourceAttribution` is renamed
+  `backfillItemExtras` and gains the field. **Per-column no-flapping
+  (COR-1)**: the UPDATE fills each column independently —
+  `SET source_name = COALESCE(source_name, ?), source_feed_url =
+  COALESCE(source_feed_url, ?), content_markdown =
+  COALESCE(content_markdown, ?)` — never gated on a single column's
+  nullness (a post attributed at migration 6 must still gain markdown at
+  migration 7). Contract pin: exactly that scenario. **Trigger (COR-2)**:
+  the ingest `else if` becomes
+  `item.sourceName || item.sourceFeedUrl || item.contentMarkdown`.
 - Local posts: `content` IS the Markdown source; `content_markdown` stays
   null (locals are implicitly Markdown by `source === 'local'`). Existing
   local dev posts are plain text — valid Markdown, renders equivalently.
+- **Mechanical thread-through sites (COR-4), enumerated so none reads
+  undefined**: `ParsedItem` field; `toParsedItem` param (RSS mapper passes
+  `it.sourceNs?.markdown ?? null`; other formats default null); the
+  `ingestItems` post literal; `Post` type (`contentMarkdown?: string |
+  null`); `PostsTable` + `rowToPost` + `insertPost` values;
+  `backfillItemExtras`; web `TimelineEntry` type. The timeline join and
+  thread/comments queries pick it up via `selectAll('posts')`/`rowToPost`
+  automatically.
 
 ## Display precedence (the whole rule)
 
@@ -62,19 +90,30 @@ renderPostHtml(post: { content: string; contentMarkdown?: string | null; source:
   Attributes: `a[href]` and `img[src]` http(s)-only (scheme-checked by the
   sanitizer config), `rel="noreferrer"` forced on every `a`,
   `loading="lazy"` forced on every `img`; every other attribute stripped
-  (no class, no style, no on*).
+  (no class, no style, no on*). Implementation gotcha (review-verified):
+  attributes added via `transformTags` must ALSO appear in
+  `allowedAttributes` or sanitize-html strips them back off — the unit
+  tests pin `rel`/`loading` presence in the OUTPUT.
 - Lives under `lib/server/` so SvelteKit build-fails any client import —
   the sanitizer never ships to (or runs in) the browser.
 
-**Enrichment at the two ingress points** — the browser never sees raw
-content:
+**Enrichment at the THREE ingress points** — every route by which post
+content reaches the browser, all server-side (SEC-1: the wedge's
+`fetchThread` is the third; without it, wedge-revealed remote replies
+would reach the `{@html}` component un-enriched — a plaintext degrade
+today, a stored-XSS foot-gun for any future "fix"):
 
 1. Page `load` functions (home, lenses, thread page): map each entry to
    include `contentHtml = renderPostHtml(entry)`.
-2. The `/stream` SSE proxy: parse each upstream `post` event's JSON, add
-   `contentHtml`, re-serialize, forward. (The proxy already exists; this is
-   a transform in its pipe. Event id/name pass through unchanged so replay
-   semantics are untouched.)
+2. The `/post/[id]/thread.json` proxy: parse core's JSON, enrich each
+   thread entry, re-serialize (same shape as the loads — trivial).
+3. The `/stream` SSE proxy — NOT a trivial transform (COR-3): the proxy is
+   a pure body pipe today. It becomes a real SSE frame parser: buffer
+   chunks, split frames on the blank-line delimiter, pass `id:` and
+   `event:` lines through BYTE-VERBATIM (the Last-Event-ID replay contract
+   rests on them), parse only `post` events' `data:` JSON, add
+   `contentHtml`, re-serialize. A frame that fails to parse forwards
+   untouched (fallback renders plaintext — never raw).
 
 Wire type: `TimelineEntry` (web) gains `contentHtml?: string`. The
 `{@html}` chokepoint gets a concrete home: a new `PostBody.svelte`
@@ -85,7 +124,7 @@ component in the codebase, fed only by `render.ts` output. This also
 retires the five duplicated body blocks (a first slice of the ledgered
 post-card dedup). `plaintext()`/`Linkified` remain for excerpt contexts.
 
-**Fallback**: entries missing `contentHtml` (shouldn't happen — both
+**Fallback**: entries missing `contentHtml` (shouldn't happen — all three
 ingress points enrich) render via `plaintext()` as today, never raw.
 
 ## Feeds out (core) — the dual contract
@@ -102,11 +141,12 @@ JSON Feed equivalent:
 
 Remote posts re-emit exactly as stored: `description` = `content`
 untouched, plus `<source:markdown>` = `content_markdown` when present
-(pass-through both fields). Core does NOT sanitize — feeds carry the
-author's original; display sanitization is the consumer's job (ours lives
-in web).
+(pass-through both fields). Core never alters OTHERS' content; it DOES
+sanitize the HTML it generates itself from local composes (SEC-4) — the
+distinction is authorship, not laziness.
 
-`marked` is core's only new dependency; web adds `marked` + `sanitize-html`.
+Deps recap: core adds `marked` + `sanitize-html` (outbound-only);
+web adds `marked` + `sanitize-html` (render path).
 
 ## Styling (web, tokens only — design pass refines)
 
