@@ -1,5 +1,60 @@
 # Spec review — reply threading & conversations (ponytail + adversarial)
 
+## Re-review of rev 3 (d5a664f): all 5 prior items landed; resolve-once is right — but its "can never mis-thread" claim has 2 narrow residuals
+
+All five carryover items are genuinely in: H2 fixed STRUCTURALLY via
+`in_reply_to_post_id` (resolve once at insert/adoption, key everything on the
+id — comments feed, count, thread — no render-time re-matching); `_textcaster`
+emission CUT with three re-add signals; `getPost` dropped (names `sqlite.ts:152`);
+adoption wording now "one adopt UPDATE + one re-root UPDATE per adopted orphan —
+a loop"; the dead isPermaLink-fallback testing line removed; mf2 `in-reply-to`
+string-vs-array pinned. The resolve-once approach is the right call — it kills
+the common (render-time) mis-match class entirely. Two residual holes remain in
+the *strong* claim "a guid collision can at worst leave an honest orphan — it
+can never mis-thread, mis-count, or leak":
+
+### Hole A — the `url` arm has NO ambiguity check (asymmetric with guid; needs a decision)
+
+Rule (1) is "a post with `url = R` wins" — no exactly-one guard, unlike the
+guid arm (rule 2). But two posts CAN share a `url`: two followed feeds
+syndicating the same article/link (planet feeds, aggregators, cross-posts) each
+ingest a row with `url = R`. A reply with `in_reply_to = R` then resolves to
+whichever row the query returns first → a mis-thread, the exact failure the guid
+arm was hardened against. "Permalinks are the trusted identifier" doesn't hold
+when two DB rows (different authors) claim the same permalink. **Fix (one-line,
+consistent with the design's own principle):** apply the same exactly-one guard
+to the url arm — a duplicated url resolves to NOTHING (honest orphan), not to an
+arbitrary row. Cheap, symmetric, and better an orphan than a mis-thread.
+
+### Hole B — temporal guid collision: first-arriver captures orphans before ambiguity appears (soften the claim, or document)
+
+The guid arm's existence check ("adopt via `guid` only when no OTHER post carries
+it") is evaluated at adoption time, so it can't see a FUTURE collision:
+1. Orphan O arrives referencing guid `g` (a guid-only ref — target had no url).
+2. Post P1 (guid `g`) arrives → at this instant P1 is the only holder → check
+   passes → O is adopted to P1 (`in_reply_to_post_id = P1.id`).
+3. Post P2 (guid `g`, possibly O's REAL parent) arrives → guid now ambiguous →
+   P2's check fails → P2 does NOT adopt. O stays wrongly attached to P1.
+
+So an orphan CAN mis-thread when it arrives before a guid that later proves
+ambiguous — the "can never mis-thread" claim is too strong. Narrow (guid-only
+refs — local posts use UUIDs, so it's remote guid-only items — and the
+orphan-before-both-parents ordering), but real. **Options:** (a) soften the claim
+to document this residual (ponytail — don't build for a narrow case), or (b) fully
+close it by re-orphaning on collision detection (when a second post with guid `g`
+inserts, null the `in_reply_to_post_id`/`thread_root_id` of anything resolved via
+that guid) — more machinery. Recommend (a): document, since Hole A's url fix +
+this note make the guarantee honest without new code.
+
+**Rev-3 verdict:** the design is sound and all prior fixes landed. Before
+planning: apply the exactly-one guard to the url arm (Hole A — one line), and
+either soften the "never mis-thread" claim to name the temporal guid residual or
+close it with re-orphaning (Hole B — recommend document). Neither touches the
+resolve-once architecture or the federation path, both still verified sound.
+
+---
+
+
 ## Re-review of rev 2 (ece6b00): source:comments SOUND, but 4 prior items still open (1 is the correctness fix)
 
 `source:comments` shipping this milestone is well-designed and correctly
