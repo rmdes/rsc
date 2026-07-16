@@ -19,6 +19,9 @@ export interface Repository {
   getPost(id: string): Promise<Post | undefined>
   findPostByRef(ref: string): Promise<Post | undefined>
   getThread(rootId: string): Promise<TimelineEntry[]>
+  adoptOrphans(parent: Post): Promise<void>
+  countRepliesByPostIds(ids: string[]): Promise<Map<string, number>>
+  listRepliesByPostId(id: string): Promise<Post[]>
   getPostsByAuthor(authorId: string, limit: number): Promise<Post[]>
   upsertSubscription(s: Subscription): Promise<void>
   deleteSubscription(protocol: PushProtocol, topic: string, callback: string): Promise<void>

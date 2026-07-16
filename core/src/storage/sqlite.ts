@@ -182,6 +182,55 @@ export class SqliteRepository implements Repository {
     return rows.map(joinedRowToEntry)
   }
 
+  async adoptOrphans(parent: Post) {
+    const newRoot = parent.threadRootId ?? parent.id
+    for (const ref of [parent.url, parent.guid]) {
+      if (!ref) continue
+      // Exactly-one guard (both arms): adopt via this ref only when the parent is its sole holder.
+      const urlHolders = await this.db.selectFrom('posts').select('id').where('url', '=', ref).limit(2).execute()
+      const guidHolders = await this.db.selectFrom('posts').select('id').where('guid', '=', ref).limit(2).execute()
+      const holders = new Set([...urlHolders, ...guidHolders].map((r) => r.id))
+      if (holders.size > 1) continue
+      const orphans = await this.db
+        .selectFrom('posts').select('id')
+        .where('in_reply_to', '=', ref)
+        .where('in_reply_to_post_id', 'is', null)
+        .where('id', '!=', parent.id)
+        .execute()
+      if (orphans.length === 0) continue
+      await this.db.updateTable('posts')
+        .set({ in_reply_to_post_id: parent.id, thread_root_id: newRoot })
+        .where('id', 'in', orphans.map((o) => o.id))
+        .execute()
+      // One re-root UPDATE per adopted orphan — a loop, not a single second UPDATE.
+      // Each sweep catches the orphan's WHOLE subtree because thread_root_id always
+      // points at the top root, never an intermediate node.
+      for (const o of orphans) {
+        await this.db.updateTable('posts').set({ thread_root_id: newRoot }).where('thread_root_id', '=', o.id).execute()
+      }
+    }
+  }
+
+  async countRepliesByPostIds(ids: string[]): Promise<Map<string, number>> {
+    if (ids.length === 0) return new Map()
+    const rows = await this.db
+      .selectFrom('posts')
+      .select('in_reply_to_post_id')
+      .select(({ fn }) => fn.countAll().as('n'))
+      .where('in_reply_to_post_id', 'in', ids)
+      .groupBy('in_reply_to_post_id')
+      .execute()
+    return new Map(rows.map((r) => [r.in_reply_to_post_id as string, Number(r.n)]))
+  }
+
+  async listRepliesByPostId(id: string): Promise<Post[]> {
+    const rows = await this.db.selectFrom('posts').selectAll()
+      .where('in_reply_to_post_id', '=', id)
+      .orderBy('published_at', 'asc').orderBy('id', 'asc')
+      .execute()
+    return rows.map(rowToPost)
+  }
+
   async upsertSubscription(s: Subscription) {
     await this.db
       .insertInto('subscriptions')

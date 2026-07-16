@@ -352,5 +352,58 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.insertPost(mkPost({ id: 'other', authorId: a.id, publishedAt: day('4') }))
       expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'r1', 'r2'])
     })
+
+    test('adoptOrphans attaches earlier orphans and re-roots their whole subtree', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
+      const day = (d: string) => `2026-01-0${d}T00:00:00.000Z`
+      // Distinct publishedAt per post: getThread orders (published_at, id) ASC and
+      // gives NO root-first guarantee on ties — same reason Task 1's test uses days.
+      // Arrival order: reply-to-reply first, then reply, then the root (worst case).
+      await repo.insertPost(mkPost({ id: 'rr', authorId: a.id, publishedAt: day('3'), inReplyTo: 'https://a.ex/r1' }))
+      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: day('2'), url: 'https://a.ex/r1', inReplyTo: 'root-guid' }))
+      await repo.adoptOrphans((await repo.getPost('r1'))!) // rr adopted by r1 (r1 is its own root for now)
+      expect((await repo.getPost('rr'))?.threadRootId).toBe('r1')
+      expect((await repo.getPost('rr'))?.inReplyToPostId).toBe('r1')
+      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, publishedAt: day('1'), guid: 'root-guid' }))
+      await repo.adoptOrphans((await repo.getPost('root'))!)
+      // r1 adopted by root; rr's subtree re-rooted to the TOP root in the same pass
+      expect((await repo.getPost('r1'))?.threadRootId).toBe('root')
+      expect((await repo.getPost('r1'))?.inReplyToPostId).toBe('root')
+      expect((await repo.getPost('rr'))?.threadRootId).toBe('root')
+      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'r1', 'rr'])
+    })
+
+    test('adoption refuses ambiguous refs on BOTH arms (H2 + Hole A)', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
+      const b = await repo.createRemoteUser({ handle: 'b', displayName: 'B', feedUrl: 'https://b.ex/f' })
+      await repo.insertPost(mkPost({ id: 'orphan', authorId: a.id, inReplyTo: 'dup-guid' }))
+      await repo.insertPost(mkPost({ id: 'h1', authorId: a.id, guid: 'dup-guid' }))
+      await repo.insertPost(mkPost({ id: 'h2', authorId: b.id, guid: 'dup-guid' }))
+      await repo.adoptOrphans((await repo.getPost('h2'))!) // dup-guid held by h1 AND h2 → refuse
+      expect((await repo.getPost('orphan'))?.inReplyToPostId).toBeNull()
+      // url arm: same shape
+      await repo.insertPost(mkPost({ id: 'orphan2', authorId: a.id, inReplyTo: 'https://dup.ex/1' }))
+      await repo.insertPost(mkPost({ id: 'u1', authorId: a.id, url: 'https://dup.ex/1' }))
+      await repo.insertPost(mkPost({ id: 'u2', authorId: b.id, url: 'https://dup.ex/1' }))
+      await repo.adoptOrphans((await repo.getPost('u2'))!)
+      expect((await repo.getPost('orphan2'))?.inReplyToPostId).toBeNull()
+    })
+
+    test('countRepliesByPostIds and listRepliesByPostId key on resolved ids only', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
+      await repo.insertPost(mkPost({ id: 'root', authorId: a.id }))
+      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
+      await repo.insertPost(mkPost({ id: 'r2', authorId: a.id, publishedAt: '2026-01-03T00:00:00.000Z', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
+      // an UNRESOLVED reply whose raw ref happens to equal the root's guid must NOT count
+      await repo.insertPost(mkPost({ id: 'stray', authorId: a.id, inReplyTo: 'root' }))
+      const counts = await repo.countRepliesByPostIds(['root', 'r1'])
+      expect(counts.get('root')).toBe(2)
+      expect(counts.get('r1')).toBeUndefined()
+      expect(await repo.countRepliesByPostIds([])).toEqual(new Map())
+      expect((await repo.listRepliesByPostId('root')).map((p) => p.id)).toEqual(['r1', 'r2'])
+    })
   })
 }
