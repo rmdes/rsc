@@ -13,7 +13,19 @@ export function buildFollowingOpml(displayName: string, following: User[], publi
     }
     // local && !publicUrl → omitted (H4): a relative URL is junk to any aggregator.
   }
-  return generateOpml({ head: { title: `${displayName} — following` }, body: { outlines } })
+  const title = `${displayName} — following`
+  // feedsmith's generateOpml throws "Invalid input OPML" on an empty outline
+  // list, but a user who follows nobody has a valid (empty) subscription list.
+  // Emit it directly so the export route never 500s; parseOpml round-trips it
+  // back to zero outlines.
+  if (outlines.length === 0) {
+    return `<?xml version="1.0" encoding="utf-8"?>\n<opml version="2.0">\n  <head><title>${escapeXml(title)}</title></head>\n  <body></body>\n</opml>\n`
+  }
+  return generateOpml({ head: { title }, body: { outlines } })
+}
+
+function escapeXml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 const MAX_OUTLINES = 1000 // H5: bound user creation per import

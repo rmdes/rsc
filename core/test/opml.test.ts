@@ -17,6 +17,15 @@ test('export omits local-user outlines when no public URL (H4)', () => {
   expect(opml).not.toContain('bob')
 })
 
+test('export of a user who follows nobody yields valid empty OPML, not a throw', () => {
+  // feedsmith's generateOpml rejects an empty outline list; an empty subscription
+  // list is nonetheless valid OPML. Regression: this 500'd the export route.
+  const opml = buildFollowingOpml('Rick & Co', [], 'https://cast.example')
+  expect(opml).toContain('<opml')
+  expect(opml).toContain('<body></body>')
+  expect(opml).toContain('Rick &amp; Co — following') // title is XML-escaped
+})
+
 import { importFollowingOpml } from '../src/domain/opml.ts'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
