@@ -3,6 +3,7 @@
 	import type { TimelineEntry } from '$lib/types'
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
+	import MarkdownComposer from '$lib/MarkdownComposer.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import Avatar from '$lib/Avatar.svelte'
@@ -46,7 +47,7 @@
 			<form method="POST" action="?/compose" class="composer">
 				<input name="handle" placeholder="your handle" required />
 				<input name="displayName" placeholder="display name (optional)" />
-				<textarea name="content" placeholder="what's happening?" required></textarea>
+				<MarkdownComposer placeholder="what's happening?" />
 				<button>Post</button>
 			</form>
 		</details>
