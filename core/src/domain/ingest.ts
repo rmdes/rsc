@@ -7,7 +7,7 @@ import { discoverFeed } from './discovery.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
 
-export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string }
+export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string; inReplyTo: string | null }
 
 export interface FeedDiscovery {
   hubs: string[]
@@ -45,8 +45,8 @@ function toIsoOrNow(raw: string, now: string): string {
   return Number.isNaN(d.getTime()) ? now : d.toISOString()
 }
 
-export function toParsedItem(guid: string | undefined, title: string | null, content: string, url: string | null, rawDate: string, now: string): ParsedItem {
-  return { guid: guid ?? url ?? fallbackGuid(title, content, rawDate), title, content, url, publishedAt: toIsoOrNow(rawDate, now) }
+export function toParsedItem(guid: string | undefined, title: string | null, content: string, url: string | null, rawDate: string, now: string, inReplyTo: string | null = null): ParsedItem {
+  return { guid: guid ?? url ?? fallbackGuid(title, content, rawDate), title, content, url, publishedAt: toIsoOrNow(rawDate, now), inReplyTo }
 }
 
 type ChannelLink = { href?: string; rel?: string }
@@ -114,8 +114,16 @@ export async function ingestItems(repo: Repository, bus: EventBus, user: User, i
   for (const item of items) {
     const now = new Date()
     const publishedAt = new Date(item.publishedAt).getTime() > now.getTime() ? now.toISOString() : item.publishedAt
-    const post: Post = { id: randomUUID(), authorId: user.id, source: 'remote', guid: item.guid, title: item.title, content: item.content, url: item.url, publishedAt, createdAt: now.toISOString() }
+    // Resolve once (spec H2): the wire ref is matched here and never again.
+    const target = item.inReplyTo ? await repo.findPostByRef(item.inReplyTo) : undefined
+    const post: Post = {
+      id: randomUUID(), authorId: user.id, source: 'remote', guid: item.guid, title: item.title,
+      content: item.content, url: item.url, publishedAt, createdAt: now.toISOString(),
+      inReplyTo: item.inReplyTo, inReplyToPostId: target?.id ?? null,
+      threadRootId: target ? target.threadRootId ?? target.id : null,
+    }
     if (await repo.insertPost(post)) {
+      await repo.adoptOrphans(post)
       if (!backfill) bus.emitNewPost({ ...post, author: user })
       inserted++
     }

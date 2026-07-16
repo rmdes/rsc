@@ -35,11 +35,18 @@ export function createService(repo: Repository, bus: EventBus) {
     async addRemoteUser(input: NewRemoteUser) {
       return repo.createRemoteUser({ ...input, handle: normalizeHandle(input.handle) })
     },
-    async createLocalPostAs(handle: string, displayName: string, content: string): Promise<TimelineEntry> {
+    async createLocalPostAs(handle: string, displayName: string, content: string, replyTo?: Post): Promise<TimelineEntry> {
       const author = await ensureLocalUser(handle, displayName)
       const now = new Date().toISOString()
-      const post: Post = { id: randomUUID(), authorId: author.id, source: 'local', guid: randomUUID(), title: null, content, url: null, publishedAt: now, createdAt: now }
+      const post: Post = {
+        id: randomUUID(), authorId: author.id, source: 'local', guid: randomUUID(), title: null, content, url: null,
+        publishedAt: now, createdAt: now,
+        inReplyTo: replyTo ? replyTo.url ?? replyTo.guid : null,
+        inReplyToPostId: replyTo?.id ?? null, // local replies are resolved by construction
+        threadRootId: replyTo ? replyTo.threadRootId ?? replyTo.id : null,
+      }
       await repo.insertPost(post)
+      await repo.adoptOrphans(post)
       const entry: TimelineEntry = { ...post, author }
       bus.emitNewPost(entry)
       return entry
@@ -49,6 +56,15 @@ export function createService(repo: Repository, bus: EventBus) {
     },
     getPost(id: string) {
       return repo.getPost(id)
+    },
+    getThread(rootId: string) {
+      return repo.getThread(rootId)
+    },
+    countRepliesByPostIds(ids: string[]) {
+      return repo.countRepliesByPostIds(ids)
+    },
+    listRepliesByPostId(id: string) {
+      return repo.listRepliesByPostId(id)
     },
     getTimelineAfter(sinceCreatedAt: string, limit: number) {
       return repo.getTimelineAfter(sinceCreatedAt, limit)

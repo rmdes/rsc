@@ -79,12 +79,18 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   app.post('/posts', bearerAuth(token), async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
-    const { handle, displayName, content } = body
+    const { handle, displayName, content, inReplyTo } = body
     if (!isString(handle, 1, 64)) return c.json({ error: 'handle invalid' }, 400)
     if (displayName !== undefined && !isString(displayName, 0, 200)) return c.json({ error: 'displayName invalid' }, 400)
     if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
+    if (inReplyTo !== undefined && !isString(inReplyTo, 1, 64)) return c.json({ error: 'inReplyTo invalid' }, 400)
+    let replyTarget
+    if (typeof inReplyTo === 'string') {
+      replyTarget = await service.getPost(inReplyTo)
+      if (!replyTarget) return c.json({ error: 'unknown post' }, 404)
+    }
     const effectiveDisplayName = typeof displayName === 'string' && displayName.trim() !== '' ? displayName : handle
-    const post = await service.createLocalPostAs(handle, effectiveDisplayName, content)
+    const post = await service.createLocalPostAs(handle, effectiveDisplayName, content, replyTarget)
     return c.json({ post }, 201)
   })
 
@@ -114,6 +120,13 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const user = await resolveUser(c.req.param('handle') ?? '')
     if (!user) return c.json({ error: 'unknown user' }, 404)
     return c.json({ following: await service.listFollowing(user.id) })
+  })
+
+  app.get('/post/:id/thread', async (c) => {
+    const post = await service.getPost(c.req.param('id') ?? '')
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    const thread = await service.getThread(post.threadRootId ?? post.id)
+    return c.json({ thread })
   })
 
   app.get('/users/:handle/following.opml', async (c) => {
