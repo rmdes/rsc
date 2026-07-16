@@ -204,6 +204,14 @@ test('degenerate HTML (childless body) → nulls, never throws (spec §7)', () =
   expect(feedUrl).toBeNull()
   expect(hentries).toEqual([])
 })
+
+test('a single h-entry carrying a nested microformat (e.g. h-card) is still mapped', () => {
+  // mf2tojf2 attaches the nested (non-entry) mf as `children` on a typed entry;
+  // the entry itself must not be dropped in favour of those children.
+  const html = `<div class="h-entry"><p class="e-content">hi</p><a class="u-url" href="https://s.ex/1">l</a><div class="h-card">Nested card</div></div>`
+  const { hentries } = discoverFeed(html, 'https://s.ex/')
+  expect(hentries.map((h) => h.url)).toEqual(['https://s.ex/1'])
+})
 ```
 
 - [ ] **Step 5: Run — verify RED**
@@ -258,11 +266,13 @@ export function discoverFeed(html: string, pageUrl: string): Discovered {
   }
 
   // h-feed: convert to JF2 (which drops implied p-names — H1) and map entries.
-  // Read `children` FIRST (P1): a page of bare h-entries with no h-feed wrapper
-  // yields { children } with NO `type` (probe-confirmed), so a type-first ternary
-  // silently drops every entry.
+  // A single typed `entry` is ALWAYS itself (it may carry `children` from nested
+  // microformats like an embedded h-card — those are NOT entries); everything
+  // else (the `feed` wrapper, and the untyped `{ children }` shape from bare
+  // h-entries with no wrapper — P1) takes its children. Probe-confirmed across
+  // all four shapes.
   const jf2 = mf2tojf2(parsed)
-  const entries: Jf2[] = jf2.children ?? (jf2.type === 'entry' ? [jf2] : [])
+  const entries: Jf2[] = jf2.type === 'entry' ? [jf2] : (jf2.children ?? [])
   const now = new Date().toISOString()
   const hentries = entries
     .filter((e) => e.type === 'entry')
