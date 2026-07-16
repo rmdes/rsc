@@ -440,29 +440,43 @@ button:hover {
 	margin: 0 0 var(--space-md);
 }
 
-/* Outliner wedge — the shade is the whole signal: dark means there are
-   replies you aren't seeing; light means nothing hidden (none, or all open). */
+/* Outliner wedge, labeled: a pill that says what it hides ("3 replies").
+   The shade is still the signal — accent when there are replies you aren't
+   seeing, muted once open (or on the page-nav fallback). */
 
 .wedge {
-	display: inline-block;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.375rem;
+	border: 1px solid var(--color-accent);
+	border-radius: 999px;
+	color: var(--color-accent);
 	background: none;
-	border: 0;
-	color: var(--color-foreground);
-	text-decoration: none;
-	font-size: 0.75rem;
+	padding: var(--space-xs) 0.75rem;
+	min-height: 2rem;
+	font-size: 0.8125rem;
 	line-height: 1;
-	padding: var(--space-xs) var(--space-sm);
-	margin-left: calc(-1 * var(--space-sm));
+	text-decoration: none;
 	cursor: pointer;
+	margin-right: var(--space-sm);
+}
+
+.wedge:hover {
+	background: var(--color-muted);
+}
+
+.wedge:focus-visible {
+	outline: 2px solid var(--color-ring);
+	outline-offset: 2px;
 }
 
 .wedge.light {
-	color: var(--color-border);
-	cursor: default;
+	border-color: var(--color-border);
+	color: var(--color-secondary);
 }
 
-a.wedge.light {
-	cursor: pointer; /* still a link to the thread page */
+.wedge .glyph {
+	font-size: 0.7em;
 }
 
 /* Nested replies unfold indented under their parent, level by level. */
@@ -506,9 +520,20 @@ a.wedge.light {
 	max-height: none;
 }
 
-/* Per-item source attribution (aggregate feeds): the item's real author. */
+/* Letter avatar (rss.chat's populateAvatar fallback — the initial IS the
+   avatar until feeds carry an image). */
 
-.via {
-	color: var(--color-secondary);
+.avatar {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.75rem;
+	height: 1.75rem;
+	border-radius: 50%;
+	background: var(--color-muted);
+	color: var(--color-foreground);
+	border: 1px solid var(--color-border);
 	font-size: 0.875rem;
+	font-weight: 600;
+	flex: none;
 }

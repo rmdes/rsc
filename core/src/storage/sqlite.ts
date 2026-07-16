@@ -246,6 +246,17 @@ export class SqliteRepository implements Repository {
     }
   }
 
+  async backfillSourceAttribution(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null) {
+    // Pre-migration-6 rows were ingested before <source> attribution existed and
+    // dedup never re-inserts them — fill attribution in place, but never flap an
+    // already-attributed post when a feed later edits its <source>.
+    await this.db.updateTable('posts')
+      .set({ source_name: sourceName, source_feed_url: sourceFeedUrl })
+      .where('author_id', '=', authorId)
+      .where('guid', '=', guid)
+      .where('source_name', 'is', null)
+      .execute()
+  }
   async countRepliesByPostIds(ids: string[]): Promise<Map<string, number>> {
     if (ids.length === 0) return new Map()
     const rows = await this.db

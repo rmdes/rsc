@@ -5,6 +5,7 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
+	import Avatar from '$lib/Avatar.svelte'
 	import { plaintext } from '$lib/plaintext'
 	import { toggleClamp } from '$lib/expand'
 	import Linkified from '$lib/Linkified.svelte'
@@ -74,24 +75,11 @@
 			{#each posts.filter((p) => !hidden.has(p.id)) as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
-						{#if post.replyCount}
-							<a
-								class="wedge"
-								class:light={!!expanded[post.id]}
-								href="/post/{post.id}"
-								role="button"
-								aria-expanded={!!expanded[post.id]}
-								aria-label="{expanded[post.id] ? 'Hide' : 'Show'} {post.replyCount} {post.replyCount === 1 ? 'reply' : 'replies'}"
-								onclick={(e) => {
-									e.preventDefault()
-									toggleWedge(post.id)
-								}}>▸</a
-							>
-						{:else}
-							<span class="wedge light" aria-hidden="true">▸</span>
+						<Avatar author={post.author} sourceName={post.sourceName} />
+						<strong>{post.sourceName ?? post.author.displayName}</strong>
+						{#if !post.sourceName}
+							<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						{/if}
-						<strong>{post.author.displayName}</strong>
-						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a> {#if post.sourceName}<span class="via">from {post.sourceName}</span>{/if}
 						<span class="kind">{post.source}</span>
 						<time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time>
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
@@ -101,6 +89,18 @@
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 					<p class="body" onclick={toggleClamp}><Linkified text={plaintext(post.content)} /></p>
+					{#if post.replyCount}
+						<a
+							class="wedge"
+							class:light={!!expanded[post.id]}
+							href="/post/{post.id}"
+							role="button"
+							aria-expanded={!!expanded[post.id]}
+							onclick={(e) => {
+								e.preventDefault()
+								toggleWedge(post.id)
+							}}><span class="glyph" aria-hidden="true">▸</span>{expanded[post.id] ? 'Hide replies' : `${post.replyCount} ${post.replyCount === 1 ? 'reply' : 'replies'}`}</a>
+					{/if}
 					<a class="source" href="/post/{post.id}">{post.replyCount || post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
 					{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>

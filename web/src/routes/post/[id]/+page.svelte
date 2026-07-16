@@ -2,6 +2,7 @@
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
+	import Avatar from '$lib/Avatar.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import { keepEvent } from '$lib/lens'
 	import { plaintext } from '$lib/plaintext'
@@ -47,8 +48,11 @@
 		{#each posts as post (post.id)}
 			<li class="post" class:remote={post.source === 'remote'} class:highlight={post.id === data.postId}>
 				<div class="byline">
-					<strong>{post.author.displayName}</strong>
-					<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a> {#if post.sourceName}<span class="via">from {post.sourceName}</span>{/if}
+					<Avatar author={post.author} sourceName={post.sourceName} />
+					<strong>{post.sourceName ?? post.author.displayName}</strong>
+					{#if !post.sourceName}
+						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
+					{/if}
 					<span class="kind">{post.source}</span>
 				</div>
 				{#if post.title}<h2 class="title">{post.title}</h2>{/if}

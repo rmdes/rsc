@@ -20,6 +20,7 @@ export interface Repository {
   findPostByRef(ref: string): Promise<Post | undefined>
   getThread(rootId: string): Promise<TimelineEntry[]>
   adoptOrphans(parent: Post): Promise<void>
+  backfillSourceAttribution(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null): Promise<void>
   countRepliesByPostIds(ids: string[]): Promise<Map<string, number>>
   listRepliesByPostId(id: string): Promise<Post[]>
   getPostsByAuthor(authorId: string, limit: number): Promise<Post[]>

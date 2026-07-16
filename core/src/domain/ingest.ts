@@ -150,6 +150,9 @@ export async function ingestItems(repo: Repository, bus: EventBus, user: User, i
       await repo.adoptOrphans(post)
       if (!backfill) bus.emitNewPost({ ...post, author: user })
       inserted++
+    } else if (item.sourceName || item.sourceFeedUrl) {
+      // Existing post from before attribution landed: fill it in silently.
+      await repo.backfillSourceAttribution(user.id, item.guid, item.sourceName, item.sourceFeedUrl)
     }
   }
   return inserted
