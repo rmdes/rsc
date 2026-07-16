@@ -131,7 +131,7 @@ Create `core/src/domain/mf2tojf2.d.ts` (mf2tojf2 ships no `.d.ts`; this declares
 ```ts
 declare module '@paulrobertlloyd/mf2tojf2' {
   export interface Jf2 {
-    type: string
+    type?: string // absent for the { children } shape (bare h-entries, no h-feed wrapper) — P1
     name?: string
     summary?: string
     content?: string | { html?: string; text?: string }
@@ -156,7 +156,7 @@ test('autodiscovery: returns the first alternate feed link, absolute, excluding 
     <link rel="alternate" type="application/json" href="/api.json">
     <link rel="alternate" type="application/rss+xml" href="/feed.xml">
     <link rel="alternate" type="application/atom+xml" href="https://other.example/atom">
-  </head><body></body></html>`
+  </head><body><p></p></body></html>`
   const { feedUrl } = discoverFeed(html, 'https://site.example/blog')
   expect(feedUrl).toBe('https://site.example/feed.xml') // relative resolved, json skipped, first feed-typed wins
 })
@@ -189,6 +189,21 @@ test('h-feed: an undated note gets a deterministic guid across two parses (raw-d
   const b = discoverFeed(html, 'https://s.ex/p').hentries[0]
   expect(a.guid).toBe(b.guid) // fallbackGuid hashes raw fields, not "now"
 })
+
+test('h-feed: multiple bare h-entries with NO h-feed wrapper are all mapped (P1)', () => {
+  // mf2tojf2 returns { children } with NO top-level `type` for this common
+  // homepage shape; a type-first branch would drop every entry.
+  const html = `<div class="h-entry"><p class="e-content">note one</p><a class="u-url" href="https://s.ex/1">l</a></div>
+    <div class="h-entry"><p class="e-content">note two</p><a class="u-url" href="https://s.ex/2">l</a></div>`
+  const { hentries } = discoverFeed(html, 'https://s.ex/')
+  expect(hentries.map((h) => h.url).sort()).toEqual(['https://s.ex/1', 'https://s.ex/2'])
+})
+
+test('degenerate HTML (childless body) → nulls, never throws (spec §7)', () => {
+  const { feedUrl, hentries } = discoverFeed('<html><head></head><body></body></html>', 'https://s.ex/')
+  expect(feedUrl).toBeNull()
+  expect(hentries).toEqual([])
+})
 ```
 
 - [ ] **Step 5: Run — verify RED**
@@ -213,13 +228,24 @@ export interface Discovered {
 const FEED_TYPES = new Set(['application/rss+xml', 'application/atom+xml', 'application/feed+json'])
 
 function jf2Content(e: Jf2): string {
-  if (typeof e.content === 'string') return e.content
-  if (e.content && typeof e.content === 'object') return e.content.text ?? e.content.html ?? ''
-  return e.summary ?? e.name ?? ''
+  if (typeof e.content === 'string' && e.content) return e.content
+  if (e.content && typeof e.content === 'object') {
+    const c = e.content.text || e.content.html // `||`: a present-but-empty content object falls through
+    if (c) return c
+  }
+  return e.summary || e.name || ''
 }
 
 export function discoverFeed(html: string, pageUrl: string): Discovered {
-  const parsed = mf2(html, { baseUrl: pageUrl })
+  let parsed
+  try {
+    parsed = mf2(html, { baseUrl: pageUrl })
+  } catch {
+    // microformats-parser throws on degenerate HTML (a childless <body>, some
+    // challenge pages). Discovery must never throw — return nulls so the ladder
+    // cleanly reports "no feed found" (spec §7 "Cloudflare-challenge → nulls").
+    return { feedUrl: null, hentries: [] }
+  }
 
   // Autodiscovery: first alternate link whose type is a feed type (rel-urls is
   // populated in document order; hrefs are already absolute against baseUrl).
@@ -232,8 +258,11 @@ export function discoverFeed(html: string, pageUrl: string): Discovered {
   }
 
   // h-feed: convert to JF2 (which drops implied p-names — H1) and map entries.
+  // Read `children` FIRST (P1): a page of bare h-entries with no h-feed wrapper
+  // yields { children } with NO `type` (probe-confirmed), so a type-first ternary
+  // silently drops every entry.
   const jf2 = mf2tojf2(parsed)
-  const entries: Jf2[] = jf2.type === 'feed' ? (jf2.children ?? []) : jf2.type === 'entry' ? [jf2] : []
+  const entries: Jf2[] = jf2.children ?? (jf2.type === 'entry' ? [jf2] : [])
   const now = new Date().toISOString()
   const hentries = entries
     .filter((e) => e.type === 'entry')
@@ -303,7 +332,7 @@ test('HTML page → autodiscover feed → ingest + persist the discovered feedUr
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const user = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://s.ex/page' })
-  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed.xml"></head><body></body></html>`
+  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed.xml"></head><body><p></p></body></html>`
   const { fn, seen } = router({
     'https://s.ex/page': { body: html, type: 'text/html' },
     'https://s.ex/feed.xml': { body: RSS, type: 'application/rss+xml' },
@@ -319,7 +348,7 @@ test('collision (R1): discovered feed already held by another user → rewrite s
   const bus = createEventBus()
   await repo.createRemoteUser({ handle: 'direct', displayName: 'Direct', feedUrl: 'https://s.ex/feed.xml' }) // already holds it
   const pageUser = await repo.createRemoteUser({ handle: 'page', displayName: 'Page', feedUrl: 'https://s.ex/page' })
-  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed.xml"></head><body></body></html>`
+  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed.xml"></head><body><p></p></body></html>`
   const { fn } = router({
     'https://s.ex/page': { body: html, type: 'text/html' },
     'https://s.ex/feed.xml': { body: RSS, type: 'application/rss+xml' },
@@ -345,8 +374,21 @@ test('neither feed link nor h-entries → still fails (throws), bounded by pollA
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const user = await repo.createRemoteUser({ handle: 'x', displayName: 'X', feedUrl: 'https://s.ex/blank' })
-  const { fn } = router({ 'https://s.ex/blank': { body: '<html><body>nothing</body></html>', type: 'text/html' } })
+  const { fn } = router({ 'https://s.ex/blank': { body: '<html><body><p>nothing</p></body></html>', type: 'text/html' } })
   await expect(ingestRemoteUser(repo, bus, user, fn)).rejects.toThrow()
+})
+
+test('SSRF-rejected discovered URL → no second fetch, ladder falls through (P2, spec §7)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const user = await repo.createRemoteUser({ handle: 's', displayName: 'S', feedUrl: 'https://s.ex/page' })
+  // The discovered link points at a loopback IP literal — checkCallbackUrl rejects
+  // it synchronously (no DNS), so the feed is never fetched and the ladder falls
+  // through to h-feed (none here) → throw. `seen` proves no second fetch happened.
+  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="http://127.0.0.1/feed"></head><body><p>x</p></body></html>`
+  const { fn, seen } = router({ 'https://s.ex/page': { body: html, type: 'text/html' } })
+  await expect(ingestRemoteUser(repo, bus, user, fn)).rejects.toThrow()
+  expect(seen).toEqual(['https://s.ex/page']) // the 127.0.0.1 feed was never fetched
 })
 ```
 
@@ -463,23 +505,23 @@ git commit -m "$(printf 'core: wire discovery into ingest — autodiscover+persi
 
 Append to `core/test/ingest-discovery.test.ts`:
 ```ts
-test('R2: a discovered feed served via 301 still ingests (redirects followed)', async () => {
+test('R2: the discovered fetch does NOT set redirect:manual (feeds legitimately 301/302)', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const user = await repo.createRemoteUser({ handle: 'r', displayName: 'R', feedUrl: 'https://s.ex/page' })
-  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed"></head><body></body></html>`
-  // The stub's Response for the feed URL is a 200 body; Node's fetch follows real
-  // 3xx transparently, so a redirecting host is exercised by returning the feed
-  // body directly here (redirect handling is fetch's, not ours — this asserts we
-  // do NOT set redirect:'manual').
+  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed"></head><body><p>x</p></body></html>`
   const fn = vi.fn(async (url: string | URL | Request) => {
     const u = String(url)
     if (u === 'https://s.ex/page') return new Response(html, { headers: { 'content-type': 'text/html' } })
     if (u === 'https://s.ex/feed') return new Response(RSS, { headers: { 'content-type': 'application/rss+xml' } })
     return new Response('x', { status: 404 })
-  }) as unknown as typeof fetch
-  const { inserted } = await ingestRemoteUser(repo, bus, user, fn)
+  })
+  const { inserted } = await ingestRemoteUser(repo, bus, user, fn as unknown as typeof fetch)
   expect(inserted).toBe(1)
+  // P3: the stub can't itself redirect, so assert the actual pin — no call opts
+  // into redirect:'manual' (which would break real 301/302 feeds). This fails if
+  // someone cargo-cults push-in's redirect:'manual' onto the feed fetch.
+  expect(fn.mock.calls.every(([, init]) => (init as RequestInit | undefined)?.redirect === undefined)).toBe(true)
 })
 
 test('MONEY TEST: OPML-style HTML-page user becomes followable end to end', async () => {
@@ -487,7 +529,7 @@ test('MONEY TEST: OPML-style HTML-page user becomes followable end to end', asyn
   const bus = createEventBus()
   // Simulates an OPML import that stored an HTML page URL as the feedUrl.
   const user = await repo.createRemoteUser({ handle: 'indieweb', displayName: 'IndieWeb', feedUrl: 'https://blog.ex/' })
-  const html = `<html><head><link rel="alternate" type="application/atom+xml" href="https://blog.ex/atom.xml"></head><body></body></html>`
+  const html = `<html><head><link rel="alternate" type="application/atom+xml" href="https://blog.ex/atom.xml"></head><body><p></p></body></html>`
   const atom = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Blog</title>
     <entry><title>First</title><id>urn:1</id><link href="https://blog.ex/1"/><content>Hi</content><updated>2026-01-01T00:00:00Z</updated></entry></feed>`
   const calls: string[] = []
