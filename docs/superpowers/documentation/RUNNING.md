@@ -144,6 +144,42 @@ Then open <http://localhost:5173>.
 - Feeds are polled every `TEXTCASTER_POLL_SECONDS` (default 60). A feed
   added just now shows its content within one poll interval.
 
+## Following & lenses
+
+A local user can follow remote feeds and other local users. The web app offers
+two lens views of the timeline:
+
+- `GET /u/<handle>` — author lens: timeline filtered to posts by `<handle>`
+  only.
+- `GET /u/<handle>/following` — followed lens: followed users' posts, with
+  forms to manage follows (follow/unfollow), export following as OPML (`GET
+  /users/:handle/following.opml`), and import follows from OPML.
+
+**Polling note:** Following an OPML import, feeds are picked up by the next
+poller cycle — no synchronous fetch on import.
+
+### API: query parameters and OPML routes
+
+The timeline query supports two mutually exclusive lens filters:
+
+| Query param | Meaning |
+|---|---|
+| `author=<handle>` | Posts by author `<handle>` (404 if unknown). |
+| `followed_by=<handle>` | Posts by users followed by `<handle>` (404 if unknown). Requests both on the same query return `400`. |
+
+Example:
+```bash
+curl http://localhost:8787/timeline?author=alice
+curl http://localhost:8787/timeline?followed_by=alice
+```
+
+OPML import and export endpoints (both bearer-authed with `TEXTCASTER_TOKEN`):
+
+| Method | Route | Notes |
+|---|---|---|
+| `GET` | `/users/<handle>/following.opml` | Export followed feeds as OPML. Public (no auth). |
+| `POST` | `/users/<handle>/follows/opml` | Import OPML. 1 MB cap. Bearer auth required. Flattens nested outlines (H1/H2) and skips duplicates. |
+
 ## Deployment note
 
 The `/stream` route proxies core's SSE endpoint and needs a streaming-capable
