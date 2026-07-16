@@ -4,6 +4,7 @@
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import FeedIcon from '$lib/FeedIcon.svelte'
 	import { plaintext } from '$lib/plaintext'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
 
@@ -89,6 +90,7 @@
 						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
 						<time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time>
+						<FeedIcon author={post.author} />
 					</div>
 					{#if post.title}<h2 class="title">{post.title}</h2>{/if}
 					<p>{plaintext(post.content)}</p>

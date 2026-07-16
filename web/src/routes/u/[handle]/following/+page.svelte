@@ -6,6 +6,7 @@
 	import { keepEvent } from '$lib/lens'
 	import { plaintext } from '$lib/plaintext'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import FeedIcon from '$lib/FeedIcon.svelte'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -108,6 +109,7 @@
 						<strong>{post.author.displayName}</strong>
 						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
+						<FeedIcon author={post.author} />
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
 					<p>{plaintext(post.content)}</p>

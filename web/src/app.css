@@ -478,3 +478,17 @@ a.wedge.light {
 	padding: var(--space-sm) 0;
 	border: 0;
 }
+
+/* Per-post feed icon (ported from rss.chat): the author's feed, one click,
+   ready to paste into a reader. RSS orange — the accent exists for this. */
+
+.feed-icon {
+	color: var(--color-accent);
+	display: inline-flex;
+	padding: var(--space-xs);
+}
+
+.feed-icon svg {
+	width: 0.75rem;
+	height: 0.75rem;
+}

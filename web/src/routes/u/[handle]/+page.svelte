@@ -4,6 +4,7 @@
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import FeedIcon from '$lib/FeedIcon.svelte'
 	import { keepEvent } from '$lib/lens'
 	import { plaintext } from '$lib/plaintext'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
@@ -40,6 +41,7 @@
 		<h1>
 			@{data.handle}
 			{#if kind}<span class="badge-kind">{kind}</span>{/if}
+			{#if data.timeline[0]}<FeedIcon author={data.timeline[0].author} />{/if}
 		</h1>
 		<p class="subnav"><a href="/u/{data.handle}/following">following &amp; followers</a></p>
 	</div>
