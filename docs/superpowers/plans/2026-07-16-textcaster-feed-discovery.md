@@ -511,29 +511,12 @@ git commit -m "$(printf 'core: wire discovery into ingest — autodiscover+persi
 **Interfaces:**
 - Consumes everything above. The money test is the milestone's definition of done; no new production code (fix wiring in Task 3 if it exposes a bug).
 
-- [ ] **Step 1: Append the redirect (R2) + money-test assertions**
+- [ ] **Step 1: Append the money test**
 
-Append to `core/test/ingest-discovery.test.ts`:
+NOTE: the earlier planned "R2: does NOT set redirect:'manual'" test is OBSOLETE — the security hardening in Task 3 deliberately sets `redirect:'manual'` and re-validates each hop, and legitimate multi-hop redirect following is already covered by that task's `legit multi-hop redirect → ingests` test. Do NOT add a redirect test here.
+
+The primary `feedUrl` fetch is now SSRF-guarded, so every `ingestRemoteUser` call needs the `publicLookup` 5th arg (already defined at the top of `ingest-discovery.test.ts` from the Task 3 hardening: `const publicLookup: LookupFn = async () => [{ address: '93.184.216.34' }]`). Append to `core/test/ingest-discovery.test.ts`:
 ```ts
-test('R2: the discovered fetch does NOT set redirect:manual (feeds legitimately 301/302)', async () => {
-  const repo = await createSqliteRepository(':memory:')
-  const bus = createEventBus()
-  const user = await repo.createRemoteUser({ handle: 'r', displayName: 'R', feedUrl: 'https://s.ex/page' })
-  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed"></head><body><p>x</p></body></html>`
-  const fn = vi.fn(async (url: string | URL | Request) => {
-    const u = String(url)
-    if (u === 'https://s.ex/page') return new Response(html, { headers: { 'content-type': 'text/html' } })
-    if (u === 'https://s.ex/feed') return new Response(RSS, { headers: { 'content-type': 'application/rss+xml' } })
-    return new Response('x', { status: 404 })
-  })
-  const { inserted } = await ingestRemoteUser(repo, bus, user, fn as unknown as typeof fetch)
-  expect(inserted).toBe(1)
-  // P3: the stub can't itself redirect, so assert the actual pin — no call opts
-  // into redirect:'manual' (which would break real 301/302 feeds). This fails if
-  // someone cargo-cults push-in's redirect:'manual' onto the feed fetch.
-  expect(fn.mock.calls.every(([, init]) => (init as RequestInit | undefined)?.redirect === undefined)).toBe(true)
-})
-
 test('MONEY TEST: OPML-style HTML-page user becomes followable end to end', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
@@ -550,8 +533,8 @@ test('MONEY TEST: OPML-style HTML-page user becomes followable end to end', asyn
     return new Response('x', { status: 404 })
   }) as unknown as typeof fetch
 
-  // First poll: discovers + persists + ingests.
-  const first = await ingestRemoteUser(repo, bus, user, fn)
+  // First poll: discovers + persists + ingests. publicLookup so blog.ex passes the guard.
+  const first = await ingestRemoteUser(repo, bus, user, fn, publicLookup)
   expect(first.inserted).toBe(1)
   expect((await repo.getUser(user.id))?.feedUrl).toBe('https://blog.ex/atom.xml')
   const tl = await repo.getTimeline(10)
@@ -560,7 +543,7 @@ test('MONEY TEST: OPML-style HTML-page user becomes followable end to end', asyn
   // Second poll: hits the persisted feed directly (no page fetch, no re-discovery).
   calls.length = 0
   const refreshed = (await repo.getUser(user.id))!
-  await ingestRemoteUser(repo, bus, refreshed, fn)
+  await ingestRemoteUser(repo, bus, refreshed, fn, publicLookup)
   expect(calls).toEqual(['https://blog.ex/atom.xml']) // page URL never fetched again
 })
 ```
