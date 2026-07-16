@@ -15,7 +15,7 @@
 - **Storage-agnostic core:** no SQL outside `core/src/storage/sqlite.ts`; new behavior lands in the `Repository` interface + contract suite.
 - **One migration array, append only** — this milestone appends the FIFTH element (index 4) to `MIGRATIONS`; never edit earlier entries.
 - **Resolve once (spec H2):** ref matching happens ONLY in `findPostByRef`/`adoptOrphans`. Nothing may re-match `in_reply_to` refs at render time — counts and comments queries key on `in_reply_to_post_id`.
-- **Ref-resolution rule (spec, pinned):** url match only if exactly one row has that url; else guid match only if exactly one row has that guid; else unresolved. Both adoption arms carry the same exactly-one guard. Temporal collisions are an accepted, documented residual — do NOT build re-orphaning.
+- **Ref-resolution rule (spec, pinned):** url match only if exactly one row has that url; else guid match only if exactly one row has that guid; else unresolved. Both adoption arms carry an exactly-one guard; adoption's guard is deliberately STRICTER than `findPostByRef` (cross-arm union — url holders + guid holders of the same ref), erring toward honest-orphan on the backward path. The asymmetry is intended: forward resolution follows the spec rule verbatim; backward adoption refuses anything ambiguous from either angle. Temporal collisions are an accepted, documented residual — do NOT build re-orphaning.
 - **No new dependencies.** No JSON Feed reply field (cut — write-only, probed). No reply notifications, no timeline bumping, no nested rendering, no reply-context fetching, no push on comments feeds.
 - **Probed feedsmith facts the code below relies on:** RSS parse → `item.sourceNs.inReplyTo.value` and `item.thr.inReplyTos[{ref,href}]`; Atom parse → `entry.thr.inReplyTos` only (NO `sourceNs` on Atom); RSS generate → `sourceNs: { inReplyTo: { value, isPermaLink } }` and `thr: { inReplyTos: [{ ref, href }] }` both serialize with namespaces declared; `sourceNs.comments` is silently DROPPED by generate (hence the injector). mf2tojf2 → JF2 `in-reply-to` is a string for one value, an array for several.
 - **TDD.** `npm test -w core`, `npm run typecheck -w core`, `npm test -w web`, `npm run check -w web` green at each task's end.
@@ -236,18 +236,22 @@ git commit -m "$(printf 'core: migration 5 — reply columns; findPostByRef (exa
     test('adoptOrphans attaches earlier orphans and re-roots their whole subtree', async () => {
       const repo = await makeRepo()
       const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
+      const day = (d: string) => `2026-01-0${d}T00:00:00.000Z`
+      // Distinct publishedAt per post: getThread orders (published_at, id) ASC and
+      // gives NO root-first guarantee on ties — same reason Task 1's test uses days.
       // Arrival order: reply-to-reply first, then reply, then the root (worst case).
-      await repo.insertPost(mkPost({ id: 'rr', authorId: a.id, inReplyTo: 'https://a.ex/r1' }))
-      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, url: 'https://a.ex/r1', inReplyTo: 'root-guid' }))
+      await repo.insertPost(mkPost({ id: 'rr', authorId: a.id, publishedAt: day('3'), inReplyTo: 'https://a.ex/r1' }))
+      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: day('2'), url: 'https://a.ex/r1', inReplyTo: 'root-guid' }))
       await repo.adoptOrphans((await repo.getPost('r1'))!) // rr adopted by r1 (r1 is its own root for now)
       expect((await repo.getPost('rr'))?.threadRootId).toBe('r1')
-      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, guid: 'root-guid' }))
+      expect((await repo.getPost('rr'))?.inReplyToPostId).toBe('r1')
+      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, publishedAt: day('1'), guid: 'root-guid' }))
       await repo.adoptOrphans((await repo.getPost('root'))!)
       // r1 adopted by root; rr's subtree re-rooted to the TOP root in the same pass
       expect((await repo.getPost('r1'))?.threadRootId).toBe('root')
       expect((await repo.getPost('r1'))?.inReplyToPostId).toBe('root')
       expect((await repo.getPost('rr'))?.threadRootId).toBe('root')
-      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'rr', 'r1'].sort((x, y) => x < y ? -1 : 1) === ['root', 'rr', 'r1'] ? ['root', 'rr', 'r1'] : (await repo.getThread('root')).map((e) => e.id))
+      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'r1', 'rr'])
     })
 
     test('adoption refuses ambiguous refs on BOTH arms (H2 + Hole A)', async () => {
@@ -282,15 +286,6 @@ git commit -m "$(printf 'core: migration 5 — reply columns; findPostByRef (exa
       expect((await repo.listRepliesByPostId('root')).map((p) => p.id)).toEqual(['r1', 'r2'])
     })
 ```
-
-Fix the first test's last assertion — replace the self-referential line with the direct form:
-```ts
-      const ids = (await repo.getThread('root')).map((e) => e.id)
-      expect(ids[0]).toBe('root')
-      expect(ids).toHaveLength(3)
-      expect(new Set(ids)).toEqual(new Set(['root', 'r1', 'rr']))
-```
-(All three share the same `published_at`, so assert membership + root-first, not a total order.)
 
 - [ ] **Step 3: Run — verify RED**
 
@@ -400,9 +395,11 @@ test('reply compose: stores refs, resolves parent, thread endpoint returns the c
   expect(re.post.inReplyToPostId).toBe(root.post.id)
   expect(re.post.threadRootId).toBe(root.post.id)
   // thread endpoint works from BOTH the root id and the reply id
+  // Same-ms local posts tie on published_at and order by random id — assert
+  // membership, not a total order (the contract suite pins ordering with distinct days).
   for (const id of [root.post.id, re.post.id]) {
     const t = await (await app.request(`/post/${id}/thread`)).json()
-    expect(t.thread.map((e: { id: string }) => e.id)).toEqual([root.post.id, re.post.id])
+    expect(new Set(t.thread.map((e: { id: string }) => e.id))).toEqual(new Set([root.post.id, re.post.id]))
   }
 })
 
@@ -702,6 +699,19 @@ test('injectSourceComments: lands inside the RIGHT item, declares xmlns:source w
   expect(injectSourceComments(xml, [])).toBe(xml) // no ads → untouched
 })
 
+test('injectSourceComments matches CDATA-wrapped guids (feedsmith wraps & < >)', () => {
+  const xml = `<?xml version="1.0"?>
+<rss version="2.0">
+  <channel><title>t</title>
+    <item><guid isPermaLink="false">
+  <![CDATA[https://ex.com/?a=1&b=2]]>
+  </guid></item>
+  </channel>
+</rss>`
+  const out = injectSourceComments(xml, [{ guid: 'https://ex.com/?a=1&b=2', count: 1, feedUrl: 'https://cast.example/post/x/comments.xml' }])
+  expect(out).toContain('<source:comments count="1"')
+})
+
 test('renderCommentsFeed: one item per reply, each with its own inReplyTo elements', () => {
   const parent = post({ id: 'root', guid: 'root-guid', title: 'Root', content: 'root body' })
   const replies = [
@@ -735,8 +745,11 @@ export function injectSourceComments(xml: string, ads: Array<{ guid: string; cou
   let out = xml
   let injected = false
   for (const ad of ads) {
-    const marker = `>${xmlEscape(ad.guid)}</guid>`
-    const at = out.indexOf(marker)
+    // feedsmith CDATA-wraps guid values containing & < > and entity-escapes "
+    // in plain text (probed) — match both serializations or the ad is skipped.
+    const markers = [`<![CDATA[${ad.guid}]]>`, `>${xmlAttrEscape(ad.guid)}</guid>`]
+    let at = -1
+    for (const m of markers) { at = out.indexOf(m); if (at !== -1) break }
     if (at === -1) continue
     const close = out.indexOf('</item>', at)
     if (close === -1) continue

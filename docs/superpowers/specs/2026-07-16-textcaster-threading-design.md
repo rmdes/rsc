@@ -270,7 +270,7 @@ non-goal forever; emission IS in scope).
 
 1. Migration 5 + repository additions + contract pins.
 2. Service/API: reply compose, resolution + adoption, thread endpoint.
-3. Wire: feed emit (source + thr + `_textcaster`), the comments feed route +
+3. Wire: feed emit (source + thr), the comments feed route +
    `source:comments` injector, and `ParsedItem.inReplyTo` ingestion across
    all three paths (probes first).
 4. Web: reply button, markers, thread page + live island.
