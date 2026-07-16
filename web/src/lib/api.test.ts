@@ -8,7 +8,7 @@ const entry = {
 	url: null,
 	publishedAt: '',
 	source: 'local',
-	author: { handle: 'a', displayName: 'A', kind: 'local' }
+	author: { id: 'u1', handle: 'a', displayName: 'A', kind: 'local' }
 }
 
 test('getTimeline returns entries and the next cursor', async () => {
@@ -23,7 +23,7 @@ test('getTimeline returns entries and the next cursor', async () => {
 
 test('getTimeline passes the before cursor as a query param and defaults nextCursor to null', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ timeline: [] }), { status: 200 }))
-	const page = await getTimeline(f as unknown as typeof fetch, '2026-01-01T00:00:00.000Z~p9')
+	const page = await getTimeline(f as unknown as typeof fetch, { before: '2026-01-01T00:00:00.000Z~p9' })
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/timeline?before=2026-01-01T00%3A00%3A00.000Z~p9')
 	expect(page.nextCursor).toBeNull()
 })

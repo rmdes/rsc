@@ -9,7 +9,7 @@ const entry = (id: string, content: string) => ({
 	url: null,
 	publishedAt: '',
 	source: 'local',
-	author: { handle: 'a', displayName: 'A', kind: 'local' }
+	author: { id: 'u1', handle: 'a', displayName: 'A', kind: 'local' }
 })
 
 test('load returns the first timeline page with isFirstPage and nextCursor', async () => {

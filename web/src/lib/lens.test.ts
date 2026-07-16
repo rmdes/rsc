@@ -1,0 +1,16 @@
+import { test, expect } from 'vitest'
+import { keepEvent } from './lens'
+import type { TimelineEntry } from './types'
+
+const entry = (authorId: string): TimelineEntry => ({ id: 'p', title: null, content: 'x', url: null, publishedAt: '', source: 'remote', author: { id: authorId, handle: 'h', displayName: 'H', kind: 'remote' } })
+
+test('author lens keeps only the matching author', () => {
+  expect(keepEvent(entry('a'), { kind: 'author', authorId: 'a' })).toBe(true)
+  expect(keepEvent(entry('b'), { kind: 'author', authorId: 'a' })).toBe(false)
+})
+
+test('followed lens keeps only authors in the follow set', () => {
+  const lens = { kind: 'followed' as const, followIds: new Set(['a', 'b']) }
+  expect(keepEvent(entry('a'), lens)).toBe(true)
+  expect(keepEvent(entry('c'), lens)).toBe(false)
+})

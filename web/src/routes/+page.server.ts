@@ -6,7 +6,7 @@ export const load: PageServerLoad = async ({ fetch, url }) => {
 	const before = url.searchParams.get('before') ?? undefined
 	const isFirstPage = !before
 	try {
-		const { timeline, nextCursor } = await getTimeline(fetch, before)
+		const { timeline, nextCursor } = await getTimeline(fetch, { before })
 		return { timeline, nextCursor, isFirstPage }
 	} catch {
 		return { timeline: [], nextCursor: null, isFirstPage, coreDown: true }

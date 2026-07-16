@@ -19,13 +19,56 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 	return fallback
 }
 
-export async function getTimeline(f: typeof fetch, before?: string): Promise<TimelinePage> {
+export async function getTimeline(
+	f: typeof fetch,
+	opts: { before?: string; followedBy?: string; author?: string } = {}
+): Promise<TimelinePage> {
+	// Build the query manually with encodeURIComponent — NOT URLSearchParams.
+	// The cursor wire format is `<publishedAt>~<id>`; URLSearchParams'
+	// form-encoding mangled it once already (found, fixed, revert rejected). P3.
 	const url = new URL(`${base()}/timeline`)
-	if (before) url.search = `before=${encodeURIComponent(before)}`
+	const params: string[] = []
+	if (opts.before) params.push(`before=${encodeURIComponent(opts.before)}`)
+	if (opts.followedBy) params.push(`followed_by=${encodeURIComponent(opts.followedBy)}`)
+	if (opts.author) params.push(`author=${encodeURIComponent(opts.author)}`)
+	if (params.length) url.search = params.join('&')
 	const res = await f(url.toString())
 	if (!res.ok) throw new Error(await errorMessage(res, `timeline ${res.status}`))
 	const body = (await res.json()) as { timeline: TimelineEntry[]; nextCursor?: string | null }
 	return { timeline: body.timeline, nextCursor: body.nextCursor ?? null }
+}
+
+export async function getFollowing(f: typeof fetch, handle: string): Promise<TimelineEntry['author'][]> {
+	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows`)
+	if (!res.ok) throw new Error(await errorMessage(res, `following ${res.status}`))
+	return (await res.json()).following
+}
+
+export async function addFollow(f: typeof fetch, handle: string, target: string): Promise<void> {
+	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
+		body: JSON.stringify({ handle: target })
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, `addFollow ${res.status}`))
+}
+
+export async function removeFollow(f: typeof fetch, handle: string, target: string): Promise<void> {
+	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows/${encodeURIComponent(target)}`, {
+		method: 'DELETE',
+		headers: { authorization: `Bearer ${token()}` }
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, `removeFollow ${res.status}`))
+}
+
+export async function importOpml(f: typeof fetch, handle: string, opml: string): Promise<{ followed: number; created: number; skipped: number }> {
+	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows/opml`, {
+		method: 'POST',
+		headers: { authorization: `Bearer ${token()}` },
+		body: opml
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, `importOpml ${res.status}`))
+	return res.json()
 }
 
 export async function createPost(

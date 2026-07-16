@@ -5,5 +5,5 @@ export interface TimelineEntry {
 	url: string | null
 	publishedAt: string
 	source: 'local' | 'remote'
-	author: { handle: string; displayName: string; kind: 'local' | 'remote' }
+	author: { id: string; handle: string; displayName: string; kind: 'local' | 'remote' }
 }
