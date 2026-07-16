@@ -198,6 +198,6 @@ measurably matters — `ponytail:` ceiling).
 
 1. Core: migration 7 + `contentMarkdown` ingest/backfill + dual-contract
    feed emission (with tests).
-2. Web: `render.ts` + hostile fixtures; enrichment at both ingress points;
+2. Web: `render.ts` + hostile fixtures; enrichment at the three ingress points;
    `{@html}` swap in the post-body component sites; styling.
 3. Obscura verification on live data + RUNNING.md note.
