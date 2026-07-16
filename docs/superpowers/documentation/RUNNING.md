@@ -154,7 +154,10 @@ Then open <http://localhost:5173>.
   new items appear live, the same as local posts.
 - Feeds are polled every `TEXTCASTER_POLL_SECONDS` (default 60). A feed
   added just now shows its content within one poll interval.
-- Local composes are **Markdown** (GFM — bare URLs autolink). Feeds emit the
+- Local composes are **Markdown** (GFM — bare URLs autolink). With
+  JavaScript on, the composer is a Markdown editor with live preview
+  (Carta); without it, the same plain textarea as always — posts are
+  identical either way. Feeds emit the
   Textcasting dual contract: `<source:markdown>` carries your source
   verbatim, `<description>`/`content_html` the rendered (and sanitized)
   HTML, so readers that don't know `source:markdown` still see rich posts.
