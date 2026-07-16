@@ -7,14 +7,25 @@
 	import Avatar from './Avatar.svelte'
 	import ReplyTree from './ReplyTree.svelte'
 
-	let { thread, parentId }: { thread: TimelineEntry[]; parentId: string } = $props()
+	let {
+		thread,
+		parentId,
+		openAll = false,
+		highlightId = null
+	}: {
+		thread: TimelineEntry[]
+		parentId: string
+		openAll?: boolean // conversation page: the whole tree starts unfolded
+		highlightId?: string | null
+	} = $props()
 	let open = $state<Record<string, boolean>>({})
+	const isOpen = (id: string) => open[id] ?? openAll
 	const kids = $derived(childrenOf(thread, parentId))
 </script>
 
 <ul class="replies">
 	{#each kids as reply (reply.id)}
-		<li class="post" class:remote={reply.source === 'remote'}>
+		<li class="post" class:remote={reply.source === 'remote'} class:highlight={reply.id === highlightId}>
 			<div class="byline">
 				<Avatar author={reply.author} sourceName={reply.sourceName} />
 				<strong>{reply.sourceName ?? reply.author.displayName}</strong>
@@ -31,19 +42,19 @@
 				{@const n = childrenOf(thread, reply.id).length}
 				<a
 					class="wedge"
-					class:light={open[reply.id]}
+					class:light={isOpen(reply.id)}
 					href="/post/{reply.id}"
 					role="button"
-					aria-expanded={!!open[reply.id]}
+					aria-expanded={isOpen(reply.id)}
 					onclick={(e) => {
 						e.preventDefault()
-						open[reply.id] = !open[reply.id]
-					}}><span class="glyph" aria-hidden="true">▸</span>{open[reply.id] ? 'Hide replies' : `${n} ${n === 1 ? 'reply' : 'replies'}`}</a>
+						open[reply.id] = !isOpen(reply.id)
+					}}><span class="glyph" aria-hidden="true">▸</span>{isOpen(reply.id) ? 'Hide replies' : `${n} ${n === 1 ? 'reply' : 'replies'}`}</a>
 			{/if}
 			<a class="source" href="/post/{reply.id}">Reply</a>
 			{#if reply.url}<a class="source" href={reply.url} rel="noreferrer">source</a>{/if}
-			{#if open[reply.id]}
-				<ReplyTree {thread} parentId={reply.id} />
+			{#if isOpen(reply.id)}
+				<ReplyTree {thread} parentId={reply.id} {openAll} {highlightId} />
 			{/if}
 		</li>
 	{/each}

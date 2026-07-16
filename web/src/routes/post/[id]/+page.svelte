@@ -4,6 +4,7 @@
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import Avatar from '$lib/Avatar.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
+	import ReplyTree from '$lib/ReplyTree.svelte'
 	import { keepEvent } from '$lib/lens'
 	import { plaintext } from '$lib/plaintext'
 	import Linkified from '$lib/Linkified.svelte'
@@ -15,6 +16,10 @@
 	function onPost(entry: TimelineEntry) {
 		if (keepEvent(entry, { kind: 'thread', rootId: data.rootId }) && !posts.some((p) => p.id === entry.id)) live = [...live, entry]
 	}
+
+	// The reading view is the TREE: the root card, then every reply nested
+	// under its parent (same ReplyTree as the timeline's wedge, fully unfolded).
+	const root = $derived(posts.find((p) => p.id === data.rootId))
 
 	// "Replying to" is the way up, one step at a time (rss.chat, 7/10/26):
 	// when the viewed post is a reply, link its parent's page.
@@ -45,23 +50,24 @@
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 	<ul class="timeline">
-		{#each posts as post (post.id)}
-			<li class="post" class:remote={post.source === 'remote'} class:highlight={post.id === data.postId}>
+		{#if root}
+			<li class="post" class:remote={root.source === 'remote'} class:highlight={root.id === data.postId}>
 				<div class="byline">
-					<Avatar author={post.author} sourceName={post.sourceName} />
-					<strong>{post.sourceName ?? post.author.displayName}</strong>
-					{#if !post.sourceName}
-						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
+					<Avatar author={root.author} sourceName={root.sourceName} />
+					<strong>{root.sourceName ?? root.author.displayName}</strong>
+					{#if !root.sourceName}
+						<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
 					{/if}
-					<span class="kind">{post.source}</span>
+					<span class="kind">{root.source}</span>
 				</div>
-				{#if post.title}<h2 class="title">{post.title}</h2>{/if}
-				<p><Linkified text={plaintext(post.content)} /></p>
-				{#if post.url}<a class="source" href={post.url} rel="noreferrer">source</a>{/if}
+				{#if root.title}<h2 class="title">{root.title}</h2>{/if}
+				<p><Linkified text={plaintext(root.content)} /></p>
+				{#if root.url}<a class="source" href={root.url} rel="noreferrer">source</a>{/if}
+				<ReplyTree thread={posts} parentId={root.id} openAll={true} highlightId={data.postId} />
 			</li>
 		{:else}
 			<li class="timeline-empty">No such conversation.</li>
-		{/each}
+		{/if}
 	</ul>
 
 	<details class="panel" open>

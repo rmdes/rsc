@@ -537,3 +537,10 @@ button:hover {
 	font-weight: 600;
 	flex: none;
 }
+
+/* The post you arrived at, inside its conversation. */
+
+.post.highlight {
+	box-shadow: -3px 0 0 var(--color-accent);
+	padding-left: var(--space-sm);
+}
