@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import { discoverFeed } from '../src/domain/discovery.ts'
-import { renderRssFeed } from '../src/domain/feed.ts'
+import { renderRssFeed, renderCommentsFeed, injectSourceComments } from '../src/domain/feed.ts'
 import type { User, Post } from '../src/domain/types.ts'
 
 const RSS_NS = 'xmlns:source="http://source.scripting.com/" xmlns:thr="http://purl.org/syndication/thread/1.0"'
@@ -40,4 +40,46 @@ test('RSS out: reply items dual-emit; bare-guid ref carries isPermaLink=false; n
   expect(xml).toContain('<thr:in-reply-to ref="https://a.ex/1" href="https://a.ex/1"/>')
   expect(xml).toContain('<source:inReplyTo isPermaLink="false">bare-guid-ref</source:inReplyTo>')
   expect(xml.match(/source:inReplyTo/g)!.length).toBe(4) // 2 open + 2 close tags — p3 emits none
+})
+
+test('injectSourceComments: lands inside the RIGHT item, declares xmlns:source when absent', () => {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0">
+  <channel><title>t</title><link>x</link><description>d</description>
+    <item><title>one</title><guid isPermaLink="false">g-one</guid></item>
+    <item><title>two</title><guid isPermaLink="false">g-two</guid></item>
+  </channel>
+</rss>`
+  const out = injectSourceComments(xml, [{ guid: 'g-two', count: 3, feedUrl: 'https://cast.example/post/p2/comments.xml' }])
+  expect(out).toContain('xmlns:source="http://source.scripting.com/"')
+  const itemTwo = out.slice(out.indexOf('g-two'))
+  expect(itemTwo).toContain('<source:comments count="3" feedUrl="https://cast.example/post/p2/comments.xml"/>')
+  expect(out.slice(0, out.indexOf('g-two'))).not.toContain('source:comments') // not in item one
+  expect(injectSourceComments(xml, [])).toBe(xml) // no ads → untouched
+})
+
+test('injectSourceComments matches CDATA-wrapped guids (feedsmith wraps & < >)', () => {
+  const xml = `<?xml version="1.0"?>
+<rss version="2.0">
+  <channel><title>t</title>
+    <item><guid isPermaLink="false">
+  <![CDATA[https://ex.com/?a=1&b=2]]>
+  </guid></item>
+  </channel>
+</rss>`
+  const out = injectSourceComments(xml, [{ guid: 'https://ex.com/?a=1&b=2', count: 1, feedUrl: 'https://cast.example/post/x/comments.xml' }])
+  expect(out).toContain('<source:comments count="1"')
+})
+
+test('renderCommentsFeed: one item per reply, each with its own inReplyTo elements', () => {
+  const parent = post({ id: 'root', guid: 'root-guid', title: 'Root', content: 'root body' })
+  const replies = [
+    post({ id: 'c1', guid: 'c1-guid', content: 'first reply', inReplyTo: 'root-guid', publishedAt: '2026-01-02T00:00:00.000Z' }),
+    post({ id: 'c2', guid: 'c2-guid', content: 'second reply', inReplyTo: 'root-guid', publishedAt: '2026-01-03T00:00:00.000Z' }),
+  ]
+  const xml = renderCommentsFeed(parent, replies, ctx)
+  expect(xml).toContain('Comments on')
+  expect(xml.match(/<item>/g)!.length).toBe(2)
+  expect(xml).toContain('first reply')
+  expect(xml.match(/<source:inReplyTo isPermaLink="false">root-guid<\/source:inReplyTo>/g)!.length).toBe(2)
 })

@@ -78,6 +78,54 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
   )
 }
 
+const xmlEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const xmlAttrEscape = (s: string) => xmlEscape(s).replace(/"/g, '&quot;')
+
+// feedsmith 2.9.6 cannot serialize <source:comments count feedUrl/> (probed —
+// silently dropped), so it is injected into XML WE generated: feedsmith's item
+// output is deterministic, and guids are matched as the <guid> ELEMENT value.
+// ponytail: delete this the day feedsmith's sourceNs types grow `comments`.
+export function injectSourceComments(xml: string, ads: Array<{ guid: string; count: number; feedUrl: string }>): string {
+  let out = xml
+  let injected = false
+  for (const ad of ads) {
+    // feedsmith CDATA-wraps guid values containing & < > and entity-escapes "
+    // in plain text (probed) — match both serializations or the ad is skipped.
+    const markers = [`<![CDATA[${ad.guid}]]>`, `>${xmlAttrEscape(ad.guid)}</guid>`]
+    let at = -1
+    for (const m of markers) { at = out.indexOf(m); if (at !== -1) break }
+    if (at === -1) continue
+    const close = out.indexOf('</item>', at)
+    if (close === -1) continue
+    out = out.slice(0, close) + `<source:comments count="${ad.count}" feedUrl="${xmlAttrEscape(ad.feedUrl)}"/>` + out.slice(close)
+    injected = true
+  }
+  if (injected && !out.includes('xmlns:source=')) {
+    out = out.replace('<rss ', '<rss xmlns:source="http://source.scripting.com/" ')
+  }
+  return out
+}
+
+export function renderCommentsFeed(post: Post, replies: Post[], ctx: FeedContext): string {
+  const label = post.title ?? (post.content.length > 60 ? `${post.content.slice(0, 60)}…` : post.content)
+  return generateRssFeed(
+    {
+      title: `Comments on "${label}"`,
+      link: post.url ?? ctx.publicUrl ?? '',
+      description: `Replies to "${label}"`,
+      items: replies.map((p) => ({
+        ...(p.title !== null ? { title: p.title } : {}),
+        description: p.content,
+        guid: { value: p.guid, isPermaLink: false },
+        ...(p.url !== null ? { link: p.url } : {}),
+        pubDate: p.publishedAt,
+        ...(p.inReplyTo ? replyWireElements(p.inReplyTo) : {}),
+      })),
+    },
+    { lenient: true },
+  )
+}
+
 export function renderJsonFeed(user: User, posts: Post[], ctx: FeedContext): string {
   const feed = generateJsonFeed(
     {

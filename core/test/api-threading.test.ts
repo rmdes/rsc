@@ -45,3 +45,20 @@ test('reply-to-reply threads to the TOP root', async () => {
   const t = await (await app.request(`/post/${root.post.id}/thread`)).json()
   expect(t.thread).toHaveLength(3)
 })
+
+test('comments.xml serves direct replies; feed.xml advertises source:comments', async () => {
+  const { app } = await makeApp()
+  // makeApp has no publicUrl — rebuild with one for this test
+  const repo2 = await createSqliteRepository(':memory:')
+  const bus2 = createEventBus()
+  const service2 = createService(repo2, bus2)
+  const app2 = createApp({ service: service2, bus: bus2, token: 'secret', feeds: { publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false } })
+  const root = await (await app2.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ handle: 'alice', content: 'root' }) })).json()
+  await app2.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ handle: 'bob', content: 'the reply', inReplyTo: root.post.id }) })
+  const comments = await (await app2.request(`/post/${root.post.id}/comments.xml`)).text()
+  expect(comments).toContain('the reply')
+  const feed = await (await app2.request('/users/alice/feed.xml')).text()
+  expect(feed).toContain(`<source:comments count="1" feedUrl="https://cast.example/post/${root.post.id}/comments.xml"/>`)
+  expect((await app2.request('/post/ghost/comments.xml')).status).toBe(404)
+  void app // silence unused
+})

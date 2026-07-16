@@ -5,7 +5,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { bearerAuth } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError } from '../domain/types.ts'
-import { renderRssFeed, renderJsonFeed } from '../domain/feed.ts'
+import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml } from '../domain/opml.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
@@ -129,6 +129,20 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ thread })
   })
 
+  app.get('/post/:id/comments.xml', async (c) => {
+    const post = await service.getPost(c.req.param('id') ?? '')
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    const replies = await service.listRepliesByPostId(post.id)
+    const counts = await service.countRepliesByPostIds(replies.map((r) => r.id))
+    let xml = renderCommentsFeed(post, replies, feeds)
+    if (feeds.publicUrl) {
+      const pub = feeds.publicUrl
+      xml = injectSourceComments(xml, replies.filter((r) => (counts.get(r.id) ?? 0) > 0)
+        .map((r) => ({ guid: r.guid, count: counts.get(r.id)!, feedUrl: `${pub}/post/${r.id}/comments.xml` })))
+    }
+    return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
+  })
+
   app.get('/users/:handle/following.opml', async (c) => {
     const user = await resolveUser(c.req.param('handle') ?? '')
     if (!user) return c.json({ error: 'unknown user' }, 404)
@@ -174,7 +188,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const r = await resolveFeedUser(c)
     if (r instanceof Response) return r
     const posts = await service.getPostsByAuthor(r.user.id, FEED_LIMIT)
-    return c.body(renderRssFeed(r.user, posts, feeds), 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
+    let xml = renderRssFeed(r.user, posts, feeds)
+    if (feeds.publicUrl) {
+      const pub = feeds.publicUrl
+      const counts = await service.countRepliesByPostIds(posts.map((p) => p.id))
+      xml = injectSourceComments(xml, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
+        .map((p) => ({ guid: p.guid, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
+    }
+    return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })
 
   app.get('/users/:handle/feed.json', async (c) => {
