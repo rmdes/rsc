@@ -6,6 +6,7 @@ import { bearerAuth } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError } from '../domain/types.ts'
 import { renderRssFeed, renderJsonFeed } from '../domain/feed.ts'
+import { buildFollowingOpml } from '../domain/opml.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
 import type { EventBus } from '../domain/bus.ts'
@@ -113,6 +114,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const user = await resolveUser(c.req.param('handle') ?? '')
     if (!user) return c.json({ error: 'unknown user' }, 404)
     return c.json({ following: await service.listFollowing(user.id) })
+  })
+
+  app.get('/users/:handle/following.opml', async (c) => {
+    const user = await resolveUser(c.req.param('handle') ?? '')
+    if (!user) return c.json({ error: 'unknown user' }, 404)
+    const following = await service.listFollowing(user.id)
+    const opml = buildFollowingOpml(user.displayName, following, feeds.publicUrl)
+    return c.body(opml, 200, { 'content-type': 'text/xml; charset=utf-8' })
   })
 
   const FEED_LIMIT = 50
