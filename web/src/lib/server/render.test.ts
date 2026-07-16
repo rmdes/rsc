@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest'
 import { renderPostHtml, enrichEntries } from './render'
+import { PREVIEW_SANITIZE_OPTS } from '../preview-sanitize'
 
 const remote = (content: string, contentMarkdown: string | null = null) => ({ content, contentMarkdown, source: 'remote' as const })
 const local = (content: string) => ({ content, contentMarkdown: null, source: 'local' as const })
@@ -48,4 +49,9 @@ test('GFM parity: tables and strikethrough survive; task-list checkboxes never d
 	const task = renderPostHtml(local('- [ ] never a checkbox'))
 	expect(task).not.toContain('<input')
 	expect(task).toContain('never a checkbox') // degrades to text, not silence
+})
+
+test('preview sanitizer forbids what the server strips (parity pin)', () => {
+	expect(PREVIEW_SANITIZE_OPTS.FORBID_TAGS).toContain('input')
+	expect(PREVIEW_SANITIZE_OPTS.FORBID_ATTR).toContain('align')
 })

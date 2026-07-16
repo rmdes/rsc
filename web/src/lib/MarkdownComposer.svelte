@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Component } from 'svelte'
+	import { PREVIEW_SANITIZE_OPTS } from './preview-sanitize'
 
 	let {
 		name = 'content',
@@ -25,7 +26,7 @@
 				const carta = new cartaMod.Carta({
 					// Preview runs client-side on pasteable input — paste-based
 					// self-XSS is real. Display sanitization stays server-side.
-					sanitizer: (html: string) => dompurifyMod.default.sanitize(html)
+					sanitizer: (html: string) => dompurifyMod.default.sanitize(html, PREVIEW_SANITIZE_OPTS)
 				})
 				editor = { MarkdownEditor: cartaMod.MarkdownEditor as unknown as Component, carta }
 			})

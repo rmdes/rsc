@@ -596,45 +596,59 @@ button:hover {
 	padding-left: var(--space-lg);
 }
 
-/* Carta composer — skin the editor with our tokens (both themes come from
-   the variables themselves). Arrives only on composer pages (dynamic import). */
+/* Carta composer — skin the editor with our tokens. default.css loads after
+   this file (dynamic import) and scopes under .carta-theme__default, so every
+   rule here must carry that prefix or it silently loses the cascade. */
 
-.carta-editor {
+.carta-theme__default.carta-editor {
 	background: var(--color-surface);
 	border: 1px solid var(--color-border);
 	border-radius: 8px;
 	font-family: inherit;
 }
 
-.carta-toolbar {
+.carta-theme__default .carta-toolbar {
 	border-bottom: 1px solid var(--color-border);
 	color: var(--color-secondary);
 }
 
-.carta-toolbar .carta-active {
+.carta-theme__default .carta-toolbar button {
+	color: var(--color-secondary);
+	background: none;
+}
+
+.carta-theme__default .carta-toolbar .carta-active {
 	color: var(--color-accent);
 }
 
-.carta-icon:hover {
+.carta-theme__default .carta-icon:hover {
 	background: var(--color-muted);
 	color: var(--color-foreground);
 }
 
-.carta-input,
-.carta-renderer {
-	color: var(--color-foreground);
-	padding: var(--space-sm);
-	min-height: 7rem;
-}
-
-.carta-input textarea {
+/* Anything affecting text metrics must sit on the CONTAINER so carta's
+   transparent textarea and its highlight overlay share font metrics —
+   styling the textarea alone drifts the caret off the visible text. */
+.carta-theme__default .carta-input {
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 0.9375rem;
-	color: inherit;
-	background: none;
-	border: 0;
+	caret-color: var(--color-foreground);
+	color: var(--color-foreground);
+	height: auto;
+	min-height: 7rem;
+	overflow-y: visible;
+	padding: var(--space-sm);
 }
 
-.carta-renderer {
+.carta-theme__default .carta-input textarea::placeholder {
+	color: var(--color-secondary);
+}
+
+.carta-theme__default .carta-renderer {
+	color: var(--color-foreground);
 	font-size: 0.9375rem;
+	height: auto;
+	min-height: 7rem;
+	overflow-y: visible;
+	padding: var(--space-sm);
 }
