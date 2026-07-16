@@ -1,7 +1,10 @@
 # Textcaster — Carta markdown composer design
 
-Date: 2026-07-16
-Status: design approved (brainstorm); spec pending review
+Date: 2026-07-16 (rev 2 — folds in
+`docs/superpowers/reviews/2026-07-16-carta-composer-spec-review.md`:
+form-native textarea dissolves H1/H2; H3 decided; H4 + mode pins; concrete
+bundle gate; reply-action test)
+Status: design approved (brainstorm); rev 2 pending review
 Author: Ricardo (rmdes) with Claude Code
 Basis: rich-content milestone (local composes ARE Markdown, server-side
 display sanitization at `web/src/lib/server/render.ts`); carta-md 4.11.2
@@ -31,21 +34,31 @@ Decisions (brainstormed, user-confirmed):
 
 Props: `{ name?: string = 'content', placeholder?: string, required?: boolean = true }`.
 
-**The form contract (the invariant everything hangs on):**
+**The form contract (rev 2 — Carta's textarea IS the field):**
 
-1. SSR renders a real `<textarea {name} {placeholder} {required}>` —
-   byte-equivalent to today's markup. No JS → the form posts exactly as it
-   does now. The server actions read the same `formData.get('content')`.
-2. On mount, the component DYNAMICALLY imports `carta-md` (and its CSS) —
-   the editor, shiki grammars, and the remark pipeline never enter the
-   initial bundle; only composer pages fetch them, post-hydration.
-3. Carta's state is seeded from the textarea's CURRENT value (a user who
-   started typing before hydration loses nothing), the editor mounts in its
-   place, and the textarea stays in the DOM — visually hidden, value synced
-   on every edit — as the form's field. Submit reads the textarea; the
-   enhancement is invisible to the action layer.
-4. If the dynamic import fails (offline, old browser), the textarea simply
-   remains — the degradation IS the baseline.
+Probed against carta-md 4.11.2 source (review): `<MarkdownEditor>` renders
+a REAL `<textarea>` and spreads caller `textarea={{ … }}` props onto it —
+`name`, `required`, `placeholder` included — with `bind:value` synchronous
+on the element. So there is no mirror, no hidden field, no sync:
+
+1. One `value = $state('')` binds BOTH branches.
+2. SSR + pre-enhancement: a plain
+   `<textarea {name} {placeholder} {required} bind:value>` — byte-equivalent
+   to today's markup; no-JS posts exactly as now.
+3. On mount the component dynamically imports `carta-md` (+ CSS); when the
+   import resolves it flips a POST-MOUNT `$state` flag (H4: never gate on
+   `browser` — SSR and first client render must match or hydration
+   mismatches) and swaps in
+   `<MarkdownEditor {carta} mode="tabs" textarea={{ name, required, placeholder }} bind:value>`
+   — Carta's own textarea carries the form semantics. `required` sits on
+   the VISIBLE control (constraint validation works); submit serializes the
+   element the user typed into (no async-mirror race — H1/H2 dissolved by
+   construction).
+4. Import failure → the flag never flips → the plain textarea remains. The
+   degradation is the baseline.
+5. `mode="tabs"` pinned: the home composer lives in the narrow sidebar
+   where Carta's default `auto` split-view is wrong; tabs (Write/Preview)
+   fit both surfaces.
 
 **Carta configuration:**
 
@@ -53,13 +66,22 @@ Props: `{ name?: string = 'content', placeholder?: string, required?: boolean = 
 new Carta({ sanitizer: DOMPurify.sanitize })
 ```
 
-No extensions. GFM is Carta's default pipeline (remark-gfm), which matches
-the compose dialect the server renders (marked GFM). **Known, accepted
-divergence:** preview = remark-gfm, canonical display = marked-gfm +
-sanitize-html — edge-case renders may differ slightly; the preview is a
-draft approximation, the server render is the truth. Documented, not
-"fixed" (unifying pipelines is not worth importing Carta's renderer into
-the server path).
+No extensions. GFM is Carta's default pipeline (remark-gfm), matching the
+compose dialect the server renders (marked GFM).
+
+**Preview/display parity (H3, decided):** the review found the divergence
+was understated — the server allowlist dropped GFM tables and
+strikethrough entirely, so the preview showed what readers never got. Rev 2
+WIDENS both sanitizer configs (core `markdown.ts` + web `render.ts`, the
+drift-canary pair, symmetrically) with the benign GFM tags:
+`table thead tbody tr td th del` — tables and strikethrough now survive
+end-to-end. Task lists stay OUT: they need `input[type=checkbox]`, an
+attribute surface the security-reviewed allowlist deliberately excludes —
+`- [ ]` renders as literal text everywhere, and THAT is the named,
+honest residual divergence (plus theoretical remark-vs-marked edge cases;
+the preview is a draft approximation, the server render is the truth).
+Fixtures: table/del survive both configs; a task-list checkbox input never
+does.
 
 ## Theming
 
@@ -85,10 +107,15 @@ via the established `light-dark()`/`[data-theme]` mechanism. No raw hex.
 - Existing form-action tests already pin the contract (field names
   unchanged) — they must pass UNMODIFIED; any action-test edit is a design
   violation, not fallout.
-- svelte-check + web test suite green; `npm run build -w web` (or the dev
-  equivalent) confirms the dynamic import splits into its own chunk (the
-  initial bundle must not grow by shiki's weight — assert by inspecting the
-  build output chunks).
+- svelte-check + web test suite green. Bundle gate, concrete: run
+  `npm run build -w web`, then parse
+  `web/.svelte-kit/output/client/.vite/manifest.json` and assert the module
+  importing `carta-md` appears only as a `dynamicImports` edge — never a
+  static `imports` edge — of the composer pages' chunks.
+- NEW reply-action test (the review found `?/reply` has no action test, so
+  "the tests pin the contract" only covered the home half): mirror the
+  existing compose-action test for the thread page's reply action —
+  formData `content` + hidden target semantics, DOM-free.
 - Obscura (SSR half): pre-hydration markup contains the plain
   `<textarea name="content">` on both composer pages.
 - Human click-check (hydrated half — obscura cannot settle dynamic
