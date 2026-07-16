@@ -35,7 +35,9 @@
 				<a class="handle" href="/u/{reply.author.handle}">@{reply.author.handle}</a> {#if reply.sourceName}<span class="via">from {reply.sourceName}</span>{/if}
 			</div>
 			{#if reply.title}<h3 class="title">{reply.title}</h3>{/if}
-			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -- click-to-expand is a pointer convenience; keyboard/AT users reach the full text via the conversation link -->
+			<!-- click-to-expand is a pointer convenience; keyboard/AT users reach the full text via the conversation link -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 			<p class="body" onclick={toggleClamp}><Linkified text={plaintext(reply.content)} /></p>
 			<a class="source" href="/post/{reply.id}">Reply</a>
 			{#if reply.url}<a class="source" href={reply.url} rel="noreferrer">source</a>{/if}

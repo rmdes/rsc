@@ -72,7 +72,9 @@
 					<span class="wedge light" aria-hidden="true">▸</span>
 				{/if}
 				{#if post.title}<h2 class="title">{post.title}</h2>{/if}
-				<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -- click-to-expand is a pointer convenience; keyboard/AT users reach the full text via the conversation link -->
+				<!-- click-to-expand is a pointer convenience; keyboard/AT users reach the full text via the conversation link -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 				<p class="body" onclick={toggleClamp}><Linkified text={plaintext(post.content)} /></p>
 				<a class="source" href="/post/{post.id}">{post.replyCount || post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
 				{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
