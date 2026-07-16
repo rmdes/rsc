@@ -36,11 +36,28 @@ Decisions taken at brainstorm:
 Append-only, as ever:
 
 ```sql
-ALTER TABLE posts ADD COLUMN in_reply_to TEXT;      -- wire ref of the target (url ?? guid), null = not a reply
-ALTER TABLE posts ADD COLUMN thread_root_id TEXT;   -- root post id when I'm a DESCENDANT; null for roots and non-replies
+ALTER TABLE posts ADD COLUMN in_reply_to TEXT;         -- wire ref of the target (url ?? guid), null = not a reply
+ALTER TABLE posts ADD COLUMN in_reply_to_post_id TEXT; -- RESOLVED parent post id; null = orphan (or not a reply)
+ALTER TABLE posts ADD COLUMN thread_root_id TEXT;      -- root post id when I'm a DESCENDANT; null for roots and non-replies
 CREATE INDEX posts_thread_idx ON posts (thread_root_id);
 CREATE INDEX posts_reply_to_idx ON posts (in_reply_to);
+CREATE INDEX posts_parent_idx ON posts (in_reply_to_post_id);
 ```
+
+**Resolve once, key on the id (H2).** Ref matching happens exactly once per
+reply — at insert (or adoption) — and stores `in_reply_to_post_id`. The
+comments feed, the `count` attribute, and the thread derivation all key on
+the resolved id, never by re-matching refs at render time. A guid collision
+can therefore at worst leave a reply UNRESOLVED (honest orphan) — it can
+never mis-thread, mis-count, or leak into the wrong comments feed.
+
+**Ref-resolution rule (pinned):** given wire ref R —
+1. a post with `url = R` wins (permalinks are the trusted identifier);
+2. else posts with `guid = R`: match ONLY if exactly one exists — `guid` is
+   unique per `(author_id, guid)` only, and real feed guids collide, so an
+   ambiguous guid resolves to NOTHING rather than to whichever row a query
+   returns first;
+3. else unresolved: `in_reply_to` kept, both id columns null.
 
 Semantics:
 
@@ -51,14 +68,18 @@ Semantics:
   `thread_root_id` null — it is its own root until adopted. Replies TO an
   orphan root at the orphan (`P.thread_root_id ?? P.id` covers this).
 - **Adoption:** when any post P arrives (insert time, local or ingested),
-  orphans whose `in_reply_to` matches P's `url` or `guid` are adopted:
-  1. `UPDATE posts SET thread_root_id = <P.thread_root_id ?? P.id>
-     WHERE in_reply_to IN (P.url, P.guid) AND id != P.id`
-  2. for each adopted orphan O, re-root O's own subtree:
-     `UPDATE posts SET thread_root_id = <new root> WHERE thread_root_id = O.id`
-  Both are indexed single UPDATEs — no recursion (a subtree all carries
-  O.id as its root, by construction). Runs on every insert; a no-op for
-  posts nothing points at.
+  orphans whose `in_reply_to` matches P under the ref-resolution rule are
+  adopted. The guid arm honors the same ambiguity rule: adopt via
+  `in_reply_to = P.guid` only when no OTHER post carries that guid (one
+  existence check before the update).
+  1. one adopt UPDATE: set `in_reply_to_post_id = P.id` and
+     `thread_root_id = <P.thread_root_id ?? P.id>` on the matching orphans;
+  2. then **one re-root UPDATE per adopted orphan O** (a loop — several
+     orphans can point at P): `UPDATE posts SET thread_root_id = <new root>
+     WHERE thread_root_id = O.id` — this single sweep catches O's whole
+     subtree because `thread_root_id` always points at the TOP root by
+     construction, never an intermediate node. No recursion.
+  Runs on every insert; a no-op for posts nothing points at.
 
 Thread read: `getThread(rootId)` = `WHERE id = rootId OR thread_root_id =
 rootId ORDER BY published_at ASC, id ASC`.
@@ -66,16 +87,18 @@ rootId ORDER BY published_at ASC, id ASC`.
 ## Repository additions (contract-tested)
 
 ```ts
-findPostByRef(ref: string): Promise<Post | undefined>   // matches posts.url OR posts.guid
+findPostByRef(ref: string): Promise<Post | undefined>   // the pinned rule: url wins; guid only when globally unique; else undefined
 getThread(rootId: string): Promise<TimelineEntry[]>     // root + descendants, (published_at, id) ASC
-adoptOrphans(parent: Post): Promise<void>               // the two UPDATEs above
-getPost(id: string): Promise<Post | undefined>          // if not already present
+adoptOrphans(parent: Post): Promise<void>               // the adopt UPDATE + per-orphan re-root loop above
+countRepliesByPostIds(ids: string[]): Promise<Map<string, number>> // GROUP BY in_reply_to_post_id — resolved ids, never refs
+listRepliesByPostId(id: string): Promise<Post[]>        // the comments feed's direct children, (published_at, id) ASC
 ```
 
-`insertPost` itself is unchanged; the service/ingest layer calls
-`adoptOrphans` after each successful insert. `Post` gains
-`inReplyTo: string | null` and `threadRootId: string | null`; the timeline
-join surfaces both on `TimelineEntry` (the web marker needs them).
+Five new methods (`getPost` already exists — `sqlite.ts:152`). `insertPost`
+itself is unchanged; the service/ingest layer calls `adoptOrphans` after
+each successful insert. `Post` gains `inReplyTo: string | null`,
+`inReplyToPostId: string | null`, and `threadRootId: string | null`; the
+timeline join surfaces them on `TimelineEntry` (the web marker needs them).
 
 ## Service & API
 
@@ -83,10 +106,13 @@ join surfaces both on `TimelineEntry` (the web marker needs them).
   always targets a post we hold). The API resolves the target post before
   calling the service — unknown target id → 404, matching the
   handle-resolution style. The service stores
-  `in_reply_to = target.url ?? target.guid`
-  and `thread_root_id = target.threadRootId ?? target.id`, then adopts.
+  `in_reply_to = target.url ?? target.guid`,
+  `in_reply_to_post_id = target.id` (local replies are resolved by
+  construction — no ref matching), and
+  `thread_root_id = target.threadRootId ?? target.id`, then adopts.
 - Ingested items: `ParsedItem` gains `inReplyTo: string | null`. `ingestItems`
-  resolves via `findPostByRef`, sets the same fields, adopts after insert.
+  resolves via `findPostByRef` (the pinned rule), sets all three fields (id
+  columns null when unresolved), adopts after insert.
 - `GET /post/:id/thread` (public read) → `{ thread: TimelineEntry[] }` —
   the conversation containing post `:id` (resolve to its root first:
   `threadRootId ?? id`), flat, oldest-first. 404 unknown id.
@@ -128,18 +154,20 @@ files to S3 on every reply; our counts are simply always current). Channel
 title: `Comments on "<post title or excerpt>"`. 404 unknown post. No
 `<cloud>`/hub advertisement on comments feeds in v1 — poll-only artifacts.
 
-New repo need: `countRepliesByRef(refs: string[]): Promise<Map<string, number>>`
-(one grouped query per rendered feed page for the `count` attributes) — the
-comments feed itself reuses the reply lookup by ref.
+Repo backing (see §Repository): `countRepliesByPostIds` for the `count`
+attributes (one grouped query per rendered feed page) and
+`listRepliesByPostId` for the feed body — both keyed on the RESOLVED
+`in_reply_to_post_id`, never by re-matching refs (H2).
 
-### JSON Feed out — `_textcaster` extension
+### JSON Feed — no reply field in v1 (deliberate)
 
-JSON Feed 1.1 has no reply field; underscore extensions are its mechanism:
-`"_textcaster": { "in_reply_to": "<ref>" }` per reply item. **Plan-time
-probe:** feedsmith `generateJsonFeed` custom-key pass-through, and
-`parseJsonFeed` retention of unknown keys. If parse-side drops them, JSON
-Feed reply INGESTION degrades (documented; RSS is the primary federation
-format) — emission is still required.
+JSON Feed 1.1 has no standard reply field, and the probed reality kills the
+extension route: `generateJsonFeed` passes a `_textcaster` key through, but
+`parseJsonFeed` DROPS unknown item keys — so the emission would be
+write-only, a proprietary key nothing (not even a peer Textcaster instance)
+can read back. Cut. RSS is the federation path for threading. Re-add
+signal: a consumer that reads it exists, or JSON Feed standardizes a reply
+field, or feedsmith retains unknown keys on parse.
 
 ### Ingestion — source namespace preferred
 
@@ -147,10 +175,10 @@ format) — emission is still required.
 
 1. RSS: `item.sourceNs.inReplyTo.value` (probed: feedsmith parses it), else
    `item.thr.inReplyTos[0].ref ?? .href` (probed).
-2. mf2/h-feed: JF2 `in-reply-to` (probed: mf2tojf2 surfaces `u-in-reply-to`;
-   value may be a string or an array/object — plan-time probe pins the
-   shapes; take the first URL).
-3. JSON Feed: `_textcaster.in_reply_to` (probe above).
+2. mf2/h-feed: JF2 `in-reply-to` (probed: mf2tojf2 surfaces `u-in-reply-to`
+   as a STRING for a single value and an ARRAY for multiple — the mapping
+   handles both and takes the first).
+3. JSON Feed: none (see above — no readable reply field exists today).
 
 Atom in: feedsmith exposes `thr` on Atom items too (same namespace) — same
 mapping applies.
@@ -200,9 +228,12 @@ non-goal forever; emission IS in scope).
 - Contract: `findPostByRef` (url and guid match), `getThread` order across
   same-ms ties, adoption incl. an orphan WITH its own descendants (subtree
   re-roots), `getPost`.
-- Unit: wire mapping out (dual-emit shapes; no `source:inReplyTo` for bare
-  guids unless attrs probe passes) and in (source-preferred order, thr
-  fallback, JF2, `_textcaster`).
+- Unit: wire mapping out (dual-emit shapes incl. `isPermaLink="false"` on a
+  bare-guid ref) and in (source-preferred order, thr fallback, JF2
+  string-vs-array `in-reply-to`).
+- Contract: the H2 pins — a guid shared by two posts resolves to NOTHING
+  (orphan, not a first-match thread) and is excluded from adoption; a url
+  match beats a guid match; counts/comments key on resolved ids only.
 - HTTP: `POST /posts` with `inReplyTo` happy/404; `GET /post/:id/thread`
   content + order + 404.
 - Comments feed + injector: `GET /post/:id/comments.xml` items/order/404;
