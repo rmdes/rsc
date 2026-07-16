@@ -43,3 +43,16 @@ test('h-feed: an undated note gets a deterministic guid across two parses (raw-d
   const b = discoverFeed(html, 'https://s.ex/p').hentries[0]
   expect(a.guid).toBe(b.guid) // fallbackGuid hashes raw fields, not "now"
 })
+
+test('h-feed: multiple bare h-entries with NO h-feed wrapper are all mapped (P1)', () => {
+  const html = `<div class="h-entry"><p class="e-content">note one</p><a class="u-url" href="https://s.ex/1">l</a></div>
+    <div class="h-entry"><p class="e-content">note two</p><a class="u-url" href="https://s.ex/2">l</a></div>`
+  const { hentries } = discoverFeed(html, 'https://s.ex/')
+  expect(hentries.map((h) => h.url).sort()).toEqual(['https://s.ex/1', 'https://s.ex/2'])
+})
+
+test('degenerate HTML (childless body) → nulls, never throws (spec §7)', () => {
+  const { feedUrl, hentries } = discoverFeed('<html><head></head><body></body></html>', 'https://s.ex/')
+  expect(feedUrl).toBeNull()
+  expect(hentries).toEqual([])
+})

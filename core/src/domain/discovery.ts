@@ -11,13 +11,21 @@ export interface Discovered {
 const FEED_TYPES = new Set(['application/rss+xml', 'application/atom+xml', 'application/feed+json'])
 
 function jf2Content(e: Jf2): string {
-  if (typeof e.content === 'string') return e.content
-  if (e.content && typeof e.content === 'object') return e.content.text ?? e.content.html ?? ''
-  return e.summary ?? e.name ?? ''
+  if (typeof e.content === 'string' && e.content) return e.content
+  if (e.content && typeof e.content === 'object') {
+    const c = e.content.text || e.content.html
+    if (c) return c
+  }
+  return e.summary || e.name || ''
 }
 
 export function discoverFeed(html: string, pageUrl: string): Discovered {
-  const parsed = mf2(html, { baseUrl: pageUrl })
+  let parsed
+  try {
+    parsed = mf2(html, { baseUrl: pageUrl })
+  } catch {
+    return { feedUrl: null, hentries: [] }
+  }
 
   // Autodiscovery: first alternate link whose type is a feed type (rel-urls is
   // populated in document order; hrefs are already absolute against baseUrl).
@@ -31,7 +39,7 @@ export function discoverFeed(html: string, pageUrl: string): Discovered {
 
   // h-feed: convert to JF2 (which drops implied p-names — H1) and map entries.
   const jf2 = mf2tojf2(parsed)
-  const entries: Jf2[] = jf2.type === 'feed' ? (jf2.children ?? []) : jf2.type === 'entry' ? [jf2] : []
+  const entries: Jf2[] = jf2.children ?? (jf2.type === 'entry' ? [jf2] : [])
   const now = new Date().toISOString()
   const hentries = entries
     .filter((e) => e.type === 'entry')
