@@ -2,7 +2,6 @@ import { env } from '$env/dynamic/private'
 import type { TimelineEntry } from './types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
-const token = () => env.CORE_API_TOKEN ?? ''
 
 export interface TimelinePage {
 	timeline: TimelineEntry[]
@@ -44,43 +43,49 @@ export async function getFollowing(f: typeof fetch, handle: string): Promise<Tim
 	return (await res.json()).following
 }
 
-export async function addFollow(f: typeof fetch, handle: string, target: string): Promise<void> {
-	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows`, {
+export async function addFollow(f: typeof fetch, target: string): Promise<void> {
+	const res = await f(`${base()}/me/follows`, {
 		method: 'POST',
-		headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
+		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ handle: target })
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, `addFollow ${res.status}`))
 }
 
-export async function removeFollow(f: typeof fetch, handle: string, target: string): Promise<void> {
-	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows/${encodeURIComponent(target)}`, {
-		method: 'DELETE',
-		headers: { authorization: `Bearer ${token()}` }
-	})
+export async function removeFollow(f: typeof fetch, target: string): Promise<void> {
+	const res = await f(`${base()}/me/follows/${encodeURIComponent(target)}`, { method: 'DELETE' })
 	if (!res.ok) throw new Error(await errorMessage(res, `removeFollow ${res.status}`))
 }
 
-export async function importOpml(f: typeof fetch, handle: string, opml: string): Promise<{ followed: number; created: number; skipped: number }> {
-	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows/opml`, {
-		method: 'POST',
-		headers: { authorization: `Bearer ${token()}` },
-		body: opml
-	})
+export async function importOpml(f: typeof fetch, opml: string): Promise<{ followed: number; created: number; skipped: number }> {
+	const res = await f(`${base()}/me/follows/opml`, { method: 'POST', body: opml })
 	if (!res.ok) throw new Error(await errorMessage(res, `importOpml ${res.status}`))
 	return res.json()
 }
 
-export async function createPost(
-	f: typeof fetch,
-	input: { handle: string; displayName: string; content: string; inReplyTo?: string }
-): Promise<void> {
+export async function createPost(f: typeof fetch, input: { content: string; inReplyTo?: string }): Promise<void> {
 	const res = await f(`${base()}/posts`, {
 		method: 'POST',
-		headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
+		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(input)
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, `createPost ${res.status}`))
+}
+
+export async function getMe(f: typeof fetch): Promise<{ user: TimelineEntry['author']; isAnonymous: boolean } | null> {
+	const res = await f(`${base()}/me`)
+	if (res.status === 401) return null
+	if (!res.ok) throw new Error(await errorMessage(res, 'getMe failed'))
+	return (await res.json()) as { user: TimelineEntry['author']; isAnonymous: boolean }
+}
+
+export async function updateProfile(f: typeof fetch, patch: { handle?: string; displayName?: string }): Promise<void> {
+	const res = await f(`${base()}/me`, {
+		method: 'PATCH',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(patch)
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, 'updateProfile failed'))
 }
 
 export async function getThread(f: typeof fetch, id: string): Promise<TimelineEntry[]> {
@@ -95,7 +100,7 @@ export async function addRemoteUser(
 ): Promise<void> {
 	const res = await f(`${base()}/users`, {
 		method: 'POST',
-		headers: { 'content-type': 'application/json', authorization: `Bearer ${token()}` },
+		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(input)
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, `addRemoteUser ${res.status}`))

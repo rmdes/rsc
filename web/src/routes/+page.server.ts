@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
 import { getTimeline, createPost, addRemoteUser } from '$lib/api'
 import { enrichEntries } from '$lib/server/render'
+import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 
 export const load: PageServerLoad = async ({ fetch, url }) => {
 	const before = url.searchParams.get('before') ?? undefined
@@ -15,27 +16,28 @@ export const load: PageServerLoad = async ({ fetch, url }) => {
 }
 
 export const actions = {
-	compose: async ({ request, fetch }) => {
-		const form = await request.formData()
-		const handle = String(form.get('handle') ?? '').trim()
-		const displayName = String(form.get('displayName') ?? '').trim() || handle
+	compose: async (event) => {
+		const form = await event.request.formData()
 		const content = String(form.get('content') ?? '').trim()
-		if (!handle || !content) return fail(400, { error: 'handle and content are required' })
+		if (!content) return fail(400, { error: 'content is required' })
 		try {
-			await createPost(fetch, { handle, displayName, content })
+			const f = await ensureSessionFetch(event)
+			await createPost(f, { content })
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'createPost failed' })
 		}
 		throw redirect(303, '/')
 	},
-	addRemote: async ({ request, fetch }) => {
-		const form = await request.formData()
+	addRemote: async (event) => {
+		const form = await event.request.formData()
 		const handle = String(form.get('handle') ?? '').trim()
 		const displayName = String(form.get('displayName') ?? '').trim() || handle
 		const feedUrl = String(form.get('feedUrl') ?? '').trim()
 		if (!handle || !feedUrl) return fail(400, { error: 'handle and feedUrl are required' })
 		try {
-			await addRemoteUser(fetch, { handle, displayName, feedUrl })
+			// no mint: adding feeds is registered-only; a sessionless POST gets core's 401/403
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			await addRemoteUser(f, { handle, displayName, feedUrl })
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'addRemoteUser failed' })
 		}

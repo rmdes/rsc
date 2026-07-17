@@ -1,5 +1,5 @@
 import { test, expect, vi } from 'vitest'
-import { getTimeline, createPost, addRemoteUser } from './api.ts'
+import { getTimeline, createPost, addRemoteUser, getMe } from './api.ts'
 
 const entry = {
 	id: 'p1',
@@ -28,25 +28,24 @@ test('getTimeline passes the before cursor as a query param and defaults nextCur
 	expect(page.nextCursor).toBeNull()
 })
 
-test('createPost sends the bearer token', async () => {
+test('createPost posts content (identity comes from the session, not the body)', async () => {
 	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 201 }))
-	await createPost(f as unknown as typeof fetch, { handle: 'a', displayName: 'A', content: 'x' })
+	await createPost(f as unknown as typeof fetch, { content: 'x' })
 	const init = f.mock.calls[0][1] as RequestInit
-	expect(new Headers(init.headers).get('authorization')).toMatch(/^Bearer /)
+	expect(new Headers(init.headers).has('authorization')).toBe(false)
+	expect(JSON.parse(String(init.body))).toEqual({ content: 'x' })
 })
 
-test('addRemoteUser sends the bearer token', async () => {
+test('addRemoteUser sends no authorization header (CORE_API_TOKEN is dead)', async () => {
 	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 201 }))
 	await addRemoteUser(f as unknown as typeof fetch, { handle: 'a', displayName: 'A', feedUrl: 'https://x/f' })
 	const init = f.mock.calls[0][1] as RequestInit
-	expect(new Headers(init.headers).get('authorization')).toMatch(/^Bearer /)
+	expect(new Headers(init.headers).has('authorization')).toBe(false)
 })
 
 test('createPost surfaces the core error message', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'invalid handle' }), { status: 400 }))
-	await expect(createPost(f as unknown as typeof fetch, { handle: '!', displayName: '!', content: 'x' })).rejects.toThrow(
-		'invalid handle'
-	)
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'content invalid' }), { status: 400 }))
+	await expect(createPost(f as unknown as typeof fetch, { content: '' })).rejects.toThrow('content invalid')
 })
 
 test('addRemoteUser falls back to a status message when the body has no error field', async () => {
@@ -54,4 +53,14 @@ test('addRemoteUser falls back to a status message when the body has no error fi
 	await expect(
 		addRemoteUser(f as unknown as typeof fetch, { handle: 'a', displayName: 'A', feedUrl: 'https://x/f' })
 	).rejects.toThrow('addRemoteUser 502')
+})
+
+test('getMe returns null on 401 instead of throwing', async () => {
+	const f = vi.fn(async () => new Response(null, { status: 401 }))
+	await expect(getMe(f as unknown as typeof fetch)).resolves.toBeNull()
+})
+
+test('getMe returns the session user', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ user: entry.author, isAnonymous: true }), { status: 200 }))
+	await expect(getMe(f as unknown as typeof fetch)).resolves.toEqual({ user: entry.author, isAnonymous: true })
 })

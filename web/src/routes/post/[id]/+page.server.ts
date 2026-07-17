@@ -2,6 +2,7 @@ import type { PageServerLoad, Actions } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
 import { getThread, createPost } from '$lib/api'
 import { enrichEntries } from '$lib/server/render'
+import { ensureSessionFetch } from '$lib/server/session'
 
 export const load: PageServerLoad = async ({ fetch, params }) => {
 	try {
@@ -13,16 +14,16 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
 }
 
 export const actions = {
-	reply: async ({ request, fetch, params }) => {
-		const form = await request.formData()
-		const handle = String(form.get('handle') ?? '').trim()
+	reply: async (event) => {
+		const form = await event.request.formData()
 		const content = String(form.get('content') ?? '').trim()
-		if (!handle || !content) return fail(400, { error: 'handle and content are required' })
+		if (!content) return fail(400, { error: 'content is required' })
 		try {
-			await createPost(fetch, { handle, displayName: handle, content, inReplyTo: params.id })
+			const f = await ensureSessionFetch(event)
+			await createPost(f, { content, inReplyTo: event.params.id })
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'reply failed' })
 		}
-		throw redirect(303, `/post/${params.id}`)
+		throw redirect(303, `/post/${event.params.id}`)
 	}
 } satisfies Actions
