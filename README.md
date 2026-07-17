@@ -58,10 +58,15 @@ way (push-in), so federation is live, not just polled.
 
 **Interop with rss.chat.** Textcaster consumes Dave Winer's rss.chat firehose
 with correct per-item author attribution and full threading, and emits the
-same `source:` namespace so his side can round-trip ours — a conversation can
-federate A→B→A over nothing but RSS. A "Connected instances" panel advertises
-which Textcasting peers an instance actually threads and interops with
-(detected from feeds that carry `source:markdown`).
+same `source:` namespace (`source:inReplyTo`, `source:markdown`,
+`source:account`, `source:comments`) so his side can round-trip ours — a
+conversation can federate A→B→A over nothing but RSS. Our feeds are walkable
+by Dave's own [`threadwalker`](https://github.com/scripting/rss.chat)
+verbatim: local posts use bare permalink `guid`s as the thread key, so his
+reference walker reconstructs a Textcaster conversation with no changes. A
+"Connected instances" panel advertises which Textcasting peers an instance
+actually threads and interops with (detected from feeds that carry
+`source:markdown`).
 
 **Accounts.** Browse and post as an anonymous guest first (you get a
 `@guest-xxxxx` handle on first write); upgrade to a permanent email + password
@@ -137,6 +142,29 @@ and is reachable only through that split. (Auth deliberately goes through
 `web`, not straight to core: emailed verify/magic-link clicks are plain GET
 navigations with no `Origin` header, and web's proxy supplies the `Origin`
 that the auth layer requires.)
+
+## Built with
+
+Standards-forward, few dependencies, no framework lock-in:
+
+- **core** — [Hono](https://hono.dev/) (HTTP) · SQLite via
+  [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) +
+  [Kysely](https://kysely.dev/) · [better-auth](https://www.better-auth.com/)
+  (identity/sessions) · [feedsmith](https://github.com/macieklamberski/feedsmith)
+  (RSS / Atom / JSON Feed / OPML parse + generate) ·
+  [unified](https://unifiedjs.com/) / remark / rehype (Markdown → HTML) ·
+  [sanitize-html](https://github.com/apostrophecms/sanitize-html) (the XSS
+  gate) · [microformats-parser](https://github.com/microformats/microformats-parser)
+  + [mf2tojf2](https://github.com/getindiekit/mf2tojf2) (h-feed ingest) ·
+  [nodemailer](https://nodemailer.com/) (SMTP).
+- **web** — [SvelteKit](https://svelte.dev/docs/kit) (Svelte 5 runes,
+  `adapter-node`) · [carta-md](https://github.com/BearToCode/carta) +
+  `@cartamd/plugin-slash` / `-emoji` (the Markdown editor) · the same unified
+  pipeline for the live preview, with [DOMPurify](https://github.com/cure53/DOMPurify)
+  guarding client-side paste.
+- **ops** — [Docker Compose](https://docs.docker.com/compose/),
+  [Caddy](https://caddyserver.com/) (auto-HTTPS), and
+  [Mailpit](https://mailpit.axllent.org/) (dev/self-host mail).
 
 ## Docs
 
