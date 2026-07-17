@@ -238,7 +238,7 @@ form.auth-form {
 .field {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
+	gap: var(--space-xs);
 }
 
 .field label {

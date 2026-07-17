@@ -333,7 +333,9 @@ their first action) — note the `Origin` header, required or better-auth
 
 ```bash
 curl -i -X POST http://localhost:8787/api/auth/sign-in/anonymous \
-  -H "Origin: http://localhost:5173" -c cookies.txt
+  -H "Origin: http://localhost:5173" \
+  -H "Content-Type: application/json" -d '{}' \
+  -c cookies.txt
 ```
 
 Post under that session, then read the identity it minted:

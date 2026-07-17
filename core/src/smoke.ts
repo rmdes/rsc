@@ -6,7 +6,7 @@ import type { Hono } from 'hono'
 // Exercised in-process by core/test/smoke.test.ts; the same sequence is
 // documented as a curl walkthrough in RUNNING.md for checking a live server.
 export async function runSmoke(app: Hono, opsToken: string, origin: string): Promise<void> {
-  const signIn = await app.request('/api/auth/sign-in/anonymous', { method: 'POST', headers: { origin } })
+  const signIn = await app.request('/api/auth/sign-in/anonymous', { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: '{}' })
   if (signIn.status !== 200) throw new Error(`anonymous sign-in failed: ${signIn.status}`)
   const cookie = (signIn.headers.get('set-cookie') ?? '').split(';')[0]
   if (!cookie) throw new Error('anonymous sign-in returned no session cookie')
