@@ -5,7 +5,9 @@ import { createService } from '../src/domain/service.ts'
 import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
+import type { Post } from '../src/domain/types.ts'
 import { renderFirehoseRss, injectSourceAccounts, injectSourceComments } from '../src/domain/feed.ts'
+import { generateRssFeed } from 'feedsmith'
 import { makeAuth } from './auth-helper.ts'
 
 const CTX: FeedContext = { publicUrl: 'https://cast.example.com', hubUrl: 'https://cast.example.com/hub', rssCloud: true }
@@ -132,4 +134,42 @@ test('injectSourceAccounts: element lands inside the right item; xmlns declared 
   expect(xml).toContain('<source:account service="tc.example">alice</source:account>')
   expect(xml).toContain('<source:comments count="2"')
   expect(xml.match(/xmlns:source=/g)?.length).toBe(1)
+})
+
+test('xmlns dedup checks the opening tag, not the whole document (body text may mention xmlns:source=)', () => {
+  // Use renderRssFeed (not firehose) with a remote post to avoid feedsmith auto-declaring xmlns
+  const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
+  const remote = { id: 'u1', kind: 'remote' as const, handle: 'remote', displayName: 'Remote', feedUrl: 'https://example.com/feed.xml', createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+  const post: Post = {
+    id: 'p1', guid: 'guid-1', title: null,
+    content: 'Check out xmlns:source= in the docs', contentMarkdown: null,
+    source: 'remote', url: 'https://example.com/post/1',
+    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
+    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
+    authorId: 'u1',
+  }
+  // Generate initial feed without xmlns (remote posts don't have sourceNs by default)
+  let xml = generateRssFeed(
+    {
+      title: 'Remote',
+      link: 'https://tc.example/users/remote',
+      description: 'Remote feed',
+      items: [{
+        guid: { value: 'guid-1', isPermaLink: false },
+        description: post.content,
+        pubDate: post.publishedAt,
+      }],
+    },
+    { lenient: true },
+  )
+  // Verify body text contains the substring but opening tag doesn't have xmlns yet
+  expect(xml).toContain('xmlns:source=') // body text mention
+  expect(xml.slice(xml.indexOf('<rss'), xml.indexOf('>') + 1)).not.toContain('xmlns:source="http://source') // opening tag
+  // Inject source comments; the check must scope to opening tag only, not whole doc
+  xml = injectSourceComments(xml, [{ guid: 'guid-1', count: 3, feedUrl: 'https://tc.example/post/guid-1/comments.xml' }])
+  // After injection, opening <rss> tag MUST have the xmlns declaration
+  const rssOpenTag = xml.slice(xml.indexOf('<rss'), xml.indexOf('>', xml.indexOf('<rss')) + 1)
+  expect(rssOpenTag).toContain('xmlns:source="http://source.scripting.com/"')
+  // And source:comments must be present
+  expect(xml).toContain('<source:comments count="3"')
 })

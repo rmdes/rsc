@@ -153,7 +153,7 @@ function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: st
     out = out.slice(0, close) + ad.fragment + out.slice(close)
     injected = true
   }
-  if (injected && !out.includes('xmlns:source=')) {
+  if (injected && !out.slice(out.indexOf('<rss'), out.indexOf('>', out.indexOf('<rss')) + 1).includes('xmlns:source=')) {
     out = out.replace('<rss ', '<rss xmlns:source="http://source.scripting.com/" ')
   }
   return out
