@@ -7,6 +7,8 @@ import remarkRehype from 'remark-rehype'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeStringify from 'rehype-stringify'
 import sanitizeHtml from 'sanitize-html'
+import { visit } from 'unist-util-visit'
+import type { Element, Root, Text } from 'hast'
 
 // SEC-4: HTML we GENERATE from local composes never ships dirty. Raw HTML
 // written in markdown dies at the parser (remark-rehype default drops it —
@@ -29,6 +31,34 @@ const SANITIZE_CONFIG: sanitizeHtml.IOptions = {
 	}
 }
 
+// I1 (final review): rehype-highlight is sync CPU work — a 1MB fenced block
+// costs ~10s of sync CPU (measured), and this pipeline runs on every read
+// (timeline load, SSE frame enrichment) over input a followed feed's
+// source:markdown fully controls, with no size cap on local compose either.
+// Ceiling picked well above any real code paste; fences over it render as
+// plain <pre><code>, not highlighted.
+const HIGHLIGHT_MAX_CHARS = 10_000
+
+// Runs before rehypeHighlight so an oversized fence never reaches lowlight.
+// 'no-highlight' is the class rehype-highlight itself recognizes as skip
+// (see language() in rehype-highlight/lib/index.js); sanitize-html then
+// strips it since it's not in allowedClasses, so it never reaches output.
+function skipOversizedFences() {
+	return (tree: Root) => {
+		visit(tree, 'element', (node: Element, _index, parent) => {
+			if (node.tagName !== 'code' || !parent || parent.type !== 'element' || parent.tagName !== 'pre') return
+			let length = 0
+			visit(node, 'text', (text: Text) => {
+				length += text.value.length
+			})
+			if (length > HIGHLIGHT_MAX_CHARS) {
+				const className = Array.isArray(node.properties.className) ? node.properties.className : []
+				node.properties.className = [...className, 'no-highlight']
+			}
+		})
+	}
+}
+
 // The twin of core/src/domain/markdown.ts — same chain, same order, same
 // versions (exact-pinned in both package.json). The canonical fixture in
 // both test suites asserts byte-identity. Everything here is sync:
@@ -39,6 +69,7 @@ const pipeline = unified()
 	.use(remarkBreaks)
 	.use(remarkEmoji) // accessible stays default-off: emoji must be bare text
 	.use(remarkRehype)
+	.use(skipOversizedFences)
 	.use(rehypeHighlight) // detect stays default-off: unlabeled fences render plain
 	.use(rehypeStringify)
 

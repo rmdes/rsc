@@ -17,7 +17,8 @@ test('hostile fixtures never survive', () => {
 	expect(renderPostHtml(remote('<a href="javascript:alert(1)">x</a>'))).not.toContain('javascript:')
 	expect(renderPostHtml(remote('<img src="data:image/png;base64,xx">'))).not.toContain('data:')
 	expect(renderPostHtml(remote('<svg onload="p()"></svg>'))).not.toContain('svg')
-	// THE load-bearing one: markdown that embeds raw HTML — marked passes it through
+	// THE load-bearing one: markdown that embeds raw HTML — the unified parser drops
+	// raw HTML (remark-rehype never sets allowDangerousHtml) and the sanitizer still runs after
 	expect(renderPostHtml(remote('x', 'safe **md**\n\n<script>alert(1)</script>'))).not.toContain('script')
 	expect(renderPostHtml(remote('<p class="x" style="y">attrs stripped</p>'))).not.toContain('class=')
 	expect(renderPostHtml(remote('<a href="//evil.com">x</a>'))).not.toContain('href=')
@@ -119,4 +120,17 @@ test('hljs sub-scope classes strip to the hljs- part (expected, do not fix)', ()
 	const html = renderPostHtml({ content: '```js\nfunction f() {}\n```', source: 'local' })
 	expect(html).toContain('class="hljs-title"')
 	expect(html).not.toContain('function_')
+})
+
+test('fence over HIGHLIGHT_MAX_CHARS skips highlighting; no hljs, no no-highlight leak (I1)', () => {
+	const oversized = '```js\n' + 'x'.repeat(10001) + '\n```'
+	const html = renderPostHtml({ content: oversized, source: 'local' })
+	expect(html).toContain('<pre><code class="language-js">') // plain: remark-rehype's own lang class, no hljs tokens
+	expect(html).not.toContain('hljs')
+	expect(html).not.toContain('no-highlight')
+})
+
+test('small fence stays under HIGHLIGHT_MAX_CHARS and still gets hljs markup (guard does not over-trigger)', () => {
+	const html = renderPostHtml({ content: '```js\nconst x = 1\n```', source: 'local' })
+	expect(html).toContain('<code class="hljs language-js">')
 })

@@ -147,3 +147,16 @@ test('hljs sub-scope classes strip to the hljs- part (expected, do not fix)', ()
   expect(html).toContain('class="hljs-title"')
   expect(html).not.toContain('function_')
 })
+
+test('fence over HIGHLIGHT_MAX_CHARS skips highlighting; no hljs, no no-highlight leak (I1)', () => {
+  const oversized = '```js\n' + 'x'.repeat(10001) + '\n```'
+  const html = renderLocalHtml(oversized)
+  expect(html).toContain('<pre><code class="language-js">') // plain: remark-rehype's own lang class, no hljs tokens
+  expect(html).not.toContain('hljs')
+  expect(html).not.toContain('no-highlight')
+})
+
+test('small fence stays under HIGHLIGHT_MAX_CHARS and still gets hljs markup (guard does not over-trigger)', () => {
+  const html = renderLocalHtml('```js\nconst x = 1\n```')
+  expect(html).toContain('<code class="hljs language-js">')
+})
