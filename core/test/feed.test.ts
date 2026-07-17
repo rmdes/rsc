@@ -66,6 +66,22 @@ test('links are omitted without config: no self/hub/cloud when unset', async () 
   expect(body).not.toContain('<cloud ')
 })
 
+test('feed description renders breaks, emoji, and highlighted code (unified pipeline)', async () => {
+  const { service, app } = await makeApp(CTX)
+  const md = 'line one\nline two :rocket:\n\n```js\nconst x = 1\n```'
+  await service.createLocalPostAs('alice', 'Alice', md)
+  const body = await (await app.request('/users/alice/feed.xml')).text()
+  const items = (await parseFeedWithMeta(body)).items
+  const description = items[0].content
+  const sourceMarkdown = items[0].contentMarkdown
+  // description = rendered + sanitized (SEC-4)
+  expect(description).toContain('line one<br />')
+  expect(description).toContain('🚀')
+  expect(description).toContain('<span class="hljs-keyword">const</span>')
+  // dual contract: the raw markdown travels verbatim beside it
+  expect(sourceMarkdown).toBe(md)
+})
+
 test('unknown handle 404s; remote handle 302s to its canonical feed; null-feedUrl remote 404s', async () => {
   const { repo, app } = await makeApp(CTX)
   expect((await app.request('/users/nobody/feed.xml')).status).toBe(404)
