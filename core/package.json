@@ -15,9 +15,16 @@
     "feedsmith": "^2.9.6",
     "hono": "^4.6.0",
     "kysely": "^0.29.3",
-    "marked": "^18.0.6",
     "microformats-parser": "^2.0.6",
-    "sanitize-html": "^2.17.6"
+    "rehype-highlight": "7.0.2",
+    "rehype-stringify": "10.0.1",
+    "remark-breaks": "4.0.0",
+    "remark-emoji": "5.0.2",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "remark-rehype": "11.1.2",
+    "sanitize-html": "^2.17.6",
+    "unified": "11.0.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
