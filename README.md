@@ -90,8 +90,7 @@ Docker Compose runs the whole dev stack — no host Node install needed.
 
 ```bash
 git clone <this repo> && cd textcaster
-cp .env.example .env          # or: ./scripts/generate-env.sh --dev
-docker compose up
+make up                       # core + web + Mailpit, live reload
 ```
 
 - App: [http://localhost:5173](http://localhost:5173)
@@ -99,20 +98,23 @@ docker compose up
   [http://localhost:8025](http://localhost:8025)
 
 Edits to `core` and `web` hot-reload in the containers (`node --watch` and
-`vite dev`). Federation push is off in dev.
+`vite dev`). Federation push is off in dev. Run `make` to list every target;
+prefer running against host Node instead of Docker? See
+[`docs/superpowers/documentation/RUNNING.md`](docs/superpowers/documentation/RUNNING.md)
+(Option B).
 
 ## Self-host on a VPS
 
 ```bash
 # 1. Point DNS (A/AAAA) at the server for your domain first.
-./scripts/generate-env.sh              # prompts for domain + Mailpit password,
-                                        # generates secrets and writes .env
-docker compose -f compose.prod.yaml up -d --build
+make prod-env       # prompts for domain + Mailpit password,
+                    # generates secrets and writes .env
+make prod-up        # build images + start behind Caddy
 ```
 
 Caddy fronts everything and issues HTTPS automatically for
 `TEXTCASTER_DOMAIN` — no manual certificates. The Mailpit UI is reachable at
-`/mail` behind HTTP basic-auth (the credentials `generate-env.sh` just
+`/mail` behind HTTP basic-auth (the credentials `make prod-env` just
 generated), since it displays every verify/magic-link email that goes out.
 Federation (WebSub + rssCloud) is **on by default** in this stack.
 

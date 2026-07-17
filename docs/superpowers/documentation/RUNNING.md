@@ -5,26 +5,110 @@ Textcaster is two deployables: **core** (headless API) and **web**
 own server-side code — core is never exposed to browsers, and there is no
 CORS to configure. Browsers only ever talk to the web app.
 
-## Prerequisites
+Every routine command is wrapped in the repo `Makefile`. Run `make` with no
+argument to list the targets; this guide uses them, and each target's exact
+command is visible in `make help` and in the `Makefile` itself.
 
-- Node.js 22.18+ (or 24+) — `core`'s dev script runs the TypeScript sources
-  directly via Node's native type stripping (default from 22.18/23.6) and
-  loads `.env` via `--env-file-if-exists`
-- npm (workspaces are used; run all commands from the repo root)
+## Two ways to run
 
-## Install
+|                | Docker (Option A)                         | Local Node (Option B)                                |
+| -------------- | ----------------------------------------- | ---------------------------------------------------- |
+| **Best for**   | trying it, self-hosting, one-command start | hacking on core/web with host tooling (tests, LSP)   |
+| **Needs**      | Docker + Compose v2                       | Node.js 22.18+ and npm                               |
+| **Start**      | `make up`                                 | `make install`, then `make dev-core` + `make dev-web` |
+| **Mailpit**    | bundled                                   | separate `docker run` (or real SMTP)                 |
+
+Both serve the same app at <http://localhost:5173>. Pick one — you don't need
+both.
+
+## Option A — Docker (recommended)
+
+One command brings up core, web, and Mailpit with live reload: edits to
+`core/` and `web/` on the host hot-reload inside the containers
+(`node --watch` + `vite`). No host Node install needed.
+
+**Prerequisites:** Docker Engine and the Compose v2 plugin — check with
+`docker compose version`.
+
+### Dev stack
 
 ```bash
-npm install
+git clone <this repo> && cd textcaster
+make up
 ```
 
-## Configure
-
-Copy the example env files and fill in the auth secret:
+- The **first** boot runs `npm ci` inside the container to populate the shared
+  `node_modules` volume — it takes a minute (core's healthcheck allows a 60s
+  start window). Later boots are fast.
+- App: <http://localhost:5173>
+- Mailpit — every outgoing email (verification, magic-link, reset):
+  <http://localhost:8025>
+- Both ports are bound to `127.0.0.1` only.
 
 ```bash
-cp core/.env.example core/.env
-cp web/.env.example web/.env
+make logs      # follow all three services
+make down      # stop the stack
+```
+
+Federation push is off in dev (no public URL). Writable state — the dev
+SQLite DB, `web/.svelte-kit`, web's `node_modules` — lives in **named
+volumes**, not the bind mount, so the containers (which run as root) never
+leave root-owned files in your checkout. Removing the stack's volumes resets
+the dev database.
+
+### Prod self-host on a VPS
+
+```bash
+# 1. Point DNS (A/AAAA) for your domain at the server first.
+make prod-env      # prompts for domain + a Mailpit password; writes .env
+                   # (strong secrets via `openssl rand`, Mailpit bcrypt hash via Caddy)
+make prod-up       # build images + start the stack behind Caddy
+```
+
+- Caddy terminates HTTPS and issues certificates **automatically** for
+  `TEXTCASTER_DOMAIN` — no manual certs.
+- core publishes **no** host ports. It's reachable only through Caddy's
+  public-path split (per-user feeds, the firehose, comment feeds, federation
+  callbacks) and internally via web. `/api/auth/*` deliberately routes through
+  web: emailed link clicks are native GETs with no `Origin` header, and
+  web's proxy supplies the one better-auth requires.
+- Mailpit's UI is at `/mail` behind HTTP basic-auth (the credentials
+  `make prod-env` generated).
+- Federation (WebSub + rssCloud) is **on** by default in this stack.
+
+```bash
+make prod-logs
+make prod-down
+```
+
+Mailpit only *catches* mail — it never delivers to real inboxes. For a real
+multi-user instance, set `TEXTCASTER_SMTP_URL` (and `TEXTCASTER_MAIL_FROM`) in
+`.env` to a real SMTP server, e.g. `smtps://user:pass@smtp.example.com:465`,
+then run `make prod-up` again. Every prod setting and its default is
+documented in `.env.example`.
+
+## Option B — Local dev (host Node)
+
+Run core and web directly with your own Node — best when iterating with host
+tooling (test runner, typechecker, editor LSP).
+
+**Prerequisites:** Node.js 22.18+ (or 24+) — core's dev script runs the
+TypeScript sources directly via Node's native type stripping (default from
+22.18 / 23.6) and loads `.env` via `--env-file-if-exists`. npm is used with
+workspaces, so run all commands from the repo root.
+
+### Install and seed env files
+
+```bash
+make install       # npm install, then copy core/.env + web/.env from the
+                   # examples if they don't exist yet (never overwrites)
+```
+
+Then set the one required value — the auth secret — in `core/.env`:
+
+```bash
+# core/.env
+TEXTCASTER_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 ```
 
 `core/.env`:
@@ -51,6 +135,42 @@ Web no longer needs a shared token — it forwards the visitor's own session
 cookie to core instead. Nothing core-related is marked `PUBLIC_*` — the
 browser never holds a core URL. Live updates reach the browser through web's
 own `/stream` route, which proxies core's SSE endpoint server-side.
+
+### Mailpit for local email
+
+Optional — only if you want to exercise the email flows; the anonymous guest
+flow needs no mail at all. (Option A bundles Mailpit; here you run it
+yourself.)
+
+```bash
+docker run -p 1025:1025 -p 8025:8025 axllent/mailpit
+```
+
+Set `TEXTCASTER_SMTP_URL=smtp://localhost:1025` in `core/.env`, then read
+captured verification/magic-link/reset emails at <http://localhost:8025>.
+
+### Run
+
+Two terminals, from the repo root:
+
+```bash
+make dev-core      # terminal 1
+make dev-web       # terminal 2
+```
+
+Then open <http://localhost:5173>.
+
+### Tests and checks
+
+```bash
+make test          # core + web test suites
+make check         # typecheck core + svelte-check web
+```
+
+---
+
+The rest of this document is **shared reference** — it applies however you
+launched the instance.
 
 ## Identity & sessions
 
@@ -85,6 +205,7 @@ start using the app:
 
 Email accounts require SMTP. Set `TEXTCASTER_SMTP_URL` to enable them; leave
 it unset and the instance runs guest-only for email purposes (see below).
+For where to point it, see the Mailpit notes in Option A/B above.
 
 - **Hard verification.** `POST /register` (email + password) never signs the
   visitor in — an account can't sign in until its verification link (emailed
@@ -115,16 +236,6 @@ it unset and the instance runs guest-only for email purposes (see below).
   created (no half-registered accounts), and the web app hides those forms
   behind a "post as a guest instead" message. The anonymous guest flow is
   entirely unaffected — it needs no email at all.
-
-**Local dev — Mailpit** (catches outgoing mail, no real SMTP server needed):
-
-```bash
-docker run -p 1025:1025 -p 8025:8025 axllent/mailpit
-```
-
-Then set `TEXTCASTER_SMTP_URL=smtp://localhost:1025` in `core/.env` and open
-<http://localhost:8025> to read verification/magic-link/reset emails sent
-during development.
 
 **Cloudron:** the mail addon injects its own SMTP env vars — point
 `TEXTCASTER_SMTP_URL` at them (e.g. build it from `MAIL_SMTP_SERVER`,
@@ -223,20 +334,6 @@ database it cannot handle, with a clear error instead of silent 500s:
   checkout; update your checkout (or delete the dev DB).
 
 From now on, schema upgrades apply automatically at startup.
-
-## Run
-
-In two terminals, from the repo root:
-
-```bash
-npm run dev -w core
-```
-
-```bash
-npm run dev -w web
-```
-
-Then open <http://localhost:5173>.
 
 ## Feature notes
 
@@ -344,17 +441,18 @@ feed item as `<source:comments count="N" feedUrl="…"/>`, pointing at:
 ## Deployment note
 
 The `/stream` route proxies core's SSE endpoint and needs a streaming-capable
-host. `adapter-auto`'s static/serverless targets are fine for local dev but
-don't hold a long-lived response open in production. If you deploy the web
-app for real (Docker/self-host/etc.), switch to `@sveltejs/adapter-node`
-first — dev mode (`npm run dev -w web`) streams fine as-is regardless of
-adapter.
+host. The web app is already configured with `@sveltejs/adapter-node`
+(`web/vite.config.ts`), which holds the long-lived SSE response open — the
+Docker prod image (`make prod-up`) runs exactly this. Serverless/static hosts
+that buffer or time out responses won't sustain the live stream; a plain Node
+host or the bundled Docker stack will.
 
-Serve production traffic over **HTTP/2** (any modern reverse proxy with TLS):
-over HTTP/1.1, browsers allow only 6 concurrent connections per origin and
-every open timeline tab holds one SSE stream. The web app releases a hidden
-tab's stream and replays missed posts when the tab returns, so tab count
-isn't fatal — but HTTP/2 removes the ceiling entirely.
+Serve production traffic over **HTTP/2** (any modern reverse proxy with TLS —
+Caddy in the prod stack does this): over HTTP/1.1, browsers allow only 6
+concurrent connections per origin and every open timeline tab holds one SSE
+stream. The web app releases a hidden tab's stream and replays missed posts
+when the tab returns, so tab count isn't fatal — but HTTP/2 removes the
+ceiling entirely.
 
 ## Manual verification
 
