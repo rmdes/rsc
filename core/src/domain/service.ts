@@ -12,7 +12,7 @@ function normalizeHandle(handle: string): string {
   return normalized
 }
 
-export function createService(repo: Repository, bus: EventBus) {
+export function createService(repo: Repository, bus: EventBus, publicUrl?: string | null) {
   async function ensureLocalUser(handle: string, displayName: string): Promise<User> {
     const normalized = normalizeHandle(handle)
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -38,8 +38,13 @@ export function createService(repo: Repository, bus: EventBus) {
     async createLocalPostAs(handle: string, displayName: string, content: string, replyTo?: Post): Promise<TimelineEntry> {
       const author = await ensureLocalUser(handle, displayName)
       const now = new Date().toISOString()
+      const id = randomUUID()
       const post: Post = {
-        id: randomUUID(), authorId: author.id, source: 'local', guid: randomUUID(), title: null, content, url: null,
+        // Permalink minted at creation (spec: Dave-style permalink refs for
+        // future replies via the existing `replyTo.url ?? replyTo.guid`).
+        // guid stays an opaque UUID — never a URL (guid stability contract).
+        id, authorId: author.id, source: 'local', guid: randomUUID(), title: null, content,
+        url: publicUrl ? `${publicUrl}/post/${id}` : null,
         publishedAt: now, createdAt: now,
         inReplyTo: replyTo ? replyTo.url ?? replyTo.guid : null,
         inReplyToPostId: replyTo?.id ?? null, // local replies are resolved by construction

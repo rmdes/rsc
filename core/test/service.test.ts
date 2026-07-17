@@ -78,3 +78,27 @@ test('followed lens passes the filter through', async () => {
   const tl = await svc.getTimeline(10, undefined, { followedBy: me.id })
   expect(tl.map((e) => e.id)).toEqual(['x1'])
 })
+
+test('local posts get a permalink url when publicUrl is configured', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const service = createService(repo, createEventBus(), 'https://tc.example')
+  const entry = await service.createLocalPostAs('alice', 'Alice', 'hello')
+  expect(entry.url).toBe(`https://tc.example/post/${entry.id}`)
+})
+
+test('local posts keep url null without publicUrl (existing behavior)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const service = createService(repo, createEventBus())
+  const entry = await service.createLocalPostAs('alice', 'Alice', 'hello')
+  expect(entry.url).toBeNull()
+})
+
+test('replies to permalinked posts reference the permalink, not the guid', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const service = createService(repo, createEventBus(), 'https://tc.example')
+  const parent = await service.createLocalPostAs('alice', 'Alice', 'root')
+  const parentPost = await repo.getPost(parent.id)
+  const reply = await service.createLocalPostAs('bob', 'Bob', 'reply', parentPost!)
+  expect(reply.inReplyTo).toBe(`https://tc.example/post/${parent.id}`)
+  expect(reply.threadRootId).toBe(parent.id)
+})

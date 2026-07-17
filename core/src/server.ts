@@ -16,7 +16,7 @@ if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive:
 
 const repo = await createSqliteRepository(config.dbPath)
 const bus = createEventBus()
-const service = createService(repo, bus)
+const service = createService(repo, bus, config.publicUrl)
 const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecret, webOrigin: config.webOrigin, anonTtlDays: config.anonTtlDays })
 const push = createPush({ repo, config })
 const pushIn = createPushIn({ repo, config })
