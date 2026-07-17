@@ -285,3 +285,32 @@ test('comments feed carries per-reply source:account (multi-author, threadwalker
   expect(body).toContain('<source:account service="cast.example.com">bob</source:account>')
   expect(body).toContain('<source:account service="cast.example.com">carol</source:account>')
 })
+
+test('comments feed: a remote cross-instance reply keeps its origin guid and still names its author', async () => {
+  const { repo, service, app } = await makeApp(CTX)
+  // Local root with a minted permalink (createLocalPostAs under CTX.publicUrl).
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  // Ingest a remote reply the real way (shared insert path used by pushes and
+  // polls alike, per ingest.test.ts) — inReplyTo targets the root's permalink
+  // URL so findPostByRef resolves it onto the local post, exactly like a real
+  // cross-instance reply would.
+  // The remote reply ALSO carries its own (non-local) permalink url, distinct
+  // from its guid — this is what makes the test bite: if the injector's guard
+  // ever regressed to localGuid(r).value for a remote item (instead of r.guid),
+  // it would key on this url and silently miss the <source:account> injection,
+  // because renderCommentsFeed's remote branch always emits r.guid verbatim.
+  const dan = await repo.createRemoteUser({ handle: 'dan-remote', displayName: 'Dan', feedUrl: 'https://elsewhere.example/users/dan/feed.xml' })
+  await ingestItems(repo, createEventBus(), dan, [{
+    guid: 'origin-guid-77', title: null, content: 'a remote reply', url: 'https://elsewhere.example/notes/77',
+    publishedAt: '2026-01-03T00:00:00.000Z', inReplyTo: root.url, sourceName: null, sourceFeedUrl: null, contentMarkdown: null,
+  }])
+  const replies = await service.listRepliesByPostId(root.id)
+  expect(replies.map((r) => r.content)).toContain('a remote reply') // sanity: ingest really resolved onto the local root
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  // author named, even though the reply is remote
+  expect(body).toContain('<source:account service="cast.example.com">dan-remote</source:account>')
+  // origin guid kept verbatim — never swapped for the reply's own url or the local permalink form
+  expect(body).toMatch(/<guid isPermaLink="false">origin-guid-77<\/guid>/)
+  expect(body).not.toContain('<guid>https://elsewhere.example/notes/77</guid>') // not localGuid-derived
+  expect(body).not.toContain(`<guid>${CTX.publicUrl}/post/`) // not swapped for a local permalink either
+})
