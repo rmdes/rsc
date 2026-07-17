@@ -94,7 +94,17 @@ it unset and the instance runs guest-only for email purposes (see below).
   (`POST /api/auth/sign-in/magic-link`) and clicking it is a full sign-in
   *and* marks the account verified in the same step — it's the recovery path
   for a registered-but-unverified account, not just an alternative to a
-  password.
+  password. NOTE (better-auth `revokeUnprovenAccountAccess`): when a magic
+  link unblocks a *still-unverified* password registration, better-auth
+  revokes that unproven password so a pre-verification hijacker can't keep
+  it — the user's next password sign-in then fails, and they set a new one
+  via `/forgot` → `/reset`. Expected, not a bug.
+- **Guest → account carry-over is same-browser.** Registering while browsing
+  as a guest keeps the guest's posts only if verification and the first
+  sign-in happen in the SAME browser (the anon cookie is what links them).
+  Verify on one device and first sign in on another → the guest is not
+  carried over. Same-browser is the normal path; cross-device merge waits on
+  IndieAuth.
 - **Password reset** (`POST /api/auth/request-password-reset` then
   `POST /api/auth/reset-password`) needs mail for the same reason: the reset
   link is emailed.

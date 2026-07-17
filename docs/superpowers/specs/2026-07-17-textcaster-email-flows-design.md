@@ -130,26 +130,32 @@ Registering WHILE anonymous must not strand the guest session:
   sweep can never reclaim (see load-bearing constraint). WHEN it fires
   relative to hard verification is a MANDATORY plan-time probe.
 
-  **F-1 (review) — the probe's PASS-CONDITION is: linking fires at the first
-  VERIFIED sign-in, not at sign-up. PROBED 2026-07-17 against installed
-  better-auth 1.6.23 (requireEmailVerification + anonymous + sign-up-while-
-  anon) — IT PASSES BY DEFAULT.** Observed, no deferral logic needed:
+  **F-1 (review) — the probe's PASS-CONDITION is: linking never fires on an
+  UNVERIFIED account. PROBED 2026-07-17 against installed better-auth 1.6.23,
+  CORRECTED at final review (rev 3) against the shipped branch.** No deferral
+  logic needed. Observed on the branch:
   - Sign-up-while-anon does NOT change the session cookie — the browser
     keeps the anonymous session (`isAnonymous=true`), so `ensureCoreUser`
     keeps resolving to the guest and NO limbo core row is minted for the
     unverified email user.
-  - `onLinkAccount` does NOT fire at sign-up; it fires at VERIFICATION
-    (the verify-link GET), with `newUser.emailVerified=true`, then the anon
-    user is deleted. Sign-in before verify → 403.
-  - Bonus observed: the verify-link GET completes the link even WITHOUT the
-    anon cookie on that request (better-auth tracks the anon→new linkage
-    server-side at sign-up-while-anon) — so the web flow need not carry the
-    anon cookie onto the verification click; the link works cross-device.
+  - `onLinkAccount` does NOT fire at sign-up, and does NOT fire at the
+    verify-link GET. It fires on the FIRST SIGN-IN AFTER VERIFICATION that
+    still carries the anon cookie (better-auth's anonymous `after` hook
+    requires an inbound anonymous session on the request). Sign-in before
+    verify → 403. After it fires, the anon user is deleted.
+  - **CAVEAT (rev 3, corrected — the earlier "works cross-device" note was
+    WRONG):** because the link fires on an anon-cookied sign-in, the same
+    browser that registered must be the one that first signs in. Verify on
+    device A, first sign-in on device B (no anon cookie) → the guest is
+    never re-pointed, stays anonymous, and the sweep eventually reclaims its
+    pre-registration posts. Accepted for v1 (same-browser is the common
+    path); the register page's "keeps your posts" copy is caveated
+    accordingly, and IndieAuth/account-merge is the real future fix.
   - Consequence for the plan: the existing `onLinkAccount` re-point
     (auth.ts:42-51) is already correctly timed under hard verification. The
     plan only ENABLES verification + wires the mailer; it does NOT add
-    deferral logic. Still pin both invariant tests below — this probe is the
-    reason to expect them green, not a substitute for them.
+    deferral logic. Both invariant tests below are pinned (they exercise the
+    same-browser path, which is the tested-and-supported one).
 - Pin BOTH invariant tests: (a) register while guest → verify → sign in →
   the guest's pre-registration posts are attributed to the account; (b)
   register while guest → ABANDON (never verify) → the guest stays anonymous

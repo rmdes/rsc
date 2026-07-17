@@ -64,7 +64,7 @@ test('registration while anonymous re-points the guest core user (onLinkAccount)
 
   const res = await app.request('/api/auth/sign-up/email', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie },
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie, 'x-forwarded-for': uniqueIp() },
     body: JSON.stringify({ email: 'a@b.example', password: 'password123', name: 'a' }),
   })
   expect(res.status).toBe(200)
@@ -76,7 +76,7 @@ test('registration while anonymous re-points the guest core user (onLinkAccount)
   await verifyByEmail(app, mail, 'a@b.example')
   const signIn = await app.request('/api/auth/sign-in/email', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie },
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie, 'x-forwarded-for': uniqueIp() },
     body: JSON.stringify({ email: 'a@b.example', password: 'password123' }),
   })
   expect(signIn.status).toBe(200)
@@ -98,7 +98,7 @@ test('login while anonymous abandons the guest core user (orphaned, reclaimed in
   // user the way a real GET /me would lazily (Task 4 route, not wired yet).
   const signUp = await app.request('/api/auth/sign-up/email', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'http://web.test' },
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', 'x-forwarded-for': uniqueIp() },
     body: JSON.stringify({ email: 'x@b.example', password: 'password123', name: 'x' }),
   })
   expect(signUp.status).toBe(200)
@@ -116,7 +116,7 @@ test('login while anonymous abandons the guest core user (orphaned, reclaimed in
   // core user for X and abandons the guest instead of re-pointing it.
   const res = await app.request('/api/auth/sign-in/email', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie },
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie, 'x-forwarded-for': uniqueIp() },
     body: JSON.stringify({ email: 'x@b.example', password: 'password123' }),
   })
   expect(res.status).toBe(200)
@@ -250,13 +250,18 @@ test('hard verification: login blocked until the emailed link is visited', async
 })
 
 test('magic link logs in and marks the account verified', async () => {
-  const { app, mail } = await makeApp()
+  const { app, mail, repo } = await makeApp()
   const r = await app.request('/api/auth/sign-in/magic-link', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://web.test', 'x-forwarded-for': uniqueIp() }, body: JSON.stringify({ email: 'm@b.test' }) })
   expect(r.status).toBe(200)
   // Subject is "Your Textcaster login link" — matches "login", not "log in".
   const link = /(https?:\/\/\S+)/.exec(mail.sent.find((m) => /login/i.test(m.subject))!.text)![1]
   const consume = await app.request(link!, { headers: { origin: 'http://web.test' } })
   expect(consume.headers.get('set-cookie') ?? '').toContain('session_token')
+  // I2 (final review): the load-bearing recovery invariant — consuming a magic
+  // link marks the account verified, so a user stuck behind hard verification
+  // can unblock by requesting one. Assert it directly, not just the session.
+  const verified = repo.raw.prepare('SELECT emailVerified FROM user WHERE email = ?').get('m@b.test') as { emailVerified: number }
+  expect(verified.emailVerified).toBe(1)
 })
 
 test('password reset: request emails a link, reset changes the password', async () => {
@@ -316,7 +321,7 @@ test('guest upgrade abandoned: register but never verify — guest stays anonymo
   const { app, repo } = await makeApp()
   const anon = await anonSession(app)
   const guest = (await (await app.request('/me', { headers: { cookie: anon } })).json()).user
-  await app.request('/api/auth/sign-up/email', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie: anon }, body: JSON.stringify({ email: 'x@b.test', password: 'password123', name: 'x' }) })
+  await app.request('/api/auth/sign-up/email', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie: anon, 'x-forwarded-for': uniqueIp() }, body: JSON.stringify({ email: 'x@b.test', password: 'password123', name: 'x' }) })
   // still anonymous: /me over the anon cookie is still the guest, still isAnonymous
   const me = await (await app.request('/me', { headers: { cookie: anon } })).json()
   expect(me.isAnonymous).toBe(true)

@@ -20,7 +20,7 @@
 	{:else if !data.mailEnabled}
 		<p class="notice">Email accounts are not available on this instance — post as a guest instead.</p>
 	{:else}
-		<p class="auth-note">Keeps your posts and follows under a permanent account — no more anonymous handle.</p>
+		<p class="auth-note">Keeps your posts and follows under a permanent account — no more anonymous handle. Verify and sign in from this same browser to carry them over.</p>
 
 		{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
