@@ -515,6 +515,7 @@ button:hover {
    unification — task 3). */
 
 .post .body {
+	position: relative;
 	max-height: 14rem;
 	overflow: hidden;
 	cursor: default;
@@ -522,6 +523,28 @@ button:hover {
 
 .post .body.expanded {
 	max-height: none;
+}
+
+/* The affordance: bodies JS has measured as actually clipped get a fade +
+   "Show more" pill (no-JS never sets .clipped — those readers reach full
+   text via the conversation link, as before). */
+.post .body.clipped:not(.expanded)::after {
+	content: 'Show more';
+	position: absolute;
+	inset: auto 0 0 0;
+	padding: 3rem 0 var(--space-xs);
+	text-align: center;
+	font-size: 0.8125rem;
+	font-weight: 600;
+	color: var(--color-accent);
+	background: linear-gradient(transparent, var(--color-surface) 75%);
+	cursor: pointer;
+}
+
+/* Remote cards are accent-tinted — the fade must dissolve into THAT color
+   or the strip reads as a pale band. */
+.post.remote .body.clipped:not(.expanded)::after {
+	background: linear-gradient(transparent, color-mix(in srgb, var(--color-accent) 4%, var(--color-surface)) 75%);
 }
 
 /* Letter avatar (rss.chat's populateAvatar fallback — the initial IS the
