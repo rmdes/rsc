@@ -89,7 +89,7 @@ feeds. Trackable in [`docs/superpowers/specs/`](docs/superpowers/specs/).
 Docker Compose runs the whole dev stack — no host Node install needed.
 
 ```bash
-git clone <this repo> && cd textcaster
+git clone https://github.com/rmdes/textcaster.git && cd textcaster
 make up                       # core + web + Mailpit, live reload
 ```
 

@@ -33,7 +33,7 @@ One command brings up core, web, and Mailpit with live reload: edits to
 ### Dev stack
 
 ```bash
-git clone <this repo> && cd textcaster
+git clone https://github.com/rmdes/textcaster.git && cd textcaster
 make up
 ```
 
