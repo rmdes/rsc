@@ -1,4 +1,55 @@
-# Spec review — better-auth session layer (2026-07-17, 935c1c7)
+# Spec review — better-auth session layer (2026-07-17)
+
+## Re-review — rev 2 (41dc739): all prior findings landed; two new items from the lazy-minting restructure
+
+Verified against the `935c1c7..41dc739` diff and the code. SEC-1 (full cookie
+mechanics section — host-only cookie, baseURL/trustedOrigins, authed-fetch
+wrapper, relay attributes, both failure modes tested), SEC-2 (CSRF relocated to
+SvelteKit `csrf.checkOrigin` + `trustedOrigins`), SEC-3 (onLinkAccount
+ordering/atomicity + create-hook gate as plan-time probes with tests either
+way), and COR-1..5 (auth_user_id UNIQUE+indexed, repo surface enumerated,
+transactional sweep, shared DB handle, migrator disabled) all landed accurately
+and grounded. P-1 chose **lazy minting**, which genuinely deletes the bootstrap
+hook, the Accept-header heuristic, and the SEC-4 read-path churn — a real
+simplification.
+
+The restructure introduced two items rev 2 does not close:
+
+- **NEW-1 — MED (security/consistency): OPML import is an un-gated feed-creation
+  path.** `importFollowingOpml` calls `addRemoteUser` ("Case 3: create a remote
+  user, then follow", `core/src/domain/opml.ts:113`) — it *creates feeds*. But
+  rev 2 lists `POST /me/follows/opml` among the session-authed follow writes a
+  guest may perform, while declaring "adding remote feeds becomes a
+  registered-only action" and gating only `POST /users` on non-anonymous. So a
+  guest can bulk-add feeds (real polling cost) through OPML import, bypassing the
+  stated boundary. This is a guard-the-operation-not-one-caller gap: the
+  non-anonymous check belongs on the feed-creation *capability*, so every route
+  that reaches `addRemoteUser` (both `POST /users` and `POST /me/follows/opml`)
+  enforces it. **Pin OPML import as registered-only** (or split it so a guest's
+  OPML only follows already-known feeds and silently skips feed *creation* —
+  heavier; registered-only is the lazy fix).
+
+- **NEW-2 — LOW (pin): the first-write mint-then-act cookie is born mid-action.**
+  On a sessionless first write there is no inbound `Cookie` to forward — the
+  action calls `sign-in/anonymous`, and must then thread the **just-minted**
+  `Set-Cookie` onto its *immediate* follow-up core call (POST /posts or
+  /me/follows) AND relay it to the browser. The SEC-1 authed-fetch wrapper is
+  described as "forward the inbound cookie," which doesn't cover a cookie created
+  within the same request. Pin: the first-write action captures sign-in's
+  Set-Cookie, reuses it for the second core call in-process, and relays it out.
+
+- **NOTE (accepted edge, LOW):** two near-simultaneous first-writes from one
+  sessionless visitor (double-click, two tabs) mint two guest accounts; the
+  extra is orphaned and the sweep reclaims it. Add to the "Pinned side-effects,
+  accepted not fixed" list rather than solving it.
+
+**Verdict:** close NEW-1 (OPML gating), pin NEW-2 (mint-then-act cookie), note
+the double-mint edge — then ready to plan. Everything from rev 1 is correctly
+resolved.
+
+---
+
+## Original review — rev 1 (935c1c7)
 
 Security-first (this is an auth milestone), then correctness, then ponytail.
 Every claim grounded in a file read of the current code.

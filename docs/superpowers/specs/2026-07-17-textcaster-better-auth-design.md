@@ -1,9 +1,9 @@
 # Textcaster — better-auth session layer (anonymous-first) design
 
-Date: 2026-07-17 (rev 2 — folds in
+Date: 2026-07-17 (rev 3 — folds in
 `docs/superpowers/reviews/2026-07-17-better-auth-spec-review.md`
-SEC-1/2/3/4, COR-1..5, P-1)
-Status: rev 2 pending review
+SEC-1/2/3/4, COR-1..5, P-1; rev-2 re-review NEW-1/NEW-2 + double-mint note)
+Status: rev 3 — approved for planning
 Author: Ricardo (rmdes) with Claude Code
 Prior art: `2026-07-15-textcaster-design.md` (deferred: IndieAuth/auth);
 `2026-07-16-textcaster-following-design.md` explicitly deferred to this
@@ -110,9 +110,13 @@ if the discovery cue proves wanted.
 
 **First write (the mint).** A visitor's first post/reply/follow arrives at
 a web form action with no session cookie. The action calls core
-`POST /api/auth/sign-in/anonymous`, relays the `Set-Cookie` (mechanics
-above), then performs the requested action with the fresh session — one
-round trip, invisible to the visitor. Core, on anonymous auth-user
+`POST /api/auth/sign-in/anonymous`, then performs the requested action with
+the fresh session — one round trip, invisible to the visitor. NEW-2 pin:
+there is no inbound cookie to forward here — the action captures
+sign-in's `Set-Cookie`, threads that just-minted cookie onto its immediate
+follow-up core call in-process, AND relays it to the browser (mechanics
+above). The authed-fetch wrapper accepts an explicit cookie value for
+exactly this case. Core, on anonymous auth-user
 creation (better-auth `databaseHooks.user.create.after`, gated on
 `isAnonymous`), creates the linked core local user: handle `guest-` +
 short random suffix (retry on `HandleTakenError`), display name = handle.
@@ -162,6 +166,9 @@ Pinned side-effects, accepted not fixed:
   deletion is local-only.
 - A cleared/lost cookie orphans the guest account either way; the sweep is
   the garbage collector for that too.
+- Two near-simultaneous first-writes from one sessionless visitor
+  (double-click, two tabs) mint two guest accounts; the spare is orphaned
+  and the sweep reclaims it. Not worth solving.
 
 ## Request flow and core API changes
 
@@ -173,17 +180,24 @@ Route changes (breaking, pre-release, no compat shims):
 - `POST /posts` — session-authed. Author = session's core user (resolved
   via `auth_user_id`). Body drops `handle`/`displayName`. Bearer token no
   longer accepted.
-- `POST /me/follows`, `DELETE /me/follows/:target`,
-  `POST /me/follows/opml` — session-authed, replace the
-  `POST|DELETE /users/:handle/follows*` write routes (which are removed).
-  You can only mutate your own follows now — this is the "lock lenses to
-  their owner" the following spec deferred, applied to writes; lens
-  *viewing* stays public (they are lenses, not private inboxes).
-- `POST /users` — creating a REMOTE user (add feed to monitor) requires a
-  session that is **not** anonymous (403 otherwise: a new feed is a real
-  polling cost for the whole instance). The ops bearer token is also
-  accepted on this route (smoke scripts, seeding) — `session-or-token`
-  middleware, this route only.
+- `POST /me/follows`, `DELETE /me/follows/:target` — session-authed
+  (anonymous OK), replace the `POST|DELETE /users/:handle/follows*` write
+  routes (which are removed). You can only mutate your own follows now —
+  this is the "lock lenses to their owner" the following spec deferred,
+  applied to writes; lens *viewing* stays public (they are lenses, not
+  private inboxes).
+- **The non-anonymous check guards the feed-creation capability, not one
+  route** (NEW-1): every path that reaches `addRemoteUser` requires a
+  registered session, because a new feed is a real polling cost for the
+  whole instance. That is two routes:
+  - `POST /users` — creating a REMOTE user (add feed). 403 for anonymous
+    sessions. The ops bearer token is also accepted here (smoke scripts,
+    seeding) — `session-or-token` middleware, this route only.
+  - `POST /me/follows/opml` — OPML import creates feeds (its Case 3 calls
+    `addRemoteUser`, `opml.ts:113`), so it is **registered-only** too, 403
+    for anonymous sessions. Splitting import into guest-follows-known /
+    registered-creates was considered and rejected — registered-only is
+    the lazy fix and OPML import is a power-user feature anyway.
 - `PATCH /me` — rename (above). `GET /me` — the session's core user, for
   the web layout's identity block (404-shaped "no session" is a normal
   state now, not an error).
@@ -218,9 +232,10 @@ invoke `ui-ux-pro-max` first, per CLAUDE.md).
 - **Forms lose identity fields.** Compose dialog, reply composer,
   follow/unfollow, OPML import: no more `handle`/`displayName` inputs — the
   session supplies identity server-side, minting it on first use.
-- **Add-remote-feed gating.** Form renders only for registered users;
-  anonymous users and sessionless visitors see a one-line "Register to add
-  feeds" nudge. The 403 in core is the boundary; UI hiding is courtesy.
+- **Add-remote-feed gating.** The add-feed form AND the OPML import form
+  render only for registered users; anonymous users and sessionless
+  visitors see a one-line "Register to add feeds" nudge. The 403s in core
+  are the boundary; UI hiding is courtesy.
 - **`/register`, `/login`** — plain SSR forms (email + password), SvelteKit
   actions proxying to core's better-auth endpoints, inline `fail()` errors
   (email taken, bad credentials). Register-while-anonymous = the upgrade.
@@ -264,7 +279,8 @@ that is a new migration entry, same rule.
 
 - Core: first-write mint creates the linked guest user (and retries handle
   collisions); session-authed post/follow attribute to the session user;
-  401 without a session on user actions; 403 anonymous add-remote-feed;
+  401 without a session on user actions; 403 anonymous add-remote-feed AND
+  403 anonymous OPML import (both `addRemoteUser` reachers);
   token still works on `POST /users`, and ONLY there; `PATCH /me` rename +
   409 conflict; `onLinkAccount` re-points the link, posts/follows survive
   registration, and no second core user is minted (SEC-3); sweep deletes
