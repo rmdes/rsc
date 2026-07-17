@@ -91,6 +91,7 @@
 						<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
 					{/if}
 					<span class="kind">{root.source}</span>
+					<a class="permalink" href="/post/{root.id}"><time datetime={root.publishedAt}>{root.publishedAt.slice(0, 10)}</time></a>
 				</div>
 				{#if root.title}<h2 class="title">{root.title}</h2>{/if}
 				<PostBody post={root} />

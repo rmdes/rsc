@@ -98,7 +98,10 @@
 							stackOpen[post.id] = !stackOpen[post.id]
 						}}><span class="glyph" aria-hidden="true">▸</span>{stackOpen[post.id] ? 'Hide' : `${others.length} more in this conversation`}</a>
 				{/if}
-				<a class="source" href="/post/{post.id}">{post.replyCount || post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
+				<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+				{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
+					<a class="source" href="/post/{post.id}">Reply</a>
+				{/if}
 				{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 					<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 				{/if}
@@ -113,6 +116,7 @@
 							<li class="post" class:remote={p.source === 'remote'}>
 								{#if p.title}<h3 class="title">{p.title}</h3>{/if}
 								<PostBody post={p} />
+								<a class="permalink" href="/post/{p.id}"><time datetime={p.publishedAt}>{p.publishedAt.slice(0, 10)}</time></a>
 							</li>
 						{/each}
 					</ul>

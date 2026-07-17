@@ -271,6 +271,24 @@ button:hover {
 	margin-left: auto;
 }
 
+/* Timestamp IS the permalink: every card's date links to /post/<id>, the
+   shareable conversation URL anchored at that post — this replaces the old
+   "View conversation" text links. */
+.post .permalink {
+	color: var(--color-secondary);
+	font-size: 0.875rem;
+	text-decoration: none;
+}
+
+.post .byline .permalink {
+	margin-left: auto;
+}
+
+.post .permalink:hover {
+	color: var(--color-accent);
+	text-decoration: underline;
+}
+
 .post .kind {
 	font-size: 0.6875rem;
 	font-weight: 600;

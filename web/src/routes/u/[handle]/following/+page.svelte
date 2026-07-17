@@ -99,6 +99,7 @@
 							<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						{/if}
 						<span class="kind">{post.source}</span>
+						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
@@ -115,7 +116,9 @@
 								toggleWedge(post.id)
 							}}><span class="glyph" aria-hidden="true">▸</span>{expanded[post.id] ? 'Hide replies' : `${post.replyCount} ${post.replyCount === 1 ? 'reply' : 'replies'}`}</a>
 					{/if}
-					<a class="source" href="/post/{post.id}">{post.replyCount || post.threadRootId || post.inReplyToPostId ? 'View conversation' : 'Reply'}</a>
+					{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
+						<a class="source" href="/post/{post.id}">Reply</a>
+					{/if}
 					{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 					{/if}
