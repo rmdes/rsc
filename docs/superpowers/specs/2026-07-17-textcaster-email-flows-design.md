@@ -113,18 +113,26 @@ Registering WHILE anonymous must not strand the guest session:
   sweep can never reclaim (see load-bearing constraint). WHEN it fires
   relative to hard verification is a MANDATORY plan-time probe.
 
-  **F-1 (review) — the probe's PASS-CONDITION is precise: linking fires at
-  the first VERIFIED sign-in, not at sign-up.** The existing
-  throw-aborts-deletion probe was done WITHOUT `requireEmailVerification`,
-  so it does not cover this. Two outcomes:
-  - Fires at verified sign-in → correct by construction: guest stays
-    anonymous through the verify-wait, keeps posting, and its posts move to
-    the account only once it's real. Nothing to change.
-  - Fires at sign-up (before verification) → the plan MUST defer the
-    re-point/deletion until verification (keep the anon session and its core
-    row alive until then), because otherwise the guest's posts strand on an
-    unverifiable, unsweepable account and the deleted anon record breaks
-    "the visitor REMAINS in their anonymous session until verified."
+  **F-1 (review) — the probe's PASS-CONDITION is: linking fires at the first
+  VERIFIED sign-in, not at sign-up. PROBED 2026-07-17 against installed
+  better-auth 1.6.23 (requireEmailVerification + anonymous + sign-up-while-
+  anon) — IT PASSES BY DEFAULT.** Observed, no deferral logic needed:
+  - Sign-up-while-anon does NOT change the session cookie — the browser
+    keeps the anonymous session (`isAnonymous=true`), so `ensureCoreUser`
+    keeps resolving to the guest and NO limbo core row is minted for the
+    unverified email user.
+  - `onLinkAccount` does NOT fire at sign-up; it fires at VERIFICATION
+    (the verify-link GET), with `newUser.emailVerified=true`, then the anon
+    user is deleted. Sign-in before verify → 403.
+  - Bonus observed: the verify-link GET completes the link even WITHOUT the
+    anon cookie on that request (better-auth tracks the anon→new linkage
+    server-side at sign-up-while-anon) — so the web flow need not carry the
+    anon cookie onto the verification click; the link works cross-device.
+  - Consequence for the plan: the existing `onLinkAccount` re-point
+    (auth.ts:42-51) is already correctly timed under hard verification. The
+    plan only ENABLES verification + wires the mailer; it does NOT add
+    deferral logic. Still pin both invariant tests below — this probe is the
+    reason to expect them green, not a substitute for them.
 - Pin BOTH invariant tests: (a) register while guest → verify → sign in →
   the guest's pre-registration posts are attributed to the account; (b)
   register while guest → ABANDON (never verify) → the guest stays anonymous
