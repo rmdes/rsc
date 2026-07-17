@@ -813,3 +813,22 @@ body .carta-theme__default .carta-renderer {
 	overflow-y: visible;
 	padding: var(--space-sm);
 }
+
+/* Slash-menu (@cartamd/plugin-slash) and emoji-autocomplete (@cartamd/plugin-emoji)
+   popups: same load-order rule as the block above — their default.css sets
+   hardcoded light colors via custom properties scoped to `.carta-slash` /
+   `.carta-emoji`, so redeclare those properties under a `body`-prefixed
+   selector to win the tie. */
+body .carta-slash,
+body .carta-emoji {
+	--background: var(--color-surface);
+	--group-color: var(--color-secondary);
+	--title-color: var(--color-foreground);
+	--description-color: var(--color-secondary);
+	--hover-background: var(--color-muted);
+	border: 1px solid var(--color-border);
+}
+
+body .carta-emoji {
+	--contrast-background: var(--color-background);
+}

@@ -24,6 +24,8 @@
 		"vitest": "^4.1.10"
 	},
 	"dependencies": {
+		"@cartamd/plugin-emoji": "4.3.0",
+		"@cartamd/plugin-slash": "4.2.0",
 		"carta-md": "^4.11.2",
 		"dompurify": "^3.4.12",
 		"rehype-highlight": "7.0.2",

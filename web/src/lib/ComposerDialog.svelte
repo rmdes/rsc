@@ -25,6 +25,11 @@
 	let content = $state('')
 	let error = $state('')
 	let dialog = $state<HTMLDialogElement>()
+	// Carta measures its textarea with requestAnimationFrame at mount; inside a
+	// CLOSED dialog (display:none) that measures 0 and the inline height sticks
+	// at 0px — a dead, unclickable editor until the first keystroke. So the
+	// composer only mounts while the dialog is open.
+	let isOpen = $state(false)
 
 	// Post-mount flag (H4 rule): SSR and first client render both show the
 	// plain <details> form — the no-JS baseline — then this flips and the
@@ -66,7 +71,14 @@
 </script>
 
 {#if enhanced}
-	<button type="button" class="composer-open" onclick={() => dialog?.showModal()}>
+	<button
+		type="button"
+		class="composer-open"
+		onclick={() => {
+			isOpen = true
+			dialog?.showModal()
+		}}
+	>
 		{title}{#if hasDraft}<span class="draft-badge">draft</span>{/if}
 	</button>
 	<!-- Click-on-backdrop closes; Esc is the native keyboard equivalent. -->
@@ -78,6 +90,7 @@
 		onclick={(e) => {
 			if (e.target === dialog) dialog?.close()
 		}}
+		onclose={() => (isOpen = false)}
 	>
 		<div class="composer-dialog-body">
 			<header>
@@ -90,7 +103,9 @@
 				{#if showDisplayName}
 					<input name="displayName" placeholder="display name (optional)" bind:value={displayName} />
 				{/if}
-				<MarkdownComposer {placeholder} bind:value={content} />
+				{#if isOpen}
+					<MarkdownComposer {placeholder} bind:value={content} />
+				{/if}
 				<button>{submitLabel}</button>
 			</form>
 		</div>
