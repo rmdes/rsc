@@ -6,5 +6,7 @@ node_modules
 .svelte-kit
 web/build
 .env
+**/.env
+**/.env.*
 .superpowers
 docs
