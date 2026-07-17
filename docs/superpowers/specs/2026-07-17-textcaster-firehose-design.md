@@ -92,6 +92,15 @@ existing cross-instance reply refs that resolved against UUID guids.
 Opaque guid + `<link>` is fully RSS 2.0 compliant; the permalink lives one
 element over. New-post guids stay UUIDs for the same stability reason.
 
+> **SUPERSEDED (2026-07-17) by
+> `2026-07-17-textcaster-walkable-feeds-design.md`.** This divergence is
+> reversed: emitted guids for url-bearing local posts become the bare
+> permalink (attribute-free), which Dave's `threadwalker` requires. The
+> stability argument above held only under "real external peers exist";
+> pre-release they don't, so the one-time item-identity break is taken
+> deliberately now. The guid-stability assertions in this spec's test list
+> change to the new shape — see the walkable-feeds spec's F-1.
+
 ## Push-out (REAL WORK — review F-1, not a one-liner)
 
 The firehose is a first-class push topic, both protocols. The catch:
