@@ -88,6 +88,14 @@ first / enclosures second, theme toggle as enhancement only).
   typography, accessibility — MUST invoke the `ui-ux-pro-max:ui-ux-pro-max`
   skill first, and MUST follow MASTER.md. Page-specific overrides go in
   `design-system/textcaster/pages/<page>.md` and beat MASTER.md.
+- When writing or reviewing SvelteKit/Svelte 5 code in `web/`, consult the
+  relevant `svelte-skills` first — `svelte-runes` (state/derived/effect/
+  props/bindable — the reactivity traps), `sveltekit-data-flow` (loads vs
+  form actions, fail/redirect, serialization), `sveltekit-structure`
+  (routing, layouts, SSR/hydration), `svelte-template-directives`
+  (`{@html}`, `{@render}`, `{@attach}` over `use:`). They're pattern
+  references, not a mandate to adopt every feature (we don't use remote
+  functions or component libraries — YAGNI).
 - No raw hex in components: every color comes from a `--color-*` variable
   defined in `web/src/app.css` (which mirrors MASTER.md). Change palette in
   both places or not at all.
