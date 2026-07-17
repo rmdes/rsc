@@ -103,6 +103,9 @@ test('user actions 401 without a session; 403 gates for anonymous', async () => 
   const { app } = await makeApp()
   expect((await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"content":"x"}' })).status).toBe(401)
   expect((await app.request('/me')).status).toBe(401)
+  expect((await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"handle":"x"}' })).status).toBe(401)
+  expect((await app.request('/me/follows/whoever', { method: 'DELETE' })).status).toBe(401)
+  expect((await app.request('/me/follows/opml', { method: 'POST', body: '<opml></opml>' })).status).toBe(401)
   const anon = await anonSession(app)
   const addFeed = await app.request('/users', {
     method: 'POST',
@@ -123,7 +126,9 @@ test('PATCH /me renames; posts and follows survive; 409 on conflict', async () =
   const { app } = await makeApp()
   const cookie = await anonSession(app)
   await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: '{"content":"hello"}' })
-  const before = (await (await app.request('/me', { headers: { cookie } })).json()).user
+  const meRes = await (await app.request('/me', { headers: { cookie } })).json()
+  expect(meRes.isAnonymous).toBe(true)
+  const before = meRes.user
   const renamed = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{"handle":"ricardo","displayName":"Ricardo"}' })
   expect(renamed.status).toBe(200)
   const timeline = (await (await app.request('/timeline')).json()).timeline
