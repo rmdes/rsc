@@ -24,10 +24,12 @@
     "remark-parse": "11.0.0",
     "remark-rehype": "11.1.2",
     "sanitize-html": "^2.17.6",
-    "unified": "11.0.5"
+    "unified": "11.0.5",
+    "unist-util-visit": "5.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
+    "@types/hast": "3.0.5",
     "@types/node": "^24.13.3",
     "@types/sanitize-html": "^2.16.1",
     "typescript": "^6.0.3",

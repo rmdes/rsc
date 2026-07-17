@@ -160,3 +160,11 @@ test('small fence stays under HIGHLIGHT_MAX_CHARS and still gets hljs markup (gu
   const html = renderLocalHtml('```js\nconst x = 1\n```')
   expect(html).toContain('<code class="hljs language-js">')
 })
+
+test('highlight budget is per DOCUMENT: two 6KB fences highlight exactly once (I1 many-fences vector)', () => {
+  const fence = '```js\n' + 'const y = 2\n'.repeat(500) + '```'
+  const html = renderLocalHtml(fence + '\n\n' + fence)
+  expect(html.match(/class="hljs language-js"/g)?.length ?? 0).toBe(1) // first fence fits the budget
+  expect(html).toContain('<pre><code class="language-js">') // second renders plain
+  expect(html).not.toContain('no-highlight')
+})

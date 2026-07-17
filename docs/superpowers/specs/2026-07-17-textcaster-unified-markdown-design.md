@@ -236,3 +236,11 @@ sanitizer + installed carta source), each strengthening or correcting rev 2:
 Net: the residual-divergence list from rev 2 is now EMPTY apart from the
 pre-existing `PREVIEW_SANITIZE_OPTS` scope difference, which predates this
 milestone.
+
+Post-merge amendment (final review I1, 2026-07-17): the server twins cap
+synchronous highlighting at a per-document `HIGHLIGHT_MAX_CHARS = 10_000`
+budget (DoS guard — sync SSE render path, ~10ms/KB measured highlight
+cost). The Carta preview deliberately does NOT mirror the cap: an
+over-budget fence highlights in the author's own browser but publishes
+plain. Client-side self-cost only; accepted as the one new residual
+divergence.
