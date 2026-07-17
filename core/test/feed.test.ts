@@ -314,3 +314,58 @@ test('comments feed: a remote cross-instance reply keeps its origin guid and sti
   expect(body).not.toContain('<guid>https://elsewhere.example/notes/77</guid>') // not localGuid-derived
   expect(body).not.toContain(`<guid>${CTX.publicUrl}/post/`) // not swapped for a local permalink either
 })
+
+test('a Textcaster conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const wait = () => new Promise((r) => setTimeout(r, 2)) // repo orders replies by published_at then id (a
+  // random UUID) — without this, sibling replies minted in the same millisecond
+  // sort arbitrarily; force strictly-increasing published_at for a stable outline.
+  const bob = await service.createLocalPostAs('bob', 'Bob', 'Bob replies to Alice', root)
+  await wait()
+  await service.createLocalPostAs('carol', 'Carol', 'Carol replies to Bob', bob)
+  await wait()
+  await service.createLocalPostAs('carol', 'Carol', 'Carol replies to the root', root)
+
+  const startingGuid = `${CTX.publicUrl}/post/${root.id}` // the permalink walker.js compares against
+
+  // --- walker.js semantics, reproduced ---
+  async function fetchItems(url: string): Promise<Array<{ guid: string; author: string; text: string; commentsFeed: string | null }>> {
+    const path = url.replace(CTX.publicUrl!, '')
+    const xml = await (await app.request(path)).text()
+    const items: any[] = []
+    for (const block of xml.split('<item>').slice(1)) {
+      const item = block.slice(0, block.indexOf('</item>'))
+      const guid = (item.match(/<guid[^>]*>([^<]+)<\/guid>/) ?? [])[1] ?? ''
+      const author = (item.match(/<source:account[^>]*>([^<]+)<\/source:account>/) ?? [])[1] ?? '?'
+      const text = (item.match(/<source:markdown>([^<]*)/) ?? [])[1] ?? ''
+      const commentsFeed = (item.match(/<source:comments[^>]*feedUrl="([^"]+)"/) ?? [])[1] ?? null
+      items.push({ guid, author, text, commentsFeed })
+    }
+    return items
+  }
+
+  const outline: string[] = []
+  async function walk(item: { author: string; text: string; commentsFeed: string | null }, depth: number) {
+    outline.push('  '.repeat(depth) + `${item.author}: ${item.text}`)
+    if (!item.commentsFeed) return
+    for (const reply of await fetchItems(item.commentsFeed)) await walk(reply, depth + 1)
+  }
+
+  const top = (await fetchItems(`${CTX.publicUrl}/users/alice/feed.xml`)).find((i) => i.guid === startingGuid)
+  expect(top).toBeDefined() // guid string-compare succeeds ONLY if the guid is a bare permalink (Task 1)
+  await walk(top!, 0)
+
+  // Author label is the account HANDLE (source:account carries `author.handle`,
+  // never displayName — see app.ts injectSourceAccounts call-sites) — normalizeHandle
+  // lowercases at creation, so 'bob'/'carol' below, not 'Bob'/'Carol'.
+  expect(outline).toEqual([
+    'alice: first body',
+    '  bob: Bob replies to Alice',
+    '    carol: Carol replies to Bob',
+    '  carol: Carol replies to the root',
+  ])
+  // and never an unresolved author
+  expect(outline.join('\n')).not.toContain('?:')
+})
