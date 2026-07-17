@@ -5,6 +5,7 @@ import { createService } from '../src/domain/service.ts'
 import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
+import { renderFirehoseRss, injectSourceAccounts, injectSourceComments } from '../src/domain/feed.ts'
 import { makeAuth } from './auth-helper.ts'
 
 const CTX: FeedContext = { publicUrl: 'https://cast.example.com', hubUrl: 'https://cast.example.com/hub', rssCloud: true }
@@ -90,4 +91,45 @@ test('unknown handle 404s; remote handle 302s to its canonical feed; null-feedUr
   const redir = await app.request('/users/news/feed.xml')
   expect(redir.status).toBe(302)
   expect(redir.headers.get('location')).toBe('https://news.example.com/feed.xml')
+})
+
+test('firehose: RSS 2.0 channel + <source> attribution on every item', () => {
+  const ctx = { publicUrl: 'https://tc.example', hubUrl: 'https://tc.example/hub', rssCloud: true }
+  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+  const entries = [{
+    id: 'p1', authorId: 'u1', source: 'local' as const, guid: 'guid-1', title: null,
+    content: 'hello **world**', url: 'https://tc.example/post/p1',
+    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
+    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
+    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
+  }]
+  const xml = renderFirehoseRss(entries, ctx)
+  expect(xml).toContain('<title>tc.example: all posts</title>')
+  expect(xml).toContain('<link>https://tc.example</link>')
+  expect(xml).toContain('Posts from all users on tc.example')
+  expect(xml).toContain('<source:self>https://tc.example/users/rss.xml</source:self>')
+  expect(xml).toContain('rel="self"')
+  expect(xml).toContain('href="https://tc.example/users/rss.xml"')
+  expect(xml).toContain('<cloud ')
+  expect(xml).toContain('<source url="https://tc.example/users/alice/feed.xml">Alice</source>')
+  expect(xml).toContain('<guid isPermaLink="false">guid-1</guid>')
+  expect(xml).toContain('<link>https://tc.example/post/p1</link>')
+  expect(xml).toContain('<source:markdown>')
+})
+
+test('injectSourceAccounts: element lands inside the right item; xmlns declared once with comments', () => {
+  const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
+  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+  const entries = [{
+    id: 'p1', authorId: 'u1', source: 'local' as const, guid: 'guid-1', title: null,
+    content: 'x', url: null, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
+    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
+    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
+  }]
+  let xml = renderFirehoseRss(entries, ctx)
+  xml = injectSourceAccounts(xml, [{ guid: 'guid-1', service: 'tc.example', name: 'alice' }])
+  xml = injectSourceComments(xml, [{ guid: 'guid-1', count: 2, feedUrl: 'https://tc.example/post/p1/comments.xml' }])
+  expect(xml).toContain('<source:account service="tc.example">alice</source:account>')
+  expect(xml).toContain('<source:comments count="2"')
+  expect(xml.match(/xmlns:source=/g)?.length).toBe(1)
 })

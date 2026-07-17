@@ -1,6 +1,6 @@
 import { generateRssFeed, generateJsonFeed } from 'feedsmith'
 import type { WebSubMode } from '../config.ts'
-import type { Post, User } from './types.ts'
+import type { Post, User, TimelineEntry } from './types.ts'
 import { renderLocalHtml } from './markdown.ts'
 
 export interface FeedContext {
@@ -11,6 +11,10 @@ export interface FeedContext {
 
 export function feedUrls(publicUrl: string, handle: string): { xml: string; json: string } {
   return { xml: `${publicUrl}/users/${handle}/feed.xml`, json: `${publicUrl}/users/${handle}/feed.json` }
+}
+
+export function firehoseUrl(publicUrl: string): string {
+  return `${publicUrl}/users/rss.xml`
 }
 
 export function urlPort(u: URL): number {
@@ -92,32 +96,77 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
   )
 }
 
+// The all-users firehose (rss.chat's /users/rss.xml convention): every LOCAL
+// post, with RSS core <source> naming the item's author and linking their
+// personal feed — the same element our ingest attributes rss.chat items by.
+export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): string {
+  const host = ctx.publicUrl ? new URL(ctx.publicUrl).host : 'textcaster.invalid'
+  const atomLinks: Array<{ rel: string; href: string; type?: string }> = []
+  let cloud
+  if (ctx.publicUrl) {
+    atomLinks.push({ rel: 'self', href: firehoseUrl(ctx.publicUrl), type: 'application/rss+xml' })
+    if (ctx.hubUrl) atomLinks.push({ rel: 'hub', href: ctx.hubUrl })
+    if (ctx.rssCloud) {
+      const u = new URL(ctx.publicUrl)
+      cloud = { domain: u.hostname, port: urlPort(u), path: '/rsscloud/pleaseNotify', registerProcedure: '', protocol: 'http-post' }
+    }
+  }
+  return generateRssFeed(
+    {
+      title: `${host}: all posts`,
+      link: ctx.publicUrl ?? 'https://textcaster.invalid',
+      description: `Posts from all users on ${host}`,
+      ...(atomLinks.length ? { atom: { links: atomLinks } } : {}),
+      ...(cloud ? { cloud } : {}),
+      ...(ctx.publicUrl ? { sourceNs: { self: firehoseUrl(ctx.publicUrl) } } : {}),
+      items: entries.map((p) => ({
+        ...(p.title !== null ? { title: p.title } : {}),
+        guid: { value: p.guid, isPermaLink: false },
+        ...(p.url !== null ? { link: p.url } : {}),
+        pubDate: p.publishedAt,
+        // RSS core <source>: the item's author and their personal feed.
+        ...(ctx.publicUrl ? { source: { title: p.author.displayName, url: feedUrls(ctx.publicUrl, p.author.handle).xml } } : {}),
+        ...itemContentFields(p),
+      })),
+    },
+    { lenient: true },
+  )
+}
+
 const xmlEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 const xmlAttrEscape = (s: string) => xmlEscape(s).replace(/"/g, '&quot;')
 
-// feedsmith 2.9.6 cannot serialize <source:comments count feedUrl/> (probed —
-// silently dropped), so it is injected into XML WE generated: feedsmith's item
-// output is deterministic, and guids are matched as the <guid> ELEMENT value.
-// ponytail: delete this the day feedsmith's sourceNs types grow `comments`.
-export function injectSourceComments(xml: string, ads: Array<{ guid: string; count: number; feedUrl: string }>): string {
+// Shared injector core: feedsmith cannot serialize these sourceNs elements
+// (probed: comments AND account are silently dropped), so they are injected
+// into XML WE generated, keyed by the <guid> element value.
+// ponytail: delete all of this the day feedsmith serializes them.
+function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: string }>): string {
   let out = xml
   let injected = false
   for (const ad of ads) {
-    // feedsmith CDATA-wraps guid values containing & < > and entity-escapes "
-    // in plain text (probed) — match both serializations or the ad is skipped.
     const markers = [`<![CDATA[${ad.guid}]]>`, `>${xmlAttrEscape(ad.guid)}</guid>`]
     let at = -1
     for (const m of markers) { at = out.indexOf(m); if (at !== -1) break }
     if (at === -1) continue
     const close = out.indexOf('</item>', at)
     if (close === -1) continue
-    out = out.slice(0, close) + `<source:comments count="${ad.count}" feedUrl="${xmlAttrEscape(ad.feedUrl)}"/>` + out.slice(close)
+    out = out.slice(0, close) + ad.fragment + out.slice(close)
     injected = true
   }
-  if (injected && !out.slice(0, out.indexOf('>') + 1).includes('xmlns:source=')) {
+  if (injected && !out.includes('xmlns:source=')) {
     out = out.replace('<rss ', '<rss xmlns:source="http://source.scripting.com/" ')
   }
   return out
+}
+
+export function injectSourceComments(xml: string, ads: Array<{ guid: string; count: number; feedUrl: string }>): string {
+  return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:comments count="${ad.count}" feedUrl="${xmlAttrEscape(ad.feedUrl)}"/>` })))
+}
+
+// Outbound-only interop (spec F-3): our ingest never reads source:account —
+// attribution comes from the RSS core <source url> element.
+export function injectSourceAccounts(xml: string, ads: Array<{ guid: string; service: string; name: string }>): string {
+  return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:account service="${xmlAttrEscape(ad.service)}">${xmlEscape(ad.name)}</source:account>` })))
 }
 
 export function renderCommentsFeed(post: Post, replies: Post[], ctx: FeedContext): string {
