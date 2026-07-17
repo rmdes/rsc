@@ -619,6 +619,13 @@ button:hover {
 
 dialog.composer-dialog {
 	width: min(42rem, 92vw);
+	height: min(32rem, 85vh);
+	resize: both; /* user-resizable — the editor grows with the dialog */
+	overflow: auto;
+	min-width: 18rem;
+	min-height: 16rem;
+	max-width: 95vw;
+	max-height: 95vh;
 	margin: auto;
 	padding: 0; /* backdrop-click detection: dialog itself must have no clickable inset */
 	border: 1px solid var(--color-border);
@@ -661,47 +668,91 @@ dialog.composer-dialog::backdrop {
 	opacity: 1;
 }
 
-/* A comfortable writing height in the overlay (sidebar sizing doesn't apply). */
-.composer-dialog .carta-theme__default .carta-input,
-.composer-dialog .carta-theme__default .carta-renderer,
-.composer-dialog textarea {
-	min-height: 14rem;
+/* The editing surface fills whatever size the user drags the dialog to:
+   body → form → editor → wrapper each pass the free height down; the
+   wrapper scrolls when writing outgrows it. */
+.composer-dialog .composer-dialog-body {
+	height: 100%;
+}
+
+.composer-dialog form.composer {
+	flex: 1;
+	min-height: 0;
+}
+
+.composer-dialog form.composer > textarea {
+	flex: 1; /* pre-enhancement fallback grows too */
+}
+
+.composer-dialog .carta-editor {
+	flex: 1;
+	min-height: 0;
+}
+
+.composer-dialog .carta-wrapper {
+	flex: 1;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+}
+
+/* …and the writing surface fills the wrapper, not just its own text. */
+.composer-dialog .carta-container {
+	flex: 1;
 }
 
 /* Carta composer — skin the editor with our tokens. default.css loads after
-   this file (dynamic import) and scopes under .carta-theme__default, so every
-   rule here must carry that prefix or it silently loses the cascade. */
+   this file (dynamic import), so any rule at EQUAL specificity silently loses
+   the tie. Every rule here is prefixed with `body` to out-rank default.css —
+   .carta-theme__default alone has lost these ties twice (600px editors,
+   raw-hex borders). Keep the prefix on every new rule. */
 
-.carta-theme__default.carta-editor {
+body .carta-theme__default.carta-editor {
 	background: var(--color-surface);
 	border: 1px solid var(--color-border);
 	border-radius: 8px;
 	font-family: inherit;
 }
 
-.carta-theme__default .carta-toolbar {
+/* The app-wide button skin must not leak into carta's controls: its icon
+   buttons are 24×24 border-boxes, so inherited 10px/20px padding leaves a
+   0-width content box and the toolbar SVGs vanish entirely. */
+body .carta-theme__default button {
+	padding: 0;
+}
+
+body .carta-theme__default .carta-toolbar {
 	border-bottom: 1px solid var(--color-border);
 	color: var(--color-secondary);
 }
 
-.carta-theme__default .carta-toolbar button {
+body .carta-theme__default .carta-toolbar button {
 	color: var(--color-secondary);
 	background: none;
 }
 
-.carta-theme__default .carta-toolbar .carta-active {
+body .carta-theme__default .carta-toolbar-left button.carta-active {
 	color: var(--color-accent);
+	border-bottom-color: var(--color-accent);
 }
 
-.carta-theme__default .carta-icon:hover {
+body .carta-theme__default .carta-icon:hover,
+body .carta-theme__default .carta-icon-full:hover {
 	background: var(--color-muted);
 	color: var(--color-foreground);
+}
+
+/* Overflow menu popup (narrow toolbars) — default.css gives it no background. */
+body .carta-theme__default .carta-icons-menu {
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	color: var(--color-secondary);
 }
 
 /* Anything affecting text metrics must sit on the CONTAINER so carta's
    transparent textarea and its highlight overlay share font metrics —
    styling the textarea alone drifts the caret off the visible text. */
-.carta-theme__default .carta-input {
+body .carta-theme__default .carta-input {
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 0.9375rem;
 	caret-color: var(--color-foreground);
@@ -712,11 +763,18 @@ dialog.composer-dialog::backdrop {
 	padding: var(--space-sm);
 }
 
-.carta-theme__default .carta-input textarea::placeholder {
+/* The app-wide `input, textarea` skin sets font-size: 1rem, but carta's
+   caret layer must share metrics with the 0.9375rem highlight overlay —
+   a 1px font mismatch drifts the caret off the visible text. */
+body .carta-theme__default .carta-input textarea {
+	font: inherit;
+}
+
+body .carta-theme__default .carta-input textarea::placeholder {
 	color: var(--color-secondary);
 }
 
-.carta-theme__default .carta-renderer {
+body .carta-theme__default .carta-renderer {
 	color: var(--color-foreground);
 	font-size: 0.9375rem;
 	height: auto;
