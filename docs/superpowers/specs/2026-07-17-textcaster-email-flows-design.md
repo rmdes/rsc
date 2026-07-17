@@ -38,6 +38,23 @@ a forgotten password permanently loses the account.
 - IndieAuth: later, fresh session; it mounts as another better-auth
   provider on this same foundation.
 
+## Probed API facts (better-auth 1.6.23, 2026-07-17 — do not re-derive from memory)
+
+- Verification: `emailAndPassword.requireEmailVerification: true` +
+  `emailVerification: { sendOnSignUp: true, sendVerificationEmail: ({ user, url }) => … }`.
+  Sign-in before verify → **403**; the verify-link is a **GET** returning 302.
+- Magic link: `magicLink({ sendMagicLink: ({ email, url, token }) => … })`
+  from `better-auth/plugins`; request endpoint `POST /sign-in/magic-link`
+  `{ email }`; consuming the link (GET) yields a session AND sets
+  `emailVerified=1` (the verified-invariant holds by DEFAULT — no manual
+  flag). Adds NO new tables (reuses `verification`).
+- Reset: `emailAndPassword.sendResetPassword: ({ user, url, token }) => …`;
+  request endpoint is **`POST /request-password-reset`** `{ email, redirectTo }`
+  — NOTE: `/forget-password` 404s in 1.6.23; completion is
+  `POST /reset-password` `{ newPassword, token }`.
+- No migration: all three flows reuse migration-8's `verification` table
+  (probed — magicLink added no tables).
+
 ## The mailer seam
 
 `core/src/mail.ts`:
