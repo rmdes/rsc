@@ -565,6 +565,46 @@ button:hover {
 	flex: none;
 }
 
+/* Author-lens card stacks: a card folding more of the author's posts from
+   the same conversation shows two card edges peeking underneath — the
+   "there are cards under this one" whisper. Pseudo-elements sit behind the
+   card via a local stacking context. */
+
+.post.stacked {
+	position: relative;
+	z-index: 0;
+}
+
+.post.stacked::before,
+.post.stacked::after {
+	content: '';
+	position: absolute;
+	z-index: -1;
+	border: 1px solid var(--color-border);
+	border-top: none;
+	border-radius: 0 0 12px 12px;
+	background: var(--color-surface);
+}
+
+.post.stacked::after {
+	left: var(--space-sm);
+	right: var(--space-sm);
+	bottom: -5px;
+	height: 10px;
+}
+
+.post.stacked::before {
+	left: var(--space-md);
+	right: var(--space-md);
+	bottom: -9px;
+	height: 10px;
+}
+
+.post.stacked.remote::before,
+.post.stacked.remote::after {
+	background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface));
+}
+
 /* The post you arrived at, inside its conversation. */
 
 .post.highlight {
