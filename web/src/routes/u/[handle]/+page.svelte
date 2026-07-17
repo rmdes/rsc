@@ -107,11 +107,12 @@
 					<ReplyTree thread={expanded[post.id]} parentId={post.id} />
 				{:else if stackOpen[post.id]}
 					<ul class="replies">
+						<!-- no per-card links: the whole stack is one conversation, and the
+						     top card already carries the one "View conversation" that matters -->
 						{#each others as p (p.id)}
 							<li class="post" class:remote={p.source === 'remote'}>
 								{#if p.title}<h3 class="title">{p.title}</h3>{/if}
 								<PostBody post={p} />
-								<a class="source" href="/post/{p.id}">View conversation</a>
 							</li>
 						{/each}
 					</ul>
