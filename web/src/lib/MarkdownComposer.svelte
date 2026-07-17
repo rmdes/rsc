@@ -51,6 +51,14 @@
 						}
 					]
 				})
+				// Carta portals caret-bound popups (slash menu, emoji autocomplete)
+				// to <body> by default — but body children can NEVER paint above a
+				// top-layer modal <dialog>. Portal into the enclosing dialog instead
+				// (popups position:fixed in viewport coords, so the math is
+				// unchanged); outside a dialog (inline reply) body stays the portal.
+				const bindToCaret = carta.bindToCaret.bind(carta)
+				carta.bindToCaret = (element: HTMLElement) =>
+					bindToCaret(element, element.closest('dialog') ?? document.body)
 				editor = { MarkdownEditor: cartaMod.MarkdownEditor as unknown as Component, carta }
 			})
 			.catch(() => {})
