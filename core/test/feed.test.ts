@@ -266,3 +266,22 @@ test('remote post keeps its origin guid verbatim (never localGuid-derived)', () 
   // the pass-through path keeps guid='origin-guid-1'. Pin at the helper boundary:
   expect(p.source).toBe('remote') // guard: the render paths below must not call localGuid for remotes
 })
+
+test('per-user feed carries source:account naming the author', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const body = await (await app.request('/users/alice/feed.xml')).text()
+  const host = 'cast.example.com'
+  expect(body).toContain(`<source:account service="${host}">alice</source:account>`)
+})
+
+test('comments feed carries per-reply source:account (multi-author, threadwalker names)', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  await service.createLocalPostAs('bob', 'Bob', 'bob replies', root)
+  await service.createLocalPostAs('carol', 'Carol', 'carol replies', root)
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(body).toContain('<source:account service="cast.example.com">bob</source:account>')
+  expect(body).toContain('<source:account service="cast.example.com">carol</source:account>')
+})

@@ -230,8 +230,11 @@ export function createPush(deps: PushDeps): Push {
             // Body regenerated ONCE per topic per event; same body (and HMAC input) for every subscriber.
             let body = format === 'xml' ? renderRssFeed(entry.author, posts, ctx) : renderJsonFeed(entry.author, posts, ctx)
             if (format === 'xml') {
-              // Mirrors GET /users/:handle/feed.xml: advertise source:comments before
-              // signing, so a subscriber's fat-ping body matches what a pull would fetch.
+              // Mirrors GET /users/:handle/feed.xml: advertise source:account and
+              // source:comments before signing, so a subscriber's fat-ping body
+              // matches what a pull would fetch.
+              const host = new URL(ctx.publicUrl).host
+              body = injectSourceAccounts(body, posts.map((p) => ({ guid: localGuid(p).value, service: host, name: entry.author.handle })))
               const counts = await repo.countRepliesByPostIds(posts.map((p) => p.id))
               body = injectSourceComments(body, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
                 .map((p) => ({ guid: localGuid(p).value, count: counts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))

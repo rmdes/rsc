@@ -332,12 +332,17 @@ export class SqliteRepository implements Repository {
     return new Map(rows.map((r) => [r.in_reply_to_post_id as string, Number(r.n)]))
   }
 
-  async listRepliesByPostId(id: string): Promise<Post[]> {
-    const rows = await this.db.selectFrom('posts').selectAll()
+  async listRepliesByPostId(id: string): Promise<TimelineEntry[]> {
+    const rows = await this.db
+      .selectFrom('posts')
+      .innerJoin('users', 'users.id', 'posts.author_id')
+      .selectAll('posts')
+      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id'])
       .where('in_reply_to_post_id', '=', id)
-      .orderBy('published_at', 'asc').orderBy('id', 'asc')
+      .orderBy('posts.published_at', 'asc')
+      .orderBy('posts.id', 'asc')
       .execute()
-    return rows.map(rowToPost)
+    return rows.map(joinedRowToEntry)
   }
 
   async upsertSubscription(s: Subscription) {
