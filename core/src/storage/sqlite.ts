@@ -362,6 +362,45 @@ export class SqliteRepository implements Repository {
   async deletePushSubscription(id: string) {
     await this.db.deleteFrom('push_subscriptions').where('id', '=', id).execute()
   }
+
+  // Idle = latest session update, else auth-user createdAt. Anon guests are
+  // few; candidate selection in JS dodges better-auth's date-storage format
+  // (new Date() parses ISO strings and epoch numbers alike).
+  sweepAnonymousUsers(ttlDays: number): { swept: number } {
+    const raw = this.raw
+    const cutoff = Date.now() - ttlDays * 86400_000
+    const anons = raw.prepare(`SELECT id, createdAt FROM user WHERE isAnonymous = 1`).all() as { id: string; createdAt: string | number }[]
+    const latest = new Map(
+      (raw.prepare(`SELECT userId, MAX(updatedAt) AS ts FROM session GROUP BY userId`).all() as { userId: string; ts: string | number }[]).map((r) => [r.userId, r.ts]),
+    )
+    const idle = anons.filter((a) => new Date(latest.get(a.id) ?? a.createdAt).getTime() < cutoff)
+    const orphans = raw
+      .prepare(`SELECT u.id FROM users u LEFT JOIN user au ON au.id = u.auth_user_id WHERE u.auth_user_id IS NOT NULL AND au.id IS NULL AND u.kind = 'local'`)
+      .all() as { id: string }[]
+
+    const coreCascade = (coreUserId: string) => {
+      raw.prepare(`DELETE FROM follows WHERE follower_id = ? OR followed_id = ?`).run(coreUserId, coreUserId)
+      raw.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(coreUserId)
+      raw.prepare(`DELETE FROM posts WHERE author_id = ?`).run(coreUserId)
+      raw.prepare(`DELETE FROM users WHERE id = ?`).run(coreUserId)
+    }
+    let swept = 0
+    raw.transaction(() => {
+      for (const a of idle) {
+        const core = raw.prepare(`SELECT id FROM users WHERE auth_user_id = ?`).get(a.id) as { id: string } | undefined
+        if (core) coreCascade(core.id)
+        raw.prepare(`DELETE FROM session WHERE userId = ?`).run(a.id)
+        raw.prepare(`DELETE FROM account WHERE userId = ?`).run(a.id)
+        raw.prepare(`DELETE FROM user WHERE id = ?`).run(a.id)
+        swept++
+      }
+      for (const o of orphans) {
+        coreCascade(o.id)
+        swept++
+      }
+    })()
+    return { swept }
+  }
 }
 
 // index N-1 holds the statements that bring the schema to version N.

@@ -60,5 +60,16 @@ async function loop() {
 }
 setTimeout(loop, config.pollSeconds * 1000)
 
+async function sweepLoop() {
+  try {
+    const { swept } = repo.sweepAnonymousUsers(config.anonTtlDays)
+    if (swept > 0) console.log(`swept ${swept} abandoned anonymous account(s)`)
+  } catch (err) {
+    console.error('anon sweep failed:', err instanceof Error ? err.message : err)
+  }
+  setTimeout(sweepLoop, 3600_000) // ponytail: fixed hourly cadence; config knob only if an operator ever asks
+}
+setTimeout(sweepLoop, 3600_000)
+
 serve({ fetch: app.fetch, port: config.port })
 console.log(`textcaster core listening on :${config.port}`)

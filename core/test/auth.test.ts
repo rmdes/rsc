@@ -135,3 +135,42 @@ test('PATCH /me renames; posts and follows survive; 409 on conflict', async () =
   expect(timeline[0].author.handle).toBe('ricardo')
   expect(timeline[0].author.id).toBe(before.id) // same identity, no data moved
 })
+
+test('sweep reclaims idle anonymous guests (full cascade, one transaction) and orphans; spares the active and the registered', async () => {
+  const { app, repo } = await makeApp()
+  // idle guest with a post and follows in both directions
+  const idle = await anonSession(app)
+  await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie: idle }, body: '{"content":"guest post"}' })
+  const idleUser = (await (await app.request('/me', { headers: { cookie: idle } })).json()).user
+  // registered user follows the guest; guest follows them back
+  const reg = await registeredSession(app, 'keeper@test.example')
+  const regUser = (await (await app.request('/me', { headers: { cookie: reg } })).json()).user
+  await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie: reg }, body: JSON.stringify({ handle: idleUser.handle }) })
+  await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie: idle }, body: JSON.stringify({ handle: regUser.handle }) })
+  // age the idle guest's session + auth user beyond the TTL
+  const old = new Date(Date.now() - 8 * 86400_000).toISOString()
+  repo.raw.prepare(`UPDATE session SET updatedAt = ? WHERE userId = ?`).run(old, idleUser.authUserId)
+  repo.raw.prepare(`UPDATE user SET createdAt = ? WHERE id = ?`).run(old, idleUser.authUserId)
+  // an ACTIVE anonymous guest must survive
+  const active = await anonSession(app)
+  await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie: active }, body: '{"content":"still here"}' })
+
+  const { swept } = repo.sweepAnonymousUsers(7)
+  expect(swept).toBe(1)
+  expect(await repo.getUserByHandle(idleUser.handle)).toBeUndefined()
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM posts WHERE author_id = ?`).get(idleUser.id)).toMatchObject({ n: 0 })
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM follows WHERE follower_id = ? OR followed_id = ?`).get(idleUser.id, idleUser.id)).toMatchObject({ n: 0 })
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM user WHERE id = ?`).get(idleUser.authUserId)).toMatchObject({ n: 0 })
+  // survivors
+  expect(await repo.getUserByHandle(regUser.handle)).toBeDefined()
+  const timeline = (await (await app.request('/timeline')).json()).timeline
+  expect(timeline.some((e: { content: string }) => e.content === 'still here')).toBe(true)
+})
+
+test('sweep reclaims core users whose auth account is gone (login-abandon orphans)', async () => {
+  const { repo } = await makeApp()
+  await repo.createLocalUser({ handle: 'guest-orphan', displayName: 'guest-orphan', authUserId: 'deleted-auth-id' })
+  const { swept } = repo.sweepAnonymousUsers(7)
+  expect(swept).toBe(1)
+  expect(await repo.getUserByHandle('guest-orphan')).toBeUndefined()
+})
