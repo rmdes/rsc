@@ -156,6 +156,22 @@ test('PATCH /me with an empty body is 400 (nothing to update)', async () => {
   expect(res.status).toBe(400)
 })
 
+test('PATCH /me rejects whitespace-only displayName (400)', async () => {
+  const { app } = await makeApp()
+  const cookie = await anonSession(app)
+  const res = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{"displayName":"   "}' })
+  expect(res.status).toBe(400)
+})
+
+test('PATCH /me trims displayName edges and preserves internal whitespace', async () => {
+  const { app } = await makeApp()
+  const cookie = await anonSession(app)
+  const res = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{"displayName":"  Ricardo Mendes  "}' })
+  expect(res.status).toBe(200)
+  const user = (await res.json()).user
+  expect(user.displayName).toBe('Ricardo Mendes')
+})
+
 test('sweep reclaims idle anonymous guests (full cascade, one transaction) and orphans; spares the active and the registered', async () => {
   const { app, repo } = await makeApp()
   // idle guest with a post and follows in both directions

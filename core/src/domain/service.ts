@@ -82,6 +82,11 @@ export function createService(repo: Repository, bus: EventBus) {
       return repo.updateUserProfile(userId, {
         ...patch,
         ...(patch.handle !== undefined ? { handle: normalizeHandle(patch.handle) } : {}),
+        ...(patch.displayName !== undefined ? { displayName: (() => {
+          const trimmed = patch.displayName.trim()
+          if (!trimmed) throw new DomainError('displayName must not be blank')
+          return trimmed
+        })() } : {}),
       })
     },
     createLocalUser(u: NewLocalUser) {
