@@ -78,9 +78,7 @@
 					<div class="byline">
 						<Avatar author={post.author} sourceName={post.sourceName} />
 						<strong>{post.sourceName ?? post.author.displayName}</strong>
-						{#if !post.sourceName}
-							<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
-						{/if}
+						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
 						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />

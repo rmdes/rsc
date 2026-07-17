@@ -27,9 +27,7 @@
 			<div class="byline">
 				<Avatar author={reply.author} sourceName={reply.sourceName} />
 				<strong>{reply.sourceName ?? reply.author.displayName}</strong>
-				{#if !reply.sourceName}
-					<a class="handle" href="/u/{reply.author.handle}">@{reply.author.handle}</a>
-				{/if}
+				<a class="handle" href="/u/{reply.author.handle}">@{reply.author.handle}</a>
 				<a class="permalink" href="/post/{reply.id}"><time datetime={reply.publishedAt}>{reply.publishedAt.slice(0, 10)}</time></a>
 			</div>
 			{#if reply.title}<h3 class="title">{reply.title}</h3>{/if}

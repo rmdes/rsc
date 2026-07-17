@@ -275,15 +275,17 @@ export class SqliteRepository implements Repository {
     }
   }
 
-  async backfillItemExtras(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null, contentMarkdown: string | null) {
+  async backfillItemExtras(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null, contentMarkdown: string | null, url: string | null) {
     // Pre-existing rows never re-insert (dedup), so extras fill in place —
     // PER COLUMN (COR-1): a post attributed at migration 6 must still gain
-    // markdown at migration 7. COALESCE keeps the first-seen value (no flapping).
+    // markdown at migration 7 and its permalink-guid url later. COALESCE
+    // keeps the first-seen value (no flapping).
     await this.db.updateTable('posts')
       .set((eb) => ({
         source_name: eb.fn.coalesce('source_name', eb.val(sourceName)),
         source_feed_url: eb.fn.coalesce('source_feed_url', eb.val(sourceFeedUrl)),
         content_markdown: eb.fn.coalesce('content_markdown', eb.val(contentMarkdown)),
+        url: eb.fn.coalesce('url', eb.val(url)),
       }))
       .where('author_id', '=', authorId)
       .where('guid', '=', guid)

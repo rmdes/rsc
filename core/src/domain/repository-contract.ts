@@ -315,13 +315,17 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       const a = await repo.createRemoteUser({ handle: 'agg', displayName: 'Agg', feedUrl: 'https://agg.ex/f' })
       await repo.insertPost(mkPost({ id: 'p1', authorId: a.id, guid: 'g1' }))
       // first pass: attribution only (the migration-6 world)
-      await repo.backfillItemExtras(a.id, 'g1', 'Dave Winer', 'https://rss.chat/users/dave/rss.xml', null)
-      // second pass: markdown arrives later (the migration-7 world) — must still fill
-      await repo.backfillItemExtras(a.id, 'g1', 'Someone Else', 'https://other.ex/f', '**md**')
+      await repo.backfillItemExtras(a.id, 'g1', 'Dave Winer', 'https://rss.chat/users/dave/rss.xml', null, null)
+      // second pass: markdown + permalink-guid url arrive later — must still fill
+      await repo.backfillItemExtras(a.id, 'g1', 'Someone Else', 'https://other.ex/f', '**md**', 'https://rss.chat/?id=1')
       const p = await repo.getPost('p1')
       expect(p?.sourceName).toBe('Dave Winer') // no flapping
       expect(p?.contentMarkdown).toBe('**md**') // filled despite source_name being set
-      await repo.backfillItemExtras(a.id, 'nope', 'X', null, null) // unknown guid → no-op
+      expect(p?.url).toBe('https://rss.chat/?id=1') // url fills where null
+      // third pass: url never flaps once set
+      await repo.backfillItemExtras(a.id, 'g1', null, null, null, 'https://evil.ex/other')
+      expect((await repo.getPost('p1'))?.url).toBe('https://rss.chat/?id=1')
+      await repo.backfillItemExtras(a.id, 'nope', 'X', null, null, null) // unknown guid → no-op
     })
 
     test('findPostByRef: unique url wins; duplicated url resolves to NOTHING (Hole A)', async () => {

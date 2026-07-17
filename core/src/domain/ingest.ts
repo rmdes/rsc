@@ -105,7 +105,20 @@ export async function parseFeedWithMeta(body: string): Promise<{ items: ParsedIt
     return { items, discovery: NO_DISCOVERY }
   }
   const items = (parsed.feed.items ?? []).map((it) =>
-    toParsedItem(it.guid?.value, it.title ?? null, it.description ?? it.content?.encoded ?? '', it.link ?? null, it.pubDate ?? '', now, itemInReplyTo(it), it.source, it.sourceNs?.markdown ?? null))
+    toParsedItem(
+      it.guid?.value,
+      it.title ?? null,
+      it.description ?? it.content?.encoded ?? '',
+      // RSS 2.0: a guid without isPermaLink="false" IS the item's permalink.
+      // rss.chat items carry no <link> at all — the guid is the only URL.
+      // toParsedItem's httpOnly() still gates the scheme downstream.
+      it.link ?? (it.guid?.value !== undefined && it.guid.isPermaLink !== false ? it.guid.value : null),
+      it.pubDate ?? '',
+      now,
+      itemInReplyTo(it),
+      it.source,
+      it.sourceNs?.markdown ?? null,
+    ))
   const c = parsed.feed.cloud
   const cloud = c && typeof c.domain === 'string' && typeof c.path === 'string' && c.protocol === 'http-post' && typeof c.port === 'number'
     ? { domain: c.domain, port: c.port, path: c.path, protocol: c.protocol }
@@ -152,9 +165,10 @@ export async function ingestItems(repo: Repository, bus: EventBus, user: User, i
       await repo.adoptOrphans(post)
       if (!backfill) bus.emitNewPost({ ...post, author: user })
       inserted++
-    } else if (item.sourceName || item.sourceFeedUrl || item.contentMarkdown) {
-      // Existing post from before attribution/markdown landed: fill it in silently.
-      await repo.backfillItemExtras(user.id, item.guid, item.sourceName, item.sourceFeedUrl, item.contentMarkdown)
+    } else if (item.sourceName || item.sourceFeedUrl || item.contentMarkdown || item.url) {
+      // Existing post from before attribution/markdown/permalink-url landed:
+      // fill it in silently.
+      await repo.backfillItemExtras(user.id, item.guid, item.sourceName, item.sourceFeedUrl, item.contentMarkdown, item.url)
     }
   }
   return inserted

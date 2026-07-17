@@ -339,3 +339,17 @@ test('ingestItems is the shared insert path (no fetch involved)', async () => {
   expect(seen).toHaveBeenCalledTimes(1)
   expect(await ingestItems(repo, bus, user, [{ guid: 'fp1', title: null, content: 'pushed body', url: null, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: null, sourceName: null, sourceFeedUrl: null, contentMarkdown: null }])).toBe(0)
 })
+
+test('RSS permalink guid is the item url when <link> is absent (rss.chat shape)', async () => {
+  const xml = `<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
+    <item><guid>https://rss.chat/?id=324</guid><description>no link element</description><pubDate>Fri, 17 Jul 2026 14:43:36 GMT</pubDate></item>
+    <item><guid isPermaLink="false">https://rss.chat/?id=325</guid><description>explicitly not a permalink</description></item>
+    <item><guid>tag:example,2026:x</guid><description>permalink flag but not http(s)</description></item>
+    <item><guid>https://e.example/g</guid><link>https://e.example/real</link><description>link wins over guid</description></item>
+  </channel></rss>`
+  const { items } = await parseFeedWithMeta(xml)
+  expect(items[0].url).toBe('https://rss.chat/?id=324') // guid IS the permalink (RSS 2.0 default)
+  expect(items[1].url).toBeNull() // isPermaLink="false" honored
+  expect(items[2].url).toBeNull() // http(s)-only guard still applies
+  expect(items[3].url).toBe('https://e.example/real') // explicit link always wins
+})

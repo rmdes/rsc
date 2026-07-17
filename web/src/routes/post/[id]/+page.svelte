@@ -85,9 +85,7 @@
 				<div class="byline">
 					<Avatar author={root.author} sourceName={root.sourceName} />
 					<strong>{root.sourceName ?? root.author.displayName}</strong>
-					{#if !root.sourceName}
-						<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
-					{/if}
+					<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
 					<span class="kind">{root.source}</span>
 					<a class="permalink" href="/post/{root.id}"><time datetime={root.publishedAt}>{root.publishedAt.slice(0, 10)}</time></a>
 				</div>
