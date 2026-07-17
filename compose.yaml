@@ -1,0 +1,62 @@
+# Textcaster — DEV stack. `docker compose up` and edit on the host; core
+# (node --watch) and web (vite) hot-reload in the containers. Push federation
+# is OFF here (no PUBLIC_URL). Mailpit UI is unprotected — localhost only.
+services:
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: textcaster-mailpit
+    ports:
+      - "8025:8025" # web UI (read verify/magic-link emails here)
+      - "1025:1025" # SMTP (also reachable in-network as mailpit:1025)
+    restart: unless-stopped
+
+  core:
+    image: node:22-bookworm-slim
+    container_name: textcaster-core
+    working_dir: /app
+    # One npm ci populates the shared root node_modules volume (workspaces
+    # hoist), then core runs in watch mode. web waits for core to be healthy.
+    command: sh -c "npm ci && npm run dev -w core"
+    environment:
+      TEXTCASTER_AUTH_SECRET: dev-secret-not-for-production-000000000000
+      TEXTCASTER_TOKEN: dev-token
+      TEXTCASTER_SMTP_URL: smtp://mailpit:1025
+      TEXTCASTER_MAIL_FROM: textcaster@localhost
+      TEXTCASTER_DB: /app/core/data/dev.db
+      TEXTCASTER_WEB_ORIGIN: http://localhost:5173
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules # container's linux better-sqlite3 wins
+    ports:
+      - "8787:8787"
+    depends_on:
+      - mailpit
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8787/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s # first boot runs npm ci
+    restart: unless-stopped
+
+  web:
+    image: node:22-bookworm-slim
+    container_name: textcaster-web
+    working_dir: /app
+    # node_modules is already populated by core's npm ci (shared volume); just
+    # run vite. --host exposes the dev server outside the container.
+    command: sh -c "npm run dev -w web -- --host 0.0.0.0"
+    environment:
+      CORE_API_URL: http://core:8787
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      core:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  node_modules:
