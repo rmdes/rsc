@@ -48,13 +48,15 @@ export function relaySetCookies(cookies: Cookies, res: Response): void {
 // Mint-then-act (spec NEW-2): no session → sign in anonymously, thread the
 // JUST-MINTED cookie onto the follow-up core call in-process, and relay it
 // to the browser on this same response.
-export async function ensureSessionFetch(event: { fetch: typeof fetch; cookies: Cookies; url: URL }): Promise<typeof fetch> {
+export async function ensureSessionFetch(event: { fetch: typeof fetch; cookies: Cookies; url: URL; getClientAddress(): string }): Promise<typeof fetch> {
 	if (hasSession(event.cookies)) return authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 	// content-type + a body are required here — better-auth 415s a bodyless
-	// POST through core's Hono mount (probed).
+	// POST through core's Hono mount (probed). x-forwarded-for carries the
+	// real client address: without it, core's per-IP rate limit on this route
+	// sees every visitor as the web server's own address (one shared bucket).
 	const res = await event.fetch(`${base()}/api/auth/sign-in/anonymous`, {
 		method: 'POST',
-		headers: { origin: event.url.origin, 'content-type': 'application/json' },
+		headers: { origin: event.url.origin, 'content-type': 'application/json', 'x-forwarded-for': event.getClientAddress() },
 		body: '{}'
 	})
 	if (!res.ok) throw new Error(`anonymous sign-in failed (${res.status})`)

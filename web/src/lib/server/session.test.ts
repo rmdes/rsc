@@ -76,7 +76,7 @@ test('ensureSessionFetch mints an anonymous session once and threads the minted 
 		if (String(url).includes('/sign-in/anonymous')) return mintRes
 		return new Response(null, { status: 201 })
 	})
-	const event = { fetch: f as unknown as typeof fetch, cookies: cookies as unknown as Cookies, url: new URL('http://localhost:5173/') }
+	const event = { fetch: f as unknown as typeof fetch, cookies: cookies as unknown as Cookies, url: new URL('http://localhost:5173/'), getClientAddress: () => '203.0.113.5' }
 
 	const acted = await ensureSessionFetch(event)
 	await acted('http://localhost:8787/posts', { method: 'POST' })
@@ -88,6 +88,9 @@ test('ensureSessionFetch mints an anonymous session once and threads the minted 
 	// content-type + a body are required even for this no-input endpoint.
 	expect(new Headers(mintInit.headers).get('content-type')).toBe('application/json')
 	expect(mintInit.body).toBe('{}')
+	// the mint carries the real client address so core's per-IP rate limit
+	// doesn't collapse every visitor into the web server's own bucket.
+	expect(new Headers(mintInit.headers).get('x-forwarded-for')).toBe('203.0.113.5')
 	const actInit = f.mock.calls[1][1] as RequestInit
 	expect(new Headers(actInit.headers).get('cookie')).toBe('textcaster.session_token=minted')
 	expect(cookies.set).toHaveBeenCalledWith('textcaster.session_token', 'minted', {
@@ -101,7 +104,7 @@ test('ensureSessionFetch mints an anonymous session once and threads the minted 
 test('ensureSessionFetch skips minting when a session cookie already exists', async () => {
 	const cookies = fakeCookies([{ name: 'textcaster.session_token', value: 'existing' }])
 	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 201 }))
-	const event = { fetch: f as unknown as typeof fetch, cookies: cookies as unknown as Cookies, url: new URL('http://localhost:5173/') }
+	const event = { fetch: f as unknown as typeof fetch, cookies: cookies as unknown as Cookies, url: new URL('http://localhost:5173/'), getClientAddress: () => '203.0.113.5' }
 
 	const acted = await ensureSessionFetch(event)
 	await acted('http://localhost:8787/posts', { method: 'POST' })
@@ -114,7 +117,7 @@ test('ensureSessionFetch skips minting when a session cookie already exists', as
 test('ensureSessionFetch throws when anonymous sign-in fails', async () => {
 	const cookies = fakeCookies()
 	const f = vi.fn(async () => new Response(null, { status: 500 }))
-	const event = { fetch: f as unknown as typeof fetch, cookies: cookies as unknown as Cookies, url: new URL('http://localhost:5173/') }
+	const event = { fetch: f as unknown as typeof fetch, cookies: cookies as unknown as Cookies, url: new URL('http://localhost:5173/'), getClientAddress: () => '203.0.113.5' }
 
 	await expect(ensureSessionFetch(event)).rejects.toThrow(/anonymous sign-in failed/)
 })

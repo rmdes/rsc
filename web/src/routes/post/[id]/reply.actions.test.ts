@@ -38,7 +38,8 @@ test('reply mints an anonymous session first when there is none yet', async () =
 		fetch,
 		params: { id: 'post-1' },
 		url: new URL('http://x/'),
-		cookies: { getAll: () => [], set: vi.fn(), delete: vi.fn() }
+		cookies: { getAll: () => [], set: vi.fn(), delete: vi.fn() },
+		getClientAddress: () => '203.0.113.5'
 	}
 	await expect(actions.reply(event as never)).rejects.toMatchObject({ status: 303 })
 	expect(fetch).toHaveBeenCalledTimes(2)

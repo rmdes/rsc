@@ -25,8 +25,10 @@ export function createAuth(deps: AuthDeps) {
     baseURL: deps.webOrigin,
     trustedOrigins: [deps.webOrigin],
     emailAndPassword: { enabled: true },
-    // Cookie must outlive the idle sweep window (spec: expiresIn >= TTL).
-    session: { expiresIn: deps.anonTtlDays * 86400 },
+    // 4x the sweep TTL: the browser cookie must outlive the idle window even
+    // though getSession's rolling refresh isn't relayed yet — relaying it via
+    // /me is the real fix (recorded follow-up)
+    session: { expiresIn: deps.anonTtlDays * 4 * 86400 },
     // ponytail: per-IP throttle only; CAPTCHA/turnstile if a real flood ever happens
     rateLimit: { enabled: true, customRules: { '/sign-in/anonymous': { window: 60, max: 10 } } },
     // disableOriginCheck defaults to true under NODE_ENV=test (better-auth's

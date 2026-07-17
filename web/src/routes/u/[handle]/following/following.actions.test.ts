@@ -28,7 +28,8 @@ function anonymousEvent(request: Request, fetch: ReturnType<typeof vi.fn>) {
 		request,
 		fetch,
 		url: new URL('http://x/'),
-		cookies: { getAll: () => [], set: vi.fn(), delete: vi.fn() }
+		cookies: { getAll: () => [], set: vi.fn(), delete: vi.fn() },
+		getClientAddress: () => '203.0.113.5'
 	}
 }
 

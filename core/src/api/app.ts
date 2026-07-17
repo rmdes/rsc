@@ -108,6 +108,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const { handle, displayName } = body
     if (handle !== undefined && !isString(handle, 1, 64)) return c.json({ error: 'handle invalid' }, 400)
     if (displayName !== undefined && !isString(displayName, 1, 200)) return c.json({ error: 'displayName invalid' }, 400)
+    if (handle === undefined && displayName === undefined) return c.json({ error: 'nothing to update' }, 400)
     try {
       const user = await service.updateUserProfile(c.get('coreUser').id, {
         ...(handle !== undefined ? { handle: handle.toLowerCase() } : {}),

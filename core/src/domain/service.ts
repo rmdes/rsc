@@ -79,7 +79,10 @@ export function createService(repo: Repository, bus: EventBus) {
       return repo.setAuthUserId(userId, authUserId)
     },
     updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }) {
-      return repo.updateUserProfile(userId, patch)
+      return repo.updateUserProfile(userId, {
+        ...patch,
+        ...(patch.handle !== undefined ? { handle: normalizeHandle(patch.handle) } : {}),
+      })
     },
     createLocalUser(u: NewLocalUser) {
       return repo.createLocalUser(u)

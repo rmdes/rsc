@@ -70,10 +70,14 @@ start using the app:
   `TEXTCASTER_ANON_TTL_DAYS` (and abandoned guests from the above) are
   deleted, cascading their posts and follows, by an hourly background sweep.
 - **Adding a feed requires registration.** `POST /users` (add a remote
-  user/feed) and OPML import (`POST /users/:handle/follows/opml`) 403 for
+  user/feed) and OPML import (`POST /me/follows/opml`) 403 for
   anonymous sessions — each new feed is a standing polling cost, so only
   registered accounts can create them. Posting, replying, and following
   existing users work anonymously.
+- **Behind a reverse proxy**, core's per-IP rate limiting (e.g. on anonymous
+  sign-in) keys on `x-forwarded-for` as forwarded by the web server —
+  production deployments must ensure the web server sets it to the real
+  client address.
 
 ## Feeds & push
 
@@ -234,7 +238,7 @@ OPML routes (import requires a registered session; export is public):
 | Method | Route | Notes |
 |---|---|---|
 | `GET` | `/users/<handle>/following.opml` | Export followed feeds as OPML. Public (no auth). |
-| `POST` | `/users/<handle>/follows/opml` | Import OPML. Registered session required (403 for anonymous — each imported feed is a new one). Core accepts up to 1 MB, flattens nested outlines, skips duplicates and non-`http(s)` feed URLs. |
+| `POST` | `/me/follows/opml` | Import OPML. Registered session required (403 for anonymous — each imported feed is a new one). Core accepts up to 1 MB, flattens nested outlines, skips duplicates and non-`http(s)` feed URLs. |
 
 **Web import upload size:** the browser import form POSTs through the
 SvelteKit server, whose body limit (`BODY_SIZE_LIMIT`, ~512 KB by default

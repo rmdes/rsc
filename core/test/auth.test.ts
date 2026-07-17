@@ -136,6 +136,26 @@ test('PATCH /me renames; posts and follows survive; 409 on conflict', async () =
   expect(timeline[0].author.id).toBe(before.id) // same identity, no data moved
 })
 
+test('PATCH /me rejects an unnormalized handle (400), and a valid rename keeps posting working', async () => {
+  const { app } = await makeApp()
+  const cookie = await anonSession(app)
+  const bad = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{"handle":"My Name"}' })
+  expect(bad.status).toBe(400)
+
+  const renamed = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{"handle":"my-name"}' })
+  expect(renamed.status).toBe(200)
+
+  const posted = await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: '{"content":"after rename"}' })
+  expect(posted.status).toBe(201)
+})
+
+test('PATCH /me with an empty body is 400 (nothing to update)', async () => {
+  const { app } = await makeApp()
+  const cookie = await anonSession(app)
+  const res = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{}' })
+  expect(res.status).toBe(400)
+})
+
 test('sweep reclaims idle anonymous guests (full cascade, one transaction) and orphans; spares the active and the registered', async () => {
   const { app, repo } = await makeApp()
   // idle guest with a post and follows in both directions
