@@ -4,7 +4,7 @@ import type { Config } from '../config.ts'
 import type { TimelineEntry } from './types.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
-import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, injectSourceAccounts } from './feed.ts'
+import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, injectSourceAccounts, localGuid } from './feed.ts'
 import type { User } from './types.ts'
 
 const PUSH_TIMEOUT_MS = 10_000
@@ -234,7 +234,7 @@ export function createPush(deps: PushDeps): Push {
               // signing, so a subscriber's fat-ping body matches what a pull would fetch.
               const counts = await repo.countRepliesByPostIds(posts.map((p) => p.id))
               body = injectSourceComments(body, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
-                .map((p) => ({ guid: p.guid, count: counts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
+                .map((p) => ({ guid: localGuid(p).value, count: counts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
             }
             const contentType = format === 'xml' ? 'application/rss+xml; charset=utf-8' : 'application/feed+json; charset=utf-8'
             for (const sub of subs) {
@@ -253,10 +253,10 @@ export function createPush(deps: PushDeps): Push {
             const recent = await repo.getRecentLocalPosts(50)
             let body = renderFirehoseRss(recent, ctx)
             const host = new URL(config.publicUrl).host
-            body = injectSourceAccounts(body, recent.map((p) => ({ guid: p.guid, service: host, name: p.author.handle })))
+            body = injectSourceAccounts(body, recent.map((p) => ({ guid: localGuid(p).value, service: host, name: p.author.handle })))
             const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
             body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
-              .map((p) => ({ guid: p.guid, count: fhCounts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
+              .map((p) => ({ guid: localGuid(p).value, count: fhCounts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
             for (const sub of fhSubs) {
               const headers: Record<string, string> = {
                 'content-type': 'application/rss+xml; charset=utf-8',

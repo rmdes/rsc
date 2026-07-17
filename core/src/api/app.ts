@@ -6,7 +6,7 @@ import { sessionAuth, registeredOnly, sessionOrToken } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
-import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, injectSourceAccounts } from '../domain/feed.ts'
+import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, injectSourceAccounts, localGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml } from '../domain/opml.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
@@ -175,8 +175,12 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     let xml = renderCommentsFeed(post, replies, feeds)
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
+      // replies can be remote (a cross-instance reply resolving onto our local
+      // post) — the injector must key on the same guid VALUE the XML emitted:
+      // localGuid for local items, r.guid verbatim for remote (matches
+      // renderCommentsFeed's per-item guid choice).
       xml = injectSourceComments(xml, replies.filter((r) => (counts.get(r.id) ?? 0) > 0)
-        .map((r) => ({ guid: r.guid, count: counts.get(r.id)!, feedUrl: `${pub}/post/${r.id}/comments.xml` })))
+        .map((r) => ({ guid: r.source === 'local' ? localGuid(r).value : r.guid, count: counts.get(r.id)!, feedUrl: `${pub}/post/${r.id}/comments.xml` })))
     }
     return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })
@@ -228,10 +232,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
       const host = new URL(pub).host
-      xml = injectSourceAccounts(xml, entries.map((p) => ({ guid: p.guid, service: host, name: p.author.handle })))
+      xml = injectSourceAccounts(xml, entries.map((p) => ({ guid: localGuid(p).value, service: host, name: p.author.handle })))
       const counts = await service.countRepliesByPostIds(entries.map((p) => p.id))
       xml = injectSourceComments(xml, entries.filter((p) => (counts.get(p.id) ?? 0) > 0)
-        .map((p) => ({ guid: p.guid, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
+        .map((p) => ({ guid: localGuid(p).value, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
     }
     return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })
@@ -245,7 +249,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       const pub = feeds.publicUrl
       const counts = await service.countRepliesByPostIds(posts.map((p) => p.id))
       xml = injectSourceComments(xml, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
-        .map((p) => ({ guid: p.guid, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
+        .map((p) => ({ guid: localGuid(p).value, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
     }
     return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })

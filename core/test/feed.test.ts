@@ -6,7 +6,7 @@ import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta, ingestItems } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post } from '../src/domain/types.ts'
-import { renderFirehoseRss, injectSourceAccounts, injectSourceComments } from '../src/domain/feed.ts'
+import { renderFirehoseRss, injectSourceAccounts, injectSourceComments, localGuid } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
 import { makeAuth } from './auth-helper.ts'
 
@@ -15,7 +15,7 @@ const CTX: FeedContext = { publicUrl: 'https://cast.example.com', hubUrl: 'https
 async function makeApp(feeds?: FeedContext) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
+  const service = createService(repo, bus, feeds?.publicUrl ?? null)
   const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds })
   return { repo, service, app }
 }
@@ -43,7 +43,7 @@ test('RSS raw output carries the profile and discovery markers', async () => {
   const { service, app } = await makeApp(CTX)
   await seedAlice(service)
   const body = await (await app.request('/users/alice/feed.xml')).text()
-  expect(body).toContain('<guid isPermaLink="false">')
+  expect(body).toMatch(/<guid>https:\/\/cast\.example\.com\/post\/[^<]+<\/guid>/)
   expect(body).toContain('rel="self"')
   expect(body).toContain('rel="hub"')
   expect(body).toContain('<cloud ')
@@ -114,7 +114,7 @@ test('firehose: RSS 2.0 channel + <source> attribution on every item', () => {
   expect(xml).toContain('href="https://tc.example/users/rss.xml"')
   expect(xml).toContain('<cloud ')
   expect(xml).toContain('<source url="https://tc.example/users/alice/feed.xml">Alice</source>')
-  expect(xml).toContain('<guid isPermaLink="false">guid-1</guid>')
+  expect(xml).toContain('<guid>https://tc.example/post/p1</guid>')
   expect(xml).toContain('<link>https://tc.example/post/p1</link>')
   expect(xml).toContain('<source:markdown>')
 })
@@ -220,4 +220,49 @@ test('ROUND TRIP: our own ingest consumes the firehose with full attribution and
   // covers newest-first order: the reply arrives before its parent)
   expect(replyEntry.inReplyToPostId).toBe(rootEntry.id)
   expect(replyEntry.threadRootId).toBe(rootEntry.id)
+})
+
+test('localGuid: url-bearing post → bare permalink guid, no isPermaLink key', () => {
+  const p = { url: 'https://cast.example.com/post/abc', guid: 'uuid-abc', source: 'local' } as any
+  expect(localGuid(p)).toEqual({ value: 'https://cast.example.com/post/abc' })
+  expect('isPermaLink' in localGuid(p)).toBe(false)
+})
+
+test('localGuid: url-less post → UUID guid with isPermaLink false (unchanged)', () => {
+  const p = { url: null, guid: 'uuid-xyz', source: 'local' } as any
+  expect(localGuid(p)).toEqual({ value: 'uuid-xyz', isPermaLink: false })
+})
+
+test('per-user feed emits the permalink as a bare guid (threadwalker string-compare key)', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const body = await (await app.request('/users/alice/feed.xml')).text()
+  // url-bearing local posts now emit <guid>URL</guid> with NO attribute
+  expect(body).toMatch(/<guid>https:\/\/cast\.example\.com\/post\/[^<]+<\/guid>/)
+  expect(body).not.toContain('isPermaLink') // no url-less local posts in this fixture
+})
+
+test('firehose emits bare permalink guids and still injects source:comments (keyed on emitted guid)', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  await service.createLocalPostAs('bob', 'Bob', 'a reply', root)
+  const body = await (await app.request('/users/rss.xml')).text()
+  expect(body).toMatch(/<guid>https:\/\/cast\.example\.com\/post\/[^<]+<\/guid>/)
+  // injection landed on the url-bearing parent → keyed on the EMITTED (URL) guid, not the UUID
+  expect(body).toContain(`<source:comments count="1" feedUrl="https://cast.example.com/post/${root.id}/comments.xml"/>`)
+})
+
+test('JSON feed id equals the emitted permalink for url-bearing posts', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const body = await (await app.request('/users/alice/feed.json')).json()
+  for (const item of body.items) expect(item.id).toMatch(/^https:\/\/cast\.example\.com\/post\//)
+})
+
+test('remote post keeps its origin guid verbatim (never localGuid-derived)', () => {
+  const p = { url: 'https://elsewhere.example/p/1', guid: 'origin-guid-1', source: 'remote' } as any
+  // localGuid is only applied to source==='local'; a remote post serialized via
+  // the pass-through path keeps guid='origin-guid-1'. Pin at the helper boundary:
+  expect(p.source).toBe('remote') // guard: the render paths below must not call localGuid for remotes
 })

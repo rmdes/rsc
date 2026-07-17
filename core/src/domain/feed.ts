@@ -9,6 +9,18 @@ export interface FeedContext {
   rssCloud: boolean
 }
 
+// The emitted identity of a LOCAL post. A post created under a public URL
+// stored url = `${publicUrl}/post/${id}` (service.ts) — that stored url IS the
+// permalink and becomes a bare <guid> (rss.chat's convention, which our ingest
+// already honors, and which Dave's threadwalker string-compares). A post with
+// no stored url keeps its UUID guid with isPermaLink="false" (a bare non-URL
+// guid would be a lie, and that post emits no <link> either — consistent).
+// PIN (feedsmith 2.9.6): the URL branch omits the isPermaLink key entirely —
+// isPermaLink:true would serialize an attribute that breaks the walker.
+export function localGuid(p: Post): { value: string; isPermaLink?: false } {
+  return p.url !== null ? { value: p.url } : { value: p.guid, isPermaLink: false }
+}
+
 export function feedUrls(publicUrl: string, handle: string): { xml: string; json: string } {
   return { xml: `${publicUrl}/users/${handle}/feed.xml`, json: `${publicUrl}/users/${handle}/feed.json` }
 }
@@ -83,7 +95,7 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
       ...(cloud ? { cloud } : {}),
       items: posts.map((p) => ({
         ...(p.title !== null ? { title: p.title } : {}), // Textcasting: never synthesize a title
-        guid: { value: p.guid, isPermaLink: false },
+        guid: localGuid(p),
         ...(p.url !== null ? { link: p.url } : {}),
         pubDate: p.publishedAt,
         ...itemContentFields(p),
@@ -121,7 +133,7 @@ export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): s
       ...(ctx.publicUrl ? { sourceNs: { self: firehoseUrl(ctx.publicUrl) } } : {}),
       items: entries.map((p) => ({
         ...(p.title !== null ? { title: p.title } : {}),
-        guid: { value: p.guid, isPermaLink: false },
+        guid: localGuid(p),
         ...(p.url !== null ? { link: p.url } : {}),
         pubDate: p.publishedAt,
         // RSS core <source>: the item's author and their personal feed.
@@ -179,7 +191,11 @@ export function renderCommentsFeed(post: Post, replies: Post[], ctx: FeedContext
       description: `Replies to "${label}"`,
       items: replies.map((p) => ({
         ...(p.title !== null ? { title: p.title } : {}),
-        guid: { value: p.guid, isPermaLink: false },
+        // Unlike the other two RSS paths, replies here can be remote (a
+        // cross-instance reply resolves onto our local post) — only local
+        // items get the permalink-guid treatment; a remote item's guid VALUE
+        // must stay p.guid verbatim, never swapped to p.url.
+        guid: p.source === 'local' ? localGuid(p) : { value: p.guid, isPermaLink: false },
         ...(p.url !== null ? { link: p.url } : {}),
         pubDate: p.publishedAt,
         ...itemContentFields(p),
@@ -197,7 +213,7 @@ export function renderJsonFeed(user: User, posts: Post[], ctx: FeedContext): str
       ...(ctx.publicUrl ? { feed_url: feedUrls(ctx.publicUrl, user.handle).json } : {}),
       ...(ctx.hubUrl ? { hubs: [{ type: 'WebSub', url: ctx.hubUrl }] } : {}),
       items: posts.map((p) => ({
-        id: p.guid,
+        id: localGuid(p).value,
         ...(p.title !== null ? { title: p.title } : {}),
         ...(p.source === 'local'
           ? { content_html: renderLocalHtml(p.content), content_text: p.content }
