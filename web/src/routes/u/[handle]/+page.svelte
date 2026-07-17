@@ -73,6 +73,12 @@
 	<ul class="timeline">
 		{#each groups as { top: post, others } (post.threadRootId ?? post.id)}
 			<li class="post" class:remote={post.source === 'remote'} class:stacked={others.length > 0}>
+				<!-- aggregate lenses (e.g. @rsschat) carry a per-item author; the date
+				     permalink lives top-right like every byline, not in the action row -->
+				<div class="byline">
+					{#if post.sourceName}<strong>{post.sourceName}</strong>{/if}
+					<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+				</div>
 				{#if post.title}<h2 class="title">{post.title}</h2>{/if}
 				<PostBody {post} />
 				{#if post.replyCount}
@@ -98,7 +104,6 @@
 							stackOpen[post.id] = !stackOpen[post.id]
 						}}><span class="glyph" aria-hidden="true">▸</span>{stackOpen[post.id] ? 'Hide' : `${others.length} more in this conversation`}</a>
 				{/if}
-				<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 				{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
 					<a class="source" href="/post/{post.id}">Reply</a>
 				{/if}
@@ -114,9 +119,12 @@
 						     top card already carries the one "View conversation" that matters -->
 						{#each others as p (p.id)}
 							<li class="post" class:remote={p.source === 'remote'}>
+								<div class="byline">
+									{#if p.sourceName}<strong>{p.sourceName}</strong>{/if}
+									<a class="permalink" href="/post/{p.id}"><time datetime={p.publishedAt}>{p.publishedAt.slice(0, 10)}</time></a>
+								</div>
 								{#if p.title}<h3 class="title">{p.title}</h3>{/if}
 								<PostBody post={p} />
-								<a class="permalink" href="/post/{p.id}"><time datetime={p.publishedAt}>{p.publishedAt.slice(0, 10)}</time></a>
 							</li>
 						{/each}
 					</ul>
