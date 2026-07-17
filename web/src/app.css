@@ -235,6 +235,23 @@ form.auth-form {
 	font-size: 0.875rem;
 }
 
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.field label {
+	font-weight: 600;
+	font-size: 0.875rem;
+}
+
+.field-hint {
+	margin: 0;
+	color: var(--color-secondary);
+	font-size: 0.8125rem;
+}
+
 input,
 textarea {
 	background: var(--color-surface);

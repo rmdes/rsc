@@ -18,10 +18,30 @@
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 	<form method="POST" action="?/save" class="auth-form">
-		<label class="visually-hidden" for="settings-handle">Handle</label>
-		<input id="settings-handle" name="handle" placeholder="handle" value={data.me?.user.handle ?? ''} />
-		<label class="visually-hidden" for="settings-display-name">Display name</label>
-		<input id="settings-display-name" name="displayName" placeholder="display name" value={data.me?.user.displayName ?? ''} />
+		<div class="field">
+			<label for="settings-handle">Username</label>
+			<input
+				id="settings-handle"
+				name="handle"
+				placeholder="handle"
+				value={data.me?.user.handle ?? ''}
+				aria-describedby="settings-handle-hint"
+			/>
+			<p class="field-hint" id="settings-handle-hint">
+				Your unique @name in timelines, links, and feeds. Lowercase; changing it updates your addresses.
+			</p>
+		</div>
+		<div class="field">
+			<label for="settings-display-name">Display name</label>
+			<input
+				id="settings-display-name"
+				name="displayName"
+				placeholder="display name"
+				value={data.me?.user.displayName ?? ''}
+				aria-describedby="settings-display-name-hint"
+			/>
+			<p class="field-hint" id="settings-display-name-hint">Shown next to your posts. Anything you like.</p>
+		</div>
 		<button>Save</button>
 	</form>
 </div>
