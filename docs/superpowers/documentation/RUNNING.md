@@ -157,7 +157,13 @@ Then open <http://localhost:5173>.
 - Local composes are **Markdown** (GFM — bare URLs autolink). With
   JavaScript on, the composer is a Markdown editor with live preview
   (Carta); without it, the same plain textarea as always — posts are
-  identical either way. Feeds emit the
+  identical either way. Single newlines are line breaks, like a chat or
+  microblog, not classic Markdown. `:shortcode:` emoji work (e.g. `:tada:`
+  → 🎉); type `:` in the editor for autocomplete. Fenced code blocks with a
+  language tag are syntax-highlighted; without a tag they render plain.
+  Typing literal HTML (e.g. `<div>x</div>`) is not supported — the tag
+  vanishes and the text remains; this is deliberate. Type `/` in the editor
+  for the slash command menu. Feeds emit the
   Textcasting dual contract: `<source:markdown>` carries your source
   verbatim, `<description>`/`content_html` the rendered (and sanitized)
   HTML, so readers that don't know `source:markdown` still see rich posts.

@@ -15,6 +15,8 @@
 	--color-border: light-dark(#e4e4e7, #27272a);
 	--color-destructive: light-dark(#dc2626, #ef4444);
 	--color-ring: light-dark(#18181b, #fafafa);
+	--color-code-string: light-dark(#15803d, #4ade80);
+	--color-code-value: light-dark(#1d4ed8, #93c5fd);
 
 	--space-xs: 0.25rem;
 	--space-sm: 0.5rem;
@@ -585,6 +587,35 @@ button:hover {
 .post .body pre code {
 	background: none;
 	padding: 0;
+}
+
+/* highlight.js tokens (server-side rehype-highlight output). Only hljs-*
+   classes survive the sanitizer; everything maps to theme tokens. */
+.hljs-keyword,
+.hljs-built_in,
+.hljs-literal,
+.hljs-type {
+	color: var(--color-accent);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+	color: var(--color-code-string);
+}
+
+.hljs-number,
+.hljs-attr,
+.hljs-title,
+.hljs-symbol {
+	color: var(--color-code-value);
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-meta,
+.hljs-deletion {
+	color: var(--color-secondary);
 }
 
 .post .body img {
