@@ -65,7 +65,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ error: 'internal error' }, 500)
   })
 
-  app.get('/health', (c) => c.json({ ok: true }))
+  app.get('/health', (c) => c.json({ ok: true, mailEnabled }))
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no

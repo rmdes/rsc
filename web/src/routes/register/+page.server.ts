@@ -1,5 +1,5 @@
 import type { Actions } from './$types'
-import { fail, redirect } from '@sveltejs/kit'
+import { fail } from '@sveltejs/kit'
 import { cookieHeader, relaySetCookies } from '$lib/server/session'
 import { env } from '$env/dynamic/private'
 
@@ -20,10 +20,14 @@ export const actions = {
 			body: JSON.stringify({ email, password, name: email.split('@')[0] })
 		})
 		if (!res.ok) {
+			if (res.status === 503) return fail(503, { error: 'Email accounts are not available on this instance — post as a guest instead.' })
 			const body = (await res.json().catch(() => ({}))) as { message?: string }
 			return fail(res.status === 422 || res.status === 400 ? 400 : 500, { error: body.message ?? 'registration failed' })
 		}
+		// Hard verification (spec decision): sign-up never mints a usable session
+		// — no redirect-as-logged-in. Relay any cookie anyway (defensive, matches
+		// every other auth action here) and hand the check-inbox state to the page.
 		relaySetCookies(cookies, res)
-		throw redirect(303, '/')
+		return { checkInbox: true, email }
 	}
 } satisfies Actions

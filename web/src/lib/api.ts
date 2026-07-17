@@ -86,11 +86,15 @@ export async function createPost(f: typeof fetch, input: { content: string; inRe
 	if (!res.ok) throw new Error(await errorMessage(res, `createPost ${res.status}`))
 }
 
-export async function getMe(f: typeof fetch): Promise<{ user: TimelineEntry['author']; isAnonymous: boolean } | null> {
+// emailVerified is optional and NOT sent by core's /me today (hard verification
+// means an unverified password account can never reach a resolvable session —
+// see auth.ts). Typed here so the identity bar's verify-nudge branch (which
+// can never fire yet) is ready without another core change.
+export async function getMe(f: typeof fetch): Promise<{ user: TimelineEntry['author']; isAnonymous: boolean; emailVerified?: boolean } | null> {
 	const res = await f(`${base()}/me`)
 	if (res.status === 401) return null
 	if (!res.ok) throw new Error(await errorMessage(res, 'getMe failed'))
-	return (await res.json()) as { user: TimelineEntry['author']; isAnonymous: boolean }
+	return (await res.json()) as { user: TimelineEntry['author']; isAnonymous: boolean; emailVerified?: boolean }
 }
 
 export async function updateProfile(f: typeof fetch, patch: { handle?: string; displayName?: string }): Promise<void> {

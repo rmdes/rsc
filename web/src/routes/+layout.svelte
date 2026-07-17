@@ -26,6 +26,9 @@
 	{:else}
 		<div>
 			{data.me.user.displayName} <a class="handle" href="/u/{data.me.user.handle}">@{data.me.user.handle}</a>
+			{#if data.me.emailVerified === false}
+				<span>Verify your email — <a class="identity-cta" href="/login">email me a login link</a></span>
+			{/if}
 			<a href="/settings">Settings</a>
 			<form method="POST" action="/login?/logout" class="logout-form"><button type="submit">Log out</button></form>
 		</div>

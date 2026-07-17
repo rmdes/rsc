@@ -35,6 +35,8 @@ cp web/.env.example web/.env
 | `TEXTCASTER_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke), also usable there in place of a registered session. |
 | `TEXTCASTER_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
 | `TEXTCASTER_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
+| `TEXTCASTER_SMTP_URL` | no | — | SMTP connection URL, e.g. `smtp://localhost:1025` (Mailpit, no TLS/auth) or `smtps://user:pass@host:465` (production). Unset means mail is off — see "Email" below. |
+| `TEXTCASTER_MAIL_FROM` | no | `textcaster@<host of TEXTCASTER_PUBLIC_URL or TEXTCASTER_WEB_ORIGIN>` | From-address on outgoing mail. |
 | `TEXTCASTER_DB` | no | `./data/textcaster.db` | SQLite file path, or `:memory:`. |
 | `TEXTCASTER_PORT` | no | `8787` | HTTP port core listens on. |
 | `TEXTCASTER_POLL_SECONDS` | no | `60` | How often remote feeds are polled. |
@@ -78,6 +80,47 @@ start using the app:
   sign-in) keys on `x-forwarded-for` as forwarded by the web server —
   production deployments must ensure the web server sets it to the real
   client address.
+
+## Email (verification, magic link, password reset)
+
+Email accounts require SMTP. Set `TEXTCASTER_SMTP_URL` to enable them; leave
+it unset and the instance runs guest-only for email purposes (see below).
+
+- **Hard verification.** `POST /register` (email + password) never signs the
+  visitor in — an account can't sign in until its verification link (emailed
+  on sign-up) is clicked. Guests keep working the whole time; only that one
+  account is blocked until verified.
+- **Magic link both logs in and verifies.** Requesting a login link
+  (`POST /api/auth/sign-in/magic-link`) and clicking it is a full sign-in
+  *and* marks the account verified in the same step — it's the recovery path
+  for a registered-but-unverified account, not just an alternative to a
+  password.
+- **Password reset** (`POST /api/auth/request-password-reset` then
+  `POST /api/auth/reset-password`) needs mail for the same reason: the reset
+  link is emailed.
+- **Without SMTP, email accounts are unavailable.** `TEXTCASTER_SMTP_URL`
+  unset means `GET /health` reports `mailEnabled: false`; core refuses
+  `POST /sign-up/email`, `POST /sign-in/magic-link`, and
+  `POST /request-password-reset` with `503` before any account row is
+  created (no half-registered accounts), and the web app hides those forms
+  behind a "post as a guest instead" message. The anonymous guest flow is
+  entirely unaffected — it needs no email at all.
+
+**Local dev — Mailpit** (catches outgoing mail, no real SMTP server needed):
+
+```bash
+docker run -p 1025:1025 -p 8025:8025 axllent/mailpit
+```
+
+Then set `TEXTCASTER_SMTP_URL=smtp://localhost:1025` in `core/.env` and open
+<http://localhost:8025> to read verification/magic-link/reset emails sent
+during development.
+
+**Cloudron:** the mail addon injects its own SMTP env vars — point
+`TEXTCASTER_SMTP_URL` at them (e.g. build it from `MAIL_SMTP_SERVER`,
+`MAIL_SMTP_PORT`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`) in the
+package's start script or manifest env mapping; core itself only ever reads
+`TEXTCASTER_SMTP_URL`.
 
 ## Feeds & push
 
