@@ -35,23 +35,28 @@ const SANITIZE_CONFIG: sanitizeHtml.IOptions = {
 // costs ~10s of sync CPU (measured), and this pipeline runs on every read
 // (timeline load, SSE frame enrichment) over input a followed feed's
 // source:markdown fully controls, with no size cap on local compose either.
-// Ceiling picked well above any real code paste; fences over it render as
-// plain <pre><code>, not highlighted.
+// Ceiling picked well above any real code paste. This is a per-DOCUMENT
+// budget, not per fence: many sub-limit fences sum linearly (~10ms/KB), so
+// a 5MB remote item packed with 9.9k fences would otherwise still stall the
+// loop for ~50s. Once the budget is spent, remaining fences render as plain
+// <pre><code>, not highlighted.
 const HIGHLIGHT_MAX_CHARS = 10_000
 
-// Runs before rehypeHighlight so an oversized fence never reaches lowlight.
+// Runs before rehypeHighlight so an over-budget fence never reaches lowlight.
 // 'no-highlight' is the class rehype-highlight itself recognizes as skip
 // (see language() in rehype-highlight/lib/index.js); sanitize-html then
 // strips it since it's not in allowedClasses, so it never reaches output.
 function skipOversizedFences() {
 	return (tree: Root) => {
+		let budget = HIGHLIGHT_MAX_CHARS
 		visit(tree, 'element', (node: Element, _index, parent) => {
 			if (node.tagName !== 'code' || !parent || parent.type !== 'element' || parent.tagName !== 'pre') return
 			let length = 0
 			visit(node, 'text', (text: Text) => {
 				length += text.value.length
 			})
-			if (length > HIGHLIGHT_MAX_CHARS) {
+			budget -= length
+			if (budget < 0) {
 				const className = Array.isArray(node.properties.className) ? node.properties.className : []
 				node.properties.className = [...className, 'no-highlight']
 			}
