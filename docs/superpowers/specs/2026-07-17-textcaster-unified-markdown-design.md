@@ -5,7 +5,8 @@ Date: 2026-07-17 (rev 2 — folds in
 allowedClasses-only correction, version-pin discipline, emoji mode pin,
 load-bearing goal declared, core-swap decision made conscious, residual
 divergences named)
-Status: design approved (brainstorm); rev 2 pending review
+Status: design approved; rev 3 (plan-time probe amendments — see addendum
+at end; plan: `docs/superpowers/plans/2026-07-17-textcaster-unified-markdown.md`)
 Author: Ricardo (rmdes) with Claude Code
 Basis: rich-content milestone (render-on-read, sanitizer twins), Carta
 composer milestone (preview = remark, published = marked — the parity gap
@@ -209,3 +210,29 @@ byte-identity canary and can ship two unified copies in the bundle.
 3. rehype-highlight + sanitizer class patterns + hljs token CSS both themes.
 4. Editor-side plugins (slash, emoji autocomplete) + bundle gate + click-check.
 5. Remove marked, deps audit, RUNNING.md note.
+
+## Rev 3 addendum — plan-time probe amendments (2026-07-17)
+
+Three findings from executing the plan-time probes (composed chain +
+sanitizer + installed carta source), each strengthening or correcting rev 2:
+
+1. **`span` must join `allowedTags`** (correction). Composing the pipeline
+   WITH the sanitizer (the review probed them separately) showed
+   `allowedClasses` alone is moot: without `span` in `allowedTags`, the
+   hljs token spans are stripped bodily and highlighting silently no-ops.
+   The security delta is therefore: `span` in `allowedTags` (inert, no
+   attributes beyond the class patterns) + the one `allowedClasses` line.
+2. **The preview uses the SAME highlighter — palette and bare-fence
+   divergences dissolve** (improvement). Probing carta 4.11.2's processor
+   showed its preview does NOT highlight code at all (shiki only styles the
+   editor's input overlay). The plan wires `rehype-highlight` into the
+   preview as a sync rehype transformer via carta's probed
+   `extensions[].transformers` API — same library, same classes, same token
+   CSS as published output. `@cartamd/plugin-code` is not used.
+3. **The emoji map divergence dissolves** (improvement).
+   `@cartamd/plugin-emoji@4.3.0` depends on `remark-emoji` itself (same
+   `node-emoji` map as the server twins). One mapping everywhere.
+
+Net: the residual-divergence list from rev 2 is now EMPTY apart from the
+pre-existing `PREVIEW_SANITIZE_OPTS` scope difference, which predates this
+milestone.
