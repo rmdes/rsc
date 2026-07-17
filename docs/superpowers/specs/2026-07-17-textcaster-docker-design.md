@@ -1,7 +1,10 @@
 # Textcaster — Docker Compose (dev + self-host) design
 
-Date: 2026-07-17
-Status: design approved (brainstorm); spec pending review
+Date: 2026-07-17 (rev 2 — folds in
+`docs/superpowers/reviews/2026-07-17-docker-spec-review.md`: F-1
+`/api/auth/*` routes to WEB not core, F-2 caddy joins the backend network,
+F-3 adapter-node ADDRESS_HEADER, `/peers` confirmed internal, anchored regexes)
+Status: rev 2, ready to plan
 Author: Ricardo (rmdes) with Claude Code
 Reference: `/home/rmdes/feedland-docker` (Caddy auto-HTTPS, Mailpit basic-auth
 at `/mail`, `.env.example` with `${VAR:?}` guards, healthchecks + memory
@@ -53,7 +56,12 @@ README.md                 # rewritten
 `node:22-bookworm-slim` (Debian/glibc). `better-sqlite3` ships glibc
 prebuilds → no compile on this base (alpine/musl would force a build; avoid).
 Builder stages run `npm ci` at the repo root (workspaces hoist to root
-`node_modules`).
+`node_modules`). Plan-time smoke checks (review): verify `better-sqlite3`
+hoists to the ROOT `node_modules` (so one root named volume suffices — if a
+nested `core/node_modules` carries the native build, the dev volume must
+cover it too); and note `sh -c "npm ci && …"` re-runs `npm ci` on every
+`up` (correct but slow — an init-once guard, e.g. skip when a sentinel
+exists, is a fair follow-up, not required for v1).
 
 ## Dev — `compose.yaml` (full stack, live reload)
 
@@ -93,8 +101,12 @@ Services: **caddy**, **web**, **core**, **mailpit**.
   else to `web:3000`.
 - **web**: built from `docker/Dockerfile.web`; runs
   `node build/index.js`, `PORT=3000`, `ORIGIN=https://${TEXTCASTER_DOMAIN}`
-  (adapter-node CSRF), `CORE_API_URL=http://core:8787`. Backend + frontend
-  networks. Not directly published (Caddy fronts it).
+  (adapter-node CSRF), plus **`ADDRESS_HEADER=X-Forwarded-For` +
+  `XFF_DEPTH=1`** (F-3: `getClientAddress()` in the auth proxy feeds
+  better-auth's per-IP rate limiter; behind Caddy, without these adapter-node
+  either throws or collapses every client to Caddy's IP — one shared bucket).
+  `CORE_API_URL=http://core:8787`. Backend + frontend networks. Not directly
+  published (Caddy fronts it).
 - **core**: built from `docker/Dockerfile.core`; **no published ports**
   (backend network only). SQLite on named volume `core-data:/data`,
   `TEXTCASTER_DB=/data/textcaster.db`. **Push ON** (prod federation, per
@@ -109,9 +121,12 @@ Services: **caddy**, **web**, **core**, **mailpit**.
   ports (Caddy fronts `/mail`). Default mail sink; `.env.example` documents
   pointing `TEXTCASTER_SMTP_URL` at real SMTP for actual delivery (Mailpit
   catches but never delivers — the honest caveat).
-- Networks: `frontend` (caddy, web, mailpit), `backend` (web, core, mailpit).
-  core ONLY on backend. Healthchecks (core `/health`, web root, mailpit),
-  memory limits, `restart: unless-stopped` on all.
+- Networks: `frontend` (caddy, web, mailpit), `backend` (**caddy**, web,
+  core, mailpit). caddy is on BOTH (F-2: it must reach `core:8787` on the
+  backend to serve the public feed/federation paths — on frontend-only those
+  502). The isolation that matters is that **core publishes no host ports**,
+  not which internal network it shares. Healthchecks (core `/health`, web
+  root, mailpit), memory limits, `restart: unless-stopped` on all.
 
 ### Caddy routing (the public/internal split)
 
@@ -127,28 +142,37 @@ routes):
 		reverse_proxy mailpit:8025
 	}
 
-	# core PUBLIC surface: auth, feeds, federation push-callbacks
+	# core PUBLIC surface: feeds + federation push-callbacks ONLY.
+	# NOT /api/auth/* — F-1: emailed verify/magic/reset links are native GET
+	# navigations that send NO Origin header, and better-auth 403s cookie-
+	# bearing requests without one. They MUST go through the web app's
+	# /api/auth proxy (injects Origin, relays Set-Cookie + the 302). So auth
+	# falls through to web:3000 below — same path dev takes (no Caddy there),
+	# restoring dev/prod parity. Form-POST auth already reaches core
+	# server-side over CORE_API_URL; nothing needs public /api/auth on core.
 	@core {
-		path /api/auth/*
 		path /users/rss.xml
-		path_regexp /users/[^/]+/feed\.(xml|json)$
-		path_regexp /users/[^/]+/following\.opml$
-		path_regexp /post/[^/]+/comments\.xml$
+		path_regexp ^/users/[^/]+/feed\.(xml|json)$
+		path_regexp ^/users/[^/]+/following\.opml$
+		path_regexp ^/post/[^/]+/comments\.xml$
 		path /websub/callback/*
 		path /rsscloud/notify /rsscloud/pleaseNotify
 		path /hub
 	}
 	handle @core { reverse_proxy core:8787 }
 
-	# everything else → the SvelteKit app
+	# everything else → the SvelteKit app (incl. /api/auth/* → its proxy)
 	handle { reverse_proxy web:3000 }
 }
 ```
 
-INTERNAL (never matched above, stay web→core server-side): `/posts`,
-`/me*`, `/timeline`, `/timeline/stream`, `POST /users`,
-`/users/:handle/follows`, `/post/:id/thread`, `/peers`, `/health`. `/hub` is
-routed only meaningfully when `TEXTCASTER_WEBSUB=self`; harmless otherwise.
+INTERNAL (never in `@core`, stay web→core server-side): `/posts`, `/me*`,
+`/timeline`, `/timeline/stream`, `POST /users`, `/users/:handle/follows`,
+`/post/:id/thread`, `/health`, and **`/peers`** (confirmed internal — it's
+the web app's connected-instances data, server-side rendered; not a public
+peer-discovery/crawl endpoint. If public discovery is ever wanted, that's a
+deliberate later addition to `@core`). `/api/auth/*` → web (F-1 above).
+`/hub` is only meaningful when `TEXTCASTER_WEBSUB=self`; harmless otherwise.
 
 ## Secrets — `scripts/generate-env.sh`
 
