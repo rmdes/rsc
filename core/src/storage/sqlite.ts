@@ -112,6 +112,27 @@ export class SqliteRepository implements Repository {
     const r = await this.db.selectFrom('users').selectAll().where('handle', '=', handle).executeTakeFirst()
     return r ? rowToUser(r) : undefined
   }
+  async getUserByAuthUserId(authUserId: string) {
+    const r = await this.db.selectFrom('users').selectAll().where('auth_user_id', '=', authUserId).executeTakeFirst()
+    return r ? rowToUser(r) : undefined
+  }
+  async setAuthUserId(userId: string, authUserId: string) {
+    await this.db.updateTable('users').set({ auth_user_id: authUserId }).where('id', '=', userId).execute()
+  }
+  async updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }) {
+    try {
+      const r = await this.db
+        .updateTable('users')
+        .set({ ...(patch.handle !== undefined ? { handle: patch.handle } : {}), ...(patch.displayName !== undefined ? { display_name: patch.displayName } : {}) })
+        .where('id', '=', userId)
+        .returningAll()
+        .executeTakeFirstOrThrow()
+      return rowToUser(r)
+    } catch (err) {
+      if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new HandleTakenError('handle already taken')
+      throw err
+    }
+  }
   async listRemoteUsers() {
     const rs = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').execute()
     return rs.map(rowToUser)

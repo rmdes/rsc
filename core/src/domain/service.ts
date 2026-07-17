@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
-import type { NewRemoteUser, TimelineEntry, TimelineCursor, User, Post } from './types.ts'
+import type { NewRemoteUser, NewLocalUser, TimelineEntry, TimelineCursor, User, Post } from './types.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 
@@ -71,6 +71,18 @@ export function createService(repo: Repository, bus: EventBus) {
     },
     getUserByHandle(handle: string) {
       return repo.getUserByHandle(handle)
+    },
+    getUserByAuthUserId(authUserId: string) {
+      return repo.getUserByAuthUserId(authUserId)
+    },
+    setAuthUserId(userId: string, authUserId: string) {
+      return repo.setAuthUserId(userId, authUserId)
+    },
+    updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }) {
+      return repo.updateUserProfile(userId, patch)
+    },
+    createLocalUser(u: NewLocalUser) {
+      return repo.createLocalUser(u)
     },
     getPostsByAuthor(authorId: string, limit: number) {
       return repo.getPostsByAuthor(authorId, limit)
