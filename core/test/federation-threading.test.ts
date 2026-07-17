@@ -14,7 +14,11 @@ const publicLookup = async () => [{ address: '93.184.216.34' }]
 async function instance(publicUrl: string) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
+  // publicUrl wired into createService too (not just the feed context): local
+  // posts then mint a permalink url, matching prod (server.ts) and exercising
+  // the milestone's permalink-guid cross-instance loop instead of the legacy
+  // url-less shape.
+  const service = createService(repo, bus, publicUrl)
   const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds: { publicUrl, hubUrl: null, rssCloud: false } })
   // fetchFn that serves this instance's own routes for its public origin
   const serve = async (url: string | URL | Request) => {
@@ -50,10 +54,16 @@ test('MONEY TEST: a conversation federates over plain RSS, round trip, threadwal
 
   // B's feed carries both reply forms
   const bobFeed = await (await B.app.request('/users/bob/feed.xml')).text()
-  expect(bobFeed).toContain(`<source:inReplyTo isPermaLink="false">${orig.post.guid}</source:inReplyTo>`) // local posts have no url → guid ref
+  // MONEY TEST: local posts now mint a permalink, so the reply's ref is the
+  // PARENT'S PERMALINK (orig.post.url), not the UUID guid — and being a URL
+  // ref, it carries no isPermaLink attribute (replyWireElements omits it for URLs).
+  expect(bobFeed).toContain(`<source:inReplyTo>${orig.post.url}</source:inReplyTo>`)
+  expect(bobFeed).not.toContain('isPermaLink')
   expect(bobFeed).toContain('<thr:in-reply-to')
 
-  // A ingests bob's feed → the reply resolves to alice's original by guid
+  // A ingests bob's feed → the reply resolves to alice's original by permalink
+  // (guid === url for url-bearing posts) — this is the headline behavior: A→B→A
+  // resolves under permalink guids.
   const bobOnA = await A.repo.createRemoteUser({ handle: 'bob-b', displayName: 'Bob', feedUrl: 'https://b.example/users/bob/feed.xml' })
   await ingestRemoteUser(A.repo, A.bus, bobOnA, B.serve as unknown as typeof fetch, publicLookup)
 
@@ -68,6 +78,26 @@ test('MONEY TEST: a conversation federates over plain RSS, round trip, threadwal
   // …and the advertised comments feed serves the reply (threadwalker-walkable)
   const comments = await (await A.app.request(`/post/${orig.post.id}/comments.xml`)).text()
   expect(comments).toContain('reply from B')
+})
+
+test('url-less local post still threads via UUID guid ref (no publicUrl on the service)', async () => {
+  // Pins the pre-permalink fallback shape now that instance() above always
+  // wires a publicUrl into createService: a deployment with no publicUrl (or
+  // legacy rows without a stored url) must still emit a bare UUID guid ref,
+  // isPermaLink="false", and still thread correctly.
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus) // no publicUrl → posts mint url: null
+  const app = createApp({ service, bus, token: 'a', auth: makeAuth(repo), users: repo, feeds: { publicUrl: 'https://a.example', hubUrl: null, rssCloud: false } })
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root, no permalink')
+  await service.createLocalPostAs('bob', 'Bob', 'reply, no permalink', root)
+
+  const bobFeed = await (await app.request('/users/bob/feed.xml')).text()
+  expect(bobFeed).toContain(`<source:inReplyTo isPermaLink="false">${root.guid}</source:inReplyTo>`)
+  expect(bobFeed).toContain('<thr:in-reply-to')
+
+  const thread = await (await app.request(`/post/${root.id}/thread`)).json()
+  expect(thread.thread.map((e: { content: string }) => e.content)).toEqual(['root, no permalink', 'reply, no permalink'])
 })
 
 test('mf2 sibling: an h-entry reply with u-in-reply-to threads on ingest', async () => {

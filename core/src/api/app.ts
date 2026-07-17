@@ -6,7 +6,7 @@ import { sessionAuth, registeredOnly, sessionOrToken } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
-import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, injectSourceAccounts, localGuid } from '../domain/feed.ts'
+import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, injectSourceAccounts, emittedGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml } from '../domain/opml.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
@@ -182,9 +182,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       // renderCommentsFeed's per-item guid choice). The author name is still
       // legitimate to emit for a remote reply (whoever wrote it), just keyed
       // on its origin guid rather than a localGuid it never carries.
-      xml = injectSourceAccounts(xml, replies.map((r) => ({ guid: r.source === 'local' ? localGuid(r).value : r.guid, service: host, name: r.author.handle })))
+      xml = injectSourceAccounts(xml, replies.map((r) => ({ guid: emittedGuid(r), service: host, name: r.author.handle })))
       xml = injectSourceComments(xml, replies.filter((r) => (counts.get(r.id) ?? 0) > 0)
-        .map((r) => ({ guid: r.source === 'local' ? localGuid(r).value : r.guid, count: counts.get(r.id)!, feedUrl: `${pub}/post/${r.id}/comments.xml` })))
+        .map((r) => ({ guid: emittedGuid(r), count: counts.get(r.id)!, feedUrl: `${pub}/post/${r.id}/comments.xml` })))
     }
     return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })
@@ -236,10 +236,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
       const host = new URL(pub).host
-      xml = injectSourceAccounts(xml, entries.map((p) => ({ guid: localGuid(p).value, service: host, name: p.author.handle })))
+      xml = injectSourceAccounts(xml, entries.map((p) => ({ guid: emittedGuid(p), service: host, name: p.author.handle })))
       const counts = await service.countRepliesByPostIds(entries.map((p) => p.id))
       xml = injectSourceComments(xml, entries.filter((p) => (counts.get(p.id) ?? 0) > 0)
-        .map((p) => ({ guid: localGuid(p).value, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
+        .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
     }
     return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })
@@ -252,10 +252,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
       const host = new URL(pub).host
-      xml = injectSourceAccounts(xml, posts.map((p) => ({ guid: localGuid(p).value, service: host, name: r.user.handle })))
+      xml = injectSourceAccounts(xml, posts.map((p) => ({ guid: emittedGuid(p), service: host, name: r.user.handle })))
       const counts = await service.countRepliesByPostIds(posts.map((p) => p.id))
       xml = injectSourceComments(xml, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
-        .map((p) => ({ guid: localGuid(p).value, count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
+        .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
     }
     return c.body(xml, 200, { 'content-type': 'application/rss+xml; charset=utf-8' })
   })

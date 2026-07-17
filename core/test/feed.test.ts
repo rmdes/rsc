@@ -208,7 +208,8 @@ test('ROUND TRIP: our own ingest consumes the firehose with full attribution and
   const { items } = await parseFeedWithMeta(xml)
   const freshRepo = await createSqliteRepository(':memory:')
   const sub = await freshRepo.createRemoteUser({ handle: 'tc-firehose', displayName: 'TC', feedUrl: 'https://tc.example/users/rss.xml' })
-  await ingestItems(freshRepo, createEventBus(), sub, items)
+  const bus = createEventBus()
+  await ingestItems(freshRepo, bus, sub, items)
   const timeline = await freshRepo.getTimeline(50)
   const rootEntry = timeline.find((e) => e.content.includes('root post text'))!
   const replyEntry = timeline.find((e) => e.content.includes('reply text'))!
@@ -220,6 +221,8 @@ test('ROUND TRIP: our own ingest consumes the firehose with full attribution and
   // covers newest-first order: the reply arrives before its parent)
   expect(replyEntry.inReplyToPostId).toBe(rootEntry.id)
   expect(replyEntry.threadRootId).toBe(rootEntry.id)
+  // idempotent re-ingest: the same permalink-guid items polled again dedup fully
+  expect(await ingestItems(freshRepo, bus, sub, items)).toBe(0)
 })
 
 test('localGuid: url-bearing post → bare permalink guid, no isPermaLink key', () => {
@@ -337,7 +340,7 @@ test('a Textcaster conversation is walkable by threadwalker semantics (guid stri
     const items: any[] = []
     for (const block of xml.split('<item>').slice(1)) {
       const item = block.slice(0, block.indexOf('</item>'))
-      const guid = (item.match(/<guid[^>]*>([^<]+)<\/guid>/) ?? [])[1] ?? ''
+      const guid = (item.match(/<guid>([^<]+)<\/guid>/) ?? [])[1] ?? ''
       const author = (item.match(/<source:account[^>]*>([^<]+)<\/source:account>/) ?? [])[1] ?? '?'
       const text = (item.match(/<source:markdown>([^<]*)/) ?? [])[1] ?? ''
       const commentsFeed = (item.match(/<source:comments[^>]*feedUrl="([^"]+)"/) ?? [])[1] ?? null

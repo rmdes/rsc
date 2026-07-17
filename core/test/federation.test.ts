@@ -15,7 +15,11 @@ test('the loop closes: instance B ingests instance A user as a remote over plain
   // Instance A: emits alice's feed
   const repoA = await createSqliteRepository(':memory:')
   const busA = createEventBus()
-  const serviceA = createService(repoA, busA)
+  // Instance A's local posts mint their permalink guid (service.ts: url =
+  // `${publicUrl}/post/${id}` when createService gets a publicUrl) — matching
+  // A's own feed context below, so this test exercises the milestone's actual
+  // cross-instance permalink-guid loop, not the legacy url-less shape.
+  const serviceA = createService(repoA, busA, 'http://a.example')
   const appA = createApp({ service: serviceA, bus: busA, token: 'a', auth: makeAuth(repoA), users: repoA, feeds: { publicUrl: 'http://a.example', hubUrl: null, rssCloud: false } })
   await serviceA.createLocalPostAs('alice', 'Alice', 'hello from instance A — ünïcode ✓')
   await serviceA.createLocalPostAs('alice', 'Alice', 'second transmission')
@@ -36,10 +40,13 @@ test('the loop closes: instance B ingests instance A user as a remote over plain
   expect(timeline.every((e) => e.source === 'remote')).toBe(true)
   expect(timeline[0].author.handle).toBe('alice-a')
 
-  // guids survive the wire: A's post guids === B's stored guids
-  const aGuids = (await repoA.getTimeline(10)).map((e) => e.guid).sort()
+  // permalinks survive the wire: A's posts are url-bearing, so the EMITTED
+  // guid (the permalink, not A's internal opaque UUID) becomes B's stored
+  // guid — this is the walkable-feeds cross-instance loop under permalink guids.
+  const aUrls = (await repoA.getTimeline(10)).map((e) => e.url).sort()
   const bGuids = timeline.map((e) => e.guid).sort()
-  expect(bGuids).toEqual(aGuids)
+  expect(bGuids).toEqual(aUrls)
+  expect(bGuids.every((g) => g?.startsWith('http://a.example/post/'))).toBe(true)
 
   // idempotent re-ingest — the poller can hit A forever without duplicating
   expect((await ingestRemoteUser(repoB, busB, aliceAtB, bridge, publicLookup)).inserted).toBe(0)

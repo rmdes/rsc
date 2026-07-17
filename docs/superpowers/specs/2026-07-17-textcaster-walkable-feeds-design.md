@@ -110,6 +110,12 @@ ingested them. Scope is narrow and the timing is deliberate: url-storage
 itself only just landed (firehose work), so url-bearing posts barely
 predate this change, and there are no real external peers pre-release. We
 do NOT build a transition shim; delete-and-refollow is the dev-era answer.
+The blast radius, made honest: a consumer holding a pre-upgrade row
+`{guid: UUID, url: P}` inserts a SECOND row `{guid: P, url: P}` on its next
+poll (different guid, so no dedup conflict) — from then on `findPostByRef(P)`
+sees two holders of the same ref, hits the ambiguity guard, and returns
+undefined permanently, so any future reply to that post orphans forever on
+that consumer; delete-and-refollow clears both rows and is the only fix.
 
 **Self-ingest coherence:** another Textcaster following our feed stores
 guid = our permalink URL; replies referencing that URL resolve by

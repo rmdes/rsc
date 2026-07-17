@@ -25,8 +25,11 @@ function makeBridge(routes: Record<string, Hono>): typeof fetch {
 async function makeInstance(env: Record<string, string>) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
   const config = loadConfig({ TEXTCASTER_AUTH_SECRET: 's', ...env })
+  // Wire config.publicUrl into createService, same as prod (server.ts) — local
+  // posts then mint a permalink url, exercising the real-time push paths under
+  // the milestone's permalink guids instead of the legacy url-less shape.
+  const service = createService(repo, bus, config.publicUrl)
   return { repo, bus, service, config }
 }
 

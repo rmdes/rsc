@@ -21,6 +21,14 @@ export function localGuid(p: Post): { value: string; isPermaLink?: false } {
   return p.url !== null ? { value: p.url } : { value: p.guid, isPermaLink: false }
 }
 
+// The emitted <guid> VALUE for injector keying — the same string the render
+// paths put in the <guid> element. Local posts use their permalink (localGuid);
+// remote posts keep their origin guid. Use this at EVERY injector call site so
+// the remote guard can't be forgotten when a new one is added.
+export function emittedGuid(p: Post): string {
+  return p.source === 'local' ? localGuid(p).value : p.guid
+}
+
 export function feedUrls(publicUrl: string, handle: string): { xml: string; json: string } {
   return { xml: `${publicUrl}/users/${handle}/feed.xml`, json: `${publicUrl}/users/${handle}/feed.json` }
 }
