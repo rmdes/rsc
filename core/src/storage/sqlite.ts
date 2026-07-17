@@ -5,7 +5,7 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 
-interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string }
+interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
@@ -13,7 +13,7 @@ interface FollowsTable { follower_id: string; followed_id: string; created_at: s
 interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable; follows: FollowsTable }
 
 function rowToUser(r: UsersTable): User {
-  return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at }
+  return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at, authUserId: r.auth_user_id }
 }
 
 function rowToPost(r: PostsTable): Post {
@@ -28,12 +28,12 @@ function rowToPushSubscription(r: PushSubscriptionsTable): PushSubscription {
   return { id: r.id, userId: r.user_id, mode: r.mode, endpoint: r.endpoint, topic: r.topic, callbackToken: r.callback_token, secret: r.secret, state: r.state, expiresAt: r.expires_at, createdAt: r.created_at }
 }
 
-type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string }
+type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string; u_auth_user_id: string | null }
 
 function joinedRowToEntry(r: JoinedRow): TimelineEntry {
   return {
     ...rowToPost(r),
-    author: { id: r.u_id, kind: r.u_kind, handle: r.u_handle, displayName: r.u_display_name, feedUrl: r.u_feed_url, createdAt: r.u_created_at },
+    author: { id: r.u_id, kind: r.u_kind, handle: r.u_handle, displayName: r.u_display_name, feedUrl: r.u_feed_url, createdAt: r.u_created_at, authUserId: r.u_auth_user_id },
   }
 }
 
@@ -71,26 +71,34 @@ function orderThread(entries: TimelineEntry[], rootId: string): TimelineEntry[] 
 
 export class SqliteRepository implements Repository {
   private db: Kysely<DB>
+  private sqlite: InstanceType<typeof Database>
 
   // Plain assignment instead of a parameter property: Node's native type
   // stripping (which replaced tsx) can't erase parameter properties.
-  constructor(db: Kysely<DB>) {
+  constructor(db: Kysely<DB>, sqlite: InstanceType<typeof Database>) {
     this.db = db
+    this.sqlite = sqlite
   }
 
-  private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null): Promise<User> {
-    const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString() }
+  get raw(): Database.Database {
+    return this.sqlite
+  }
+
+  private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null, authUserId: string | null): Promise<User> {
+    const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString(), auth_user_id: authUserId }
     try {
       await this.db.insertInto('users').values(row).execute()
     } catch (err) {
-      // In the createUser paths the only reachable UNIQUE constraint is users.handle (ids are fresh UUIDs).
+      // In the createUser paths the reachable UNIQUE constraints are users.handle
+      // and users.auth_user_id (ids are fresh UUIDs). Both surface as HandleTakenError
+      // here; callers that need to distinguish re-check via getUserByAuthUserId.
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new HandleTakenError('handle already taken')
       throw err
     }
     return rowToUser(row)
   }
-  createLocalUser(u: NewLocalUser) { return this.insertUser('local', u.handle, u.displayName, null) }
-  createRemoteUser(u: NewRemoteUser) { return this.insertUser('remote', u.handle, u.displayName, u.feedUrl) }
+  createLocalUser(u: NewLocalUser) { return this.insertUser('local', u.handle, u.displayName, null, u.authUserId ?? null) }
+  createRemoteUser(u: NewRemoteUser) { return this.insertUser('remote', u.handle, u.displayName, u.feedUrl, null) }
 
   async updateFeedUrl(userId: string, feedUrl: string) {
     await this.db.updateTable('users').set({ feed_url: feedUrl }).where('id', '=', userId).execute()
@@ -123,7 +131,7 @@ export class SqliteRepository implements Repository {
     const rows = await this.db
       .selectFrom('follows')
       .innerJoin('users', 'users.id', 'follows.followed_id')
-      .select(['users.id as id', 'users.kind as kind', 'users.handle as handle', 'users.display_name as display_name', 'users.feed_url as feed_url', 'users.created_at as created_at'])
+      .select(['users.id as id', 'users.kind as kind', 'users.handle as handle', 'users.display_name as display_name', 'users.feed_url as feed_url', 'users.created_at as created_at', 'users.auth_user_id as auth_user_id'])
       .where('follows.follower_id', '=', followerId)
       .orderBy('follows.created_at', 'asc')
       .orderBy('users.handle', 'asc') // deterministic tiebreak for same-ms follows (P2)
@@ -149,7 +157,7 @@ export class SqliteRepository implements Repository {
       .selectFrom('posts')
       .innerJoin('users', 'users.id', 'posts.author_id')
       .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at'])
+      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id'])
       .orderBy('posts.published_at', 'desc')
       .orderBy('posts.id', 'desc')
       .limit(limit)
@@ -172,7 +180,7 @@ export class SqliteRepository implements Repository {
       .selectFrom('posts')
       .innerJoin('users', 'users.id', 'posts.author_id')
       .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at'])
+      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id'])
       .where('posts.created_at', '>=', sinceCreatedAt)
       .orderBy('posts.created_at', 'asc')
       .orderBy('posts.id', 'asc')
@@ -206,7 +214,7 @@ export class SqliteRepository implements Repository {
       .selectFrom('posts')
       .innerJoin('users', 'users.id', 'posts.author_id')
       .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at'])
+      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id'])
       .where((eb) => eb.or([eb('posts.id', '=', rootId), eb('posts.thread_root_id', '=', rootId)]))
       .orderBy('posts.published_at', 'asc')
       .orderBy('posts.id', 'asc')
@@ -418,6 +426,23 @@ const MIGRATIONS: string[][] = [
     // Incoming source:markdown, verbatim — the Textcasting preferred display source
     'ALTER TABLE posts ADD COLUMN content_markdown text',
   ],
+  [
+    // better-auth 1.6.23 tables, generated by `@better-auth/cli generate`
+    // (emailAndPassword + anonymous plugin). better-auth never migrates at
+    // runtime; this array is the only schema mechanism. A future better-auth
+    // schema change = a NEW migration entry, same rule.
+    `create table "user" ("id" text not null primary key, "name" text not null, "email" text not null unique, "emailVerified" integer not null, "image" text, "createdAt" date not null, "updatedAt" date not null, "isAnonymous" integer)`,
+    `create table "session" ("id" text not null primary key, "expiresAt" date not null, "token" text not null unique, "createdAt" date not null, "updatedAt" date not null, "ipAddress" text, "userAgent" text, "userId" text not null references "user" ("id") on delete cascade)`,
+    `create table "account" ("id" text not null primary key, "accountId" text not null, "providerId" text not null, "userId" text not null references "user" ("id") on delete cascade, "accessToken" text, "refreshToken" text, "idToken" text, "accessTokenExpiresAt" date, "refreshTokenExpiresAt" date, "scope" text, "password" text, "createdAt" date not null, "updatedAt" date not null)`,
+    `create table "verification" ("id" text not null primary key, "identifier" text not null, "value" text not null, "expiresAt" date not null, "createdAt" date not null, "updatedAt" date not null)`,
+    'create index "session_userId_idx" on "session" ("userId")',
+    'create index "account_userId_idx" on "account" ("userId")',
+    'create index "verification_identifier_idx" on "verification" ("identifier")',
+    // accounts <-> timeline identities link (SQLite UNIQUE ignores NULLs,
+    // so remote feeds — always NULL — are unaffected)
+    'ALTER TABLE users ADD COLUMN auth_user_id text',
+    'CREATE UNIQUE INDEX users_auth_user_idx ON users (auth_user_id)',
+  ],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
@@ -445,5 +470,5 @@ export async function createSqliteRepository(filename: string): Promise<SqliteRe
   sqlite.pragma('foreign_keys = ON')
   migrate(sqlite)
   const db = new Kysely<DB>({ dialect: new SqliteDialect({ database: sqlite }) })
-  return new SqliteRepository(db)
+  return new SqliteRepository(db, sqlite)
 }

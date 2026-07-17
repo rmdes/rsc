@@ -11,6 +11,7 @@
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "@paulrobertlloyd/mf2tojf2": "^3.0.0",
+    "better-auth": "1.6.23",
     "better-sqlite3": "^12.11.1",
     "feedsmith": "^2.9.6",
     "hono": "^4.6.0",

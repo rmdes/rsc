@@ -30,7 +30,7 @@ test('mf2 in: u-in-reply-to as string and as array', () => {
   expect(discoverFeed(multi, 'https://b.ex/').hentries[0].inReplyTo).toBe('https://a.ex/1')
 })
 
-const user: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z' }
+const user: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
 const post = (over: Partial<Post>): Post => ({ id: 'p1', authorId: 'u1', source: 'local', guid: 'guid-1', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over })
 const ctx = { publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false }
 

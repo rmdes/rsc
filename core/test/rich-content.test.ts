@@ -14,7 +14,7 @@ test('source:markdown is captured verbatim into ParsedItem.contentMarkdown', asy
   expect(items[1].contentMarkdown).toBeNull()
 })
 
-const alice: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z' }
+const alice: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
 const basePost: Post = { id: 'p1', authorId: 'u1', source: 'local', guid: 'g-1', title: null, content: '', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' }
 const ctx = { publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false }
 

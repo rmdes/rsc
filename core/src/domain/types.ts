@@ -12,6 +12,7 @@ export interface User {
   displayName: string
   feedUrl: string | null
   createdAt: string
+  authUserId: string | null
 }
 
 export interface Post {
@@ -32,7 +33,7 @@ export interface Post {
   contentMarkdown?: string | null // incoming source:markdown, verbatim (remote); null otherwise
 }
 
-export interface NewLocalUser { handle: string; displayName: string }
+export interface NewLocalUser { handle: string; displayName: string; authUserId?: string }
 export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string }
 export type TimelineEntry = Post & { author: User }
 export interface TimelineCursor { publishedAt: string; id: string }
