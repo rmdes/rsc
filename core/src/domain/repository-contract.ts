@@ -442,6 +442,18 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       expect((await repo.listRepliesByPostId('root')).map((p) => p.id)).toEqual(['r1', 'r2'])
     })
 
+    test('listTextcastingPeers: remote authors with source:markdown evidence only', async () => {
+      const repo = await makeRepo()
+      const peer = await repo.createRemoteUser({ handle: 'rsschat', displayName: 'rss.chat', feedUrl: 'https://rss.chat/users/rss.xml' })
+      const plain = await repo.createRemoteUser({ handle: 'wp', displayName: 'WP Blog', feedUrl: 'https://wp.ex/feed/' })
+      const local = await repo.createLocalUser({ handle: 'me', displayName: 'Me' })
+      await repo.insertPost(mkPost({ id: 'pp', authorId: peer.id, guid: 'pp', contentMarkdown: '**md**' }))
+      await repo.insertPost(mkPost({ id: 'pw', authorId: plain.id, guid: 'pw' })) // no markdown ever
+      await repo.insertPost(mkPost({ id: 'pl', authorId: local.id, guid: 'pl', contentMarkdown: 'local md' })) // local: never a peer
+      const peers = await repo.listTextcastingPeers()
+      expect(peers.map((u) => u.handle)).toEqual(['rsschat'])
+    })
+
     test('getRecentLocalPosts: local authors only, newest first, limited', async () => {
       const repo = await makeRepo()
       const local = await repo.createLocalUser({ handle: 'loc', displayName: 'Loc' })

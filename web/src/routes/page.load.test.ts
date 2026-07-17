@@ -44,5 +44,5 @@ test('load returns an empty timeline with coreDown when the core is unreachable'
 		throw new Error('fetch failed')
 	})
 	const result = await load({ fetch, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ timeline: [], nextCursor: null, isFirstPage: true, coreDown: true })
+	expect(result).toEqual({ timeline: [], nextCursor: null, isFirstPage: true, coreDown: true, peers: [] })
 })

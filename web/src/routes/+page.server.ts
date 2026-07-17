@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getTimeline, createPost, addRemoteUser } from '$lib/api'
+import { getTimeline, getPeers, createPost, addRemoteUser } from '$lib/api'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 
@@ -9,9 +9,11 @@ export const load: PageServerLoad = async ({ fetch, url }) => {
 	const isFirstPage = !before
 	try {
 		const { timeline, nextCursor } = await getTimeline(fetch, { before })
-		return { timeline: enrichEntries(timeline), nextCursor, isFirstPage }
+		// Widget data, never load-bearing: a peers failure must not down the page.
+		const peers = await getPeers(fetch).catch(() => [])
+		return { timeline: enrichEntries(timeline), nextCursor, isFirstPage, peers }
 	} catch {
-		return { timeline: [], nextCursor: null, isFirstPage, coreDown: true }
+		return { timeline: [], nextCursor: null, isFirstPage, coreDown: true, peers: [] }
 	}
 }
 

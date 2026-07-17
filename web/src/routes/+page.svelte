@@ -19,6 +19,17 @@
 		if (!posts.some((p) => p.id === entry.id)) live = [entry, ...live]
 	}
 
+	// Group Textcasting peers by instance host: "which textcasters is this
+	// instance connected to" reads as instances, not individual feed URLs.
+	const peerHosts = $derived.by(() => {
+		const counts = new Map<string, number>()
+		for (const p of data.peers ?? []) {
+			const host = p.feedUrl ? URL.parse(p.feedUrl)?.host : null
+			if (host) counts.set(host, (counts.get(host) ?? 0) + 1)
+		}
+		return [...counts.entries()].map(([host, feeds]) => ({ host, feeds }))
+	})
+
 	// Open wedges: post id → its flat thread. Revealed subtrees hide from the
 	// top level (a post never shows twice) and return when the wedge folds.
 	let expanded = $state<Record<string, TimelineEntry[]>>({})
@@ -125,5 +136,35 @@
 			</p>
 			<p><a href="https://textcasting.org" rel="noreferrer">Textcasting</a></p>
 		</details>
+
+		<details class="panel" open>
+			<summary>Feed</summary>
+			<p class="feed-widget">
+				<a class="feed-badge" href="/users/rss.xml" target="_blank" rel="noreferrer" aria-label="All posts — RSS feed">
+					<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+						<circle cx="2.5" cy="13.5" r="2" />
+						<path d="M0 6.5v2.5a7 7 0 0 1 7 7h2.5A9.5 9.5 0 0 0 0 6.5z" />
+						<path d="M0 1v2.5A12.5 12.5 0 0 1 12.5 16H15A15 15 0 0 0 0 1z" />
+					</svg>
+				</a>
+				<a href="/users/rss.xml" target="_blank" rel="noreferrer">All posts · RSS</a>
+			</p>
+		</details>
+
+		{#if peerHosts.length}
+			<details class="panel" open>
+				<summary>Connected instances</summary>
+				<!-- Textcasting peers only: remote feeds whose items carry
+				     source:markdown — instances that thread and interop with us. -->
+				<ul class="peer-list">
+					{#each peerHosts as p (p.host)}
+						<li>
+							<a href="https://{p.host}/" rel="noreferrer">{p.host}</a>
+							<span class="badge-kind">{p.feeds} {p.feeds === 1 ? 'feed' : 'feeds'}</span>
+						</li>
+					{/each}
+				</ul>
+			</details>
+		{/if}
 	</aside>
 </div>

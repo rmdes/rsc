@@ -113,6 +113,9 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     listFollowing(userId: string) {
       return repo.listFollowing(userId)
     },
+    listTextcastingPeers() {
+      return repo.listTextcastingPeers()
+    },
     listRemoteUsers() {
       return repo.listRemoteUsers()
     },

@@ -8,6 +8,10 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
+	<!-- Feed autodiscovery: a reader given ANY page of this site finds the
+	     all-users firehose. Pages with a more specific feed (author lenses)
+	     add their own link BEFORE this one via their own svelte:head. -->
+	<link rel="alternate" type="application/rss+xml" title="All posts" href="/users/rss.xml" />
 </svelte:head>
 
 <div class="identity-bar">

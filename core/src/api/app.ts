@@ -143,6 +143,13 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ following: await service.listFollowing(user.id) })
   })
 
+  // Textcasting peers: remote feeds whose items have carried source:markdown —
+  // the instances this one is verifiably interop-connected to. Public read.
+  app.get('/peers', async (c) => {
+    const peers = await service.listTextcastingPeers()
+    return c.json({ peers: peers.map((u) => ({ handle: u.handle, displayName: u.displayName, feedUrl: u.feedUrl })) })
+  })
+
   app.get('/post/:id/thread', async (c) => {
     const post = await service.getPost(c.req.param('id') ?? '')
     if (!post) return c.json({ error: 'unknown post' }, 404)

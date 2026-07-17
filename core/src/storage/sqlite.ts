@@ -137,6 +137,21 @@ export class SqliteRepository implements Repository {
     const rs = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').execute()
     return rs.map(rowToUser)
   }
+  // Textcasting peers: remote feeds whose ingested items have carried
+  // source:markdown — the marker every Textcasting item bears (inReplyTo/
+  // comments/account only appear situationally, so requiring them would
+  // exclude quiet peers).
+  async listTextcastingPeers() {
+    const rs = await this.db
+      .selectFrom('users')
+      .selectAll()
+      .where('kind', '=', 'remote')
+      .where(({ exists, selectFrom }) =>
+        exists(selectFrom('posts').select('posts.id').whereRef('posts.author_id', '=', 'users.id').where('posts.content_markdown', 'is not', null)))
+      .orderBy('handle', 'asc')
+      .execute()
+    return rs.map(rowToUser)
+  }
   async addFollow(followerId: string, followedId: string) {
     await this.db
       .insertInto('follows')

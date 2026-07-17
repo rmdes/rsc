@@ -10,6 +10,7 @@ export interface Repository {
   setAuthUserId(userId: string, authUserId: string): Promise<void>
   updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }): Promise<User>
   listRemoteUsers(): Promise<User[]>
+  listTextcastingPeers(): Promise<User[]>
   addFollow(followerId: string, followedId: string): Promise<void>
   removeFollow(followerId: string, followedId: string): Promise<void>
   listFollowing(followerId: string): Promise<User[]>

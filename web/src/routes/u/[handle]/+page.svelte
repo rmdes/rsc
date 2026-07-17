@@ -47,7 +47,13 @@
 	let stackOpen = $state<Record<string, boolean>>({})
 </script>
 
-<svelte:head><title>@{data.handle} — Textcaster</title></svelte:head>
+<svelte:head>
+	<title>@{data.handle} — Textcaster</title>
+	<!-- Readers pick the FIRST alternate link: on an author page that is the
+	     author's feed (remote profiles proxy-redirect to their canonical one);
+	     the layout's firehose link follows as the site-wide fallback. -->
+	<link rel="alternate" type="application/rss+xml" title="@{data.handle}" href="/u/{data.handle}/feed.xml" />
+</svelte:head>
 
 {#if data.isFirstPage && authorId}
 	<LiveTimeline {onPost} />

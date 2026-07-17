@@ -777,6 +777,45 @@ button:hover {
 	padding-left: var(--space-lg);
 }
 
+/* Meta-sidebar widgets: the firehose feed badge (classic RSS square — the
+   accent IS this palette's orange) and the Textcasting-peers list. */
+
+.feed-widget {
+	display: flex;
+	align-items: center;
+	gap: var(--space-sm);
+	margin: 0;
+}
+
+.feed-widget .feed-badge {
+	display: inline-flex;
+	padding: 6px;
+	background: var(--color-accent);
+	color: var(--color-on-accent);
+	border-radius: 6px;
+}
+
+.feed-widget .feed-badge svg {
+	width: 1rem;
+	height: 1rem;
+}
+
+.peer-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-xs);
+}
+
+.peer-list li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-sm);
+}
+
 /* Compose dialog — writing happens in an overlay, not the sidebar. Native
    <dialog> supplies the focus trap, Esc handling, and ::backdrop. */
 

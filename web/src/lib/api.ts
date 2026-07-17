@@ -37,6 +37,20 @@ export async function getTimeline(
 	return { timeline: body.timeline, nextCursor: body.nextCursor ?? null }
 }
 
+export interface Peer {
+	handle: string
+	displayName: string
+	feedUrl: string | null
+}
+
+// Textcasting peers: remote feeds whose items carry source:markdown — the
+// instances this one verifiably interops/threads with.
+export async function getPeers(f: typeof fetch): Promise<Peer[]> {
+	const res = await f(`${base()}/peers`)
+	if (!res.ok) throw new Error(await errorMessage(res, `peers ${res.status}`))
+	return (await res.json()).peers
+}
+
 export async function getFollowing(f: typeof fetch, handle: string): Promise<TimelineEntry['author'][]> {
 	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/follows`)
 	if (!res.ok) throw new Error(await errorMessage(res, `following ${res.status}`))
