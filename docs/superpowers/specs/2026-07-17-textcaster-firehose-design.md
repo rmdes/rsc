@@ -1,9 +1,11 @@
 # Textcaster — all-users RSS firehose (`/users/rss.xml`) design
 
-Date: 2026-07-17
-Status: design approved (brainstorm); spec pending review. BUILD AFTER the
-better-auth milestone lands — this touches `core/src/api/app.ts`, which
-better-auth is actively rewriting.
+Date: 2026-07-17 (rev 2 — folds in
+`docs/superpowers/reviews/2026-07-17-firehose-spec-review.md`: push-out
+scoped as real work (F-1), the local-posts query enumerated (F-2),
+source:account pinned outbound-only (F-3))
+Status: rev 2, ready to plan. better-auth HAS landed (4c88ed6..5cea86d) —
+`core/src/api/app.ts` is stable again.
 Author: Ricardo (rmdes) with Claude Code
 Basis: rss.chat interop work (permalink guids `fac1e08`, `<source>`
 attribution, `source:inReplyTo` threading — see memory `rsschat-interop`);
@@ -65,6 +67,10 @@ Every field the per-user feed emits, unchanged (title only when real,
    — feedsmith DROPS `sourceNs.account` on generate (probed, same class as
    comments), so the injector grows a sibling: same guid-keyed matching,
    same xmlns bookkeeping. Delete both the day feedsmith serializes them.
+   PINNED (review F-3): `source:account` is OUTBOUND-ONLY interop. Our
+   ingest attributes from the RSS core `<source url>` element and never
+   reads `sourceNs.account`; the round-trip money test asserts the former.
+   Do not add phantom `account` consumption to "complete" the round trip.
 
 ## Local posts gain a permalink URL
 
@@ -86,16 +92,35 @@ existing cross-instance reply refs that resolved against UUID guids.
 Opaque guid + `<link>` is fully RSS 2.0 compliant; the permalink lives one
 element over. New-post guids stay UUIDs for the same stability reason.
 
-## Push-out
+## Push-out (REAL WORK — review F-1, not a one-liner)
 
-The firehose is a first-class push topic, both protocols:
+The firehose is a first-class push topic, both protocols. The catch:
+`resolveLocalTopic` (push.ts:37) returns a user-shaped `{ user, format }`
+and has THREE callers (topic-existence check, rssCloud format check, and
+the notify path that renders THAT USER's feed for the fat ping). The
+firehose topic has no user and renders the all-users feed, so:
 
-- `resolveLocalTopic` (push.ts) learns the firehose topic
-  `${publicUrl}/users/rss.xml` alongside per-user topics.
+- The resolver's return contract becomes a discriminated union —
+  `{ kind: 'user', user, format } | { kind: 'firehose', format: 'xml' }` —
+  or an equivalent sibling resolver; the plan picks after reading all
+  three call sites.
+- Every caller handles the userless case; the notify path renders the
+  firehose XML for firehose-topic subscribers.
 - On every local post, push notifies the firehose topic's subscribers in
   addition to the author's own feed subscribers (WebSub fat ping carries
   the firehose XML; rssCloud pings the topic URL).
 - rssCloud registration for the firehose topic works like any other topic.
+
+## New repository surface (review F-2)
+
+No existing query returns "recent posts by all local users" —
+`getPostsByAuthor` is single-author and `getTimeline` has no kind filter.
+The firehose adds ONE repo method (+ Repository contract + service
+passthrough):
+
+- `getRecentLocalPosts(limit: number): Promise<Post[]>` — posts whose
+  author has `kind = 'local'`, ordered `published_at DESC, id DESC`,
+  limited. No cursor (feeds are windows, not pagination).
 
 ## What does NOT change
 
