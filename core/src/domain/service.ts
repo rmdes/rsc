@@ -56,6 +56,13 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       bus.emitNewPost(entry)
       return entry
     },
+    async editLocalPost(post: Post, content: string, author: User): Promise<TimelineEntry> {
+      const now = new Date().toISOString()
+      await repo.recordEdit(post.id, { title: post.title, content, contentMarkdown: post.contentMarkdown ?? null, editedAt: now })
+      const entry: TimelineEntry = { ...post, content, editedAt: now, author }
+      bus.emitNewPost(entry) // existing channel → SSE swap + push.onLocalPost fires (edit propagates)
+      return entry
+    },
     getTimeline(limit = 100, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string }) {
       return repo.getTimeline(limit, before, filter)
     },

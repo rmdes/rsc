@@ -110,6 +110,20 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ post }, 201)
   })
 
+  app.patch('/posts/:id', authed, async (c) => {
+    const me = c.get('coreUser')
+    const post = await service.getPost(c.req.param('id'))
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not editable' }, 403)
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { content } = body
+    if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
+    if (content === post.content) return c.json({ post }, 200) // no-op: no phantom revision
+    const entry = await service.editLocalPost(post, content, me)
+    return c.json({ post: entry }, 200)
+  })
+
   async function resolveUser(handleRaw: string): Promise<import('../domain/types.ts').User | undefined> {
     return service.getUserByHandle(handleRaw.toLowerCase())
   }
