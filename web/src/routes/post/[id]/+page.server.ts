@@ -1,8 +1,8 @@
 import type { PageServerLoad, Actions } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getThread, createPost } from '$lib/api'
+import { getThread, createPost, deletePost } from '$lib/api'
 import { enrichEntries } from '$lib/server/render'
-import { ensureSessionFetch } from '$lib/server/session'
+import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 
 export const load: PageServerLoad = async ({ fetch, params }) => {
 	try {
@@ -25,5 +25,17 @@ export const actions = {
 			return fail(400, { error: err instanceof Error ? err.message : 'reply failed' })
 		}
 		throw redirect(303, `/post/${event.params.id}`)
+	},
+	deletePost: async (event) => {
+		const form = await event.request.formData()
+		const id = String(form.get('id') ?? '').trim()
+		if (!id) return fail(400, { error: 'id required' })
+		try {
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			await deletePost(f, id)
+		} catch (err) {
+			return fail(400, { error: err instanceof Error ? err.message : 'remove failed' })
+		}
+		return { removed: true }
 	}
 } satisfies Actions

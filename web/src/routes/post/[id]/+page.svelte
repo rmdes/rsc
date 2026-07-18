@@ -13,6 +13,7 @@
 	import { enhance } from '$app/forms'
 	import type { SubmitFunction } from '@sveltejs/kit'
 	import { loadDraft, saveDraft } from '$lib/draft'
+	import { confirmSubmit } from '$lib/confirm'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -103,6 +104,12 @@
 				{#if root.source === 'local' && data.me?.user.id === root.author.id}
 					<a class="edit" href="/post/{root.id}/edit">Edit</a>
 				{/if}
+				{#if data.me?.isAdmin && root.source === 'local'}
+					<form method="POST" action="?/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
+						<input type="hidden" name="id" value={root.id} />
+						<button class="danger-link" type="submit">Remove</button>
+					</form>
+				{/if}
 				<ReplyTree thread={posts} parentId={root.id} openAll={true} highlightId={data.postId} />
 			</li>
 		{:else}
@@ -119,3 +126,22 @@
 		</form>
 	</details>
 </div>
+
+<style>
+	/* Text-button destructive affordance, matching .edit/.source's inline
+	   link weight — not a filled/outlined button (that's .danger on
+	   /admin/users, a card list with more visual room). */
+	.danger-link {
+		font: inherit;
+		font-size: 0.875rem;
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-destructive);
+		cursor: pointer;
+	}
+
+	.danger-link:hover {
+		text-decoration: underline;
+	}
+</style>

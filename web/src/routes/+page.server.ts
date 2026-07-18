@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getTimeline, getPeers, createPost, addRemoteUser } from '$lib/api'
+import { getTimeline, getPeers, createPost, addRemoteUser, deletePost } from '$lib/api'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 
@@ -46,5 +46,17 @@ export const actions = {
 			return fail(400, { error: err instanceof Error ? err.message : 'addRemoteUser failed' })
 		}
 		throw redirect(303, `/?feed=${encodeURIComponent(handle)}`)
+	},
+	deletePost: async (event) => {
+		const form = await event.request.formData()
+		const id = String(form.get('id') ?? '').trim()
+		if (!id) return fail(400, { error: 'id required' })
+		try {
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			await deletePost(f, id)
+		} catch (err) {
+			return fail(400, { error: err instanceof Error ? err.message : 'remove failed' })
+		}
+		return { removed: true }
 	}
 } satisfies import('./$types').Actions

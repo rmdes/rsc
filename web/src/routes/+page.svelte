@@ -11,6 +11,8 @@
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import { mergeIncoming } from '$lib/live'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
+	import { enhance } from '$app/forms'
+	import { confirmSubmit } from '$lib/confirm'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -129,6 +131,12 @@
 					{#if post.source === 'local' && data.me?.user.id === post.author.id}
 						<a class="edit" href="/post/{post.id}/edit">Edit</a>
 					{/if}
+					{#if data.me?.isAdmin && post.source === 'local'}
+						<form method="POST" action="?/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
+							<input type="hidden" name="id" value={post.id} />
+							<button class="danger-link" type="submit">Remove</button>
+						</form>
+					{/if}
 					{#if expanded[post.id]}
 						<ReplyTree thread={expanded[post.id]} parentId={post.id} />
 					{/if}
@@ -187,3 +195,22 @@
 		{/if}
 	</aside>
 </div>
+
+<style>
+	/* Text-button destructive affordance, matching .edit/.source's inline
+	   link weight — not a filled/outlined button (that's .danger on
+	   /admin/users, a card list with more visual room). */
+	.danger-link {
+		font: inherit;
+		font-size: 0.875rem;
+		background: none;
+		border: none;
+		padding: 0;
+		color: var(--color-destructive);
+		cursor: pointer;
+	}
+
+	.danger-link:hover {
+		text-decoration: underline;
+	}
+</style>
