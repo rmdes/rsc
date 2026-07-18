@@ -33,6 +33,8 @@ const app = createApp({
   users: repo,
   mailEnabled: config.mailEnabled,
   feeds: { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud },
+  websub: config.websub.mode,
+  pushIn: config.pushIn,
   pushApi:
     config.websub.mode === 'self' || config.rssCloud
       ? {

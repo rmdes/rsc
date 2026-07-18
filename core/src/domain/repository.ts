@@ -12,6 +12,7 @@ export interface Repository {
   listRemoteUsers(): Promise<User[]>
   listTextcastingPeers(): Promise<User[]>
   deleteUserCascade(id: string): void
+  instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   close(): void
   addFollow(followerId: string, followedId: string): Promise<void>
   removeFollow(followerId: string, followedId: string): Promise<void>

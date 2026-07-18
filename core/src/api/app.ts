@@ -53,11 +53,13 @@ const MAX_FAT_PING_BYTES = 5 * 1024 * 1024
 const MAX_FORM_BYTES = 64 * 1024
 const rejectOversized = (c: Context) => c.text('payload too large', 413)
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string> }): Hono {
+export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean }): Hono {
   const { service, bus, token } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const mailEnabled = deps.mailEnabled ?? true
   const adminEmails = deps.adminEmails ?? new Set<string>()
+  const websubMode = deps.websub ?? 'off'
+  const pushInEnabled = deps.pushIn ?? false
   const app = new Hono()
   const authed = sessionAuth(deps.auth, deps.users, adminEmails)
 
@@ -114,7 +116,12 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   app.get('/me', authed, (c) => c.json({ user: c.get('coreUser'), isAnonymous: c.get('sessionIsAnonymous'), isAdmin: c.get('isAdmin') }))
 
-  app.get('/admin/status', authed, requireAdmin(), (c) => c.json({ ok: true, adminEmails: [...adminEmails] }))
+  app.get('/admin/overview', authed, requireAdmin(), (c) => c.json({
+    counts: service.instanceStats(),
+    federation: { websub: websubMode, rssCloud: feeds.rssCloud, pushIn: pushInEnabled, publicUrl: feeds.publicUrl },
+    mailEnabled,
+    adminEmails: [...adminEmails],
+  }))
 
   app.get('/admin/feeds', authed, requireAdmin(), async (c) => {
     const feeds = await service.listRemoteUsers()

@@ -27,7 +27,7 @@ test('deriveIsAdmin: case-insensitive match', () => {
   expect(deriveIsAdmin({ email: 'ADMIN@X.test', emailVerified: true }, admins)).toBe(true)
 })
 
-// ── integration: /me and /admin/status ──
+// ── integration: /me and /admin/overview ──
 async function makeApp(adminEmails: string[]) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
@@ -36,33 +36,33 @@ async function makeApp(adminEmails: string[]) {
   return { app, repo }
 }
 
-test('admin session: /me isAdmin true, /admin/status 200', async () => {
+test('admin session: /me isAdmin true, /admin/overview 200', async () => {
   const { app, repo } = await makeApp(['boss@x.test'])
   const cookie = await registeredSession(app, 'boss@x.test', repo)
   const me = await app.request('/me', { headers: { cookie } })
   expect((await me.json()).isAdmin).toBe(true)
-  const status = await app.request('/admin/status', { headers: { cookie } })
+  const status = await app.request('/admin/overview', { headers: { cookie } })
   expect(status.status).toBe(200)
-  expect((await status.json())).toEqual({ ok: true, adminEmails: ['boss@x.test'] })
+  expect((await status.json()).adminEmails).toEqual(['boss@x.test'])
 })
 
-test('non-admin session: /me isAdmin false, /admin/status 403', async () => {
+test('non-admin session: /me isAdmin false, /admin/overview 403', async () => {
   const { app, repo } = await makeApp(['boss@x.test'])
   const cookie = await registeredSession(app, 'peon@x.test', repo)
   expect((await (await app.request('/me', { headers: { cookie } })).json()).isAdmin).toBe(false)
-  expect((await app.request('/admin/status', { headers: { cookie } })).status).toBe(403)
+  expect((await app.request('/admin/overview', { headers: { cookie } })).status).toBe(403)
 })
 
-test('anonymous session: /me isAdmin false, /admin/status 403', async () => {
+test('anonymous session: /me isAdmin false, /admin/overview 403', async () => {
   const { app } = await makeApp(['boss@x.test'])
   const cookie = await anonSession(app)
   expect((await (await app.request('/me', { headers: { cookie } })).json()).isAdmin).toBe(false)
-  expect((await app.request('/admin/status', { headers: { cookie } })).status).toBe(403)
+  expect((await app.request('/admin/overview', { headers: { cookie } })).status).toBe(403)
 })
 
 test('no admins configured: even a matching email is not admin (fail-closed)', async () => {
   const { app, repo } = await makeApp([])
   const cookie = await registeredSession(app, 'boss@x.test', repo)
   expect((await (await app.request('/me', { headers: { cookie } })).json()).isAdmin).toBe(false)
-  expect((await app.request('/admin/status', { headers: { cookie } })).status).toBe(403)
+  expect((await app.request('/admin/overview', { headers: { cookie } })).status).toBe(403)
 })

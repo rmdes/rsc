@@ -411,6 +411,15 @@ export class SqliteRepository implements Repository {
     })()
   }
 
+  instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number } {
+    return this.raw.prepare(
+      `SELECT (SELECT COUNT(*) FROM user WHERE isAnonymous = 0 OR isAnonymous IS NULL) AS registeredUsers,
+              (SELECT COUNT(*) FROM user WHERE isAnonymous = 1) AS guests,
+              (SELECT COUNT(*) FROM users WHERE kind = 'remote') AS remoteFeeds,
+              (SELECT COUNT(*) FROM posts) AS posts`,
+    ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
+  }
+
   close(): void {
     this.raw.pragma('wal_checkpoint(TRUNCATE)')
     this.raw.close()
