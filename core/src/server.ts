@@ -11,6 +11,7 @@ import { createMailer } from './mail.ts'
 import { hubLinkUrl } from './domain/feed.ts'
 import { createPush, handleWebSubRequest, handleRssCloudRequest } from './domain/push.ts'
 import { createPushIn, runPollCycle, pushInEffective } from './domain/push-in.ts'
+import { createShutdown } from './shutdown.ts'
 
 const config = loadConfig()
 if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive: true })
@@ -53,6 +54,7 @@ const app = createApp({
 bus.onNewPost((e) => { void push.onLocalPost(e) })
 
 let tick = 0
+let pollTimer: NodeJS.Timeout
 async function loop() {
   tick++
   try {
@@ -60,10 +62,11 @@ async function loop() {
   } catch (err) {
     console.error('poll cycle failed:', err instanceof Error ? err.message : err)
   }
-  setTimeout(loop, config.pollSeconds * 1000)
+  pollTimer = setTimeout(loop, config.pollSeconds * 1000)
 }
-setTimeout(loop, config.pollSeconds * 1000)
+pollTimer = setTimeout(loop, config.pollSeconds * 1000)
 
+let sweepTimer: NodeJS.Timeout
 async function sweepLoop() {
   try {
     const { swept } = repo.sweepAnonymousUsers(config.anonTtlDays)
@@ -71,9 +74,13 @@ async function sweepLoop() {
   } catch (err) {
     console.error('anon sweep failed:', err instanceof Error ? err.message : err)
   }
-  setTimeout(sweepLoop, 3600_000) // ponytail: fixed hourly cadence; config knob only if an operator ever asks
+  sweepTimer = setTimeout(sweepLoop, 3600_000) // ponytail: fixed hourly cadence; config knob only if an operator ever asks
 }
-setTimeout(sweepLoop, 3600_000)
+sweepTimer = setTimeout(sweepLoop, 3600_000)
 
-serve({ fetch: app.fetch, port: config.port })
+const server = serve({ fetch: app.fetch, port: config.port })
 console.log(`textcaster core listening on :${config.port}`)
+
+const handler = createShutdown({ server, repo, stopLoops: () => { clearTimeout(pollTimer); clearTimeout(sweepTimer) } })
+process.once('SIGTERM', () => handler('SIGTERM'))
+process.once('SIGINT', () => handler('SIGINT'))
