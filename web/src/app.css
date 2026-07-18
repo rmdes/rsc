@@ -160,6 +160,28 @@ a {
 	font-weight: 500;
 }
 
+/* Site footer (mirror of the identity-bar; carries the About link) */
+
+.site-footer {
+	max-width: 90rem;
+	margin: var(--space-xl) auto 0;
+	padding: var(--space-lg);
+	border-top: 1px solid var(--color-border);
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-lg);
+	font-size: 0.875rem;
+}
+
+.site-footer a {
+	color: var(--color-secondary);
+	text-decoration: none;
+}
+
+.site-footer a:hover {
+	color: var(--color-foreground);
+}
+
 /* Masthead */
 
 .masthead {
