@@ -1,5 +1,44 @@
 # Spec review — rich content rendering (UI-6), security-first
 
+## Re-review of rev 2 (3b7906c): APPROVED for planning — one trivial leftover
+
+All findings landed and verified against the spec text:
+- **SEC-1** — three ingress points named (loads, `/stream`, `/post/[id]/thread.json`
+  proxy enriches like the loads), with the plaintext-degrade danger spelled out
+  so no implementer "fixes" it into stored XSS.
+- **COR-1/COR-2** — backfill is now per-column `COALESCE(source_name, ?)…
+  COALESCE(content_markdown, ?)` (never single-column-gated), with the
+  migration-6-attributed-but-markdown-null contract pin; the ingest trigger is
+  `item.sourceName || item.sourceFeedUrl || item.contentMarkdown`.
+- **COR-3** — the `/stream` transform is scoped honestly as a real SSE frame
+  parser (chunk buffering, blank-line framing, `id:`/`event:` byte-verbatim as
+  the replay contract, unparseable frames forwarded untouched).
+- **COR-4** — the ~7 wire-through sites enumerated.
+- **transformTags gotcha** — pinned with output-asserting tests.
+
+**SEC-4 / marked-in-core — resolved coherently.** marked stays in core
+(legacy readers render `<description>` only; Dave's contract defines
+`source:markdown` as the *source* of the description), and core now sanitizes
+the HTML it GENERATES from local composes with the same allowlist, while
+remote content re-emits untouched. The authorship line ("our own generated
+HTML never ships dirty; others' content passes through") is principled and
+correct: a description-only reader gets sanitized HTML; a `source:markdown`
+presenter gets the raw markdown source and sanitizes on its own render per the
+contract (sanitizing the source itself would corrupt it — correctly not done).
+**The widened dependency (`sanitize-html` now in core, outbound-only) is
+warranted** — it closes the "we emit dirty HTML we generated" vector; it's a
+justified expansion of the original web-only approval, not scope creep.
+
+**One trivial leftover:** §Sequencing step 2 still reads "enrichment at both
+ingress points" — the body now correctly says THREE (loads, `/stream`,
+`thread.json`). Fix "both" → "the three" so the plan doesn't under-scope to two
+and re-open SEC-1. One word.
+
+Ready for writing-plans once that word is fixed.
+
+---
+
+
 Date: 2026-07-16
 Target: `docs/superpowers/specs/2026-07-16-textcaster-rich-content-design.md` (b3cbff9)
 Grounded: every claim from a file read or a probe/doc fetch (marked, sanitize-html).
