@@ -24,6 +24,9 @@ services:
       TEXTCASTER_MAIL_FROM: textcaster@localhost
       TEXTCASTER_DB: /app/core/data/dev.db
       TEXTCASTER_WEB_ORIGIN: http://localhost:5173
+      # Instance admins (comma-separated emails). Set the value in the
+      # gitignored root .env so no personal address is committed to this repo.
+      TEXTCASTER_ADMIN_EMAIL: ${TEXTCASTER_ADMIN_EMAIL:-}
     volumes:
       - ./:/app
       - node_modules:/app/node_modules # container's linux better-sqlite3 wins
