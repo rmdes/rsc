@@ -1,5 +1,47 @@
 # Spec review — Carta markdown composer (ponytail + adversarial)
 
+## Re-review of rev 2 (d74fa99): CLEAN — ready for writing-plans
+
+Every finding landed, verified against the spec text:
+- **H1 + H2 dissolved by construction** (not mitigated): the form contract now
+  uses Carta's OWN textarea as the field —
+  `<MarkdownEditor {carta} mode="tabs" textarea={{ name, required, placeholder }}
+  bind:value>`, one `$state` binding both the SSR textarea and the editor. No
+  hidden mirror, no sync, so the fast-POST sync-race (H1) and required-on-hidden
+  (H2) can't occur. Less code, as flagged.
+- **H4** pinned: swap gated on a post-mount `$state` flag, the `browser`
+  hydration-mismatch trap called out. `mode="tabs"` pinned for the narrow
+  sidebar. Bundle gate made concrete (parse `.vite/manifest.json`, assert
+  `carta-md` is a `dynamicImports` edge only).
+- **Reply-action test** joins the plan (DOM-free, mirrors the compose test) —
+  both composer contracts now genuinely gated.
+- **Ponytail flag answered in-spec:** Carta's transitive weight (shiki/unified/
+  remark) is bought deliberately for syntax-highlighted source editing — the
+  operator's explicit pick, lazy-loaded so it stays off the initial bundle.
+
+### H3 resolution — verified security-SAFE
+
+The middle path: both sanitizer configs (`render.ts` + `markdown.ts`, the
+drift-canary pair) widen SYMMETRICALLY with `table thead tbody tr td th del`, so
+GFM tables + strikethrough survive preview→display→feed instead of vanishing.
+I checked the security implication of touching the previously-airtight
+allowlist: **the added tags are benign** — structural table elements and `del`
+carry no script/event/URL surface, and the widening is **tags-only** (the tight
+attribute allowlist that strips `style`/`class`/`on*` is unchanged, so no CSS/JS
+surface is reintroduced; `td`/`th` without `colspan`/`rowspan` just render
+un-merged, a fidelity nit, not a risk). **Task lists correctly stay OUT** —
+`input[type=checkbox]` is the exact attribute surface (and `input` opens
+`formaction`-class vectors) the reviewed allowlist exists to exclude; the spec
+names this residual honestly and fixtures a task-list checkbox to never survive.
+The symmetric drift-canary keeps preview and display in agreement.
+
+**Verdict: clean. Ready for writing-plans.** The architecture flip removed the
+two HIGH findings and simplified the code; the sanitizer widening is safe and
+honestly bounded.
+
+---
+
+
 Date: 2026-07-16
 Target: `docs/superpowers/specs/2026-07-16-textcaster-carta-composer-design.md` (03ace72)
 Grounded: files read, carta-md@4.11.2 tarball probed (deps not yet installed —
