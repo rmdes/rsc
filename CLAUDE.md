@@ -108,6 +108,9 @@ All generated markdown lives under `docs/superpowers/`, by kind:
 - `plans/` — implementation plans
 - `reviews/` — code-review findings, improvement suggestions, audits
 - `documentation/` — operator/user docs (RUNNING.md, …)
+- `ideas.md` — a single running backlog of vetted, not-yet-specced improvement
+  ideas (name · mechanism · why-novel · grounding · tradeoff · status). Append
+  new ones here; promote to a `specs/` doc when one is picked up.
 
 Dated documents are named `YYYY-MM-DD-<topic>.md`. Don't create markdown at
 the repo root or directly in `docs/` — `README.md` is the only exception.
