@@ -87,6 +87,38 @@ test('DELETE /admin/posts/:id: 200 local, 409 remote, 404 unknown; gate matrix',
   const admin2 = await registeredSession(app, 'boss@x.test', repo)
   expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: admin2 } })).status).toBe(409)
   expect((await app.request('/admin/posts/ghost', { method: 'DELETE', headers: { cookie: admin2 } })).status).toBe(404)
+  expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: await registeredSession(app, 'peon@x.test', repo) } })).status).toBe(403)
   expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: await anonSession(app) } })).status).toBe(403)
   expect((await app.request('/admin/posts/rp2', { method: 'DELETE' })).status).toBe(401)
+})
+
+// Regression: hard removal must clear post_revisions first — post_revisions.post_id is a
+// RESTRICT FK to posts(id) and foreign_keys=ON, so deleting an *edited* post/account
+// without clearing its revisions is refused by SQLite (was a 500 / rolled-back delete).
+test('deletePost removes an edited post (clears its post_revisions)', async () => {
+  const { app, repo, service } = await makeApp()
+  const cookie = await registeredSession(app, 'ed@x.test', repo)
+  await app.request('/me', { headers: { cookie } })
+  const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'v1' }) })).json()
+  const postId = created.post.id
+  await repo.recordEdit(postId, { title: null, content: 'v2', contentMarkdown: null, editedAt: '2026-07-19T00:00:00Z' })
+  expect((await repo.getRevisions(postId)).length).toBeGreaterThan(0) // sanity: a revision exists
+
+  expect(await service.deletePost(postId)).toEqual({ ok: true })
+  expect(await repo.getPost(postId)).toBeUndefined()
+  expect(await repo.getRevisions(postId)).toEqual([]) // revisions gone too
+})
+
+test('deleteLocalAccount removes an account whose post was edited (clears post_revisions)', async () => {
+  const { app, repo, service } = await makeApp()
+  const cookie = await registeredSession(app, 'ed2@x.test', repo)
+  const me = await (await app.request('/me', { headers: { cookie } })).json()
+  const handle = me.user.handle
+  const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'v1' }) })).json()
+  await repo.recordEdit(created.post.id, { title: null, content: 'v2', contentMarkdown: null, editedAt: '2026-07-19T00:00:00Z' })
+
+  expect(await service.deleteLocalAccount(handle)).toEqual({ ok: true })
+  expect(await repo.getUserByHandle(handle)).toBeUndefined()
+  expect(repo.instanceStats().posts).toBe(0)
+  expect(await repo.getRevisions(created.post.id)).toEqual([]) // revisions cascaded away
 })

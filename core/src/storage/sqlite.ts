@@ -232,7 +232,12 @@ export class SqliteRepository implements Repository {
   }
 
   async deletePost(id: string): Promise<void> {
-    await this.db.deleteFrom('posts').where('id', '=', id).execute()
+    // Clear the post's revisions first — post_revisions.post_id is a plain RESTRICT
+    // FK to posts(id) (foreign_keys=ON), so deleting an edited post is refused otherwise.
+    await this.db.transaction().execute(async (trx) => {
+      await trx.deleteFrom('post_revisions').where('post_id', '=', id).execute()
+      await trx.deleteFrom('posts').where('id', '=', id).execute()
+    })
   }
 
   async getPostsByAuthor(authorId: string, limit: number): Promise<Post[]> {
@@ -434,12 +439,14 @@ export class SqliteRepository implements Repository {
   }
 
   // Manual cascade for a user (no DB-level ON DELETE CASCADE; FKs are plain
-  // REFERENCES users(id)). Shared by sweepAnonymousUsers and DELETE /users.
+  // REFERENCES). Shared by sweepAnonymousUsers and DELETE /users. post_revisions
+  // must go before posts — its post_id FK is RESTRICT and foreign_keys=ON.
   deleteUserCascade(id: string): void {
     const raw = this.raw
     raw.transaction(() => {
       raw.prepare(`DELETE FROM follows WHERE follower_id = ? OR followed_id = ?`).run(id, id)
       raw.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(id)
+      raw.prepare(`DELETE FROM post_revisions WHERE post_id IN (SELECT id FROM posts WHERE author_id = ?)`).run(id)
       raw.prepare(`DELETE FROM posts WHERE author_id = ?`).run(id)
       raw.prepare(`DELETE FROM users WHERE id = ?`).run(id)
     })()
