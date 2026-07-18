@@ -47,16 +47,18 @@ A verification pass over the admin milestone's debt: only the **still-open**
 items are kept; the resolved/stale-ledger entries are excluded (summarized at the
 end for the record).
 
-**Worth doing**
-- **Graceful shutdown** — `core/src/server.ts` has **zero** SIGTERM/SIGINT
-  handlers (confirmed: 0 matches). Every deploy/restart cuts in-flight requests
-  and the SSE stream hard instead of draining. The one genuinely
-  production-relevant item.
+**✅ Done — post-SP2 hardening batch (2026-07-18, `ea4e4c2..2504aab`, pushed)**
+- **Graceful shutdown** — `core/src/shutdown.ts` `createShutdown` handles
+  SIGTERM/SIGINT: `stopLoops` → drain in-flight → force-close SSE after 5s →
+  `Repository.close()` (WAL `wal_checkpoint(TRUNCATE)` + close) → `exit(0)`, with
+  a `.unref()`'d `exit(1)` backstop. Wired into `server.ts`. Opus final review:
+  ready-to-merge. *(Residual, backlog: an optional 1-line `shuttingDown` guard
+  for an in-flight-loop reschedule — production-harmless, `process.exit` closes
+  the window.)*
+- **SP2 web API tests** — `listAdminFeeds` + `removeRemoteFeed` now covered
+  (`web/src/lib/api.test.ts`, mirroring the `createPost`/`addRemoteUser` style).
 
-**Small & real**
-- **SP2 web API untested** — `listAdminFeeds` / `removeRemoteFeed` (added in
-  Task 4) have no test, while their siblings `createPost`/`addRemoteUser` do.
-  ~10-minute add. (New gap, not from the old ledger.)
+**Small & real (still open)**
 - **`purgeExpiredSubscriptions` skips `push_subscriptions`** — confirmed it only
   `deleteFrom('subscriptions')` (inbound); outbound expired rows aren't swept —
   bounded to ~2/user by `UNIQUE(user_id, mode)`, so low severity.
