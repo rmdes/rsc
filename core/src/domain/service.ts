@@ -138,6 +138,14 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       repo.deleteUserCascade(user.id)
       return { ok: true }
     },
+    async deleteLocalAccount(handle: string): Promise<{ ok: true } | { error: 'unknown' | 'remote' }> {
+      const user = await repo.getUserByHandle(normalizeHandle(handle))
+      if (!user) return { error: 'unknown' }
+      if (user.kind !== 'local') return { error: 'remote' }
+      repo.deleteUserCascade(user.id)
+      if (user.authUserId) repo.deleteAuthRows(user.authUserId)
+      return { ok: true }
+    },
   }
 }
 

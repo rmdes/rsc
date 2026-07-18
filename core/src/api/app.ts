@@ -156,6 +156,12 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ ok: true }, 200)
   })
 
+  app.delete('/admin/users/:handle', authed, requireAdmin(), async (c) => {
+    const result = await service.deleteLocalAccount(c.req.param('handle') ?? '')
+    if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown user' : 'not a local account' }, result.error === 'unknown' ? 404 : 409)
+    return c.json({ ok: true }, 200)
+  })
+
   app.patch('/me', authed, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)

@@ -441,6 +441,15 @@ export class SqliteRepository implements Repository {
     })()
   }
 
+  deleteAuthRows(authUserId: string): void {
+    const raw = this.raw
+    raw.transaction(() => {
+      raw.prepare(`DELETE FROM session WHERE userId = ?`).run(authUserId)
+      raw.prepare(`DELETE FROM account WHERE userId = ?`).run(authUserId)
+      raw.prepare(`DELETE FROM user WHERE id = ?`).run(authUserId)
+    })()
+  }
+
   instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number } {
     return this.raw.prepare(
       `SELECT (SELECT COUNT(*) FROM user WHERE isAnonymous = 0 OR isAnonymous IS NULL) AS registeredUsers,
@@ -487,9 +496,7 @@ export class SqliteRepository implements Repository {
       for (const a of idle) {
         const core = raw.prepare(`SELECT id FROM users WHERE auth_user_id = ?`).get(a.id) as { id: string } | undefined
         if (core) this.deleteUserCascade(core.id)
-        raw.prepare(`DELETE FROM session WHERE userId = ?`).run(a.id)
-        raw.prepare(`DELETE FROM account WHERE userId = ?`).run(a.id)
-        raw.prepare(`DELETE FROM user WHERE id = ?`).run(a.id)
+        this.deleteAuthRows(a.id)
         swept++
       }
       for (const o of orphans) {

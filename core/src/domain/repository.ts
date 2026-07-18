@@ -12,6 +12,7 @@ export interface Repository {
   listRemoteUsers(): Promise<User[]>
   listTextcastingPeers(): Promise<User[]>
   deleteUserCascade(id: string): void
+  deleteAuthRows(authUserId: string): void
   instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   listUsers(): Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
   close(): void
