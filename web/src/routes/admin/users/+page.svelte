@@ -1,7 +1,9 @@
 <script lang="ts">
-	import type { PageData } from './$types'
+	import type { PageData, ActionData } from './$types'
+	import { enhance } from '$app/forms'
+	import { confirmSubmit } from '$lib/confirm'
 
-	let { data }: { data: PageData } = $props()
+	let { data, form }: { data: PageData; form: ActionData } = $props()
 
 	function formatDate(iso: string): string {
 		return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
@@ -15,6 +17,8 @@
 <svelte:head><title>Admin — Users — Textcaster</title></svelte:head>
 
 <h2>Users</h2>
+
+{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 {#if data.users.length === 0}
 	<p class="subnav">No users yet.</p>
@@ -34,6 +38,17 @@
 						<div class="user-feed"><dt>Feed</dt> <dd>{u.feedUrl}</dd></div>
 					{/if}
 				</dl>
+				{#if u.kind === 'local'}
+					<form
+						method="POST"
+						action="?/deleteUser"
+						class="delete-form"
+						use:enhance={confirmSubmit(`Delete @${u.handle} and all their posts? This can't be undone.`)}
+					>
+						<input type="hidden" name="handle" value={u.handle} />
+						<button class="danger" type="submit">Delete account</button>
+					</form>
+				{/if}
 			</li>
 		{/each}
 	</ul>
@@ -100,5 +115,17 @@
 
 	.user-feed dd {
 		overflow-wrap: anywhere;
+	}
+
+	.delete-form {
+		margin-top: var(--space-sm);
+	}
+
+	/* Outline destructive, matching .unfollow-form's button on /admin/feeds. */
+	.danger {
+		background: transparent;
+		color: var(--color-destructive);
+		border: 1px solid var(--color-border);
+		padding: 6px 14px;
 	}
 </style>

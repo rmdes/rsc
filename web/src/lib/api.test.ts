@@ -1,5 +1,18 @@
 import { test, expect, vi } from 'vitest'
-import { getTimeline, createPost, addRemoteUser, getMe, listAdminFeeds, removeRemoteFeed, getAdminOverview, listAdminUsers, editPost, getRevisions } from './api.ts'
+import {
+	getTimeline,
+	createPost,
+	addRemoteUser,
+	getMe,
+	listAdminFeeds,
+	removeRemoteFeed,
+	getAdminOverview,
+	listAdminUsers,
+	editPost,
+	getRevisions,
+	deleteLocalAccount,
+	deletePost
+} from './api.ts'
 
 const entry = {
 	id: 'p1',
@@ -118,4 +131,19 @@ test('getRevisions GETs /posts/:id/revisions', async () => {
 	const out = await getRevisions(f as unknown as typeof fetch, 'p1')
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/posts/p1/revisions')
 	expect(out.revisions).toEqual([])
+})
+
+test('deleteLocalAccount DELETEs the url-encoded handle', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
+	await deleteLocalAccount(f as unknown as typeof fetch, 'a b')
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/users/a%20b', { method: 'DELETE' })
+})
+test('deleteLocalAccount surfaces the core error', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local account' }), { status: 409 }))
+	await expect(deleteLocalAccount(f as unknown as typeof fetch, 'x')).rejects.toThrow('not a local account')
+})
+test('deletePost DELETEs /admin/posts/:id', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
+	await deletePost(f as unknown as typeof fetch, 'p1')
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/posts/p1', { method: 'DELETE' })
 })

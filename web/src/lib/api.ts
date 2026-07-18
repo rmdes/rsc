@@ -173,3 +173,13 @@ export async function listAdminUsers(
 		}
 	).users
 }
+
+export async function deleteLocalAccount(f: typeof fetch, handle: string): Promise<void> {
+	const res = await f(`${base()}/admin/users/${encodeURIComponent(handle)}`, { method: 'DELETE' })
+	if (!res.ok) throw new Error(await errorMessage(res, 'deleteLocalAccount failed'))
+}
+
+export async function deletePost(f: typeof fetch, id: string): Promise<void> {
+	const res = await f(`${base()}/admin/posts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+	if (!res.ok) throw new Error(await errorMessage(res, 'deletePost failed'))
+}
