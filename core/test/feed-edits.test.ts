@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { it, expect } from 'vitest'
 import { renderRssFeed, renderFirehoseRss, renderJsonFeed } from '../src/domain/feed.ts'
 import type { Post, User, TimelineEntry } from '../src/domain/types.ts'
 

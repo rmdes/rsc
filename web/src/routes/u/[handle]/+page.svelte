@@ -8,16 +8,22 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import { keepEvent } from '$lib/lens'
+	import { mergeIncoming } from '$lib/live'
 	import { fetchThread } from '$lib/wedge'
 
 	let { data }: { data: PageData } = $props()
 	const authorId = $derived(data.timeline[0]?.author.id ?? null)
 	const kind = $derived(data.timeline[0]?.author.kind ?? null)
 	let live = $state<TimelineEntry[]>([])
-	const posts = $derived([...live, ...data.timeline])
+	let edited = $state<Record<string, TimelineEntry>>({})
+	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
+	const posts = $derived([...live, ...data.timeline].map((p) => edited[p.id] ?? p))
 
 	function onPost(entry: TimelineEntry) {
-		if (authorId && keepEvent(entry, { kind: 'author', authorId }) && !posts.some((p) => p.id === entry.id)) live = [entry, ...live]
+		if (!authorId || !keepEvent(entry, { kind: 'author', authorId })) return
+		const r = mergeIncoming(live, edited, entry, pageIds)
+		live = r.live
+		edited = r.edited
 	}
 
 	// An author lens shows ONE card per conversation, not one per post: the

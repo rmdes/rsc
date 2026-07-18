@@ -12,5 +12,8 @@ export function mergeIncoming(
 	if (pageIds.has(entry.id) || live.some((p) => p.id === entry.id)) {
 		return { live, edited: { ...edited, [entry.id]: entry } }
 	}
+	// Unknown id + editedAt set: an edit to a post off this page — drop it
+	// rather than bumping a stale post to the top of the live feed.
+	if (entry.editedAt) return { live, edited }
 	return { live: [entry, ...live], edited }
 }

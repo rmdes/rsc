@@ -17,4 +17,9 @@ describe('mergeIncoming', () => {
     const r = mergeIncoming([e('l1')], {}, e('l1', { editedAt: 'x' }), new Set())
     expect(r.edited.l1.editedAt).toBe('x')
   })
+  it('unknown id with editedAt set (off-page edit) → dropped, not prepended', () => {
+    const r = mergeIncoming([], {}, e('x1', { editedAt: 'x' }), new Set())
+    expect(r.live).toEqual([])
+    expect(r.edited).toEqual({})
+  })
 })
