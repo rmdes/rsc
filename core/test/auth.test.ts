@@ -138,7 +138,7 @@ test('user actions 401 without a session; POST /users is admin-gated (feed-manag
     headers: { 'content-type': 'application/json', cookie: anon },
     body: JSON.stringify({ handle: 'feed1', displayName: 'Feed', feedUrl: 'http://e.example/f.xml' }),
   })
-  expect(addFeed.status).toBe(401) // adminOrToken: anonymous carries no provable identity — unauthenticated
+  expect(addFeed.status).toBe(403) // adminOrToken: an anon session is a session, just not admin (matches SP1 /admin/status); only NO session → 401
   const reg = await registeredSession(app, 'r@test.example', repo)
   const addFeed2 = await app.request('/users', {
     method: 'POST',

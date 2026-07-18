@@ -109,9 +109,9 @@ export function adminOrToken(token: string, auth: Auth, users: UserDirectory, ad
   return async (c, next) => {
     const header = c.req.header('authorization')
     if (header !== undefined) return bearerAuth(token)(c, next)
-    return viaSession(c, (() => {
-      if (c.get('sessionIsAnonymous')) return c.json({ error: 'authentication required' }, 401)
-      return mustBeAdmin(c, next)
-    }) as unknown as Next)
+    // Same next-forwarding note as sessionOrToken. An anon session reaches
+    // requireAdmin and gets 403 (isAdmin false); no session is rejected 401 by
+    // viaSession first — matching SP1's /admin/status.
+    return viaSession(c, (() => mustBeAdmin(c, next)) as unknown as Next)
   }
 }
