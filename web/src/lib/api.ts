@@ -96,10 +96,12 @@ export async function editPost(f: typeof fetch, id: string, content: string): Pr
 }
 
 export interface Revision { id: string; title: string | null; content: string; contentMarkdown: string | null; seenAt: string }
-export async function getRevisions(f: typeof fetch, id: string): Promise<{ post: TimelineEntry; revisions: Revision[] }> {
+// `post` is core's bare Post (NO author at runtime) — typed via Omit so reading
+// `.author` off it is a compile error. The history page reads only content/markdown/source/editedAt.
+export async function getRevisions(f: typeof fetch, id: string): Promise<{ post: Omit<TimelineEntry, 'author'>; revisions: Revision[] }> {
 	const res = await f(`${base()}/posts/${encodeURIComponent(id)}/revisions`)
 	if (!res.ok) throw new Error(await errorMessage(res, `revisions ${res.status}`))
-	return (await res.json()) as { post: TimelineEntry; revisions: Revision[] }
+	return (await res.json()) as { post: Omit<TimelineEntry, 'author'>; revisions: Revision[] }
 }
 
 // emailVerified is optional and NOT sent by core's /me today (hard verification
