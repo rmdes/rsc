@@ -26,6 +26,11 @@ export TEXTCASTER_AUTH_SECRET
 TEXTCASTER_TOKEN=$(tc_ensure_secret /app/data/config/ops_token)
 export TEXTCASTER_TOKEN
 
+# Instance admin allowlist (optional, comma-separated emails). Persisted like the
+# secrets so it survives restarts and is changeable via `cloudron exec` without a
+# rebuild: cloudron exec --app <id> -- sh -c 'echo you@example.com > /app/data/config/admin_email'
+[ -f /app/data/config/admin_email ] && export TEXTCASTER_ADMIN_EMAIL="$(cat /app/data/config/admin_email)"
+
 # Map Cloudron env → Textcaster/core.
 export TEXTCASTER_DB="/app/data/textcaster.db"
 export TEXTCASTER_PUBLIC_URL="${CLOUDRON_APP_ORIGIN}"
