@@ -15,6 +15,7 @@ export interface Config {
   smtpUrl: string | null
   mailFrom: string
   mailEnabled: boolean
+  adminEmails: Set<string>
 }
 
 function positiveInt(name: string, raw: string): number {
@@ -31,6 +32,11 @@ function httpUrl(name: string, raw: string): string {
     // fall through to the throw below
   }
   throw new Error(`${name} must be an http(s) URL, got "${raw}"`)
+}
+
+function parseAdminEmails(raw: string | undefined): Set<string> {
+  if (!raw) return new Set()
+  return new Set(raw.split(',').map((e) => e.trim().toLowerCase()).filter((e) => e.length > 0))
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -69,6 +75,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const mailHost = new URL(publicUrl ?? webOrigin).host
   const mailFrom = env.TEXTCASTER_MAIL_FROM ?? `textcaster@${mailHost}`
 
+  const adminEmails = parseAdminEmails(env.TEXTCASTER_ADMIN_EMAIL)
+
   return {
     dbPath: env.TEXTCASTER_DB ?? './data/textcaster.db',
     token,
@@ -84,5 +92,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     smtpUrl,
     mailFrom,
     mailEnabled: smtpUrl !== null,
+    adminEmails,
   }
 }
