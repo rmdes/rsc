@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import { discoverFeed } from '../src/domain/discovery.ts'
 import { renderRssFeed, renderCommentsFeed, injectSourceComments } from '../src/domain/feed.ts'
-import type { User, Post } from '../src/domain/types.ts'
+import type { User, Post, TimelineEntry } from '../src/domain/types.ts'
 
 const RSS_NS = 'xmlns:source="http://source.scripting.com/" xmlns:thr="http://purl.org/syndication/thread/1.0"'
 
@@ -31,6 +31,8 @@ test('mf2 in: u-in-reply-to as string and as array', () => {
 })
 
 const user: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+const remoteAuthor: User = { id: 'u2', kind: 'remote', handle: 'bob', displayName: 'Bob', feedUrl: 'https://bob.example/rss.xml', createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+const entry = (over: Partial<Post>, author: User = user): TimelineEntry => ({ id: 'p1', authorId: author.id, source: 'local', guid: 'guid-1', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over, author })
 const post = (over: Partial<Post>): Post => ({ id: 'p1', authorId: 'u1', source: 'local', guid: 'guid-1', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over })
 const ctx = { publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false }
 
@@ -75,12 +77,26 @@ test('injectSourceComments matches CDATA-wrapped guids (feedsmith wraps & < >)',
 test('renderCommentsFeed: one item per reply, each with its own inReplyTo elements', () => {
   const parent = post({ id: 'root', guid: 'root-guid', title: 'Root', content: 'root body' })
   const replies = [
-    post({ id: 'c1', guid: 'c1-guid', content: 'first reply', inReplyTo: 'root-guid', publishedAt: '2026-01-02T00:00:00.000Z' }),
-    post({ id: 'c2', guid: 'c2-guid', content: 'second reply', inReplyTo: 'root-guid', publishedAt: '2026-01-03T00:00:00.000Z' }),
+    entry({ id: 'c1', guid: 'c1-guid', content: 'first reply', inReplyTo: 'root-guid', publishedAt: '2026-01-02T00:00:00.000Z' }),
+    entry({ id: 'c2', guid: 'c2-guid', content: 'second reply', inReplyTo: 'root-guid', publishedAt: '2026-01-03T00:00:00.000Z' }),
   ]
   const xml = renderCommentsFeed(parent, replies, ctx)
   expect(xml).toContain('Comments on')
   expect(xml.match(/<item>/g)!.length).toBe(2)
   expect(xml).toContain('first reply')
   expect(xml.match(/<source:inReplyTo isPermaLink="false">root-guid<\/source:inReplyTo>/g)!.length).toBe(2)
+})
+
+// Dave issue #14: the fixed threadwalker reads the author from each reply's core
+// <source> (walkComments passes no channel default, so a reply with none walks
+// as "?"). Every reply in a comments feed must carry it.
+test('renderCommentsFeed: each reply carries core <source> naming its author', () => {
+  const parent = post({ id: 'root', guid: 'root-guid', title: 'Root', content: 'root body' })
+  const replies = [
+    entry({ id: 'c1', guid: 'c1-guid', content: 'local reply', inReplyTo: 'root-guid' }), // Alice, local
+    entry({ id: 'c2', guid: 'c2-guid', source: 'remote', content: 'remote reply', inReplyTo: 'root-guid' }, remoteAuthor),
+  ]
+  const xml = renderCommentsFeed(parent, replies, ctx)
+  expect(xml).toContain('<source url="https://cast.example/users/alice/feed.xml">Alice</source>') // local -> our feed url
+  expect(xml).toContain('<source url="https://bob.example/rss.xml">Bob</source>') // remote -> origin feed url
 })

@@ -289,6 +289,18 @@ test('comments feed carries per-reply source:account (multi-author, threadwalker
   expect(body).toContain('<source:account service="cast.example.com">carol</source:account>')
 })
 
+// Dave issue #14: the fixed threadwalker reads each reply's author from the RSS
+// core <source> element (walkComments passes no channel default, so a reply
+// without it walks as "?"). Every reply in a comments feed must carry it.
+test('comments feed carries per-reply core <source> naming the author', async () => {
+  const { service, app } = await makeApp(CTX)
+  await seedAlice(service)
+  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  await service.createLocalPostAs('bob', 'Bob', 'bob replies', root)
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(body).toContain('<source url="https://cast.example.com/users/bob/feed.xml">Bob</source>')
+})
+
 test('comments feed: a remote cross-instance reply keeps its origin guid and still names its author', async () => {
   const { repo, service, app } = await makeApp(CTX)
   // Local root with a minted permalink (createLocalPostAs under CTX.publicUrl).

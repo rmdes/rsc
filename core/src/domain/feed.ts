@@ -189,7 +189,13 @@ export function injectSourceAccounts(xml: string, ads: Array<{ guid: string; ser
   return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:account service="${xmlAttrEscape(ad.service)}">${xmlEscape(ad.name)}</source:account>` })))
 }
 
-export function renderCommentsFeed(post: Post, replies: Post[], ctx: FeedContext): string {
+// The author's canonical feed URL for a core <source> element: a remote author's
+// own origin feed; a local author's feed on this instance (needs publicUrl).
+function authorSourceUrl(author: User, ctx: FeedContext): string | null {
+  return author.feedUrl ?? (ctx.publicUrl ? feedUrls(ctx.publicUrl, author.handle).xml : null)
+}
+
+export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: FeedContext): string {
   const chars = Array.from(post.content) // code-point safe: .length/.slice on a string split surrogate pairs
   const label = post.title ?? (chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : post.content)
   return generateRssFeed(
@@ -197,17 +203,25 @@ export function renderCommentsFeed(post: Post, replies: Post[], ctx: FeedContext
       title: `Comments on "${label}"`,
       link: post.url ?? ctx.publicUrl ?? 'https://textcaster.invalid',
       description: `Replies to "${label}"`,
-      items: replies.map((p) => ({
-        ...(p.title !== null ? { title: p.title } : {}),
-        // Unlike the other two RSS paths, replies here can be remote (a
-        // cross-instance reply resolves onto our local post) — only local
-        // items get the permalink-guid treatment; a remote item's guid VALUE
-        // must stay p.guid verbatim, never swapped to p.url.
-        guid: p.source === 'local' ? localGuid(p) : { value: p.guid, isPermaLink: false },
-        ...(p.url !== null ? { link: p.url } : {}),
-        pubDate: p.publishedAt,
-        ...itemContentFields(p),
-      })),
+      items: replies.map((p) => {
+        const srcUrl = authorSourceUrl(p.author, ctx)
+        return {
+          ...(p.title !== null ? { title: p.title } : {}),
+          // Unlike the other two RSS paths, replies here can be remote (a
+          // cross-instance reply resolves onto our local post) — only local
+          // items get the permalink-guid treatment; a remote item's guid VALUE
+          // must stay p.guid verbatim, never swapped to p.url.
+          guid: p.source === 'local' ? localGuid(p) : { value: p.guid, isPermaLink: false },
+          ...(p.url !== null ? { link: p.url } : {}),
+          pubDate: p.publishedAt,
+          // RSS core <source>: the reply's author + their feed. Dave's fixed
+          // threadwalker (issue #14) reads the author from here, and a comments
+          // feed has no single-author channel to fall back to — so a reply
+          // without it walks as "?". Mirrors renderFirehoseRss.
+          ...(srcUrl ? { source: { title: p.author.displayName, url: srcUrl } } : {}),
+          ...itemContentFields(p),
+        }
+      }),
     },
     { lenient: true },
   )
