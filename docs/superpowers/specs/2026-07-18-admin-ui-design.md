@@ -146,8 +146,28 @@ no forms — everything is read-only; the moved feeds page keeps its SP2 forms).
   null for remotes), `feedUrl` null for locals / set for remotes.
 - `GET /admin/overview` + `GET /admin/users`: admin session → 200 with the
   expected shape; non-admin registered → 403; anon session → 403; no session → 401.
+- `/admin/status` is gone: its SP1 test (`core/test/admin.test.ts`) is removed or
+  repointed at `/admin/overview` (whose gate assertions cover the same ground).
 
 **Web:** the `/admin` layout load is admin-gated (non-admin → 404); the overview
 page renders the counts/status from a stubbed `/admin/overview`; the users page
 renders rows from a stubbed `/admin/users`; the nav links to all three; the moved
 feeds page still works at `/admin/feeds`.
+
+## Revisions
+
+**Rev 1 (2026-07-18)** — folded a ponytail review of this spec (3 of 4 cuts accepted):
+- **Dropped `pollSeconds`** from the overview — an env-static tuning number, not a
+  status; threading it through `createApp` deps just to display it isn't worth it
+  (an admin reads `TEXTCASTER_POLL_SECONDS` from env). `federation`'s `websub`/
+  `pushIn` stay — those are real feature-state.
+- **Retiring `/admin/status`** (SP1's proof-of-concept route) — it has no caller
+  and `/admin/overview` + `/me.isAdmin` cover it. One admin-info endpoint, not two.
+- **Dropped the `ui-ux-pro-max:ui-styling` mandate** — it's the Tailwind/shadcn
+  skill, structurally unusable here (plain scoped CSS + `--color-*` tokens);
+  CLAUDE.md only requires `ui-ux-pro-max` + MASTER.md.
+
+**Rejected (kept as-is):** reusing `listRemoteUsers().length` for the `remoteFeeds`
+count — that materializes every remote row to count them. `COUNT(*)` is the correct,
+cheaper primitive (and `instanceStats()`'s other three counts are already COUNTs);
+the duplicated `kind='remote'` predicate is trivial and stable.
