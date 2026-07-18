@@ -13,6 +13,7 @@ export interface Repository {
   listTextcastingPeers(): Promise<User[]>
   deleteUserCascade(id: string): void
   instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
+  listUsers(): Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
   close(): void
   addFollow(followerId: string, followedId: string): Promise<void>
   removeFollow(followerId: string, followedId: string): Promise<void>

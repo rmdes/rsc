@@ -48,6 +48,11 @@ export async function registeredSession(app: Hono, email: string, repo: SqliteRe
     body: JSON.stringify({ email, password: 'password123' }),
   })
   if (signIn.status !== 200) throw new Error(`sign-in after verify failed: ${signIn.status}`)
+  // Get auth user ID and create a local user entry in textcaster's users table
+  const authUser = repo.raw.prepare('SELECT id FROM user WHERE email = ?').get(email.toLowerCase()) as { id: string } | undefined
+  if (authUser) {
+    await repo.createLocalUser({ handle: email.split('@')[0], displayName: email, authUserId: authUser.id })
+  }
   const setCookie = signIn.headers.get('set-cookie') ?? ''
   return setCookie.split(';')[0]
 }

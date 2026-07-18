@@ -420,6 +420,18 @@ export class SqliteRepository implements Repository {
     ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   }
 
+  listUsers(): Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
+    const rows = this.raw.prepare(
+      `SELECT u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
+              u.created_at AS createdAt, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
+       FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
+       WHERE u.kind = 'remote'
+          OR (u.kind = 'local' AND (au.isAnonymous = 0 OR au.isAnonymous IS NULL))
+       ORDER BY u.created_at DESC`,
+    ).all() as Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; createdAt: string; feedUrl: string | null; emailVerified: number | null }>
+    return rows.map((r) => ({ ...r, emailVerified: r.emailVerified === null ? null : r.emailVerified === 1 }))
+  }
+
   close(): void {
     this.raw.pragma('wal_checkpoint(TRUNCATE)')
     this.raw.close()

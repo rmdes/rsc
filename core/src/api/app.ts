@@ -123,6 +123,8 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     adminEmails: [...adminEmails],
   }))
 
+  app.get('/admin/users', authed, requireAdmin(), (c) => c.json({ users: service.listUsers() }))
+
   app.get('/admin/feeds', authed, requireAdmin(), async (c) => {
     const feeds = await service.listRemoteUsers()
     return c.json({ feeds: feeds.map((u) => ({ handle: u.handle, displayName: u.displayName, feedUrl: u.feedUrl })) })

@@ -120,6 +120,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       return repo.listRemoteUsers()
     },
     instanceStats() { return repo.instanceStats() },
+    listUsers() { return repo.listUsers() },
     async removeRemoteFeed(handle: string): Promise<{ ok: true } | { error: 'unknown' | 'local' }> {
       const user = await repo.getUserByHandle(normalizeHandle(handle))
       if (!user) return { error: 'unknown' }
