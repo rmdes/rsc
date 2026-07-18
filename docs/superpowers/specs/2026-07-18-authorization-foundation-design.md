@@ -61,8 +61,14 @@ isAdmin = emailVerified === true
 ```
 
 - `email` / `emailVerified` come from the resolved better-auth user.
-- **Verified-only:** an account whose email matches an admin address but is not
-  verified is NOT admin (belt-and-suspenders over hard email verification).
+- **Verified-only — the security linchpin (not belt-and-suspenders).** An
+  account whose email matches an admin address but is not verified is NOT admin.
+  This check is what makes an email allowlist safe to use for authorization at
+  all: because Textcaster enforces **hard email verification**, you cannot hold
+  a session for an inbox you don't control, so a *verified* email matching the
+  allowlist genuinely proves control of that address. Drop the verified check
+  and the whole model collapses — anyone could register the admin address and
+  self-grant. `emailVerified === true` is therefore load-bearing, not defensive.
 - **Anonymous sessions are never admin** (they have no email → `isAdmin` false).
 - Attached to context as `isAdmin` (e.g. `c.set('isAdmin', …)`), alongside the
   existing `coreUser`.
@@ -76,10 +82,12 @@ isAdmin = emailVerified === true
   Web's layout load already fetches `/me` into `data.me`, so web becomes
   admin-aware with **no web code change** in this sub-project.
 - **`GET /admin/status`** (`sessionAuth` + `requireAdmin`) — the first
-  admin-gated route, both to validate the gate end-to-end and to seed the future
-  admin UI. Returns `{ ok: true, adminEmails: string[] }` (the configured admin
-  addresses — safe to return on an admin-only route). 200 for an admin, 403
-  otherwise.
+  admin-gated route. Its primary purpose is **end-to-end validation that
+  `sessionAuth` + `requireAdmin` compose correctly** — an admin session gets
+  200, every other session (non-admin registered, anonymous) gets 403. It also
+  returns `{ ok: true, adminEmails: string[] }` (the configured admin addresses,
+  safe on an admin-only route) as a convenient config confirmation. It is *not*
+  a UI-seeding endpoint; the future admin UI will define its own data needs.
 
 ### Fail-closed default
 
@@ -108,6 +116,12 @@ additive: no change to the derivation or the config designed here.
 No changes to `POST /users` or any existing gate in this sub-project.
 
 ## Out of scope (deferred)
+
+**SP1 does not change the security posture.** It introduces the admin *concept
+and mechanism* but re-gates nothing: any registered user can still add feeds via
+`POST /users` until SP2 applies `requireAdmin` (or a finer permission) to it.
+That is correct decomposition — the foundation is a reusable gate, not a policy
+change — not a gap.
 
 - **Re-gating `POST /users`** (feed-add policy) — sub-project 2.
 - The **remove-remote-feed endpoint** + live duplicate-sub cleanup — sub-project 2.
