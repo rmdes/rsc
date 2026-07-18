@@ -27,6 +27,7 @@ const app = createApp({
   service,
   bus,
   token: config.token,
+  adminEmails: config.adminEmails,
   auth,
   users: repo,
   mailEnabled: config.mailEnabled,

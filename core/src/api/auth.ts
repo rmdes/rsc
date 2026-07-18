@@ -8,6 +8,7 @@ declare module 'hono' {
   interface ContextVariableMap {
     coreUser: User
     sessionIsAnonymous: boolean
+    isAdmin: boolean
   }
 }
 
@@ -49,12 +50,22 @@ export async function ensureCoreUser(users: UserDirectory, authUserId: string): 
   throw new Error('could not allocate a guest handle')
 }
 
-export function sessionAuth(auth: Auth, users: UserDirectory): MiddlewareHandler {
+// Email-derived admin. Verified-only is load-bearing: the allowlist is only safe
+// because hard email verification proves control of the inbox (spec rev 1).
+export function deriveIsAdmin(
+  user: { email?: string | null; emailVerified?: boolean | null },
+  adminEmails: ReadonlySet<string>,
+): boolean {
+  return user.emailVerified === true && typeof user.email === 'string' && adminEmails.has(user.email.toLowerCase())
+}
+
+export function sessionAuth(auth: Auth, users: UserDirectory, adminEmails: ReadonlySet<string> = new Set()): MiddlewareHandler {
   return async (c, next) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'authentication required' }, 401)
     c.set('coreUser', await ensureCoreUser(users, session.user.id))
     c.set('sessionIsAnonymous', (session.user as { isAnonymous?: boolean | null }).isAnonymous === true)
+    c.set('isAdmin', deriveIsAdmin(session.user as { email?: string | null; emailVerified?: boolean | null }, adminEmails))
     return next() // must propagate: sessionOrToken composes this manually, outside Hono's own dispatch
   }
 }
@@ -66,9 +77,16 @@ export function registeredOnly(): MiddlewareHandler {
   }
 }
 
+export function requireAdmin(): MiddlewareHandler {
+  return async (c, next) => {
+    if (!c.get('isAdmin')) return c.json({ error: 'admin only' }, 403)
+    return next()
+  }
+}
+
 // POST /users only: ops bearer token OR a registered session.
-export function sessionOrToken(token: string, auth: Auth, users: UserDirectory): MiddlewareHandler {
-  const viaSession = sessionAuth(auth, users)
+export function sessionOrToken(token: string, auth: Auth, users: UserDirectory, adminEmails: ReadonlySet<string> = new Set()): MiddlewareHandler {
+  const viaSession = sessionAuth(auth, users, adminEmails)
   const mustBeRegistered = registeredOnly()
   return async (c, next) => {
     const header = c.req.header('authorization')

@@ -119,6 +119,7 @@ TEXTCASTER_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | `TEXTCASTER_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke), also usable there in place of a registered session. |
 | `TEXTCASTER_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
 | `TEXTCASTER_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
+| `TEXTCASTER_ADMIN_EMAIL` | no | — | Comma-separated admin email(s). An account whose **verified** email matches becomes an instance admin (`isAdmin` on `/me`; unlocks admin-only routes like `GET /admin/status`). Unset = no admin (admin routes 403 for everyone). |
 | `TEXTCASTER_SMTP_URL` | no | — | SMTP connection URL, e.g. `smtp://localhost:1025` (Mailpit, no TLS/auth) or `smtps://user:pass@host:465` (production). Unset means mail is off — see "Email" below. |
 | `TEXTCASTER_MAIL_FROM` | no | `textcaster@<host of TEXTCASTER_PUBLIC_URL or TEXTCASTER_WEB_ORIGIN>` | From-address on outgoing mail. |
 | `TEXTCASTER_DB` | no | `./data/textcaster.db` | SQLite file path, or `:memory:`. |

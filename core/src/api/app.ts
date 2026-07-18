@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
-import { sessionAuth, registeredOnly, sessionOrToken } from './auth.ts'
+import { sessionAuth, registeredOnly, sessionOrToken, requireAdmin } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
@@ -53,10 +53,11 @@ const MAX_FAT_PING_BYTES = 5 * 1024 * 1024
 const MAX_FORM_BYTES = 64 * 1024
 const rejectOversized = (c: Context) => c.text('payload too large', 413)
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean }): Hono {
+export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string> }): Hono {
   const { service, bus, token } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const mailEnabled = deps.mailEnabled ?? true
+  const adminEmails = deps.adminEmails ?? new Set<string>()
   const app = new Hono()
 
   app.onError((err, c) => {
@@ -110,7 +111,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return service.getUserByHandle(handleRaw.toLowerCase())
   }
 
-  app.get('/me', sessionAuth(deps.auth, deps.users), (c) => c.json({ user: c.get('coreUser'), isAnonymous: c.get('sessionIsAnonymous') }))
+  app.get('/me', sessionAuth(deps.auth, deps.users, adminEmails), (c) => c.json({ user: c.get('coreUser'), isAnonymous: c.get('sessionIsAnonymous'), isAdmin: c.get('isAdmin') }))
+
+  app.get('/admin/status', sessionAuth(deps.auth, deps.users, adminEmails), requireAdmin(), (c) => c.json({ ok: true, adminEmails: [...adminEmails] }))
 
   app.patch('/me', sessionAuth(deps.auth, deps.users), async (c) => {
     const body = await readJsonBody(c)
