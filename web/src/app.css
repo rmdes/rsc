@@ -484,6 +484,12 @@ button:hover {
 	vertical-align: middle;
 }
 
+/* On-state accent for a status badge (e.g. federation on/off). */
+.badge-kind.on {
+	color: var(--color-accent);
+	border-color: currentColor;
+}
+
 .unfollow-form button,
 .follow-form button {
 	padding: 6px 14px;

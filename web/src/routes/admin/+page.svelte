@@ -29,18 +29,18 @@
 
 <section aria-labelledby="admin-federation-heading">
 	<h3 id="admin-federation-heading">Federation</h3>
-	<ul class="status-list">
+	<ul class="following-list">
 		<li>
 			<span class="status-label">WebSub</span>
 			<span class="badge-kind">{data.overview.federation.websub}</span>
 		</li>
 		<li>
 			<span class="status-label">rssCloud</span>
-			<span class="status-flag" class:on={data.overview.federation.rssCloud}>{data.overview.federation.rssCloud ? 'on' : 'off'}</span>
+			<span class="badge-kind" class:on={data.overview.federation.rssCloud}>{data.overview.federation.rssCloud ? 'on' : 'off'}</span>
 		</li>
 		<li>
 			<span class="status-label">Push-in</span>
-			<span class="status-flag" class:on={data.overview.federation.pushIn}>{data.overview.federation.pushIn ? 'on' : 'off'}</span>
+			<span class="badge-kind" class:on={data.overview.federation.pushIn}>{data.overview.federation.pushIn ? 'on' : 'off'}</span>
 		</li>
 		<li>
 			<span class="status-label">Public URL</span>
@@ -48,7 +48,7 @@
 		</li>
 		<li>
 			<span class="status-label">Mail</span>
-			<span class="status-flag" class:on={data.overview.mailEnabled}>{data.overview.mailEnabled ? 'on' : 'off'}</span>
+			<span class="badge-kind" class:on={data.overview.mailEnabled}>{data.overview.mailEnabled ? 'on' : 'off'}</span>
 		</li>
 	</ul>
 </section>
@@ -94,44 +94,7 @@
 		line-height: 1.1;
 	}
 
-	.status-list {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-sm);
-	}
-
-	.status-list li {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-sm);
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		padding: var(--space-sm) var(--space-md);
-	}
-
 	.status-label {
 		font-weight: 600;
-	}
-
-	.status-flag {
-		display: inline-block;
-		font-size: 0.6875rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		border: 1px solid var(--color-border);
-		border-radius: 999px;
-		padding: 0 var(--space-sm);
-		color: var(--color-secondary);
-	}
-
-	.status-flag.on {
-		color: var(--color-accent);
-		border-color: currentColor;
 	}
 </style>
