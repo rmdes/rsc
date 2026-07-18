@@ -1,0 +1,21 @@
+{
+  "id": "net.textcaster.app",
+  "title": "Textcaster",
+  "author": "Ricardo Mendes",
+  "description": "A feeds-native social timeline — posts, replies, and conversations travel as RSS.",
+  "tagline": "A feeds-native social timeline",
+  "version": "0.1.0",
+  "healthCheckPath": "/",
+  "httpPort": 8000,
+  "addons": {
+    "localstorage": {},
+    "sendmail": {}
+  },
+  "manifestVersion": 2,
+  "minBoxVersion": "8.0.0",
+  "memoryLimit": 1073741824,
+  "website": "https://github.com/rmdes/textcaster",
+  "contactEmail": "hello@rmendes.net",
+  "icon": "file://logo.png",
+  "tags": ["rss", "indieweb", "social", "feeds", "textcasting"]
+}
