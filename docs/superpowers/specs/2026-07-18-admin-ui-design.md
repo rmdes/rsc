@@ -20,8 +20,13 @@ env-driven and immutable by design — see `core/src/config.ts`).
 - Core `users` (kind `local`/`remote`) links to a better-auth account via
   `users.auth_user_id`; **remote feeds have `auth_user_id = NULL`**.
 - `createApp`'s deps already carry `feeds { publicUrl, hubUrl, rssCloud }`,
-  `mailEnabled`, `adminEmails`; it does **not** yet carry `pollSeconds`,
-  the WebSub mode, or `pushIn` — SP4 threads those in for the overview.
+  `mailEnabled`, `adminEmails`; it does **not** yet carry the WebSub mode or
+  `pushIn` — SP4 threads those two in for the overview's federation status.
+- `GET /admin/status` (SP1's one gated proof-of-concept route, returning
+  `{ ok, adminEmails }`) has **no caller** (not exposed via web, not called
+  service-to-service). SP4 **retires it** — `/admin/overview` supersedes its
+  `adminEmails`, and `/me` already reports `isAdmin`. Removing the route + its
+  SP1 test is part of this work.
 
 ## Goal
 
@@ -42,8 +47,7 @@ Returns an instance snapshot:
   "counts": { "registeredUsers": 12, "guests": 3, "remoteFeeds": 4, "posts": 210 },
   "federation": { "websub": "self", "rssCloud": true, "pushIn": true, "publicUrl": "https://…" },
   "mailEnabled": true,
-  "adminEmails": ["rick@rmendes.net"],
-  "pollSeconds": 60
+  "adminEmails": ["rick@rmendes.net"]
 }
 ```
 
@@ -52,10 +56,10 @@ Returns an instance snapshot:
   - `guests` = `COUNT(*) FROM user WHERE isAnonymous = 1`.
   - `remoteFeeds` = `COUNT(*) FROM users WHERE kind = 'remote'`.
   - `posts` = `COUNT(*) FROM posts`.
-- **`federation`/`mailEnabled`/`adminEmails`/`pollSeconds`** come from config, not
-  queries. `feeds.rssCloud` + `feeds.publicUrl` + `mailEnabled` + `adminEmails`
-  are already in `createApp` deps; SP4 adds `pollSeconds`, the WebSub `mode`
-  string, and `pushIn` to deps (server.ts passes them from `config`).
+- **`federation`/`mailEnabled`/`adminEmails`** come from config, not queries.
+  `feeds.rssCloud` + `feeds.publicUrl` + `mailEnabled` + `adminEmails` are already
+  in `createApp` deps; SP4 adds the WebSub `mode` string + `pushIn` to deps
+  (server.ts passes them from `config`).
 
 #### `GET /admin/users`
 
@@ -103,12 +107,14 @@ The `/admin` area grows from one page into a small section:
   via `authedFetch`).
 
 **UI convention (required):** the overview, users, and nav MUST be built via the
-`ui-ux-pro-max:ui-ux-pro-max` **and** `ui-ux-pro-max:ui-styling` skills, follow
-`design-system/textcaster/MASTER.md` (tokens/typography/spacing; no raw hex —
-colors from `web/src/app.css` `--color-*`), and consult the relevant
-`svelte-skills` (`sveltekit-data-flow` for the loads, `svelte-runes` for state,
-`svelte-template-directives` for `{@render children()}`). No-JS-functional
-(plain server-rendered pages; no forms needed — everything is read-only).
+`ui-ux-pro-max:ui-ux-pro-max` skill and follow `design-system/textcaster/MASTER.md`
+(tokens/typography/spacing; no raw hex — colors from `web/src/app.css`
+`--color-*`), and consult the relevant `svelte-skills` (`sveltekit-data-flow` for
+the loads, `svelte-runes` for state, `svelte-template-directives` for `{@render
+children()}`). (`ui-ux-pro-max:ui-styling` is the Tailwind/shadcn skill — omitted:
+this codebase uses plain scoped CSS with `--color-*` tokens, not Tailwind.)
+No-JS-functional (plain server-rendered pages; the new overview + users pages need
+no forms — everything is read-only; the moved feeds page keeps its SP2 forms).
 
 ## Error handling
 
