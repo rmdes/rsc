@@ -1,13 +1,15 @@
 <script lang="ts">
-	import type { TimelineEntry } from './types'
 	import { plaintext } from './plaintext'
 	import { toggleClamp, markClipped } from './expand'
 
 	// THE {@html} chokepoint — the only one in the codebase. contentHtml is
 	// produced exclusively by lib/server/render.ts (sanitized server-side at
 	// all three ingress points); anything without it falls back to plaintext,
-	// never raw.
-	let { post }: { post: TimelineEntry } = $props()
+	// never raw. Prop type is the minimal shape this component actually
+	// reads (not TimelineEntry) so callers like the history page — which only
+	// have a version's content/contentHtml, not a full TimelineEntry — can
+	// route through the same one chokepoint.
+	let { post }: { post: { content: string; contentHtml?: string } } = $props()
 </script>
 
 <!-- click-to-expand is a pointer convenience; keyboard/AT users reach the full text via the conversation link -->
