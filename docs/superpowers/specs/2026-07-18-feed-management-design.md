@@ -63,9 +63,13 @@ unchanged (same body, same 201). This is the accepted regular-user gap.
 
 ### `DELETE /users/:handle` — remove an instance feed
 
-`adminOrToken`-gated. Removes a remote feed by mirroring the anon-sweep's manual
-cascade **inside one transaction** (there is no DB-level `ON DELETE CASCADE`;
-all FKs are plain `REFERENCES users(id)`):
+`adminOrToken`-gated. Removes a remote feed via a shared **`deleteUserCascade(id)`**
+storage method — the anon-sweep's existing `coreCascade` closure
+(`sqlite.ts`, inside `sweepAnonymousUsers`) **hoisted to one method that both the
+sweep and this route call** (one source of truth — no twin-drift when a 5th FK
+table is added later). It runs the four dependent deletes **in one transaction**
+(there is no DB-level `ON DELETE CASCADE`; all FKs are plain
+`REFERENCES users(id)`):
 
 ```
 DELETE follows            WHERE follower_id = :id OR followed_id = :id
@@ -94,8 +98,8 @@ DELETE users              WHERE id = :id
 ### `GET /admin/feeds` — list instance feeds
 
 `sessionAuth` + `requireAdmin`. Returns the instance feeds for the admin UI:
-`{ feeds: [{ handle, displayName, feedUrl, postCount }] }` — the remote users
-plus a per-feed post count (a cheap `COUNT(*)` grouped by `author_id`). Consistent
+`{ feeds: [{ handle, displayName, feedUrl }] }` — the remote users. No per-feed
+post count (YAGNI — add it if an admin actually needs to see volume). Consistent
 with SP1's `GET /admin/status`.
 
 ### Web: `/admin` — feed-management page
@@ -108,8 +112,10 @@ A new admin-only web route:
   **remove** button, and an **add-feed** form (feed URL + optional handle/display
   name). Form actions proxy to core `POST /users` / `DELETE /users/:handle`,
   forwarding the session; use `fail()`/`redirect()` per SvelteKit conventions.
-- **`/admin` is a dedicated admin section** (feed management is its first panel;
-  SP3/SP4 add more). Non-admins never see it.
+- **`/admin` is one plain page** (list feeds + add/remove) — not a section/panel
+  container pre-built for future siblings (there's no admin scaffolding in `web/`
+  yet). It grows into a section trivially when SP3/SP4 add a second thing.
+  Non-admins never see it.
 
 **UI convention (required):** this page MUST be built via the
 `ui-ux-pro-max:ui-ux-pro-max` skill **and** the `ui-ux-pro-max:ui-styling`
@@ -152,8 +158,7 @@ duplicate that motivated this SP.
   its `push_subscriptions`, follows to/from it all gone; the user gone);
   **404** unknown handle; **409** when the handle is a local user; a **local
   reply** to a removed feed's post still exists afterward (orphaned).
-- `GET /admin/feeds`: admin → 200 with the feed list + post counts; non-admin →
-  403; anon → 401.
+- `GET /admin/feeds`: admin → 200 with the feed list; non-admin → 403; anon → 401.
 
 **Web:** the `/admin` load is admin-gated (non-admin → redirect/404); add and
 remove form actions call the right core endpoints with the forwarded session.
@@ -165,10 +170,23 @@ remove form actions call the right core endpoints with the forwarded session.
    note already documented in `auth.ts`).
 2. The full list of `sessionAuth(...)` call sites to convert to the bound
    `authed` instance.
-3. The `GET /admin/feeds` repo query (list remote users + `COUNT` posts by
-   author).
+3. The `deleteUserCascade(id)` hoist from `sweepAnonymousUsers`' `coreCascade`
+   closure, and the `GET /admin/feeds` repo query (list remote users).
 4. Web route file layout (`web/src/routes/admin/+page.server.ts` + `+page.svelte`)
    and the `authedFetch` calls to core.
 5. Whether the ops-token path on `adminOrToken` should also mark the request
    admin (it currently sets no `isAdmin`; the token routes don't read it — the
    plan confirms).
+
+## Revisions
+
+**Rev 1 (2026-07-18)** — folded a ponytail over-engineering review (3 cuts, all accepted):
+- **Reuse over mirror:** `DELETE` now calls a hoisted `deleteUserCascade(id)`
+  storage method shared with `sweepAnonymousUsers`, instead of a hand-copied
+  cascade (kills the twin-drift hazard).
+- **Dropped `postCount`** from `GET /admin/feeds` (YAGNI — the goal is
+  list/add/remove; no `COUNT` query/column).
+- **Dropped the "dedicated admin section / SP3-SP4 panels" framing** — `/admin`
+  is one plain page that grows later; no premature layout abstraction.
+Everything else confirmed lean (adminOrToken reuse, the footgun de-dup, the 409
+local-guard trust boundary, all deferrals).
