@@ -31,3 +31,4 @@ npm-debug.log*
 
 # scratch
 .superpowers/
+.playwright-mcp/
