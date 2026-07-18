@@ -1,5 +1,5 @@
 import { test, expect, vi } from 'vitest'
-import { getTimeline, createPost, addRemoteUser, getMe } from './api.ts'
+import { getTimeline, createPost, addRemoteUser, getMe, listAdminFeeds, removeRemoteFeed } from './api.ts'
 
 const entry = {
 	id: 'p1',
@@ -63,4 +63,29 @@ test('getMe returns null on 401 instead of throwing', async () => {
 test('getMe returns the session user', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ user: entry.author, isAnonymous: true }), { status: 200 }))
 	await expect(getMe(f as unknown as typeof fetch)).resolves.toEqual({ user: entry.author, isAnonymous: true })
+})
+
+test('listAdminFeeds returns the feeds array and GETs /admin/feeds', async () => {
+	const f = vi.fn(
+		async () => new Response(JSON.stringify({ feeds: [{ handle: 'a', displayName: 'A', feedUrl: 'https://x/f' }] }), { status: 200 })
+	)
+	const feeds = await listAdminFeeds(f as unknown as typeof fetch)
+	expect(feeds[0].handle).toBe('a')
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/feeds')
+})
+
+test('listAdminFeeds surfaces the core error message', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'admin only' }), { status: 403 }))
+	await expect(listAdminFeeds(f as unknown as typeof fetch)).rejects.toThrow('admin only')
+})
+
+test('removeRemoteFeed DELETEs the url-encoded handle', async () => {
+	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
+	await removeRemoteFeed(f as unknown as typeof fetch, 'a b')
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/users/a%20b', { method: 'DELETE' })
+})
+
+test('removeRemoteFeed surfaces the core error message', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a remote feed' }), { status: 409 }))
+	await expect(removeRemoteFeed(f as unknown as typeof fetch, 'x')).rejects.toThrow('not a remote feed')
 })
