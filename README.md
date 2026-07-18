@@ -12,9 +12,9 @@ It uses RSS, OPML, JSON Feed, WebSub, and rssCloud today, and aims to add
 IndieWeb interop (IndieAuth, Micropub, Webmention) next — see the roadmap.
 
 > **Status: pre-release, but deep.** Not everything below is polished and no
-> release is cut yet — but the timeline, posting, threading, feeds in and
-> out, real-time federation, rss.chat interop, and accounts all work end to
-> end today. It's at the point where it's worth showing people. The founding
+> release is cut yet — but the timeline, posting and editing, threading, feeds
+> in and out, real-time federation, rss.chat interop, and accounts all work end
+> to end today. It's at the point where it's worth showing people. The founding
 > design is in
 > [`docs/superpowers/specs/2026-07-15-textcaster-design.md`](docs/superpowers/specs/2026-07-15-textcaster-design.md).
 
@@ -33,6 +33,15 @@ between the editor preview and the published post — so what you preview is
 what readers get. Composing opens in a resizable overlay with drafts that
 survive a reload. Every post is sanitized server-side before it ever reaches
 a browser.
+
+**Live edits.** Authors can edit their own posts after publishing; each edit
+keeps a full revision history (browsable per post) instead of silently
+overwriting. Because posts travel as feeds, an edit stays current *everywhere
+it federated*: it rides the post's stable permalink `guid` with an
+`<atom:updated>` marker, so every instance that already ingested the post
+detects the change on its next poll or push, updates its copy, and records its
+own revision — all over plain RSS, and without bumping the post to the top of
+the timeline.
 
 **Real conversations over plain RSS.** Replies are posts. They thread inline
 under a post (an outliner-style disclosure wedge) and on a dedicated
