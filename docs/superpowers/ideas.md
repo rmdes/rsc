@@ -12,22 +12,22 @@ Status legend: **⭐ next** (chosen to spec next) · **candidate** · **posted**
 
 ---
 
-## Next up — admin milestone (SP1+SP2) follow-ups & deferrals
+## Next up — admin milestone COMPLETE; open follow-ups & deferrals
 
-Remaining pieces + adjacent deferrals from the just-finished "Instance admin &
-authorization" milestone (SP1 authorization foundation + SP2 feed management).
-This is where the parallel build session picks up next; some will be deferred.
+The **"Instance admin & authorization" milestone is done and deployed** to all
+three instances (2026-07-19, image `rmdes/textcaster:20260718-224922-324c41d7b`):
+SP1 authorization foundation · SP2 feed management · **SP3 moderation** (hard
+removal — `DELETE /admin/users/:handle` + `DELETE /admin/posts/:id`, web
+"Delete account" + admin "Remove" affordance on local posts) · **SP4 broader
+admin UI** (overview + read-only user list, sub-routes + layout gate) · plus the
+post-SP2 hardening batch. The parallel session's **Live edits** feature shipped
+alongside it (section below). Remaining follow-ups + adjacent deferrals:
 
-- **Per-user feeds / feed-reader milestone** *(the big one)* — users subscribe to
-  their own feeds and read them in a personal timeline (Textcaster as a feed
-  reader with a social layer), distinct from admin-managed instance feeds.
+- **Per-user feeds / feed-reader milestone** *(the big one — likely next)* — users
+  subscribe to their own feeds and read them in a personal timeline (Textcaster as
+  a feed reader with a social layer), distinct from admin-managed instance feeds.
   Explicitly carved out as its own milestone during the SP2 brainstorm. (Adjacent
   to several generated reader ideas below — Microsub read endpoint, River feeds.)
-- **SP3 — Moderation** — deferred admin sub-project (block / hide / report). Note
-  the founding design lists "moderation-labeling infrastructure" as a v1
-  non-goal, so this needs a scope decision first.
-- **SP4 — Broader admin UI** — beyond the one feed-management page (instance
-  settings, user management, etc.).
 - **WebSub unsubscribe on feed removal** — `deleteUserCascade` drops our local
   subscription but never sends `hub.mode=unsubscribe`; self-heals on lease expiry
   (SP2 final-review Minor).
@@ -38,6 +38,11 @@ This is where the parallel build session picks up next; some will be deferred.
 - **Cloudron/Docker hardening** — slim the ~4 GB image, and bind core/web to
   `127.0.0.1` instead of `0.0.0.0` (only the httpPort is published today, so it's
   contained, not urgent).
+- **SP3 accepted deferrals** (opus final review, non-blocking) — non-atomic
+  account delete (`deleteLocalAccount` runs `deleteUserCascade` + `deleteAuthRows`
+  as two transactions, matching `removeRemoteFeed`); `.danger-link` CSS block
+  duplicated across the timeline + post-detail pages (fold into `app.css` beside
+  `.edit`/`.source` on a future global-CSS pass).
 
 ---
 
@@ -112,10 +117,17 @@ why-it-fits · grounding · tradeoff); one line each for now.
 
 ---
 
-## ⭐ Live edits over the wire — "posts that stay current"
+## Live edits over the wire — "posts that stay current"
 
-**Status:** ⭐ next — chosen. Matches an rss.chat feature we lack: Dave edits
-posts *in place* under a stable guid; we freeze the body at first poll.
+**Status:** ✅ SHIPPED (2026-07-19, deployed to all 3 instances) — local post
+editing (`PATCH /posts/:id`) + ingest edit-detection + `post_revisions` history
+(`/post/:id/history`) + `<atom:updated>`/`date_modified` federation + SSE
+upsert-by-id with an "edited" marker. Matched the rss.chat feature we lacked:
+Dave edits posts *in place* under a stable guid; we used to freeze the body at
+first poll. **Consequence for moderation:** the new `post_revisions` table is a
+`RESTRICT` FK on `posts` — SP3's hard removal had to clear revisions before
+posts (`deletePost` + `deleteUserCascade`), else SQLite refused to delete any
+edited post (fixed `8a9f94a`). Original design notes retained below for the record.
 
 **Mechanism.** Ingest currently freezes a remote post's body: a re-polled item
 whose `guid` already exists makes `insertPost` return false, and the only update
