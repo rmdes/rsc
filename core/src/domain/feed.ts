@@ -182,12 +182,11 @@ function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: st
 export function injectSourceComments(xml: string, ads: Array<{ guid: string; count: number; feedUrl: string }>): string {
   return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:comments count="${ad.count}" feedUrl="${xmlAttrEscape(ad.feedUrl)}"/>` })))
 }
-
-// Outbound-only interop (spec F-3): our ingest never reads source:account —
-// attribution comes from the RSS core <source url> element.
-export function injectSourceAccounts(xml: string, ads: Array<{ guid: string; service: string; name: string }>): string {
-  return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:account service="${xmlAttrEscape(ad.service)}">${xmlEscape(ad.name)}</source:account>` })))
-}
+// source:account was injected per-item so Dave's old threadwalker could read the
+// author. As of rss.chat issue #14 the walker reads the RSS core <source> element
+// instead, and item-level source:account is a spec violation (it's channel-level).
+// Every feed now carries core <source> for attribution (firehose + comments) or a
+// single-author channel (personal feed), so the injector is gone.
 
 // The author's canonical feed URL for a core <source> element: a remote author's
 // own origin feed; a local author's feed on this instance (needs publicUrl).

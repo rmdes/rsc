@@ -6,7 +6,7 @@ import { sessionAuth, registeredOnly, requireAdmin, adminOrToken } from './auth.
 import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
-import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, injectSourceAccounts, emittedGuid } from '../domain/feed.ts'
+import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, emittedGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml } from '../domain/opml.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
@@ -190,14 +190,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     let xml = renderCommentsFeed(post, replies, feeds)
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
-      const host = new URL(pub).host
-      // replies can be remote (a cross-instance reply resolving onto our local
-      // post) — the injector must key on the same guid VALUE the XML emitted:
-      // localGuid for local items, r.guid verbatim for remote (matches
-      // renderCommentsFeed's per-item guid choice). The author name is still
-      // legitimate to emit for a remote reply (whoever wrote it), just keyed
-      // on its origin guid rather than a localGuid it never carries.
-      xml = injectSourceAccounts(xml, replies.map((r) => ({ guid: emittedGuid(r), service: host, name: r.author.handle })))
+      // per-reply attribution is the core <source> element renderCommentsFeed emits
       xml = injectSourceComments(xml, replies.filter((r) => (counts.get(r.id) ?? 0) > 0)
         .map((r) => ({ guid: emittedGuid(r), count: counts.get(r.id)!, feedUrl: `${pub}/post/${r.id}/comments.xml` })))
     }
@@ -250,8 +243,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     let xml = renderFirehoseRss(entries, feeds)
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
-      const host = new URL(pub).host
-      xml = injectSourceAccounts(xml, entries.map((p) => ({ guid: emittedGuid(p), service: host, name: p.author.handle })))
+      // attribution is the per-item core <source> renderFirehoseRss emits
       const counts = await service.countRepliesByPostIds(entries.map((p) => p.id))
       xml = injectSourceComments(xml, entries.filter((p) => (counts.get(p.id) ?? 0) > 0)
         .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))
@@ -266,8 +258,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     let xml = renderRssFeed(r.user, posts, feeds)
     if (feeds.publicUrl) {
       const pub = feeds.publicUrl
-      const host = new URL(pub).host
-      xml = injectSourceAccounts(xml, posts.map((p) => ({ guid: emittedGuid(p), service: host, name: r.user.handle })))
+      // personal feed is single-author: the channel names the author (walker default)
       const counts = await service.countRepliesByPostIds(posts.map((p) => p.id))
       xml = injectSourceComments(xml, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
         .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: `${pub}/post/${p.id}/comments.xml` })))

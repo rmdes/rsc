@@ -6,7 +6,7 @@ import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta, ingestItems } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post } from '../src/domain/types.ts'
-import { renderFirehoseRss, injectSourceAccounts, injectSourceComments, localGuid } from '../src/domain/feed.ts'
+import { renderFirehoseRss, injectSourceComments, localGuid } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
 import { makeAuth } from './auth-helper.ts'
 
@@ -119,7 +119,7 @@ test('firehose: RSS 2.0 channel + <source> attribution on every item', () => {
   expect(xml).toContain('<source:markdown>')
 })
 
-test('injectSourceAccounts: element lands inside the right item; xmlns declared once with comments', () => {
+test('injectSourceComments: element lands inside the right item; xmlns declared once', () => {
   const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
   const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
   const entries = [{
@@ -129,9 +129,7 @@ test('injectSourceAccounts: element lands inside the right item; xmlns declared 
     sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
   }]
   let xml = renderFirehoseRss(entries, ctx)
-  xml = injectSourceAccounts(xml, [{ guid: 'guid-1', service: 'tc.example', name: 'alice' }])
   xml = injectSourceComments(xml, [{ guid: 'guid-1', count: 2, feedUrl: 'https://tc.example/post/p1/comments.xml' }])
-  expect(xml).toContain('<source:account service="tc.example">alice</source:account>')
   expect(xml).toContain('<source:comments count="2"')
   expect(xml.match(/xmlns:source=/g)?.length).toBe(1)
 })
@@ -191,8 +189,8 @@ test('GET /users/rss.xml serves the firehose; a user literally named rss keeps t
   expect(res.headers.get('content-type')).toContain('application/rss+xml')
   const xml = await res.text()
   expect(xml).toContain(': all posts</title>')
-  expect(xml).toContain('<source url=')
-  expect(xml).toContain('<source:account ')
+  expect(xml).toContain('<source url=') // per-item attribution is RSS core <source> (Dave issue #14)
+  expect(xml).not.toContain('<source:account') // item-level source:account is gone (channel-level per spec)
   // non-collision: a local user named "rss" still resolves per-user
   await service.createLocalPostAs('rss', 'Rss The User', 'a post by the user named rss')
   const perUser = await app.request('/users/rss/feed.xml')
@@ -270,35 +268,26 @@ test('remote post keeps its origin guid verbatim (never localGuid-derived)', () 
   expect(p.source).toBe('remote') // guard: the render paths below must not call localGuid for remotes
 })
 
-test('per-user feed carries source:account naming the author', async () => {
+test('per-user feed names the author via the channel, not per-item source:account', async () => {
   const { service, app } = await makeApp(CTX)
   await seedAlice(service)
   const body = await (await app.request('/users/alice/feed.xml')).text()
-  const host = 'cast.example.com'
-  expect(body).toContain(`<source:account service="${host}">alice</source:account>`)
+  // A personal feed is single-author: the channel <title> says whose feed it is,
+  // which is where Dave's fixed threadwalker takes the author for a single-author
+  // starting feed. No item-level source:account (spec: it's channel-level).
+  expect(body).toContain('<title>Alice</title>')
+  expect(body).not.toContain('<source:account')
 })
 
-test('comments feed carries per-reply source:account (multi-author, threadwalker names)', async () => {
+test('comments feed carries per-reply core <source> (multi-author, threadwalker names)', async () => {
   const { service, app } = await makeApp(CTX)
   await seedAlice(service)
   const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
   await service.createLocalPostAs('bob', 'Bob', 'bob replies', root)
   await service.createLocalPostAs('carol', 'Carol', 'carol replies', root)
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
-  expect(body).toContain('<source:account service="cast.example.com">bob</source:account>')
-  expect(body).toContain('<source:account service="cast.example.com">carol</source:account>')
-})
-
-// Dave issue #14: the fixed threadwalker reads each reply's author from the RSS
-// core <source> element (walkComments passes no channel default, so a reply
-// without it walks as "?"). Every reply in a comments feed must carry it.
-test('comments feed carries per-reply core <source> naming the author', async () => {
-  const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
-  await service.createLocalPostAs('bob', 'Bob', 'bob replies', root)
-  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
   expect(body).toContain('<source url="https://cast.example.com/users/bob/feed.xml">Bob</source>')
+  expect(body).toContain('<source url="https://cast.example.com/users/carol/feed.xml">Carol</source>')
 })
 
 test('comments feed: a remote cross-instance reply keeps its origin guid and still names its author', async () => {
@@ -310,10 +299,10 @@ test('comments feed: a remote cross-instance reply keeps its origin guid and sti
   // URL so findPostByRef resolves it onto the local post, exactly like a real
   // cross-instance reply would.
   // The remote reply ALSO carries its own (non-local) permalink url, distinct
-  // from its guid — this is what makes the test bite: if the injector's guard
-  // ever regressed to localGuid(r).value for a remote item (instead of r.guid),
-  // it would key on this url and silently miss the <source:account> injection,
-  // because renderCommentsFeed's remote branch always emits r.guid verbatim.
+  // from its guid — this is what makes the test bite: renderCommentsFeed's remote
+  // branch must emit r.guid verbatim (never localGuid-derived) while still naming
+  // the author, and a remote author's <source> points at its ORIGIN feed, not our
+  // per-handle url.
   const dan = await repo.createRemoteUser({ handle: 'dan-remote', displayName: 'Dan', feedUrl: 'https://elsewhere.example/users/dan/feed.xml' })
   await ingestItems(repo, createEventBus(), dan, [{
     guid: 'origin-guid-77', title: null, content: 'a remote reply', url: 'https://elsewhere.example/notes/77',
@@ -322,8 +311,8 @@ test('comments feed: a remote cross-instance reply keeps its origin guid and sti
   const replies = await service.listRepliesByPostId(root.id)
   expect(replies.map((r) => r.content)).toContain('a remote reply') // sanity: ingest really resolved onto the local root
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
-  // author named, even though the reply is remote
-  expect(body).toContain('<source:account service="cast.example.com">dan-remote</source:account>')
+  // author named via core <source>, even though the reply is remote — url is dan's origin feed
+  expect(body).toContain('<source url="https://elsewhere.example/users/dan/feed.xml">Dan</source>')
   // origin guid kept verbatim — never swapped for the reply's own url or the local permalink form
   expect(body).toMatch(/<guid isPermaLink="false">origin-guid-77<\/guid>/)
   expect(body).not.toContain('<guid>https://elsewhere.example/notes/77</guid>') // not localGuid-derived
@@ -345,41 +334,47 @@ test('a Textcaster conversation is walkable by threadwalker semantics (guid stri
 
   const startingGuid = `${CTX.publicUrl}/post/${root.id}` // the permalink walker.js compares against
 
-  // --- walker.js semantics, reproduced ---
-  async function fetchItems(url: string): Promise<Array<{ guid: string; author: string; text: string; commentsFeed: string | null }>> {
+  // --- walker.js semantics (Dave issue #14), reproduced ---
+  // The fixed walker reads the author from each item's core <source>; a
+  // starting (single-author) feed falls back to the channel <title>, and
+  // walkComments passes no default (a reply with no <source> would be "?").
+  async function fetchFeed(url: string): Promise<{ channelTitle: string; items: Array<{ guid: string; sourceName: string | null; text: string; commentsFeed: string | null }> }> {
     const path = url.replace(CTX.publicUrl!, '')
     const xml = await (await app.request(path)).text()
+    const channelTitle = (xml.match(/<channel>[\s\S]*?<title>([^<]+)<\/title>/) ?? [])[1] ?? '?'
     const items: any[] = []
     for (const block of xml.split('<item>').slice(1)) {
       const item = block.slice(0, block.indexOf('</item>'))
-      const guid = (item.match(/<guid>([^<]+)<\/guid>/) ?? [])[1] ?? ''
-      const author = (item.match(/<source:account[^>]*>([^<]+)<\/source:account>/) ?? [])[1] ?? '?'
+      const guid = (item.match(/<guid[^>]*>([^<]+)<\/guid>/) ?? [])[1] ?? ''
+      const sourceName = (item.match(/<source [^>]*>([^<]+)<\/source>/) ?? [])[1] ?? null
       const text = (item.match(/<source:markdown>([^<]*)/) ?? [])[1] ?? ''
       const commentsFeed = (item.match(/<source:comments[^>]*feedUrl="([^"]+)"/) ?? [])[1] ?? null
-      items.push({ guid, author, text, commentsFeed })
+      items.push({ guid, sourceName, text, commentsFeed })
     }
-    return items
+    return { channelTitle, items }
   }
 
   const outline: string[] = []
-  async function walk(item: { author: string; text: string; commentsFeed: string | null }, depth: number) {
-    outline.push('  '.repeat(depth) + `${item.author}: ${item.text}`)
+  async function walk(item: { sourceName: string | null; text: string; commentsFeed: string | null }, depth: number, defaultAuthor: string | undefined) {
+    outline.push('  '.repeat(depth) + `${item.sourceName ?? defaultAuthor ?? '?'}: ${item.text}`)
     if (!item.commentsFeed) return
-    for (const reply of await fetchItems(item.commentsFeed)) await walk(reply, depth + 1)
+    const feed = await fetchFeed(item.commentsFeed)
+    for (const reply of feed.items) await walk(reply, depth + 1, undefined) // comments feed: no channel default
   }
 
-  const top = (await fetchItems(`${CTX.publicUrl}/users/alice/feed.xml`)).find((i) => i.guid === startingGuid)
+  const start = await fetchFeed(`${CTX.publicUrl}/users/alice/feed.xml`)
+  const top = start.items.find((i) => i.guid === startingGuid)
   expect(top).toBeDefined() // guid string-compare succeeds ONLY if the guid is a bare permalink (Task 1)
-  await walk(top!, 0)
+  await walk(top!, 0, start.channelTitle) // starting feed: the channel names the author
 
-  // Author label is the account HANDLE (source:account carries `author.handle`,
-  // never displayName — see app.ts injectSourceAccounts call-sites) — normalizeHandle
-  // lowercases at creation, so 'bob'/'carol' below, not 'Bob'/'Carol'.
+  // Author label is the DISPLAY NAME: core <source> carries author.displayName
+  // (matching Dave's feeds), and the starting feed's channel <title> is the
+  // display name too — so 'Alice'/'Bob'/'Carol', not the lowercased handles.
   expect(outline).toEqual([
-    'alice: first body',
-    '  bob: Bob replies to Alice',
-    '    carol: Carol replies to Bob',
-    '  carol: Carol replies to the root',
+    'Alice: first body',
+    '  Bob: Bob replies to Alice',
+    '    Carol: Carol replies to Bob',
+    '  Carol: Carol replies to the root',
   ])
   // and never an unresolved author
   expect(outline.join('\n')).not.toContain('?:')

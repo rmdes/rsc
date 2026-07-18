@@ -4,7 +4,7 @@ import type { Config } from '../config.ts'
 import type { TimelineEntry } from './types.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
-import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, injectSourceAccounts, emittedGuid } from './feed.ts'
+import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, emittedGuid } from './feed.ts'
 import type { User } from './types.ts'
 
 const PUSH_TIMEOUT_MS = 10_000
@@ -230,11 +230,8 @@ export function createPush(deps: PushDeps): Push {
             // Body regenerated ONCE per topic per event; same body (and HMAC input) for every subscriber.
             let body = format === 'xml' ? renderRssFeed(entry.author, posts, ctx) : renderJsonFeed(entry.author, posts, ctx)
             if (format === 'xml') {
-              // Mirrors GET /users/:handle/feed.xml: advertise source:account and
-              // source:comments before signing, so a subscriber's fat-ping body
-              // matches what a pull would fetch.
-              const host = new URL(ctx.publicUrl).host
-              body = injectSourceAccounts(body, posts.map((p) => ({ guid: emittedGuid(p), service: host, name: entry.author.handle })))
+              // Mirrors GET /users/:handle/feed.xml: advertise source:comments
+              // before signing, so a subscriber's fat-ping body matches a pull.
               const counts = await repo.countRepliesByPostIds(posts.map((p) => p.id))
               body = injectSourceComments(body, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
                 .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
@@ -255,8 +252,6 @@ export function createPush(deps: PushDeps): Push {
           if (fhSubs.length > 0) {
             const recent = await repo.getRecentLocalPosts(50)
             let body = renderFirehoseRss(recent, ctx)
-            const host = new URL(config.publicUrl).host
-            body = injectSourceAccounts(body, recent.map((p) => ({ guid: emittedGuid(p), service: host, name: p.author.handle })))
             const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
             body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
               .map((p) => ({ guid: emittedGuid(p), count: fhCounts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
