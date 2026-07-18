@@ -194,4 +194,4 @@ Textcaster's job is to make these work together, credited, in one place.
 
 ## License
 
-Not yet chosen — a license will be picked before the first release.
+[MIT](LICENSE).
