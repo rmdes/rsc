@@ -106,6 +106,7 @@ cloudron/
 ├── Dockerfile
 ├── start.sh
 ├── nginx.conf
+├── proxy_params        # shared proxy_set_header block, included per location
 └── README.md          # operator: cloudron build + install, env, backups
 ```
 
@@ -158,9 +159,11 @@ Sequence (concrete steps in the plan):
 2. Install **Node 22.x** via the nodejs.org tarball (core runs `.ts` sources
    through native type-stripping → needs ≥22.18; mirrors indiekit's Node
    install). Pin the exact version in the plan.
-3. Install `build-essential python3` as a **fallback** so **better-sqlite3**
-   compiles if no prebuilt binary matches the Node ABI (glibc base → the
-   prebuild usually applies; the build tools are insurance).
+3. **No build toolchain by default.** Pin the Node 22.x version so
+   better-sqlite3's prebuilt binary (linux-x64, glibc) matches the ABI — the
+   Docker milestone's own conclusion (glibc base → prebuild, no compile). If a
+   given Node pin has no matching prebuild, `npm ci` fails **loudly at build
+   time**; add `build-essential python3` then, not preemptively.
 4. `WORKDIR /app/code`; copy the repo; `npm ci` at the root (workspaces).
 5. **`npm run build -w web`** (adapter-node → `web/build/`).
 6. **`ENV NODE_ENV=production` AFTER** the install + build (the devDeps-timing
@@ -192,10 +195,17 @@ dance — SvelteKit builds at image-build time). Responsibilities, in order:
 5. **Start nginx** (foreground-backgrounded) so health checks pass during boot.
 6. **Start core** (`gosu cloudron:cloudron … node core/src/server.ts`) — core
    runs migrations automatically at boot; no migration step needed.
-7. **Wait for core ready** (poll `127.0.0.1:8787/health`), then **start web**
-   (`gosu cloudron:cloudron … node web/build/index.js`).
-8. **Watchdog** — a `while … wait $PID` loop restarts a crashed process (core
-   or web), mirroring indiekit's supervisor.
+7. **Start web immediately** (`gosu cloudron:cloudron … node web/build/index.js`)
+   — no core-readiness poll. Web degrades gracefully when core is briefly
+   unreachable at cold boot: the timeline load returns `coreDown` and the
+   `/stream` proxy returns a retryable 503 (`1b913ea`). Worst case is a brief
+   coreDown state on the very first paint, which self-heals within a second.
+8. **No hand-rolled watchdog.** `wait -n` on the processes; if any exits,
+   start.sh exits and **Cloudron restarts the whole container** (with its own
+   backoff). Whole-container restart is coarser than per-process but correct
+   for a personal instance — and genuinely lighter than indiekit's supervisor
+   loop, which exists only because it must keep nginx/eleventy serving while
+   restarting just indiekit. Requires `#!/bin/bash` (bash `wait -n`).
 
 CWD for any process that may write diagnostics is `/tmp` (`/app/code` is
 read-only).
@@ -261,8 +271,10 @@ location = /stream {
 location / { proxy_pass http://127.0.0.1:3000; ... }
 ```
 
-- Standard proxy headers on every block: `Host`, `X-Real-IP`,
-  `X-Forwarded-For`, `X-Forwarded-Proto https`.
+- Standard proxy headers (`Host`, `X-Real-IP`, `X-Forwarded-For`,
+  `X-Forwarded-Proto https`) live in a single `/app/pkg/proxy_params`, `include`d
+  in every block (the `...` above) — one source of truth, can't drift between
+  blocks.
 - A small deny block for `.env`/`.git`/wp-probes (defense-in-depth, matches
   indiekit).
 - **Path-matching parity is load-bearing** (it's the security boundary): the
@@ -295,4 +307,27 @@ location / { proxy_pass http://127.0.0.1:3000; ... }
 5. SMTP URL construction with percent-encoding from `CLOUDRON_MAIL_*`.
 6. Each nginx `location` form + the path-parity test.
 7. `logo.png` source (reuse the existing brand asset).
+
+## Revisions
+
+**Rev 1 (2026-07-18)** — folded the parallel session's ponytail-review
+(over-engineering lens). 4 accepted, 1 rejected:
+
+- **Accepted — watchdog:** dropped the hand-rolled per-process restart loop.
+  `wait -n`; any process death exits start.sh → Cloudron restarts the container.
+- **Accepted — build tools:** dropped preemptive `build-essential python3`. Pin
+  Node 22.x so better-sqlite3's glibc prebuild matches; add tools only on a loud
+  build-time `npm ci` failure.
+- **Accepted — readiness poll:** dropped the poll-core-before-web gate. Web
+  degrades gracefully on core-down (`1b913ea` + `coreDown` load state); a brief
+  first-paint flash self-heals.
+- **Accepted — nginx headers:** factored the four repeated `proxy_set_header`
+  lines into one included `proxy_params`.
+- **Rejected — `TEXTCASTER_TOKEN` generation:** core **hard-requires** it at boot
+  (`core/src/config.ts:38` throws if unset), so it is mandatory, not smoke-only.
+  Kept (generated once + persisted).
+
+Out-of-lens notes acknowledged: manifest `id` and `memoryLimit` stay operator's
+call (plan measures actual RSS); WAL + pre-backup checkpoint is correctness, not
+complexity — retained.
 ```
