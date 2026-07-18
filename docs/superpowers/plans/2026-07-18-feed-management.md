@@ -159,10 +159,15 @@ test('POST /users: non-admin registered session → 403', async () => {
   const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: body('news3') })
   expect(res.status).toBe(403)
 })
-test('POST /users: anonymous → 401', async () => {
+test('POST /users: anonymous session → 403 (a session, just not admin — matches SP1 /admin/status)', async () => {
   const { app } = await makeApp()
   const cookie = await anonSession(app)
   const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: body('news4') })
+  expect(res.status).toBe(403)
+})
+test('POST /users: no session at all → 401', async () => {
+  const { app } = await makeApp()
+  const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body('news5') })
   expect(res.status).toBe(401)
 })
 ```
@@ -290,7 +295,8 @@ test('GET /admin/feeds: admin lists feeds; non-admin 403; anon 401', async () =>
   expect((await ok.json()).feeds.some((f: { handle: string }) => f.handle === 'shown')).toBe(true)
   const peon = await registeredSession(app, 'peon@x.test', repo)
   expect((await app.request('/admin/feeds', { headers: { cookie: peon } })).status).toBe(403)
-  expect((await app.request('/admin/feeds', { headers: { cookie: await anonSession(app) } })).status).toBe(401)
+  expect((await app.request('/admin/feeds', { headers: { cookie: await anonSession(app) } })).status).toBe(403) // anon session = not admin
+  expect((await app.request('/admin/feeds')).status).toBe(401) // no session
 })
 ```
 

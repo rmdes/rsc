@@ -151,13 +151,13 @@ duplicate that motivated this SP.
 
 **Core (in-process Hono, existing style):**
 - `adminOrToken`: bearer token → allowed; admin session → allowed; non-admin
-  registered session → 403; anonymous → 401; no auth → 401.
+  registered session → 403; anonymous session → 403; NO session (no cookie, no token) → 401.
 - `POST /users` now requires admin/token (a plain registered session → 403).
 - `DELETE /users/:handle`: removes the remote user and cascades (its posts,
   its `push_subscriptions`, follows to/from it all gone; the user gone);
   **404** unknown handle; **409** when the handle is a local user; a **local
   reply** to a removed feed's post still exists afterward (orphaned).
-- `GET /admin/feeds`: admin → 200 with the feed list; non-admin → 403; anon → 401.
+- `GET /admin/feeds`: admin → 200 with the feed list; non-admin & anon session → 403; no session → 401.
 
 **Web:** the `/admin` load is admin-gated (non-admin → redirect/404); add and
 remove form actions call the right core endpoints with the forwarded session.
@@ -189,3 +189,10 @@ remove form actions call the right core endpoints with the forwarded session.
   is one plain page that grows later; no premature layout abstraction.
 Everything else confirmed lean (adminOrToken reuse, the footgun de-dup, the 409
 local-guard trust boundary, all deferrals).
+
+**Rev 2 (2026-07-18)** — corrected an internal inconsistency caught during
+execution: an **anonymous session** on an admin route returns **403** (it is a
+session, just not admin — matching SP1's `/admin/status` and the codebase's
+`registeredOnly` pattern), not 401. Only a request with **no session at all**
+(no cookie, no token) returns 401. `adminOrToken` needs no anon special-case —
+`requireAdmin` already returns 403 for an anon session.
