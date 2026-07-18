@@ -31,6 +31,7 @@
 - **Modify `core/src/api/app.ts`** — `DELETE /admin/users/:handle` + `DELETE /admin/posts/:id`.
 - **Modify `core/src/storage/repository-contract.ts`** — if it enumerates repo methods for the contract suite, add the two (check first).
 - **Create `core/test/moderation.test.ts`** — endpoint + service tests.
+- **Create `web/src/lib/confirm.ts`** — one `confirmSubmit(message)` `use:enhance` guard, reused by every destructive action (account + post, both surfaces).
 - **Modify `web/src/lib/api.ts`** (+ `api.test.ts`) — `deleteLocalAccount`, `deletePost`.
 - **Modify `web/src/routes/admin/users/+page.server.ts` + `+page.svelte`** — delete-account action + button.
 - **Modify `web/src/routes/+page.server.ts` + `+page.svelte`** — timeline `deletePost` action + Remove affordance.
@@ -200,7 +201,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Write the failing test** (append to `core/test/moderation.test.ts`)
 
 ```ts
-test('deletePost removes a local post; 409 remote, 404 unknown; a local reply survives', async () => {
+test('deletePost removes a local post; 409 remote, 404 unknown', async () => {
   const { app, repo, service } = await makeApp()
   const cookie = await registeredSession(app, 'a@x.test', repo)
   await app.request('/me', { headers: { cookie } })
@@ -304,7 +305,21 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Invoke the UI skill first** — `ui-ux-pro-max:ui-ux-pro-max` + `design-system/textcaster/MASTER.md` (destructive = `--color-destructive`); consult `svelte-skills` (`sveltekit-data-flow`, `svelte-runes`). No Tailwind, no new deps.
 
-- [ ] **Step 2: Add the two api clients** (`web/src/lib/api.ts`, mirroring `removeRemoteFeed`)
+- [ ] **Step 2: Create the shared confirm guard** — `web/src/lib/confirm.ts` (one place; both surfaces reuse it, matching the `$lib/draft.ts`/`lens.ts` single-purpose-util pattern)
+
+```ts
+import type { SubmitFunction } from '@sveltejs/kit'
+
+/** use:enhance guard — confirm() before submit, then apply the result. No-JS falls through to a plain POST. */
+export function confirmSubmit(message: string): SubmitFunction {
+	return ({ cancel }) => {
+		if (typeof confirm === 'function' && !confirm(message)) cancel()
+		return async ({ update }) => update()
+	}
+}
+```
+
+- [ ] **Step 3: Add the two api clients** (`web/src/lib/api.ts`, mirroring `removeRemoteFeed`)
 
 ```ts
 export async function deleteLocalAccount(f: typeof fetch, handle: string): Promise<void> {
@@ -318,7 +333,7 @@ export async function deletePost(f: typeof fetch, id: string): Promise<void> {
 }
 ```
 
-- [ ] **Step 3: Add api-fn tests** (`web/src/lib/api.test.ts`, extend the import; mirror `removeRemoteFeed`'s tests)
+- [ ] **Step 4: Add api-fn tests** (`web/src/lib/api.test.ts`, extend the import; mirror `removeRemoteFeed`'s tests)
 
 ```ts
 test('deleteLocalAccount DELETEs the url-encoded handle', async () => {
@@ -337,7 +352,7 @@ test('deletePost DELETEs /admin/posts/:id', async () => {
 })
 ```
 
-- [ ] **Step 4: Add the `deleteUser` action** (`web/src/routes/admin/users/+page.server.ts`)
+- [ ] **Step 5: Add the `deleteUser` action** (`web/src/routes/admin/users/+page.server.ts`)
 
 ```ts
 import { fail } from '@sveltejs/kit'
@@ -366,24 +381,19 @@ export const actions: Actions = {
 }
 ```
 
-- [ ] **Step 5: Add the "Delete account" button per local user** — `web/src/routes/admin/users/+page.svelte`
+- [ ] **Step 6: Add the "Delete account" button per local user** — `web/src/routes/admin/users/+page.svelte`
 
-Per Step 1 (MASTER.md, `--color-destructive`): in each **local** user's card (`{#if u.kind === 'local'}`), add a form:
+Per Step 1 (MASTER.md, `--color-destructive`): in each **local** user's card (`{#if u.kind === 'local'}`), add a form using the shared `confirmSubmit` guard from Step 2:
 
 ```svelte
 <script lang="ts">
 	import { enhance } from '$app/forms'
+	import { confirmSubmit } from '$lib/confirm'
 	// … existing …
-	function confirmDelete(handle: string) {
-		return ({ cancel }: { cancel: () => void }) => {
-			if (typeof confirm === 'function' && !confirm(`Delete @${handle} and all their posts? This can't be undone.`)) cancel()
-			return async ({ update }: { update: () => Promise<void> }) => update()
-		}
-	}
 </script>
 …
 {#if u.kind === 'local'}
-	<form method="POST" action="?/deleteUser" use:enhance={confirmDelete(u.handle)}>
+	<form method="POST" action="?/deleteUser" use:enhance={confirmSubmit(`Delete @${u.handle} and all their posts? This can't be undone.`)}>
 		<input type="hidden" name="handle" value={u.handle} />
 		<button class="danger" type="submit">Delete account</button>
 	</form>
@@ -392,12 +402,12 @@ Per Step 1 (MASTER.md, `--color-destructive`): in each **local** user's card (`{
 
 with a scoped `.danger` style: `background: var(--color-destructive); color: var(--color-on-accent);` (or an outline variant per MASTER.md). Show `form?.error` inline. Remote feeds show **no** delete here (their remove lives on `/admin/feeds`).
 
-- [ ] **Step 6: Verify** — `npm run check -w web` (0 errors), `npm run build -w web`, `npm test -w web` (incl. the new api tests). If the dev stack is running and `.vite-temp` blocks svelte-check, run it inside the container: `docker compose exec -T web sh -c "npm run check -w web"`.
+- [ ] **Step 7: Verify** — `npm run check -w web` (0 errors), `npm run build -w web`, `npm test -w web` (incl. the new api tests). If the dev stack is running and `.vite-temp` blocks svelte-check, run it inside the container: `docker compose exec -T web sh -c "npm run check -w web"`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add web/src/lib/api.ts web/src/lib/api.test.ts web/src/routes/admin/users/+page.server.ts web/src/routes/admin/users/+page.svelte
+git add web/src/lib/confirm.ts web/src/lib/api.ts web/src/lib/api.test.ts web/src/routes/admin/users/+page.server.ts web/src/routes/admin/users/+page.svelte
 git commit -m "web: /admin/users — delete-account action + button (admin moderation)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -439,14 +449,14 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 ```svelte
 {#if data.me?.isAdmin && post.source === 'local'}
-	<form method="POST" action="?/deletePost" use:enhance={confirmRemove(post.id)}>
+	<form method="POST" action="?/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
 		<input type="hidden" name="id" value={post.id} />
 		<button class="danger-link" type="submit">Remove</button>
 	</form>
 {/if}
 ```
 
-with a `confirmRemove(id)` helper (same shape as Task 3's `confirmDelete`, message "Remove this post? This can't be undone.") and a scoped `.danger-link` style (a text button in `--color-destructive`, matching the inline `.edit`/`.source` link look, not a filled button). `use:enhance`/`enhance` imported from `$app/forms`.
+reusing the shared `confirmSubmit` from Task 3's `$lib/confirm` (`import { confirmSubmit } from '$lib/confirm'`, plus `enhance` from `$app/forms`), with a scoped `.danger-link` style (a text button in `--color-destructive`, matching the inline `.edit`/`.source` link look, not a filled button).
 
 - [ ] **Step 4: Same on the post-detail page** — add the identical `deletePost` action to `web/src/routes/post/[id]/+page.server.ts`'s `actions`, and the identical Remove form to `web/src/routes/post/[id]/+page.svelte` beside the `root` owner-`Edit` block (~`:103`), gated on `data.me?.isAdmin && root.source === 'local'`.
 
@@ -469,3 +479,9 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - **Atomicity:** `deleteUserCascade` and `deleteAuthRows` are each transaction-atomic; `deleteLocalAccount` calls them in sequence (not one combined transaction). A failure between them is negligibly unlikely (simple local deletes) and would leave only orphaned better-auth rows — acceptable for a single-admin tool; noted rather than wrapped, matching `removeRemoteFeed`'s simplicity.
 - **Live-edits coordination (Task 4):** re-read `+page.svelte` and `post/[id]/+page.svelte` immediately before editing — the parallel session owns the `Edit` affordance there; only add the `Remove` block beside it. If those files moved the post markup into a shared component since this plan was written, add `Remove` there once instead.
 - **Shared checkout:** confirm `npm test -w core` is green on the current HEAD before starting (a pre-existing red other than the known ingest flaky is not this work's).
+
+## Revisions
+
+**Rev 1 (2026-07-18)** — folded a ponytail review of this plan (net −10 lines):
+- **Extracted `web/src/lib/confirm.ts`** — one `confirmSubmit(message)` `use:enhance` guard replaces three near-identical inline closures (`confirmDelete` + two `confirmRemove`s), matching the existing single-purpose `$lib/*.ts` util pattern (`draft.ts`, `lens.ts`). Reviewer confirmed the rest lean: the `deleteAuthRows` transaction-wrap is load-bearing (the service path calls it standalone, no outer transaction), per-page duplication of the `deletePost` action + Remove button matches the already-duplicated owner-`Edit` link (house convention, not new dup), and the 4-task split is right-sized.
+- **Dropped the untested "a local reply survives" claim from Task 2's test title** (the body asserts only local-removed / remote-409 / unknown-404 — single-post delete is a by-id `deleteFrom`, so orphan-survival is the mechanism's default, not worth a dedicated assertion).
