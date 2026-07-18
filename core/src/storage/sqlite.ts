@@ -563,6 +563,7 @@ function migrate(sqlite: InstanceType<typeof Database>): void {
 
 export async function createSqliteRepository(filename: string): Promise<SqliteRepository> {
   const sqlite = new Database(filename)
+  sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
   migrate(sqlite)
   const db = new Kysely<DB>({ dialect: new SqliteDialect({ database: sqlite }) })
