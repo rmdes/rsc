@@ -76,7 +76,7 @@ test('DELETE cascades but a local reply to a removed post survives (orphaned)', 
   expect(tl.timeline.some((p: { id: string }) => p.id === reply.post.id)).toBe(true) // reply survives
   expect(tl.timeline.some((p: { id: string }) => p.id === 'rp')).toBe(false)         // remote post gone
 })
-test('GET /admin/feeds: admin lists feeds; non-admin 403; anon 401', async () => {
+test('GET /admin/feeds: admin lists feeds; non-admin & anon session 403; no session 401', async () => {
   const { app, repo } = await makeApp()
   await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: body('shown') })
   const adminCookie = await registeredSession(app, 'boss@x.test', repo)
