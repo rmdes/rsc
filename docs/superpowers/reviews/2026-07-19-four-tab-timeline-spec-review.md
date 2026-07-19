@@ -56,3 +56,34 @@ always-explicit-tab pagination.
 4. **Six spy-based load tests → one pure tab-resolution helper** tested
    directly; drop the older-link test (template interpolation). **Folded.**
 5. **Guest-skip-fetch test** — falls away with 1. **Folded.**
+
+## Parallel-session review of rev 1 (7420bb0)
+
+Independent pass focused on the rev-1 fixes themselves and cross-caller
+fallout; the rev-0 grounding was already source-verified above.
+
+**Verified clean (with source proof):**
+- The `?tab=<tab>&/compose` form-action URL form is valid: SvelteKit's action
+  resolver scans ALL query params and takes the first whose name starts with
+  `/` (`kit/src/runtime/server/page/actions.js:236-243`) — order-independent,
+  so `?tab=local&/compose` resolves to `compose` with `tab` preserved. Rev-1
+  fix 2 holds.
+- Self-inclusion fallout across callers: `service.test.ts:72-80` (follower
+  authors no posts), `api-follows.test.ts:64` (asserts only the 400), and
+  `following.actions.test.ts` (action calls only, no timeline contents) are
+  all unaffected.
+- Anon + explicit `?tab=personal` resolves to Personal (only *guest*+personal
+  falls back) — consistent with "anons are real sessions with follow graphs";
+  read as deliberate.
+
+**1. Important — `timeline-tabs.test.ts:45-47` asserts the pre-rev-1
+exclusive semantics and WILL break under self-inclusion.** The Personal-river
+test's `expect(tl.map(e => e.id)).toEqual([webfeedPostId])` runs with
+`followedBy: alice` — and `localPostId` is authored by **alice**
+(setup line 25). With the self-inclusive OR clause the result becomes
+`[webfeedPostId, localPostId]` (published_at desc). The spec's §7 adds a NEW
+self-inclusion test but never says this existing assertion changes — an SDD
+implementer hits an unexplained red mid-task and the tempting "fix" is
+weakening the OR clause back to the rev-0 bug. **Fold (one line in §7):**
+"update `timeline-tabs.test.ts`'s Personal-river assertion to
+`[webfeedPostId, localPostId]` — the owner's own post now belongs there."
