@@ -1,8 +1,10 @@
 # Four-tab web timeline (SP2) — design
 
 **Milestone:** Per-user feeds / feed-reader (sub-project 2 of 3)
-**Date:** 2026-07-19 · **rev 1** (clean-context correctness + ponytail reviews
-folded — see `../reviews/2026-07-19-four-tab-timeline-spec-review.md`)
+**Date:** 2026-07-19 · **rev 2** (rev 1: clean-context correctness + ponytail
+reviews folded; rev 2: maintainer pass — existing Personal-river test assertion
+updates with self-inclusion — see
+`../reviews/2026-07-19-four-tab-timeline-spec-review.md`)
 **Depends on:** SP1 engine (commits `8ffd69a..734d8d0` on main) — see
 `2026-07-19-per-user-feeds-engine-design.md` for the milestone model.
 
@@ -191,7 +193,11 @@ pages. Notes:
   webfeed vs local-null) — also closes SP1's deferred "no HTTP-layer test for
   source/feed_type params" minor. Thread/replies sites covered by asserting on
   one thread fetch. New test: `followed_by` self-inclusion (own post appears;
-  instance-exclusion still holds).
+  instance-exclusion still holds). **Update the existing Personal-river
+  assertion** (`core/test/timeline-tabs.test.ts` — currently expects exactly
+  `[webfeedPostId]` for `followedBy: alice`) to `[webfeedPostId, localPostId]`:
+  the owner's own post now belongs there. This red is expected — do NOT "fix"
+  it by weakening the OR clause.
 - **Web** (in-container): the tab-resolution helper is tested **directly as a
   pure function** (defaults per auth state, invalid → default, guest+personal
   → public, tab → filter mapping) — no load-spy machinery. Slim load tests:
