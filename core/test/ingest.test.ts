@@ -354,6 +354,19 @@ test('RSS permalink guid is the item url when <link> is absent (rss.chat shape)'
   expect(items[3].url).toBe('https://e.example/real') // explicit link always wins
 })
 
+test('poll backfills display_name from the feed title while still URL-named', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const feedUrl = 'https://ex.com/f.xml'
+  // Self-serve subscriptions seed displayName === feedUrl — the guard this backfill relies on.
+  const user = await repo.createRemoteUser({ handle: 'newsite', displayName: feedUrl, feedUrl })
+  const rssWithTitle = `<?xml version="1.0"?><rss version="2.0"><channel><title>Real Title</title>
+<item><title>Hello</title><link>https://ex.com/1</link><guid>https://ex.com/1</guid><description>Body one</description><pubDate>Wed, 01 Jan 2026 00:00:00 GMT</pubDate></item>
+</channel></rss>`
+  await ingestRemoteUser(repo, bus, user, fakeFetch(rssWithTitle, 'application/rss+xml'), publicLookup)
+  expect((await repo.getUser(user.id))?.displayName).toBe('Real Title')
+})
+
 test('h-cite reply persists context and threads onto an existing parent', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()

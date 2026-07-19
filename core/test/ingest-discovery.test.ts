@@ -132,6 +132,25 @@ test('a legitimate redirect on the discovered feed is followed and ingested', as
   expect(seen).toEqual(['https://pub.ex/page', 'http://pub.ex/feed', 'http://pub.ex/feed2']) // redirect followed, re-validated
 })
 
+test('discovery pass backfills display_name from the feed title BEFORE rewriting feed_url', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const pageUrl = 'https://s.ex/page'
+  // Self-serve subscriptions seed displayName === feedUrl (here, the pre-discovery page URL).
+  const user = await repo.createRemoteUser({ handle: 'blog2', displayName: pageUrl, feedUrl: pageUrl })
+  const html = `<html><head><link rel="alternate" type="application/rss+xml" href="https://s.ex/feed2.xml"></head><body><p></p></body></html>`
+  const rssWithTitle = `<?xml version="1.0"?><rss version="2.0"><channel><title>Discovered Title</title>
+<item><title>Hello</title><link>https://s.ex/1</link><guid>https://s.ex/1</guid><description>Body</description></item></channel></rss>`
+  const { fn } = router({
+    'https://s.ex/page': { body: html, type: 'text/html' },
+    'https://s.ex/feed2.xml': { body: rssWithTitle, type: 'application/rss+xml' },
+  })
+  await ingestRemoteUser(repo, bus, user, fn, publicLookup)
+  const refreshed = await repo.getUser(user.id)
+  expect(refreshed?.displayName).toBe('Discovered Title') // backfill ran against pre-rewrite equality
+  expect(refreshed?.feedUrl).toBe('https://s.ex/feed2.xml') // R1 rewrite still happened
+})
+
 test('MONEY TEST: OPML-style HTML-page user becomes followable end to end', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()

@@ -84,7 +84,7 @@ function linksToDiscovery(links: ChannelLink[] | undefined): Pick<FeedDiscovery,
   return { hubs, self }
 }
 
-export async function parseFeedWithMeta(body: string): Promise<{ items: ParsedItem[]; discovery: FeedDiscovery }> {
+export async function parseFeedWithMeta(body: string): Promise<{ items: ParsedItem[]; discovery: FeedDiscovery; title: string | null }> {
   // feedsmith's format detection chokes on a BOM, so strip it first.
   const cleanBody = body.charCodeAt(0) === 0xfeff ? body.slice(1) : body
   const now = new Date().toISOString()
@@ -93,19 +93,19 @@ export async function parseFeedWithMeta(body: string): Promise<{ items: ParsedIt
     const items = (parsed.feed.items ?? []).map((it) =>
       toParsedItem(it.id, it.title ?? null, it.content_html ?? it.content_text ?? '', it.url ?? null, it.date_published ?? '', now, null, undefined, null, it.date_modified ?? null))
     const hubs = (parsed.feed.hubs ?? []).map((h) => h.url).filter((u): u is string => typeof u === 'string')
-    return { items, discovery: { hubs, self: parsed.feed.feed_url ?? null, cloud: null } }
+    return { items, discovery: { hubs, self: parsed.feed.feed_url ?? null, cloud: null }, title: parsed.feed.title ?? null }
   }
   if (parsed.format === 'atom') {
     const items = (parsed.feed.entries ?? []).map((it) => {
       const url = it.links?.find((l) => l.href && (!l.rel || l.rel === 'alternate'))?.href ?? null
       return toParsedItem(it.id, it.title ?? null, it.content ?? it.summary ?? '', url, it.published ?? it.updated ?? '', now, itemInReplyTo(it), undefined, null, it.updated ?? null)
     })
-    return { items, discovery: { ...linksToDiscovery(parsed.feed.links), cloud: null } }
+    return { items, discovery: { ...linksToDiscovery(parsed.feed.links), cloud: null }, title: parsed.feed.title ?? null }
   }
   if (parsed.format === 'rdf') {
     const items = (parsed.feed.items ?? []).map((it) =>
       toParsedItem(undefined, it.title ?? null, it.description ?? '', it.link ?? null, it.dc?.dates?.[0] ?? '', now))
-    return { items, discovery: NO_DISCOVERY }
+    return { items, discovery: NO_DISCOVERY, title: parsed.feed.title ?? null }
   }
   const items = (parsed.feed.items ?? []).map((it) =>
     toParsedItem(
@@ -127,7 +127,7 @@ export async function parseFeedWithMeta(body: string): Promise<{ items: ParsedIt
   const cloud = c && typeof c.domain === 'string' && typeof c.path === 'string' && c.protocol === 'http-post' && typeof c.port === 'number'
     ? { domain: c.domain, port: c.port, path: c.path, protocol: c.protocol }
     : null
-  return { items, discovery: { ...linksToDiscovery(parsed.feed.atom?.links), cloud } }
+  return { items, discovery: { ...linksToDiscovery(parsed.feed.atom?.links), cloud }, title: parsed.feed.title ?? null }
 }
 
 export function parseLinkHeader(header: string | null): { hubs: string[]; self: string | null } {
@@ -237,6 +237,8 @@ export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: Us
     return await ingestViaDiscovery(repo, bus, user, user.feedUrl, body, fetchFn, lookupFn)
   }
 
+  const title = parsed.title?.trim()
+  if (title) await repo.updateDisplayNameIfUnset(user.id, title)
   const inserted = await ingestItems(repo, bus, user, parsed.items)
   return { inserted, discovery: mergeDiscovery(res, parsed.discovery) }
 }
@@ -263,6 +265,10 @@ async function ingestViaDiscovery(repo: Repository, bus: EventBus, user: User, p
     }
     if (fetched) {
       const parsed = await parseFeedWithMeta(fetched.body) // parse error still propagates (bounded by pollAll) — unchanged
+      const title = parsed.title?.trim()
+      // BEFORE updateFeedUrl: the unset-guard compares display_name to the
+      // CURRENT (input) feed_url; the rewrite below would break equality forever.
+      if (title) await repo.updateDisplayNameIfUnset(user.id, title)
       const inserted = await ingestItems(repo, bus, user, parsed.items)
       // R1: persist only if no OTHER user already holds this feedUrl.
       const taken = (await repo.listRemoteUsers()).some((u) => u.id !== user.id && u.feedUrl === feedUrl)

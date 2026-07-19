@@ -44,4 +44,12 @@ describe('per-user-feeds repo reads', () => {
     await repo.setSetting('new_key', 'value')
     await expect(repo.getSetting('new_key')).resolves.toBe('value')
   })
+
+  it('updateDisplayNameIfUnset writes only while display_name equals feed_url', async () => {
+    const seeded = await repo.createRemoteUser({ handle: 'f1', displayName: 'https://ex.com/f.xml', feedUrl: 'https://ex.com/f.xml', feedType: 'webfeed' })
+    await repo.updateDisplayNameIfUnset(seeded.id, 'Example Feed')
+    await expect(repo.getUser(seeded.id)).resolves.toMatchObject({ displayName: 'Example Feed' })
+    await repo.updateDisplayNameIfUnset(seeded.id, 'Clobber Attempt')
+    await expect(repo.getUser(seeded.id)).resolves.toMatchObject({ displayName: 'Example Feed' }) // no longer equals feed_url → refused
+  })
 })

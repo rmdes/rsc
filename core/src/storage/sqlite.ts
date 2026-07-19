@@ -109,6 +109,11 @@ export class SqliteRepository implements Repository {
     await this.db.updateTable('users').set({ feed_url: feedUrl }).where('id', '=', userId).execute()
   }
 
+  async updateDisplayNameIfUnset(userId: string, name: string) {
+    // Only while display_name still equals feed_url (the subscribe-seeded value) — never clobber a chosen name.
+    await this.db.updateTable('users').set({ display_name: name }).where('id', '=', userId).whereRef('display_name', '=', 'feed_url').execute()
+  }
+
   async getUser(id: string) {
     const r = await this.db.selectFrom('users').selectAll().where('id', '=', id).executeTakeFirst()
     return r ? rowToUser(r) : undefined

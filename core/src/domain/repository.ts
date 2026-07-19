@@ -4,6 +4,7 @@ export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
   createRemoteUser(u: NewRemoteUser): Promise<User>
   updateFeedUrl(userId: string, feedUrl: string): Promise<void>
+  updateDisplayNameIfUnset(userId: string, name: string): Promise<void>
   getUser(id: string): Promise<User | undefined>
   getUserByHandle(handle: string): Promise<User | undefined>
   getUserByAuthUserId(authUserId: string): Promise<User | undefined>
