@@ -20,3 +20,9 @@
 	</div>
 	<button>Save</button>
 </form>
+
+<style>
+	form {
+		max-width: 24rem;
+	}
+</style>

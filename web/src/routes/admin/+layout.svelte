@@ -54,6 +54,11 @@
 		color: var(--color-foreground);
 	}
 
+	.admin-nav a:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 15%, transparent);
+	}
+
 	.admin-nav a[aria-current='page'] {
 		color: var(--color-foreground);
 		border-bottom-color: var(--color-accent);

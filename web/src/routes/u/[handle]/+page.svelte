@@ -82,7 +82,7 @@
 		<p class="subnav"><a href="/u/{data.handle}/following">following &amp; followers</a></p>
 	</div>
 
-	{#if data.coreDown}<p class="notice" role="alert">Core API unreachable — is the core server running?</p>{/if}
+	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 
 	<ul class="timeline">
 		{#each groups as { top: post, others } (post.threadRootId ?? post.id)}

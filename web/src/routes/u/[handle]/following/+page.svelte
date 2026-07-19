@@ -46,10 +46,10 @@
 		<p class="subnav"><a href="/u/{data.handle}">author lens</a> · <a href="/u/{data.handle}/following.opml">export OPML</a></p>
 	</div>
 
-	{#if data.coreDown}<p class="notice" role="alert">Core API unreachable — is the core server running?</p>{/if}
+	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 	{#if form?.ok && form.result}
-		<p class="import-result">Imported: {form.result.followed} followed, {form.result.created} created, {form.result.skipped} skipped (unfetchable, duplicate, or over your subscription cap).</p>
+		<p class="notice confirm" role="status">Imported: {form.result.followed} followed, {form.result.created} created, {form.result.skipped} skipped (unfetchable, duplicate, or over your subscription cap).</p>
 	{/if}
 
 	{#if !data.isOwner}
@@ -62,8 +62,11 @@
 			<form method="POST" action="/?/subscribe" class="add-remote">
 				<label class="visually-hidden" for="sub-url">Feed URL</label>
 				<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-				<label><input type="radio" name="type" value="webfeed" checked /> a site or publication</label>
-				<label><input type="radio" name="type" value="person" /> an individual</label>
+				<fieldset>
+					<legend class="visually-hidden">Subscription type</legend>
+					<label><input type="radio" name="type" value="webfeed" checked /> a site or publication</label>
+					<label><input type="radio" name="type" value="person" /> an individual</label>
+				</fieldset>
 				<button>Subscribe</button>
 			</form>
 		</details>
@@ -93,19 +96,19 @@
 	<section>
 		<h2>{data.isOwner ? 'Your subscriptions' : `@${data.handle} follows`}</h2>
 		{#if data.following.length === 0}
-			<p class="subnav">{data.isOwner ? "You're not following anything yet — subscribe above." : `@${data.handle} isn't following anything yet.`}</p>
+			<p class="timeline-empty">{data.isOwner ? "You're not following anything yet — subscribe above." : `@${data.handle} isn't following anything yet.`}</p>
 		{:else}
 			<ul class="following-list">
 				{#each data.following as u (u.id)}
 					<li>
-						<span><a href="/u/{u.handle}">@{u.handle}</a> <span class="badge-kind">{u.kind}</span>{#if u.feedType === 'instance'}<span class="badge-kind">instance</span>{/if}</span>
+						<span><a href="/u/{u.handle}">@{u.handle}</a> <span class="badge-kind">{u.kind}</span>{#if u.feedType === 'instance'}<span class="badge-kind on">instance</span>{/if}</span>
 						{#if data.isOwner}
 							<form method="POST" action="?/unfollow" class="unfollow-form">
 								<input type="hidden" name="target" value={u.handle} />
 								<button>Unfollow</button>
 							</form>
 						{:else}
-							<form method="POST" action="?/follow" class="unfollow-form">
+							<form method="POST" action="?/follow" class="unfollow-form follow-row">
 								<input type="hidden" name="target" value={u.handle} />
 								<button>Follow</button>
 							</form>

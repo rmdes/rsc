@@ -545,6 +545,7 @@ button:hover {
 .unfollow-form button,
 .follow-form button {
 	padding: 6px 14px;
+	min-height: 44px;
 }
 
 .unfollow-form button {
@@ -553,22 +554,35 @@ button:hover {
 	border: 1px solid var(--color-border);
 }
 
+/* Visitor Follow reuses .unfollow-form's layout but reads as the positive
+   action it is — accent, not destructive red (SP3 final review, deferred). */
+.follow-row button {
+	color: var(--color-accent);
+	border-color: var(--color-accent);
+}
+
 .follow-form,
 .import-form {
 	display: flex;
+	flex-direction: column;
 	gap: var(--space-sm);
-	flex-wrap: wrap;
-	align-items: center;
+	align-items: stretch;
 }
 
 .follow-form input {
-	flex: 1;
 	min-width: 10rem;
 }
 
-.import-result {
-	color: var(--color-secondary);
-	font-size: 0.875rem;
+/* Finding 2: fieldset default chrome reset for the radio-pair groups; column
+   flex so the two radio labels keep stacking one per row like every other
+   direct child of .add-remote (a <label> is inline by default). */
+.add-remote fieldset {
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-xs);
+	border: 0;
+	margin: 0;
+	padding: 0;
 }
 
 /* Accessibility: label text available to screen readers, hidden visually */
@@ -629,7 +643,7 @@ button:hover {
 	color: var(--color-accent);
 	background: none;
 	padding: var(--space-xs) 0.75rem;
-	min-height: 2rem;
+	min-height: 44px;
 	font-size: 0.8125rem;
 	line-height: 1;
 	text-decoration: none;

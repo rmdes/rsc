@@ -88,8 +88,11 @@
 				<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
 					<label class="visually-hidden" for="sub-url">Feed URL</label>
 					<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-					<label><input type="radio" name="type" value="webfeed" checked /> a site or publication</label>
-					<label><input type="radio" name="type" value="person" /> an individual</label>
+					<fieldset>
+						<legend class="visually-hidden">Subscription type</legend>
+						<label><input type="radio" name="type" value="webfeed" checked /> a site or publication</label>
+						<label><input type="radio" name="type" value="person" /> an individual</label>
+					</fieldset>
 					<button>Subscribe</button>
 				</form>
 			</details>
@@ -99,6 +102,8 @@
 	</aside>
 
 	<main>
+		<h1 class="visually-hidden">Timeline</h1>
+
 		<nav class="tabs" aria-label="Timeline">
 			{#each TABS as t (t)}
 				<a href="/?tab={t}" aria-current={data.tab === t ? 'page' : undefined}>{t}</a>
@@ -106,7 +111,7 @@
 		</nav>
 
 		{#if data.coreDown}
-			<p class="notice" role="alert">Core API unreachable — is the core server running?</p>
+			<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>
 		{/if}
 
 		{#if data.addedFeed}
@@ -245,12 +250,14 @@
 	.tabs {
 		display: flex;
 		gap: var(--space-md);
+		overflow-x: auto;
 		border-bottom: 1px solid var(--color-border);
 		margin-bottom: var(--space-md);
 	}
 
 	.tabs a {
 		display: inline-flex;
+		flex-shrink: 0;
 		align-items: center;
 		min-height: 44px;
 		padding: 0 var(--space-xs);

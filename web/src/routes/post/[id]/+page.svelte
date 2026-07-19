@@ -87,7 +87,7 @@
 		<p class="subnav">Replying to <a href={viewed.inReplyTo} rel="noreferrer">↗ {viewed.inReplyTo}</a></p>
 	{/if}
 
-	{#if data.coreDown}<p class="notice" role="alert">Core API unreachable — is the core server running?</p>{/if}
+	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 	<ul class="timeline">
