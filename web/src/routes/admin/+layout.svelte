@@ -7,7 +7,8 @@
 	const tabs = [
 		{ href: '/admin', label: 'Overview' },
 		{ href: '/admin/feeds', label: 'Feeds' },
-		{ href: '/admin/users', label: 'Users' }
+		{ href: '/admin/users', label: 'Users' },
+		{ href: '/admin/settings', label: 'Settings' }
 	]
 </script>
 
