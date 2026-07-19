@@ -1,4 +1,4 @@
-{$TEXTCASTER_DOMAIN} {
+{$RSC_DOMAIN} {
 	# Mailpit UI — MUST be protected: it shows verify/magic-link emails, so
 	# anyone who could read /mail could sign in as any user.
 	handle /mail* {

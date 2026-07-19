@@ -11,7 +11,7 @@ services:
       core:
         condition: service_healthy
     environment:
-      TEXTCASTER_DOMAIN: ${TEXTCASTER_DOMAIN:?Set TEXTCASTER_DOMAIN in .env}
+      RSC_DOMAIN: ${RSC_DOMAIN:?Set RSC_DOMAIN in .env}
       MAILPIT_USER: ${MAILPIT_USER:-mail}
       MAILPIT_PASSWORD_HASH: ${MAILPIT_PASSWORD_HASH:?Set MAILPIT_PASSWORD_HASH (run scripts/generate-env.sh)}
     ports:
@@ -32,7 +32,7 @@ services:
     environment:
       CORE_API_URL: http://core:8787
       PORT: "3000"
-      ORIGIN: https://${TEXTCASTER_DOMAIN:?Set TEXTCASTER_DOMAIN in .env}
+      ORIGIN: https://${RSC_DOMAIN:?Set RSC_DOMAIN in .env}
       ADDRESS_HEADER: X-Forwarded-For # F-3: getClientAddress() behind Caddy
       XFF_DEPTH: "1"
     depends_on:
@@ -57,16 +57,16 @@ services:
       dockerfile: docker/Dockerfile.core
     container_name: textcaster-core
     environment:
-      TEXTCASTER_AUTH_SECRET: ${TEXTCASTER_AUTH_SECRET:?Set TEXTCASTER_AUTH_SECRET (run scripts/generate-env.sh)}
-      TEXTCASTER_TOKEN: ${TEXTCASTER_TOKEN:?Set TEXTCASTER_TOKEN (run scripts/generate-env.sh)}
-      TEXTCASTER_DB: /data/textcaster.db
-      TEXTCASTER_PUBLIC_URL: https://${TEXTCASTER_DOMAIN:?Set TEXTCASTER_DOMAIN in .env}
-      TEXTCASTER_WEB_ORIGIN: https://${TEXTCASTER_DOMAIN}
-      TEXTCASTER_WEBSUB: ${TEXTCASTER_WEBSUB:-self}
-      TEXTCASTER_RSSCLOUD: ${TEXTCASTER_RSSCLOUD:-on}
-      TEXTCASTER_PUSH_IN: ${TEXTCASTER_PUSH_IN:-on}
-      TEXTCASTER_SMTP_URL: ${TEXTCASTER_SMTP_URL:-smtp://mailpit:1025}
-      TEXTCASTER_MAIL_FROM: ${TEXTCASTER_MAIL_FROM:-textcaster@${TEXTCASTER_DOMAIN}}
+      RSC_AUTH_SECRET: ${RSC_AUTH_SECRET:?Set RSC_AUTH_SECRET (run scripts/generate-env.sh)}
+      RSC_TOKEN: ${RSC_TOKEN:?Set RSC_TOKEN (run scripts/generate-env.sh)}
+      RSC_DB: /data/textcaster.db
+      RSC_PUBLIC_URL: https://${RSC_DOMAIN:?Set RSC_DOMAIN in .env}
+      RSC_WEB_ORIGIN: https://${RSC_DOMAIN}
+      RSC_WEBSUB: ${RSC_WEBSUB:-self}
+      RSC_RSSCLOUD: ${RSC_RSSCLOUD:-on}
+      RSC_PUSH_IN: ${RSC_PUSH_IN:-on}
+      RSC_SMTP_URL: ${RSC_SMTP_URL:-smtp://mailpit:1025}
+      RSC_MAIL_FROM: ${RSC_MAIL_FROM:-textcaster@${RSC_DOMAIN}}
     volumes:
       - core-data:/data
     healthcheck:

@@ -115,7 +115,7 @@ make up                       # core + web + Mailpit, live reload
 - **Auth API reference (dev only):** with the dev stack up, browse
   <http://localhost:8787/api/auth/reference> for the better-auth OpenAPI/Scalar
   reference (raw spec at `/api/auth/open-api/generate-schema`). Enabled by
-  `TEXTCASTER_AUTH_OPENAPI=on` (set in `compose.yaml`); unset in prod, and the
+  `RSC_AUTH_OPENAPI=on` (set in `compose.yaml`); unset in prod, and the
   web proxy 404s it, so it is never public. After pulling, recreate core once so
   it picks up the env (`docker compose up -d core`). Full how-to + the
   reachability table: RUNNING.md → "Auth API reference (dev only)".
@@ -136,7 +136,7 @@ make prod-up        # build images + start behind Caddy
 ```
 
 Caddy fronts everything and issues HTTPS automatically for
-`TEXTCASTER_DOMAIN` — no manual certificates. The Mailpit UI is reachable at
+`RSC_DOMAIN` — no manual certificates. The Mailpit UI is reachable at
 `/mail` behind HTTP basic-auth (the credentials `make prod-env` just
 generated), since it displays every verify/magic-link email that goes out.
 Federation (WebSub + rssCloud) is **on by default** in this stack.
@@ -144,7 +144,7 @@ Federation (WebSub + rssCloud) is **on by default** in this stack.
 **Mailpit only catches mail — it never delivers it.** That's fine for
 trying the instance solo, but for real multi-user email (verification,
 magic-link sign-in, password reset) you need real delivery: set
-`TEXTCASTER_SMTP_URL` (and `TEXTCASTER_MAIL_FROM`) in `.env` to a real SMTP
+`RSC_SMTP_URL` (and `RSC_MAIL_FROM`) in `.env` to a real SMTP
 server, e.g. `smtps://user:pass@smtp.example.com:465`, and redeploy.
 
 ## Architecture

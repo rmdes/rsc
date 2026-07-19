@@ -25,7 +25,7 @@ function makeBridge(routes: Record<string, Hono>): typeof fetch {
 async function makeInstance(env: Record<string, string>) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const config = loadConfig({ TEXTCASTER_AUTH_SECRET: 's', ...env })
+  const config = loadConfig({ RSC_AUTH_SECRET: 's', ...env })
   // Wire config.publicUrl into createService, same as prod (server.ts) — local
   // posts then mint a permalink url, exercising the real-time push paths under
   // the milestone's permalink guids instead of the legacy url-less shape.
@@ -35,9 +35,9 @@ async function makeInstance(env: Record<string, string>) {
 
 test('REAL-TIME LOOP: B receives A post via WebSub fat ping, no polling', async () => {
   // Instance A: publisher with the M1 self-hosted hub
-  const A = await makeInstance({ TEXTCASTER_TOKEN: 'a', TEXTCASTER_PUBLIC_URL: 'https://a.example', TEXTCASTER_WEBSUB: 'self' })
+  const A = await makeInstance({ RSC_TOKEN: 'a', RSC_PUBLIC_URL: 'https://a.example', RSC_WEBSUB: 'self' })
   // Instance B: subscriber
-  const B = await makeInstance({ TEXTCASTER_TOKEN: 'b', TEXTCASTER_PUBLIC_URL: 'https://b.example' })
+  const B = await makeInstance({ RSC_TOKEN: 'b', RSC_PUBLIC_URL: 'https://b.example' })
 
   const routes: Record<string, Hono> = {}
   const bridge = makeBridge(routes)
@@ -86,7 +86,7 @@ test('REAL-TIME LOOP: B receives A post via WebSub fat ping, no polling', async 
 })
 
 test('tampered fat ping is silently discarded end to end (H2)', async () => {
-  const B = await makeInstance({ TEXTCASTER_TOKEN: 'b', TEXTCASTER_PUBLIC_URL: 'https://b.example' })
+  const B = await makeInstance({ RSC_TOKEN: 'b', RSC_PUBLIC_URL: 'https://b.example' })
   const pushInB = createPushIn({ repo: B.repo, config: B.config, lookupFn: publicLookup })
   const u = await B.repo.createRemoteUser({ handle: 'x', displayName: 'X', feedUrl: 'https://x.example/f.xml' })
   await B.repo.upsertPushSubscription({ id: 't1', userId: u.id, mode: 'websub', endpoint: 'https://hub.x/h', topic: 'https://x.example/f.xml', callbackToken: 'tok-t', secret: 'shh', state: 'active', expiresAt: new Date(Date.now() + 86400000).toISOString(), createdAt: '2026-01-01T00:00:00.000Z' })
@@ -98,8 +98,8 @@ test('tampered fat ping is silently discarded end to end (H2)', async () => {
 })
 
 test('REAL-TIME LOOP (rssCloud): thin ping triggers immediate re-fetch', async () => {
-  const A = await makeInstance({ TEXTCASTER_TOKEN: 'a', TEXTCASTER_PUBLIC_URL: 'https://a.example', TEXTCASTER_RSSCLOUD: 'on' })
-  const B = await makeInstance({ TEXTCASTER_TOKEN: 'b', TEXTCASTER_PUBLIC_URL: 'https://b.example' })
+  const A = await makeInstance({ RSC_TOKEN: 'a', RSC_PUBLIC_URL: 'https://a.example', RSC_RSSCLOUD: 'on' })
+  const B = await makeInstance({ RSC_TOKEN: 'b', RSC_PUBLIC_URL: 'https://b.example' })
   const routes: Record<string, Hono> = {}
   const bridge = makeBridge(routes)
   const { handleRssCloudRequest } = await import('../src/domain/push.ts')

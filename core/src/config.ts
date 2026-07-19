@@ -41,52 +41,52 @@ function parseAdminEmails(raw: string | undefined): Set<string> {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const token = env.TEXTCASTER_TOKEN
-  if (!token) throw new Error('TEXTCASTER_TOKEN is required')
+  const token = env.RSC_TOKEN
+  if (!token) throw new Error('RSC_TOKEN is required')
 
-  const rawPublic = env.TEXTCASTER_PUBLIC_URL
-  const publicUrl = rawPublic ? httpUrl('TEXTCASTER_PUBLIC_URL', rawPublic).replace(/\/+$/, '') : null
+  const rawPublic = env.RSC_PUBLIC_URL
+  const publicUrl = rawPublic ? httpUrl('RSC_PUBLIC_URL', rawPublic).replace(/\/+$/, '') : null
 
-  const rawWebsub = env.TEXTCASTER_WEBSUB ?? 'off'
+  const rawWebsub = env.RSC_WEBSUB ?? 'off'
   let websub: WebSubMode
   if (rawWebsub === 'off') websub = { mode: 'off' }
   else if (rawWebsub === 'self') websub = { mode: 'self' }
-  else websub = { mode: 'external', hubUrl: httpUrl('TEXTCASTER_WEBSUB', rawWebsub) }
+  else websub = { mode: 'external', hubUrl: httpUrl('RSC_WEBSUB', rawWebsub) }
 
-  const rawRssCloud = env.TEXTCASTER_RSSCLOUD ?? 'off'
-  if (rawRssCloud !== 'on' && rawRssCloud !== 'off') throw new Error(`TEXTCASTER_RSSCLOUD must be "on" or "off", got "${rawRssCloud}"`)
+  const rawRssCloud = env.RSC_RSSCLOUD ?? 'off'
+  if (rawRssCloud !== 'on' && rawRssCloud !== 'off') throw new Error(`RSC_RSSCLOUD must be "on" or "off", got "${rawRssCloud}"`)
   const rssCloud = rawRssCloud === 'on'
 
-  const rawPushIn = env.TEXTCASTER_PUSH_IN ?? 'on'
-  if (rawPushIn !== 'on' && rawPushIn !== 'off') throw new Error(`TEXTCASTER_PUSH_IN must be "on" or "off", got "${rawPushIn}"`)
+  const rawPushIn = env.RSC_PUSH_IN ?? 'on'
+  if (rawPushIn !== 'on' && rawPushIn !== 'off') throw new Error(`RSC_PUSH_IN must be "on" or "off", got "${rawPushIn}"`)
   const pushIn = rawPushIn === 'on'
 
-  const rawAuthOpenApi = env.TEXTCASTER_AUTH_OPENAPI ?? 'off'
-  if (rawAuthOpenApi !== 'on' && rawAuthOpenApi !== 'off') throw new Error(`TEXTCASTER_AUTH_OPENAPI must be "on" or "off", got "${rawAuthOpenApi}"`)
+  const rawAuthOpenApi = env.RSC_AUTH_OPENAPI ?? 'off'
+  if (rawAuthOpenApi !== 'on' && rawAuthOpenApi !== 'off') throw new Error(`RSC_AUTH_OPENAPI must be "on" or "off", got "${rawAuthOpenApi}"`)
   const authOpenApi = rawAuthOpenApi === 'on'
 
   // Fail-fast ONLY for explicitly enabled push (spec H1): defaults stay bootable.
   if ((websub.mode !== 'off' || rssCloud) && !publicUrl) {
-    throw new Error('TEXTCASTER_PUBLIC_URL is required when TEXTCASTER_WEBSUB or TEXTCASTER_RSSCLOUD is enabled')
+    throw new Error('RSC_PUBLIC_URL is required when RSC_WEBSUB or RSC_RSSCLOUD is enabled')
   }
 
-  const authSecret = env.TEXTCASTER_AUTH_SECRET
-  if (!authSecret) throw new Error('TEXTCASTER_AUTH_SECRET is required')
-  const webOrigin = httpUrl('TEXTCASTER_WEB_ORIGIN', env.TEXTCASTER_WEB_ORIGIN ?? 'http://localhost:5173').replace(/\/+$/, '')
-  const anonTtlDays = positiveInt('TEXTCASTER_ANON_TTL_DAYS', env.TEXTCASTER_ANON_TTL_DAYS ?? '7')
+  const authSecret = env.RSC_AUTH_SECRET
+  if (!authSecret) throw new Error('RSC_AUTH_SECRET is required')
+  const webOrigin = httpUrl('RSC_WEB_ORIGIN', env.RSC_WEB_ORIGIN ?? 'http://localhost:5173').replace(/\/+$/, '')
+  const anonTtlDays = positiveInt('RSC_ANON_TTL_DAYS', env.RSC_ANON_TTL_DAYS ?? '7')
 
-  const smtpUrl = env.TEXTCASTER_SMTP_URL ?? null
+  const smtpUrl = env.RSC_SMTP_URL ?? null
   // From-address default derives from the public origin's host, else webOrigin's.
   const mailHost = new URL(publicUrl ?? webOrigin).host
-  const mailFrom = env.TEXTCASTER_MAIL_FROM ?? `textcaster@${mailHost}`
+  const mailFrom = env.RSC_MAIL_FROM ?? `textcaster@${mailHost}`
 
-  const adminEmails = parseAdminEmails(env.TEXTCASTER_ADMIN_EMAIL)
+  const adminEmails = parseAdminEmails(env.RSC_ADMIN_EMAIL)
 
   return {
-    dbPath: env.TEXTCASTER_DB ?? './data/textcaster.db',
+    dbPath: env.RSC_DB ?? './data/textcaster.db',
     token,
-    port: positiveInt('TEXTCASTER_PORT', env.TEXTCASTER_PORT ?? '8787'),
-    pollSeconds: positiveInt('TEXTCASTER_POLL_SECONDS', env.TEXTCASTER_POLL_SECONDS ?? '60'),
+    port: positiveInt('RSC_PORT', env.RSC_PORT ?? '8787'),
+    pollSeconds: positiveInt('RSC_POLL_SECONDS', env.RSC_POLL_SECONDS ?? '60'),
     publicUrl,
     websub,
     rssCloud,

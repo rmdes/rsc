@@ -15,10 +15,10 @@ root so the whole workspace is the build context, pointing at `cloudron/Dockerfi
 
 ## What it wires automatically
 
-- `CLOUDRON_APP_ORIGIN` → `TEXTCASTER_PUBLIC_URL` / `TEXTCASTER_WEB_ORIGIN` / web `ORIGIN`
+- `CLOUDRON_APP_ORIGIN` → `RSC_PUBLIC_URL` / `RSC_WEB_ORIGIN` / web `ORIGIN`
 - SQLite at `/app/data/textcaster.db` (WAL mode)
-- `TEXTCASTER_AUTH_SECRET` + `TEXTCASTER_TOKEN` generated once into `/app/data/config/` (stable across restarts)
-- `sendmail` addon → `TEXTCASTER_SMTP_URL` (verify / magic-link / reset emails deliver for real)
+- `RSC_AUTH_SECRET` + `RSC_TOKEN` generated once into `/app/data/config/` (stable across restarts)
+- `sendmail` addon → `RSC_SMTP_URL` (verify / magic-link / reset emails deliver for real)
 - Federation on: WebSub (`self` hub at `/hub`) + rssCloud + push-in
 
 ## Data & backups

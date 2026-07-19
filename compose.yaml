@@ -18,19 +18,19 @@ services:
     # hoist), then core runs in watch mode. web waits for core to be healthy.
     command: sh -c "npm ci && npm run dev -w core"
     environment:
-      TEXTCASTER_AUTH_SECRET: dev-secret-not-for-production-000000000000
-      TEXTCASTER_TOKEN: dev-token
-      TEXTCASTER_SMTP_URL: smtp://mailpit:1025
-      TEXTCASTER_MAIL_FROM: textcaster@localhost
-      TEXTCASTER_DB: /app/core/data/dev.db
-      TEXTCASTER_WEB_ORIGIN: http://localhost:5173
+      RSC_AUTH_SECRET: dev-secret-not-for-production-000000000000
+      RSC_TOKEN: dev-token
+      RSC_SMTP_URL: smtp://mailpit:1025
+      RSC_MAIL_FROM: textcaster@localhost
+      RSC_DB: /app/core/data/dev.db
+      RSC_WEB_ORIGIN: http://localhost:5173
       # Dev-only: serves the better-auth OpenAPI reference at
       # http://localhost:8787/api/auth/reference. Off (unset) in prod/Cloudron;
       # the web proxy also 404s it, so it is never publicly reachable.
-      TEXTCASTER_AUTH_OPENAPI: "on"
+      RSC_AUTH_OPENAPI: "on"
       # Instance admins (comma-separated emails). Set the value in the
       # gitignored root .env so no personal address is committed to this repo.
-      TEXTCASTER_ADMIN_EMAIL: ${TEXTCASTER_ADMIN_EMAIL:-}
+      RSC_ADMIN_EMAIL: ${RSC_ADMIN_EMAIL:-}
     volumes:
       - ./:/app
       - node_modules:/app/node_modules # container's linux better-sqlite3 wins

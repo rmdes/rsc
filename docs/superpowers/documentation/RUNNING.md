@@ -61,7 +61,7 @@ the dev database.
 The dev stack serves a live [OpenAPI](https://swagger.io/specification/) /
 [Scalar](https://scalar.com/) reference for every better-auth route (sign-in,
 sign-up, verify, magic-link, reset, anonymous, …) — an interactive "Try it out"
-console plus the raw spec. It is gated by `TEXTCASTER_AUTH_OPENAPI` (set to `on`
+console plus the raw spec. It is gated by `RSC_AUTH_OPENAPI` (set to `on`
 in `compose.yaml`, unset everywhere else) and is **never reachable in
 production** (see the boundary below).
 
@@ -81,7 +81,7 @@ until you recreate core:
 
 ```bash
 docker compose up -d core      # or: make up  — recreates core with the new env
-docker compose exec core printenv TEXTCASTER_AUTH_OPENAPI   # → on
+docker compose exec core printenv RSC_AUTH_OPENAPI   # → on
 ```
 
 **Why it's safe (the two-guard boundary).** The reference lives under
@@ -114,7 +114,7 @@ make prod-up       # build images + start the stack behind Caddy
 ```
 
 - Caddy terminates HTTPS and issues certificates **automatically** for
-  `TEXTCASTER_DOMAIN` — no manual certs.
+  `RSC_DOMAIN` — no manual certs.
 - core publishes **no** host ports. It's reachable only through Caddy's
   public-path split (per-user feeds, the firehose, comment feeds, federation
   callbacks) and internally via web. `/api/auth/*` deliberately routes through
@@ -130,7 +130,7 @@ make prod-down
 ```
 
 Mailpit only *catches* mail — it never delivers to real inboxes. For a real
-multi-user instance, set `TEXTCASTER_SMTP_URL` (and `TEXTCASTER_MAIL_FROM`) in
+multi-user instance, set `RSC_SMTP_URL` (and `RSC_MAIL_FROM`) in
 `.env` to a real SMTP server, e.g. `smtps://user:pass@smtp.example.com:465`,
 then run `make prod-up` again. Every prod setting and its default is
 documented in `.env.example`.
@@ -156,23 +156,23 @@ Then set the one required value — the auth secret — in `core/.env`:
 
 ```bash
 # core/.env
-TEXTCASTER_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
+RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 ```
 
 `core/.env`:
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `TEXTCASTER_AUTH_SECRET` | yes | — | better-auth session/cookie signing secret. Generate with `openssl rand -hex 32`. |
-| `TEXTCASTER_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke), also usable there in place of a registered session. |
-| `TEXTCASTER_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
-| `TEXTCASTER_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
-| `TEXTCASTER_ADMIN_EMAIL` | no | — | Comma-separated admin email(s). An account whose **verified** email matches becomes an instance admin (`isAdmin` on `/me`; unlocks admin-only routes like `GET /admin/status`). Unset = no admin (admin routes 403 for everyone). |
-| `TEXTCASTER_SMTP_URL` | no | — | SMTP connection URL, e.g. `smtp://localhost:1025` (Mailpit, no TLS/auth) or `smtps://user:pass@host:465` (production). Unset means mail is off — see "Email" below. |
-| `TEXTCASTER_MAIL_FROM` | no | `textcaster@<host of TEXTCASTER_PUBLIC_URL or TEXTCASTER_WEB_ORIGIN>` | From-address on outgoing mail. |
-| `TEXTCASTER_DB` | no | `./data/textcaster.db` | SQLite file path, or `:memory:`. |
-| `TEXTCASTER_PORT` | no | `8787` | HTTP port core listens on. |
-| `TEXTCASTER_POLL_SECONDS` | no | `60` | How often remote feeds are polled. |
+| `RSC_AUTH_SECRET` | yes | — | better-auth session/cookie signing secret. Generate with `openssl rand -hex 32`. |
+| `RSC_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke), also usable there in place of a registered session. |
+| `RSC_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
+| `RSC_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
+| `RSC_ADMIN_EMAIL` | no | — | Comma-separated admin email(s). An account whose **verified** email matches becomes an instance admin (`isAdmin` on `/me`; unlocks admin-only routes like `GET /admin/status`). Unset = no admin (admin routes 403 for everyone). |
+| `RSC_SMTP_URL` | no | — | SMTP connection URL, e.g. `smtp://localhost:1025` (Mailpit, no TLS/auth) or `smtps://user:pass@host:465` (production). Unset means mail is off — see "Email" below. |
+| `RSC_MAIL_FROM` | no | `textcaster@<host of RSC_PUBLIC_URL or RSC_WEB_ORIGIN>` | From-address on outgoing mail. |
+| `RSC_DB` | no | `./data/textcaster.db` | SQLite file path, or `:memory:`. |
+| `RSC_PORT` | no | `8787` | HTTP port core listens on. |
+| `RSC_POLL_SECONDS` | no | `60` | How often remote feeds are polled. |
 
 `web/.env`:
 
@@ -195,7 +195,7 @@ yourself.)
 docker run -p 1025:1025 -p 8025:8025 axllent/mailpit
 ```
 
-Set `TEXTCASTER_SMTP_URL=smtp://localhost:1025` in `core/.env`, then read
+Set `RSC_SMTP_URL=smtp://localhost:1025` in `core/.env`, then read
 captured verification/magic-link/reset emails at <http://localhost:8025>.
 
 ### Run
@@ -238,7 +238,7 @@ start using the app:
   *existing* different account instead, and the guest identity is abandoned
   (its posts stay put; nothing is merged).
 - **Idle guests are swept.** An anonymous identity untouched for
-  `TEXTCASTER_ANON_TTL_DAYS` (and abandoned guests from the above) are
+  `RSC_ANON_TTL_DAYS` (and abandoned guests from the above) are
   deleted, cascading their posts and follows, by an hourly background sweep.
 - **Adding a feed requires registration.** `POST /users` (add a remote
   user/feed) and OPML import (`POST /me/follows/opml`) 403 for
@@ -252,7 +252,7 @@ start using the app:
 
 ## Email (verification, magic link, password reset)
 
-Email accounts require SMTP. Set `TEXTCASTER_SMTP_URL` to enable them; leave
+Email accounts require SMTP. Set `RSC_SMTP_URL` to enable them; leave
 it unset and the instance runs guest-only for email purposes (see below).
 For where to point it, see the Mailpit notes in Option A/B above.
 
@@ -278,7 +278,7 @@ For where to point it, see the Mailpit notes in Option A/B above.
 - **Password reset** (`POST /api/auth/request-password-reset` then
   `POST /api/auth/reset-password`) needs mail for the same reason: the reset
   link is emailed.
-- **Without SMTP, email accounts are unavailable.** `TEXTCASTER_SMTP_URL`
+- **Without SMTP, email accounts are unavailable.** `RSC_SMTP_URL`
   unset means `GET /health` reports `mailEnabled: false`; core refuses
   `POST /sign-up/email`, `POST /sign-in/magic-link`, and
   `POST /request-password-reset` with `503` before any account row is
@@ -287,10 +287,10 @@ For where to point it, see the Mailpit notes in Option A/B above.
   entirely unaffected — it needs no email at all.
 
 **Cloudron:** the mail addon injects its own SMTP env vars — point
-`TEXTCASTER_SMTP_URL` at them (e.g. build it from `MAIL_SMTP_SERVER`,
+`RSC_SMTP_URL` at them (e.g. build it from `MAIL_SMTP_SERVER`,
 `MAIL_SMTP_PORT`, `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD`) in the
 package's start script or manifest env mapping; core itself only ever reads
-`TEXTCASTER_SMTP_URL`.
+`RSC_SMTP_URL`.
 
 ## Feeds & push
 
@@ -319,9 +319,9 @@ Push is **opt-in** (default: plain feeds, polling only):
 
 | Variable | Values | Meaning |
 |---|---|---|
-| `TEXTCASTER_PUBLIC_URL` | `https://your.host` | Public origin; required for any push mode. |
-| `TEXTCASTER_WEBSUB` | `off` (default) \| `self` \| hub URL | `self` runs a WebSub hub at `POST /hub`; a URL advertises that external hub and pings it on every local post. |
-| `TEXTCASTER_RSSCLOUD` | `off` (default) \| `on` | Adds `<cloud>` to RSS feeds and serves `POST /rsscloud/pleaseNotify` (thin pings). |
+| `RSC_PUBLIC_URL` | `https://your.host` | Public origin; required for any push mode. |
+| `RSC_WEBSUB` | `off` (default) \| `self` \| hub URL | `self` runs a WebSub hub at `POST /hub`; a URL advertises that external hub and pings it on every local post. |
+| `RSC_RSSCLOUD` | `off` (default) \| `on` | Adds `<cloud>` to RSS feeds and serves `POST /rsscloud/pleaseNotify` (thin pings). |
 
 Notes:
 - Subscriber callbacks are verified with a challenge and must be public
@@ -352,7 +352,7 @@ interval.
 
 | Variable | Values | Meaning |
 |---|---|---|
-| `TEXTCASTER_PUSH_IN` | `on` (default) \| `off` | Kill-switch. Effective only when `TEXTCASTER_PUBLIC_URL` is set (subscriber callbacks need a public address); without it, push-in stays dormant and polling continues. |
+| `RSC_PUSH_IN` | `on` (default) \| `off` | Kill-switch. Effective only when `RSC_PUBLIC_URL` is set (subscriber callbacks need a public address); without it, push-in stays dormant and polling continues. |
 
 Callback endpoints (public, no auth — verified by construction):
 `GET|POST /websub/callback/<token>` (token is per-subscription and
@@ -404,7 +404,7 @@ This must be empty. If duplicates exist, merge/delete them before upgrading.
 - A newly added remote user's first poll backfills its existing feed items
   silently (no flood into the live timeline). From the second poll onward,
   new items appear live, the same as local posts.
-- Feeds are polled every `TEXTCASTER_POLL_SECONDS` (default 60). A feed
+- Feeds are polled every `RSC_POLL_SECONDS` (default 60). A feed
   added just now shows its content within one poll interval.
 - Local composes are **Markdown** (GFM — bare URLs autolink). With
   JavaScript on, the composer is a Markdown editor with live preview
@@ -514,7 +514,7 @@ feed item as `<source:comments count="N" feedUrl="…"/>`, pointing at:
 
 | Method | Route | Notes |
 |---|---|---|
-| `GET` | `/post/<id>/comments.xml` | RSS feed of direct replies to `<id>` — the Winer-native "threadwalker" pull side. Always serves regardless of `TEXTCASTER_PUBLIC_URL`; only the `<source:comments>` advertisement pointing at it requires `TEXTCASTER_PUBLIC_URL` and is omitted without it. |
+| `GET` | `/post/<id>/comments.xml` | RSS feed of direct replies to `<id>` — the Winer-native "threadwalker" pull side. Always serves regardless of `RSC_PUBLIC_URL`; only the `<source:comments>` advertisement pointing at it requires `RSC_PUBLIC_URL` and is omitted without it. |
 | `GET` | `/post/<id>/thread` | The whole conversation (root + all descendants) as JSON. |
 | `PATCH` | `/posts/<id>` | Edit your own local post (session auth required, owner + source=`local` gate). No-op on unchanged content; records edit with prior version retained. |
 | `GET` | `/posts/<id>/revisions` | Edit history for `<id>`; returns `{ post, revisions }` (prior versions oldest→newest, then the current post). Public; 404 if unknown. |
@@ -607,7 +607,7 @@ curl -i -X POST http://localhost:8787/users \
 # → 403
 
 curl -X POST http://localhost:8787/users \
-  -H "Authorization: Bearer $TEXTCASTER_TOKEN" \
+  -H "Authorization: Bearer $RSC_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"handle":"bob-remote","displayName":"Bob","feedUrl":"https://example.com/feed.xml"}'
 # → 201

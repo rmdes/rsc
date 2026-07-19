@@ -8,9 +8,9 @@ if [ "${1:-}" = "--dev" ]; then
 	umask 077 # .env holds secrets — owner-only
 	cat > .env <<EOF
 # Dev .env (generated). Not for production.
-TEXTCASTER_DOMAIN=localhost
-TEXTCASTER_AUTH_SECRET=$(openssl rand -hex 32)
-TEXTCASTER_TOKEN=dev-token
+RSC_DOMAIN=localhost
+RSC_AUTH_SECRET=$(openssl rand -hex 32)
+RSC_TOKEN=dev-token
 MAILPIT_USER=mail
 MAILPIT_PASSWORD_HASH=
 EOF
@@ -25,9 +25,9 @@ read -rsp "Mailpit /mail password: " MP_PW; echo
 HASH="$(printf '%s\n' "$MP_PW" | docker run --rm -i caddy:2-alpine caddy hash-password)"
 umask 077 # .env holds AUTH_SECRET/TOKEN/hash — owner-only
 cat > .env <<EOF
-TEXTCASTER_DOMAIN=$DOMAIN
-TEXTCASTER_AUTH_SECRET=$(openssl rand -hex 32)
-TEXTCASTER_TOKEN=$(openssl rand -hex 32)
+RSC_DOMAIN=$DOMAIN
+RSC_AUTH_SECRET=$(openssl rand -hex 32)
+RSC_TOKEN=$(openssl rand -hex 32)
 MAILPIT_USER=mail
 MAILPIT_PASSWORD_HASH=$HASH
 EOF

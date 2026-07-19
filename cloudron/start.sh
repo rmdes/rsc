@@ -21,28 +21,28 @@ echo "==> Textcaster: preparing /app/data"
 mkdir -p /app/data/config
 
 # Secrets: generate once, persist, NEVER regenerate (would drop all sessions).
-TEXTCASTER_AUTH_SECRET=$(tc_ensure_secret /app/data/config/auth_secret)
-export TEXTCASTER_AUTH_SECRET
-TEXTCASTER_TOKEN=$(tc_ensure_secret /app/data/config/ops_token)
-export TEXTCASTER_TOKEN
+RSC_AUTH_SECRET=$(tc_ensure_secret /app/data/config/auth_secret)
+export RSC_AUTH_SECRET
+RSC_TOKEN=$(tc_ensure_secret /app/data/config/ops_token)
+export RSC_TOKEN
 
 # Instance admin allowlist (optional, comma-separated emails). Persisted like the
 # secrets so it survives restarts and is changeable via `cloudron exec` without a
 # rebuild: cloudron exec --app <id> -- sh -c 'echo you@example.com > /app/data/config/admin_email'
-[ -f /app/data/config/admin_email ] && export TEXTCASTER_ADMIN_EMAIL="$(cat /app/data/config/admin_email)"
+[ -f /app/data/config/admin_email ] && export RSC_ADMIN_EMAIL="$(cat /app/data/config/admin_email)"
 
 # Map Cloudron env → Textcaster/core.
-export TEXTCASTER_DB="/app/data/textcaster.db"
-export TEXTCASTER_PUBLIC_URL="${CLOUDRON_APP_ORIGIN}"
-export TEXTCASTER_WEB_ORIGIN="${CLOUDRON_APP_ORIGIN}"
-export TEXTCASTER_WEBSUB="self"
-export TEXTCASTER_RSSCLOUD="on"
-export TEXTCASTER_PUSH_IN="on"
-export TEXTCASTER_PORT="8787"
+export RSC_DB="/app/data/textcaster.db"
+export RSC_PUBLIC_URL="${CLOUDRON_APP_ORIGIN}"
+export RSC_WEB_ORIGIN="${CLOUDRON_APP_ORIGIN}"
+export RSC_WEBSUB="self"
+export RSC_RSSCLOUD="on"
+export RSC_PUSH_IN="on"
+export RSC_PORT="8787"
 if [ -n "${CLOUDRON_MAIL_SMTP_SERVER:-}" ]; then
-  TEXTCASTER_SMTP_URL=$(tc_smtp_url "$CLOUDRON_MAIL_SMTP_SERVER" "$CLOUDRON_MAIL_SMTP_PORT" "$CLOUDRON_MAIL_SMTP_USERNAME" "$CLOUDRON_MAIL_SMTP_PASSWORD")
-  export TEXTCASTER_SMTP_URL
-  export TEXTCASTER_MAIL_FROM="${CLOUDRON_MAIL_FROM}"
+  RSC_SMTP_URL=$(tc_smtp_url "$CLOUDRON_MAIL_SMTP_SERVER" "$CLOUDRON_MAIL_SMTP_PORT" "$CLOUDRON_MAIL_SMTP_USERNAME" "$CLOUDRON_MAIL_SMTP_PASSWORD")
+  export RSC_SMTP_URL
+  export RSC_MAIL_FROM="${CLOUDRON_MAIL_FROM}"
 fi
 
 # web (adapter-node) env. XFF_DEPTH=2 for the Cloudron-proxy → nginx chain

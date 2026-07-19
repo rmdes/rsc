@@ -5,7 +5,7 @@ import { createService } from '../src/domain/service.ts'
 import { createPush, handleWebSubRequest, handleRssCloudRequest, resolveLocalTopic } from '../src/domain/push.ts'
 import { loadConfig } from '../src/config.ts'
 
-const EXT_ENV = { TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's', TEXTCASTER_PUBLIC_URL: 'https://cast.example.com', TEXTCASTER_WEBSUB: 'https://hub.example.com/hub' }
+const EXT_ENV = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://cast.example.com', RSC_WEBSUB: 'https://hub.example.com/hub' }
 
 async function setup(env: Record<string, string>) {
   const repo = await createSqliteRepository(':memory:')
@@ -40,7 +40,7 @@ test('remote posts and websub-off both produce no pings', async () => {
   await push.onLocalPost({ id: 'x', authorId: remote.id, source: 'remote', guid: 'g', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', author: remote })
   expect(fetchFn).not.toHaveBeenCalled()
 
-  const off = await setup({ TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's' })
+  const off = await setup({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' })
   const offPush = createPush({ repo: off.repo, config: off.config, fetchFn: fetchFn as unknown as typeof fetch })
   const entry = await off.service.createLocalPostAs('bob', 'Bob', 'silent')
   await offPush.onLocalPost(entry)
@@ -55,7 +55,7 @@ test('onLocalPost never rejects, even when fetch explodes (H4)', async () => {
   await expect(push.onLocalPost(entry)).resolves.toBeUndefined()
 })
 
-const SELF_ENV = { TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's', TEXTCASTER_PUBLIC_URL: 'https://cast.example.com', TEXTCASTER_WEBSUB: 'self' }
+const SELF_ENV = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://cast.example.com', RSC_WEBSUB: 'self' }
 const publicLookup = async () => [{ address: '93.184.216.34' }]
 
 function subForm(over: Record<string, string> = {}): Record<string, string> {
@@ -191,7 +191,7 @@ test('renewing an existing subscription is not blocked by the per-host cap', asy
   expect((await handleWebSubRequest(deps, subForm({ 'hub.callback': 'https://full.example.com/brand-new' }))).status).toBe(429)
 })
 
-const CLOUD_ENV = { TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's', TEXTCASTER_PUBLIC_URL: 'https://cast.example.com', TEXTCASTER_RSSCLOUD: 'on' }
+const CLOUD_ENV = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://cast.example.com', RSC_RSSCLOUD: 'on' }
 
 function cloudForm(over: Record<string, string> = {}): Record<string, string> {
   return { notifyProcedure: '', port: '5337', path: '/rsscloud/notify', protocol: 'http-post', url1: 'https://cast.example.com/users/alice/feed.xml', domain: 'cb.example.com', ...over }

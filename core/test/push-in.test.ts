@@ -29,7 +29,7 @@ test('cloud endpoints derive scheme from port: 443 is https, others http', () =>
   expect(choosePushTarget({ hubs: [], self: null, cloud: cloud(5337) }, 'https://a.example/users/x/feed.xml')?.endpoint).toBe('http://a.example:5337/rsscloud/pleaseNotify')
 })
 
-const PUSHIN_ENV = { TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's', TEXTCASTER_PUBLIC_URL: 'https://b.example.com' }
+const PUSHIN_ENV = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://b.example.com' }
 const publicLookup = async () => [{ address: '93.184.216.34' }]
 const HUB_DISCOVERY = { hubs: ['https://hub.example.com/hub'], self: 'https://blog.example.com/feed.xml', cloud: null }
 
@@ -42,8 +42,8 @@ async function pushInSetup(env: Record<string, string> = PUSHIN_ENV) {
 
 test('pushInEffective requires both the switch and a public URL', () => {
   expect(pushInEffective(loadConfig(PUSHIN_ENV))).toBe(true)
-  expect(pushInEffective(loadConfig({ ...PUSHIN_ENV, TEXTCASTER_PUSH_IN: 'off' }))).toBe(false)
-  expect(pushInEffective(loadConfig({ TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's' }))).toBe(false)
+  expect(pushInEffective(loadConfig({ ...PUSHIN_ENV, RSC_PUSH_IN: 'off' }))).toBe(false)
+  expect(pushInEffective(loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' }))).toBe(false)
 })
 
 test('maybeSubscribe creates a pending row and POSTs the hub with the STORED token', async () => {
@@ -92,7 +92,7 @@ test('maybeSubscribe skips when a live subscription exists, when the endpoint is
   expect(fetchFn).not.toHaveBeenCalled() // guard rejected → no request, no row
   expect(await repo.findPushSubscription({ userId: user2.id, mode: 'websub' })).toBeUndefined()
 
-  const off = createPushIn({ repo, config: loadConfig({ ...PUSHIN_ENV, TEXTCASTER_PUSH_IN: 'off' }), fetchFn: fetchFn as unknown as typeof fetch, lookupFn: publicLookup })
+  const off = createPushIn({ repo, config: loadConfig({ ...PUSHIN_ENV, RSC_PUSH_IN: 'off' }), fetchFn: fetchFn as unknown as typeof fetch, lookupFn: publicLookup })
   await off.maybeSubscribe(user2, HUB_DISCOVERY)
   expect(fetchFn).not.toHaveBeenCalled()
 })
