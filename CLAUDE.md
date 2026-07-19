@@ -52,6 +52,10 @@ reach for a new dependency where they already solve it.
   open-api; `@better-auth/mongo-adapter` for a future Cloudron-on-Mongo
   switch) are **backlog** in `docs/superpowers/ideas.md`, not yet adopted —
   each is a feature that goes through brainstorm→spec, not a drop-in.
+  Dev-only: `TEXTCASTER_AUTH_OPENAPI=on` mounts the better-auth OpenAPI
+  reference at `/api/auth/reference`; it is **never public** — the flag
+  defaults off in prod AND the web proxy hard-404s `/api/auth/reference` +
+  `/api/auth/open-api/*` (both guards load-bearing; keep both).
 
 ## Working here
 

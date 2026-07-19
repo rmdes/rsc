@@ -105,6 +105,10 @@ make up                       # core + web + Mailpit, live reload
 - App: [http://localhost:5173](http://localhost:5173)
 - Mailpit (catches every outgoing email — verify links, magic links):
   [http://localhost:8025](http://localhost:8025)
+- **Auth API reference (dev only):** with the dev stack up, browse
+  <http://localhost:8787/api/auth/reference> for the better-auth OpenAPI/Scalar
+  reference. Enabled by `TEXTCASTER_AUTH_OPENAPI=on` (set in `compose.yaml`);
+  unset in prod, and the web proxy 404s it, so it is never public.
 
 Edits to `core` and `web` hot-reload in the containers (`node --watch` and
 `vite dev`). Federation push is off in dev. Run `make` to list every target;
