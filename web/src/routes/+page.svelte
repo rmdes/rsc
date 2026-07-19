@@ -14,6 +14,8 @@
 	import { hiddenIds, fetchThread } from '$lib/wedge'
 	import { enhance } from '$app/forms'
 	import { confirmSubmit } from '$lib/confirm'
+	import { keepEvent, type Lens } from '$lib/lens'
+	import { TABS } from '$lib/tabs'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -22,7 +24,17 @@
 	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
 	const posts = $derived([...live, ...data.timeline].map((p) => edited[p.id] ?? p))
 
+	// Public river is lensless; the stream is a firehose, so every other tab
+	// filters incoming SSE events client-side (same pattern as author/thread pages).
+	const lens = $derived.by((): Lens | null => {
+		if (data.tab === 'local') return { kind: 'source', source: 'local' }
+		if (data.tab === 'federated') return { kind: 'feedType', feedType: 'instance' }
+		if (data.tab === 'personal') return { kind: 'followed', followIds: new Set(data.followIds ?? []) }
+		return null
+	})
+
 	function onPost(entry: TimelineEntry) {
+		if (lens && !keepEvent(entry, lens)) return
 		const r = mergeIncoming(live, edited, entry, pageIds)
 		live = r.live
 		edited = r.edited
@@ -64,7 +76,7 @@
 
 		<ComposerDialog
 			draftKey="compose"
-			action="?/compose"
+			action="?tab={data.tab}&/compose"
 			title="New post"
 			submitLabel="Post"
 			placeholder="what's happening?"
@@ -73,7 +85,7 @@
 		{#if data.me && !data.me.isAnonymous}
 			<details class="panel">
 				<summary>Add remote user</summary>
-				<form method="POST" action="?/addRemote" class="add-remote">
+				<form method="POST" action="?tab={data.tab}&/addRemote" class="add-remote">
 					<input name="handle" placeholder="remote handle" required />
 					<input name="displayName" placeholder="display name (optional)" />
 					<input name="feedUrl" type="url" placeholder="https://their-site.com/feed.xml" required />
@@ -86,6 +98,12 @@
 	</aside>
 
 	<main>
+		<nav class="tabs" aria-label="Timeline">
+			{#each TABS as t (t)}
+				<a href="/?tab={t}" aria-current={data.tab === t ? 'page' : undefined}>{t}</a>
+			{/each}
+		</nav>
+
 		{#if data.coreDown}
 			<p class="notice" role="alert">Core API unreachable — is the core server running?</p>
 		{/if}
@@ -95,6 +113,10 @@
 		{/if}
 
 		{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
+
+		{#if data.tab === 'personal' && posts.length === 0 && !data.coreDown}
+			<p class="notice">Your personal river is empty — <a href="/u/{data.me?.user.handle}/following">follow people and feeds</a> to fill it.</p>
+		{/if}
 
 		<ul class="timeline">
 			{#each posts.filter((p) => !hidden.has(p.id)) as post (post.id)}
@@ -135,7 +157,7 @@
 						<a class="edit" href="/post/{post.id}/edit">Edit</a>
 					{/if}
 					{#if data.me?.isAdmin && post.source === 'local'}
-						<form method="POST" action="?/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
+						<form method="POST" action="?tab={data.tab}&/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
 							<input type="hidden" name="id" value={post.id} />
 							<button class="danger-link" type="submit">Remove</button>
 						</form>
@@ -148,7 +170,7 @@
 		</ul>
 
 		{#if data.nextCursor}
-			<a class="older" href="/?before={encodeURIComponent(data.nextCursor)}">Older posts</a>
+			<a class="older" href="/?tab={data.tab}&before={encodeURIComponent(data.nextCursor)}">Older posts</a>
 		{/if}
 	</main>
 
@@ -215,5 +237,43 @@
 
 	.danger-link:hover {
 		text-decoration: underline;
+	}
+
+	/* Tab bar: .admin-nav pattern + focus ring. Fixed 44px row so live
+	   prepends below never shift it (MASTER: jank-free prepends). */
+	.tabs {
+		display: flex;
+		gap: var(--space-md);
+		border-bottom: 1px solid var(--color-border);
+		margin-bottom: var(--space-md);
+	}
+
+	.tabs a {
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
+		padding: 0 var(--space-xs);
+		color: var(--color-secondary);
+		font-weight: 600;
+		text-decoration: none;
+		text-transform: capitalize;
+		border-bottom: 2px solid transparent;
+		transition:
+			color 200ms,
+			border-color 200ms;
+	}
+
+	.tabs a:hover {
+		color: var(--color-foreground);
+	}
+
+	.tabs a:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 15%, transparent);
+	}
+
+	.tabs a[aria-current='page'] {
+		color: var(--color-foreground);
+		border-bottom-color: var(--color-accent);
 	}
 </style>
