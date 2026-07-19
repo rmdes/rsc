@@ -6,7 +6,7 @@ import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCu
 import { HandleTakenError } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null }
-interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null }
+interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
 interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
@@ -18,7 +18,7 @@ function rowToUser(r: UsersTable): User {
 }
 
 function rowToPost(r: PostsTable): Post {
-  return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at, inReplyTo: r.in_reply_to, inReplyToPostId: r.in_reply_to_post_id, threadRootId: r.thread_root_id, sourceName: r.source_name, sourceFeedUrl: r.source_feed_url, contentMarkdown: r.content_markdown, editedAt: r.edited_at }
+  return { id: r.id, authorId: r.author_id, source: r.source, guid: r.guid, title: r.title, content: r.content, url: r.url, publishedAt: r.published_at, createdAt: r.created_at, inReplyTo: r.in_reply_to, inReplyToPostId: r.in_reply_to_post_id, threadRootId: r.thread_root_id, sourceName: r.source_name, sourceFeedUrl: r.source_feed_url, contentMarkdown: r.content_markdown, editedAt: r.edited_at, replyContextAuthor: r.reply_context_author, replyContextSnippet: r.reply_context_snippet }
 }
 
 function rowToSubscription(r: SubscriptionsTable): Subscription {
@@ -178,7 +178,7 @@ export class SqliteRepository implements Repository {
   async insertPost(p: Post) {
     const [result] = await this.db
       .insertInto('posts')
-      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt, in_reply_to: p.inReplyTo ?? null, in_reply_to_post_id: p.inReplyToPostId ?? null, thread_root_id: p.threadRootId ?? null, source_name: p.sourceName ?? null, source_feed_url: p.sourceFeedUrl ?? null, content_markdown: p.contentMarkdown ?? null })
+      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt, in_reply_to: p.inReplyTo ?? null, in_reply_to_post_id: p.inReplyToPostId ?? null, thread_root_id: p.threadRootId ?? null, source_name: p.sourceName ?? null, source_feed_url: p.sourceFeedUrl ?? null, content_markdown: p.contentMarkdown ?? null, reply_context_author: p.replyContextAuthor ?? null, reply_context_snippet: p.replyContextSnippet ?? null })
       // Relies on posts_author_guid_uq being the ONLY unique constraint on posts;
       // a future second unique constraint would need an explicit conflict target.
       .onConflict((oc) => oc.doNothing())
@@ -630,6 +630,10 @@ const MIGRATIONS: string[][] = [
       seen_at text NOT NULL
     )`,
     'CREATE INDEX post_revisions_post_idx ON post_revisions (post_id, seen_at)',
+  ],
+  [
+    'ALTER TABLE posts ADD COLUMN reply_context_author text',
+    'ALTER TABLE posts ADD COLUMN reply_context_snippet text',
   ],
 ]
 

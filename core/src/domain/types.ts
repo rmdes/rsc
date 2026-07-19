@@ -32,6 +32,8 @@ export interface Post {
   sourceFeedUrl?: string | null
   contentMarkdown?: string | null // incoming source:markdown, verbatim (remote); null otherwise
   editedAt?: string | null
+  replyContextAuthor?: string | null
+  replyContextSnippet?: string | null
 }
 
 export interface PostRevision {

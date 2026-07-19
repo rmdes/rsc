@@ -1,7 +1,7 @@
 import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
-import { ingestRemoteUser, pollAll, parseFeedWithMeta, parseLinkHeader, ingestItems } from '../src/domain/ingest.ts'
+import { ingestRemoteUser, pollAll, parseFeedWithMeta, parseLinkHeader, ingestItems, toParsedItem } from '../src/domain/ingest.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
 // The primary feedUrl fetch is now SSRF-guarded (checkCallbackUrl) on every call.
@@ -352,4 +352,18 @@ test('RSS permalink guid is the item url when <link> is absent (rss.chat shape)'
   expect(items[1].url).toBeNull() // isPermaLink="false" honored
   expect(items[2].url).toBeNull() // http(s)-only guard still applies
   expect(items[3].url).toBe('https://e.example/real') // explicit link always wins
+})
+
+test('h-cite reply persists context and threads onto an existing parent', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const feed = await repo.createRemoteUser({ handle: 'aaron', displayName: 'Aaron', feedUrl: 'https://e/f.xml' })
+  await repo.insertPost({ id: 'P', authorId: feed.id, source: 'remote', guid: 'pg', title: null, content: 'parent', url: 'https://a/1', publishedAt: '2026-07-19T00:00:00Z', createdAt: '2026-07-19T00:00:00Z', inReplyTo: null, inReplyToPostId: null, threadRootId: null })
+  const items = [toParsedItem('rg', null, 'my reply', 'https://a/2', '2026-07-19T00:01:00Z', new Date().toISOString(), 'https://a/1', undefined, null, null, { author: 'aaronpk', snippet: 'nice one' })]
+  await ingestItems(repo, bus, feed, items)
+  const reply = (await repo.getPostsByAuthor(feed.id, 50)).find((p) => p.guid === 'rg')!
+  const stored = await repo.getPost(reply.id) // getPost is NOT gated → raw context readable
+  expect(stored?.replyContextAuthor).toBe('aaronpk')
+  expect(stored?.replyContextSnippet).toBe('nice one')
+  expect(stored?.inReplyToPostId).toBe('P') // threaded, not orphaned — the bug fix
 })

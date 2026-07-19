@@ -164,6 +164,7 @@ export async function ingestItems(repo: Repository, bus: EventBus, user: User, i
       threadRootId: target ? target.threadRootId ?? target.id : null,
       sourceName: item.sourceName, sourceFeedUrl: item.sourceFeedUrl,
       contentMarkdown: item.contentMarkdown,
+      replyContextAuthor: item.replyContextAuthor, replyContextSnippet: item.replyContextSnippet,
     }
     if (await repo.insertPost(post)) {
       await repo.adoptOrphans(post)
