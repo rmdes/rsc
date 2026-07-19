@@ -1,8 +1,10 @@
 # Subscribe & manage web UX (SP3) — design
 
 **Milestone:** Per-user feeds / feed-reader (sub-project 3 of 3)
-**Date:** 2026-07-19 · **rev 1** (clean-context correctness review — 13
-findings, 5 design holes closed — + ponytail review — 8 cuts folded; see
+**Date:** 2026-07-19 · **rev 2** (rev 1: clean-context correctness — 13
+findings — + ponytail — 8 cuts; rev 2: parallel-session pass on the rev-1
+folds — S1 guard mechanism, S2 minted-boolean counts, S3 self-follow, S4/S6/S7
+scoping, S8 count; see
 `../reviews/2026-07-19-subscribe-manage-spec-review.md`)
 **Depends on:** SP1 engine (`8ffd69a..734d8d0`) + SP2 four-tab timeline
 (`9ea04a7..483a43d`), both on main. Milestone model in
@@ -39,8 +41,9 @@ OPML both ways) but the web never caught up:
   semantics).
 - **Home gets a self-serve subscribe form** (URL + person/webfeed) replacing
   the broken admin-endpoint form; admin instance-adds stay on `/admin/feeds`.
-- **Core ride-alongs (5):** displayName backfill; central instance-follow
-  guard; OPML Case-3 re-resolve; reuse → 200; local-URL resolve in
+- **Core ride-alongs (5):** displayName backfill; central follow guard
+  (instance targets AND self-follows, via a shared helper every minting path
+  uses — rev 2); OPML Case-3 re-resolve; reuse → 200; local-URL resolve in
   `subscribeByUrl` (rev 1, from review F1).
 - **Admin cap UI = new Settings tab** (`/admin/settings`).
 
@@ -48,32 +51,48 @@ OPML both ways) but the web never caught up:
 
 ### 1. Core touch-ups
 
-- **Central instance-follow guard** (rev 1 — replaces the reuse-path-only
-  guard): `service.addFollow` (`core/src/domain/service.ts:117`) returns
-  without minting the edge when the target's `feedType === 'instance'`
-  (instances are global — Decision B). One guard covers every path: direct
-  `POST /me/follows` (stays `200 {ok:true}` — idempotent-no-op semantics, same
-  as re-following), `subscribeByUrl` reuse, OPML Case-1
-  (`opml.ts:103-106`), and the OPML re-resolve winner below.
+- **Central follow guard, as a shared helper** (rev 2, S1/S2/S3 — rev 1's
+  "guard in `service.addFollow`" did NOT cover `subscribeByUrl`, whose reuse/
+  race-winner/create paths call `repo.addFollow` directly at
+  `service.ts:164,176,179`). Mechanism: one private helper
+  `followUnlessExcluded(followerId, target): boolean` — mints the edge and
+  returns `true` unless the target's `feedType === 'instance'` (global —
+  Decision B) **or** `target.id === followerId` (self-follow guard, S3), in
+  which case it mints nothing and returns `false`. EVERY minting path routes
+  through it: `service.addFollow` (public API — `POST /me/follows` stays
+  `200 {ok:true}` on a no-op, idempotent semantics), all three `subscribeByUrl`
+  call sites, OPML Case-1 (`opml.ts:103-106`), and the OPML re-resolve winner.
+  The **returned boolean is load-bearing** (S2): OPML counts branch on it
+  (`minted → followed++, subCount++; else skipped++`) — `addFollow`'s current
+  void return makes the counts unimplementable otherwise.
 - **`subscribeByUrl` returns `{ user, followed, created }`**
   (`service.ts:161-181`; sole consumer is the route — OPML has its own deps,
   verified). Order of resolution:
   1. **Local-URL resolve** (rev 1, F1): if the URL matches this instance's own
      minted feed pattern (`localHandleForUrl`, as OPML Case-2 does at
-     `opml.ts:69-76`) → follow that local user, return
-     `{ user, followed: true, created: false }`. No remote shadow row.
-  2. Reuse by `getRemoteUserByFeedUrl`: follow (guard above makes instance
-     reuse a no-op) → `{ user, followed: feedType !== 'instance', created: false }`.
-  3. Create path as today → `created: true`.
+     `opml.ts:69-76`) → follow that local user via the guard helper, return
+     `{ user, followed: minted, created: false }`. No remote shadow row.
+     **Your own URL** (rev 2, S3): the self-guard makes `followed: false` —
+     no self-edge, no double-sourcing against SP2's self-inclusive river.
+     **Scoping (S4):** `localHandleForUrl` requires `TEXTCASTER_PUBLIC_URL`;
+     without it (dev/docker) the resolve never matches and the shadow-mint
+     persists — accepted, dev-only exposure (prod Cloudron sets it).
+  2. Reuse by `getRemoteUserByFeedUrl`: guard helper →
+     `{ user, followed: minted, created: false }` (instance reuse mints
+     nothing).
+  3. Create path as today → `created: true` (its follow also routes through
+     the helper — a fresh person/webfeed row always mints).
 - **Route 201/200** (`app.ts:294-305`): `201` when `created`, else `200`.
   Body gains honest `followed`. (Note: `subscribe.test.ts:77` uses strict
   `toEqual({user, followed:true})` — gains `created`; `subscriptions-api.test.ts`
   already accepts `[200, 201]`.)
 - **OPML Case-3 re-resolve** (`opml.ts:114-137`): `ImportDeps` gains
   `getRemoteUserByFeedUrl` (wired at `app.ts:274-286`); on mint-loop
-  exhaustion re-resolve — if a concurrent create won, follow the winner
-  (`followed++`, `subCount++`); the addFollow guard means an instance winner
-  mints nothing (count it `skipped`). Else `skipped++` as today.
+  exhaustion re-resolve — if a concurrent create won, follow the winner via
+  the guard helper and branch on its boolean (`minted → followed++,
+  subCount++; else skipped++` — an instance winner mints nothing). Else
+  `skipped++` as today. Case-1's unconditional `followed++; subCount++` gains
+  the same branch (S2).
 - **displayName backfill.** `parseFeedWithMeta` (`ingest.ts:87-131`) returns
   feed-level `title` alongside `{items, discovery}` (all four format
   branches). New repo method `updateDisplayNameIfUnset(userId, name)`
@@ -86,7 +105,13 @@ OPML both ways) but the web never caught up:
   `feed_url` to the discovered URL, which would break the equality guard
   forever). WebSub fat-ping feeds (`push-in.ts:224-225`) heal on their
   every-10th-tick full poll — accepted, not wired separately. Applies on any
-  poll, so pre-existing URL-named rows heal too.
+  poll, so pre-existing URL-named rows heal too — **scoped (S6): only rows
+  never discovery-rewritten**; a row whose `feed_url` was rewritten pre-ship
+  has `display_name ≠ feed_url` forever and stays stranded (cosmetic; backlog
+  one-time heal query, YAGNI). **The h-feed/mf2 discovery branch is out of
+  scope (S7)** — `discoverFeed` returns no feed-level title
+  (`ingest.ts:275-278` never calls `parseFeedWithMeta`); h-card/author-name
+  harvesting is backlog.
 
 ### 2. Web plumbing
 
@@ -115,13 +140,21 @@ OPML both ways) but the web never caught up:
   {person, webfeed}; `authedFetch` (no mint — endpoint is registeredOnly);
   `subscribeToFeed`; on error `fail(400, { error })` (cap 429 and SSRF "url
   invalid" surface via the existing `form?.error` rail, re-rendering on the
-  origin tab since the action URL carries `?tab=`); on success
-  `redirect(303, `/?tab=${followed ? 'personal' : 'federated'}&feed=<handle>`)`
-  — the deliberate exception to SP2's tab-preserving redirects: the flash must
-  render where its claim is true (failure re-renders stay tab-preserving).
-- One flash string (rev 1, ponytail): "Now following **@handle**." — true on
-  either landing tab; replaces the current "its posts appear in your timeline"
-  copy.
+  origin tab since the action URL carries `?tab=`). Success redirects (rev 2,
+  S3 — three outcomes, branched on fields the response already carries; the
+  deliberate exception to SP2's tab-preserving redirects, because the landing
+  tab must be where the outcome is visible; failure re-renders stay
+  tab-preserving):
+  - `followed: true` → `/?tab=personal&feed=<handle>` + flash.
+  - `followed: false`, `user.feedType === 'instance'` → `/?tab=federated`
+    (no `feed` param, no flash — the instance's content on screen is the
+    explanation).
+  - `followed: false`, `user.kind === 'local'` (your own URL) →
+    `/?tab=personal` (no flash — your posts are already there; nothing
+    changed, nothing claimed).
+- One flash string (rev 1, ponytail): "Now following **@handle**." — rendered
+  only on actual follows; replaces the current "its posts appear in your
+  timeline" copy.
 - The old `?/addRemote` action and its three `page.actions.test.ts` tests are
   deleted (`api.ts` `addRemoteUser` stays — `/admin/feeds` uses it).
 
@@ -185,18 +218,26 @@ OPML both ways) but the web never caught up:
 
 ### 7. Testing
 
-- **Core:** `addFollow` instance guard (no edge minted; `/me/follows` on an
-  instance handle still 200s); `subscribeByUrl` — local-URL resolve (own +
-  other local user; no remote row created), reuse vs create `created` flag,
-  instance-reuse `followed: false`; route 201-vs-200; OPML Case-3 re-resolve
-  (raced winner followed + cap-counted; instance winner skipped) and Case-1
-  instance no-op; `updateDisplayNameIfUnset` (updates when name===feedUrl,
-  refuses otherwise) + backfill-before-updateFeedUrl ordering in the
-  discovery pass + `parseFeedWithMeta` title extraction. Amend
-  `subscribe.test.ts:77` (strict `toEqual` gains `created`).
+- **Core:** guard helper — instance target and self target both mint nothing
+  and return `false`, normal target mints and returns `true`; `/me/follows` on
+  an instance handle still 200s; **all three `subscribeByUrl` call sites route
+  through it** (S1 — test: pasted instance URL mints NO follow row);
+  `subscribeByUrl` — local-URL resolve (other local user `followed:true`; OWN
+  URL `followed:false`, no self-edge; no remote row created either way), reuse
+  vs create `created` flag; route 201-vs-200; OPML Case-3 re-resolve (raced
+  winner minted + cap-counted; instance winner skipped) and Case-1 branch on
+  `minted`; `updateDisplayNameIfUnset` (updates when name===feedUrl, refuses
+  otherwise) + backfill-before-updateFeedUrl ordering in the discovery pass +
+  `parseFeedWithMeta` title extraction. Amend `subscribe.test.ts:77` (strict
+  `toEqual` gains `created`) and `repository-contract.ts:276`'s "self-follow
+  is allowed" documentation/assertion if the guard moves that behavior to the
+  service layer (repo stays permissive; service refuses — state which layer
+  the contract describes).
 - **Web (in-container):** home `?/subscribe` action tests (success →
-  personal redirect, instance-reuse → federated redirect, 429 surfaces,
-  invalid type rejected); the three deleted `addRemote` tests removed;
+  personal redirect + flash, instance-reuse → federated no-flash redirect,
+  own-URL → personal no-flash redirect, 429 surfaces, invalid type rejected);
+  the **four** deleted `addRemote` tests removed (S8 —
+  `page.actions.test.ts:66,74,81,107`);
   following-page load tests (isOwner incl. mixed-case URL, followIds
   instance-excluded); admin settings action test (validation + PATCH call).
   No lens unit test (lens unchanged); no admin-settings load test (one-line
