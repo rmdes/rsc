@@ -8,6 +8,7 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import MarkdownComposer from '$lib/MarkdownComposer.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
+	import ReplyContext from '$lib/ReplyContext.svelte'
 	import { mergeIncoming } from '$lib/live'
 	import { keepEvent } from '$lib/lens'
 	import { enhance } from '$app/forms'
@@ -80,6 +81,8 @@
 	<h1>Conversation</h1>
 	{#if parent}
 		<p class="subnav">Replying to <a href="/post/{parent.id}">@{parent.author.handle}</a></p>
+	{:else if viewed && !viewed.inReplyToPostId && viewed.replyContextAuthor}
+		<p class="subnav"><ReplyContext author={viewed.replyContextAuthor} snippet={viewed.replyContextSnippet} url={viewed.inReplyTo?.startsWith('http') ? viewed.inReplyTo : null} /></p>
 	{:else if viewed?.inReplyTo && !viewed.inReplyToPostId && viewed.inReplyTo.startsWith('http')}
 		<p class="subnav">Replying to <a href={viewed.inReplyTo} rel="noreferrer">↗ {viewed.inReplyTo}</a></p>
 	{/if}

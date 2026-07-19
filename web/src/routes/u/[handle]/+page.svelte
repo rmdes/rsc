@@ -7,6 +7,7 @@
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
+	import ReplyContext from '$lib/ReplyContext.svelte'
 	import { keepEvent } from '$lib/lens'
 	import { mergeIncoming } from '$lib/live'
 	import { fetchThread } from '$lib/wedge'
@@ -121,7 +122,9 @@
 				{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
 					<a class="source" href="/post/{post.id}">Reply</a>
 				{/if}
-				{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
+				{#if !post.inReplyToPostId && post.replyContextAuthor}
+					<ReplyContext author={post.replyContextAuthor} snippet={post.replyContextSnippet} url={post.inReplyTo?.startsWith('http') ? post.inReplyTo : null} />
+				{:else if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 					<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 				{/if}
 				{#if post.source === 'remote' && post.url}<a href={post.url} rel="noreferrer">source</a>{/if}

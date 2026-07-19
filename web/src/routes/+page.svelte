@@ -9,6 +9,7 @@
 	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
+	import ReplyContext from '$lib/ReplyContext.svelte'
 	import { mergeIncoming } from '$lib/live'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
 	import { enhance } from '$app/forms'
@@ -124,7 +125,9 @@
 					{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
 						<a class="source" href="/post/{post.id}">Reply</a>
 					{/if}
-					{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
+					{#if !post.inReplyToPostId && post.replyContextAuthor}
+						<ReplyContext author={post.replyContextAuthor} snippet={post.replyContextSnippet} url={post.inReplyTo?.startsWith('http') ? post.inReplyTo : null} />
+					{:else if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 					{/if}
 					{#if post.source === 'remote' && post.url}<a class="source" href={post.url} rel="noreferrer">{URL.parse(post.url)?.hostname ?? 'source'}</a>{/if}

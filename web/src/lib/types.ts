@@ -10,6 +10,8 @@ export interface TimelineEntry {
 	author: { id: string; handle: string; displayName: string; kind: 'local' | 'remote'; feedUrl?: string | null }
 	inReplyTo?: string | null
 	inReplyToPostId?: string | null
+	replyContextAuthor?: string | null
+	replyContextSnippet?: string | null
 	threadRootId?: string | null
 	replyCount?: number
 	sourceName?: string | null

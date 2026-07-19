@@ -8,6 +8,7 @@
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
+	import ReplyContext from '$lib/ReplyContext.svelte'
 	import { hiddenIds, fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -123,7 +124,9 @@
 					{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
 						<a class="source" href="/post/{post.id}">Reply</a>
 					{/if}
-					{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
+					{#if !post.inReplyToPostId && post.replyContextAuthor}
+						<ReplyContext author={post.replyContextAuthor} snippet={post.replyContextSnippet} url={post.inReplyTo?.startsWith('http') ? post.inReplyTo : null} />
+					{:else if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
 						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 					{/if}
 					{#if post.source === 'remote' && post.url}<a href={post.url} rel="noreferrer">source</a>{/if}

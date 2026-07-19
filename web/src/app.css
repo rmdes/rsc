@@ -405,6 +405,11 @@ button:hover {
 	font-size: 0.875rem;
 }
 
+.reply-context {
+	color: var(--color-secondary);
+	font-size: 0.875rem;
+}
+
 .edited {
 	font-size: 0.8125rem;
 	color: var(--color-secondary);
