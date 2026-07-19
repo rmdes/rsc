@@ -11,6 +11,11 @@ export interface Repository {
   updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }): Promise<User>
   listRemoteUsers(): Promise<User[]>
   listTextcastingPeers(): Promise<User[]>
+  getRemoteUserByFeedUrl(url: string): Promise<User | undefined>
+  countRemoteSubscriptions(userId: string): Promise<number>
+  countFollowers(userId: string): Promise<number>
+  getSetting(key: string): Promise<string | undefined>
+  setSetting(key: string, value: string): Promise<void>
   deleteUserCascade(id: string): void
   deleteAuthRows(authUserId: string): void
   instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }

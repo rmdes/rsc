@@ -157,6 +157,31 @@ export class SqliteRepository implements Repository {
       .execute()
     return rs.map(rowToUser)
   }
+  async getRemoteUserByFeedUrl(url: string) {
+    const r = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').where('feed_url', '=', url).executeTakeFirst()
+    return r ? rowToUser(r) : undefined
+  }
+  async countRemoteSubscriptions(userId: string) {
+    const r = await this.db
+      .selectFrom('follows')
+      .innerJoin('users', 'users.id', 'follows.followed_id')
+      .select(({ fn }) => fn.countAll().as('n'))
+      .where('follows.follower_id', '=', userId)
+      .where('users.feed_type', 'in', ['person', 'webfeed']) // excludes vestigial instance follows
+      .executeTakeFirst()
+    return Number(r?.n ?? 0)
+  }
+  async countFollowers(userId: string) {
+    const r = await this.db.selectFrom('follows').select(({ fn }) => fn.countAll().as('n')).where('followed_id', '=', userId).executeTakeFirst()
+    return Number(r?.n ?? 0)
+  }
+  async getSetting(key: string) {
+    const r = await this.db.selectFrom('instance_settings').select('value').where('key', '=', key).executeTakeFirst()
+    return r?.value
+  }
+  async setSetting(key: string, value: string) {
+    await this.db.insertInto('instance_settings').values({ key, value }).onConflict((oc) => oc.column('key').doUpdateSet({ value })).execute()
+  }
   async addFollow(followerId: string, followedId: string) {
     await this.db
       .insertInto('follows')
