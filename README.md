@@ -107,8 +107,11 @@ make up                       # core + web + Mailpit, live reload
   [http://localhost:8025](http://localhost:8025)
 - **Auth API reference (dev only):** with the dev stack up, browse
   <http://localhost:8787/api/auth/reference> for the better-auth OpenAPI/Scalar
-  reference. Enabled by `TEXTCASTER_AUTH_OPENAPI=on` (set in `compose.yaml`);
-  unset in prod, and the web proxy 404s it, so it is never public.
+  reference (raw spec at `/api/auth/open-api/generate-schema`). Enabled by
+  `TEXTCASTER_AUTH_OPENAPI=on` (set in `compose.yaml`); unset in prod, and the
+  web proxy 404s it, so it is never public. After pulling, recreate core once so
+  it picks up the env (`docker compose up -d core`). Full how-to + the
+  reachability table: RUNNING.md → "Auth API reference (dev only)".
 
 Edits to `core` and `web` hot-reload in the containers (`node --watch` and
 `vite dev`). Federation push is off in dev. Run `make` to list every target;

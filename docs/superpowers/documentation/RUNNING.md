@@ -56,6 +56,54 @@ volumes**, not the bind mount, so the containers (which run as root) never
 leave root-owned files in your checkout. Removing the stack's volumes resets
 the dev database.
 
+### Auth API reference (dev only)
+
+The dev stack serves a live [OpenAPI](https://swagger.io/specification/) /
+[Scalar](https://scalar.com/) reference for every better-auth route (sign-in,
+sign-up, verify, magic-link, reset, anonymous, …) — an interactive "Try it out"
+console plus the raw spec. It is gated by `TEXTCASTER_AUTH_OPENAPI` (set to `on`
+in `compose.yaml`, unset everywhere else) and is **never reachable in
+production** (see the boundary below).
+
+**Access it (browser):**
+
+- Interactive console: <http://localhost:8787/api/auth/reference>
+- Raw OpenAPI 3.1.1 JSON: <http://localhost:8787/api/auth/open-api/generate-schema>
+  (feed this to a client generator or any OpenAPI tool)
+
+Note the port: **8787 is core directly**, not the app on 5173. Core is bound to
+`127.0.0.1` only, so the reference is local to your machine.
+
+**One-time step after pulling this change.** The flag is read from the
+environment, which Docker fixes when the container is *created* — `node --watch`
+hot-reloads code but not env. So a stack that was already running won't have it
+until you recreate core:
+
+```bash
+docker compose up -d core      # or: make up  — recreates core with the new env
+docker compose exec core printenv TEXTCASTER_AUTH_OPENAPI   # → on
+```
+
+**Why it's safe (the two-guard boundary).** The reference lives under
+`/api/auth/*`, which the web app proxies to browsers — so on its own the plugin
+would publish an auth-docs console. Two independent guards prevent that, and
+they hold live:
+
+| URL | Result |
+| --- | --- |
+| `http://localhost:8787/api/auth/reference` (core, dev) | **200** — the console |
+| `http://localhost:8787/api/auth/open-api/generate-schema` (core, dev) | **200** — the JSON spec |
+| `http://localhost:5173/api/auth/reference` (via the web app) | **404** — proxy hard-blocks it |
+| `http://localhost:5173/api/auth/open-api/generate-schema` (via the web app) | **404** — proxy hard-blocks it |
+| `http://localhost:5173/api/auth/sign-in/anonymous` (via the web app) | **200** — normal auth still forwards |
+
+So: reach it through **core on 8787** (internal/dev); through the **public web
+app it is 404**. Guard 1 — the flag defaults off in prod and Cloudron, so the
+plugin is never registered there. Guard 2 — the web auth proxy
+(`web/src/routes/api/auth/[...path]/+server.ts`) returns 404 for
+`/api/auth/reference` + `/api/auth/open-api/*` in **every** environment. A
+single misconfiguration (flag flipped on in prod) still cannot leak it.
+
 ### Prod self-host on a VPS
 
 ```bash
