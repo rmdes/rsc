@@ -20,6 +20,24 @@
 - **Never `git add -A`** (shared checkout) — stage explicit paths.
 - Commits end with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - No new dependencies.
+- **Web tests:** if host `npm test -w web` misbehaves, use the in-container form with `CORE_API_URL` unset (known gotcha): `docker compose exec web env -u CORE_API_URL npm test -w web`.
+
+---
+
+**Rev 1** (ponytail review of the plan, 2026-07-20): Task 1 sed + gate now
+exclude `docs/superpowers/{plans,specs,reviews}` (blanket form rewrote 30+
+historical docs and this plan's own commands mid-run); Task 1 stages the
+live docs it touches (README/CLAUDE.md/RUNNING.md/ideas.md) and gains a
+gitignored-`.env` sed step (compose interpolates `${RSC_ADMIN_EMAIL:-}`;
+prod `:?` guards would hard-fail); Task 2 names `feed.test.ts`/`auth.test.ts`
+explicitly; Task 3 duplicate app.css sed cut; Task 5 covers lowercase
+values (mail-from defaults, `.env.example`s, `/run/textcaster-nginx*`)
+while `/data/textcaster.db` in compose.prod is allowlisted stored state;
+Task 6 fixes README's `cd textcaster`; Task 7 allowlist extended
+(federation-demo live hosts, compose.prod DB value). Reviewer verified: all
+other seds match real lines, no empty-`$()` xargs risk, task ordering
+leaves every commit green, sanitizer twins unreachable by any sed, OPML
+per-test timeouts present.
 
 ---
 
@@ -30,12 +48,14 @@
 
 **Interfaces:** Produces the `RSC_*` env names every later task and deploy relies on: `RSC_ADMIN_EMAIL, RSC_ANON_TTL_DAYS, RSC_AUTH_OPENAPI, RSC_AUTH_SECRET, RSC_DB, RSC_DOMAIN, RSC_MAIL_FROM, RSC_POLL_SECONDS, RSC_PORT, RSC_PUBLIC_URL, RSC_PUSH_IN, RSC_RSSCLOUD, RSC_SMTP_URL, RSC_TOKEN, RSC_WEBSUB, RSC_WEB_ORIGIN`.
 
-- [ ] **Step 1: Rename in every tracked file**
+- [ ] **Step 1: Rename in every tracked file EXCEPT historical docs and this plan/spec**
 
 ```bash
 cd /home/rmdes/textcaster
-git grep -l 'TEXTCASTER_' | xargs sed -i 's/TEXTCASTER_/RSC_/g'
+git grep -l 'TEXTCASTER_' -- ':!docs/superpowers/plans' ':!docs/superpowers/specs' ':!docs/superpowers/reviews' \
+  | xargs sed -i 's/TEXTCASTER_/RSC_/g'
 ```
+(The exclusions are load-bearing: historical records keep `TEXTCASTER_`, and this plan's own commands must not be rewritten mid-execution. `docs/superpowers/documentation/RUNNING.md` and `ideas.md` ARE live docs — they get sed'd and staged here.)
 
 - [ ] **Step 2: Verify the two stored-state values survived with old paths**
 
@@ -44,27 +64,35 @@ grep -n 'RSC_DB' cloudron/start.sh
 ```
 Expected: `export RSC_DB="/app/data/textcaster.db"` — var renamed, **value unchanged**. Also confirm `tc_ensure_secret /app/data/config/auth_secret` paths are untouched.
 
-- [ ] **Step 3: Verify zero stragglers**
+- [ ] **Step 3: Verify zero stragglers (same exclusions as Step 1)**
 
 ```bash
-git grep -n 'TEXTCASTER_' ; echo "exit=$?"
+git grep -n 'TEXTCASTER_' -- ':!docs/superpowers/plans' ':!docs/superpowers/specs' ':!docs/superpowers/reviews' ; echo "exit=$?"
 ```
-Expected: no output, `exit=1`.
+Expected: no output, `exit=1`. (Without the pathspec the gate always fails on historical docs.)
 
 - [ ] **Step 4: Run core suite + typechecks**
 
 Run: `npm test -w core` then `make check`
 Expected: core suite green (403+ tests; the two OPML tests have their own 15s timeouts), `tsc` and `svelte-check` clean.
 
-- [ ] **Step 5: Restart dev stack to prove boot with new vars**
+- [ ] **Step 5: Rename vars in the gitignored env files (sed, not regen — keeps secrets)**
+
+```bash
+for f in .env core/.env web/.env; do [ -f "$f" ] && sed -i 's/TEXTCASTER_/RSC_/g' "$f"; done; true
+```
+(compose.yaml interpolates `${TEXTCASTER_ADMIN_EMAIL:-}` from root `.env` — without this, dev admin silently unsets; on a prod VPS the `:?` guards would hard-fail.)
+
+- [ ] **Step 6: Restart dev stack to prove boot with new vars**
 
 Run: `docker compose up -d --force-recreate core web && sleep 8 && curl -sf http://localhost:5173/ >/dev/null && echo WEB-OK`
 Expected: `WEB-OK`. (Dev compose passes the renamed vars; a boot failure here means a missed reader.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit (stage every file Step 1 touched — including live docs; historical docs must show NO diff)**
 
 ```bash
-git add core/src core/test compose.yaml compose.prod.yaml .env.example core/.env.example Caddyfile scripts cloudron/start.sh cloudron/README.md Makefile web
+git status --porcelain   # confirm nothing under docs/superpowers/{plans,specs,reviews} is modified
+git add core/src core/test compose.yaml compose.prod.yaml .env.example core/.env.example Caddyfile scripts cloudron/start.sh cloudron/README.md Makefile web README.md CLAUDE.md docs/superpowers/documentation docs/superpowers/ideas.md
 git commit -m "rename: TEXTCASTER_* env vars -> RSC_* (clean break, values preserved)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -92,7 +120,9 @@ sed -i 's/textcaster core listening/rsc core listening/' core/src/server.ts
 sed -i "s|'./data/textcaster.db'|'./data/rsc.db'|; s/textcaster@\${mailHost}/rsc@\${mailHost}/" core/src/config.ts
 sed -i 's/textcaster\.session_token/rsc.session_token/g' $(git grep -l 'textcaster\.session_token' -- core/test)
 sed -i 's/Textcaster/RSC/g; s/textcaster/rsc/g' core/test/ingest.test.ts core/test/auth-helper.ts
+sed -i 's/Textcaster/RSC/g' core/test/feed.test.ts core/test/auth.test.ts
 ```
+(`feed.test.ts:322` test name and `auth.test.ts:266` comment carry capital "Textcaster" — named explicitly so the hand-check isn't the only net.)
 Then hand-check `git grep -ni textcaster -- core/src core/test` — remaining hits must be only "Textcasting" (convention term) or none; fix any strays by hand with the same app-name→RSC mapping.
 
 - [ ] **Step 2: Run core suite + typecheck**
@@ -129,8 +159,8 @@ sed -i "s/'textcaster:draft:'/'rsc:draft:'/" web/src/lib/draft.ts
 sed -i 's/textcaster:draft:/rsc:draft:/g' web/src/lib/draft.test.ts
 sed -i 's|github.com/rmdes/textcaster|github.com/rmdes/rsc|g' web/src/routes/+layout.svelte
 sed -i 's|design-system/textcaster/MASTER.md|design-system/rsc/MASTER.md|' web/src/app.css
-sed -i 's/Textcaster/RSC/' web/src/app.css
 ```
+(No separate app-name sed for app.css — it's already in the blanket-sed file list above.)
 
 - [ ] **Step 2: Sidebar blurb + credit line in `web/src/routes/+page.svelte` (hand edit, exact copy)**
 
@@ -283,11 +313,17 @@ Expected final grep: no output, `exit=1`.
 
 ```bash
 sed -i 's/container_name: textcaster-/container_name: rsc-/g; s/^# Textcaster/# RSC/' compose.yaml compose.prod.yaml
+sed -i 's/textcaster@localhost/rsc@localhost/' compose.yaml
+sed -i 's/textcaster@/rsc@/' compose.prod.yaml            # mail-from default; the /data/textcaster.db value on line ~62 MUST STAY (VPS stored state)
 sed -i 's/^# Textcaster/# RSC/' Makefile
 sed -i 's/Textcaster contributors/RSC contributors/' LICENSE
 sed -i 's/Generate .env for Textcaster/Generate .env for RSC/; s/textcaster\.example\.com/rsc.example.com/' scripts/generate-env.sh
+sed -i 's/textcaster\.example\.com/rsc.example.com/; s/textcaster@your-domain/rsc@your-domain/' .env.example
+sed -i 's|./data/textcaster.db|./data/rsc.db|' core/.env.example   # matches Task 2's new dev default
+sed -i 's|/run/textcaster-nginx|/run/rsc-nginx|g' cloudron/start.sh  # tmpfs runtime paths (conf + pid refs), safe
 sed -i 's/Textcaster/RSC/g; s/github\.com\/rmdes\/textcaster/github.com\/rmdes\/rsc/g' scripts/federation-demo.mjs cloudron/README.md
 ```
+Verify after: `git grep -n 'textcaster' -- compose.prod.yaml` shows ONLY the `/data/textcaster.db` volume value and any `textcaster.app` domain defaults; `git grep -n textcaster -- scripts/federation-demo.mjs` shows only `textcaster.app` instance domains (live hosts — stay).
 
 - [ ] **Step 3: Cloudron manifest (hand edit — `id` LOCKED) + nginx pid**
 
@@ -307,7 +343,7 @@ Expected: `WEB-OK`, all green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add package.json core/package.json web/package.json package-lock.json compose.yaml compose.prod.yaml Makefile LICENSE cloudron/CloudronManifest.json cloudron/nginx.conf cloudron/README.md scripts/generate-env.sh scripts/federation-demo.mjs
+git add package.json core/package.json web/package.json package-lock.json compose.yaml compose.prod.yaml Makefile LICENSE cloudron/CloudronManifest.json cloudron/nginx.conf cloudron/start.sh cloudron/README.md scripts/generate-env.sh scripts/federation-demo.mjs .env.example core/.env.example
 git commit -m "rename: packages @rsc/*, compose rsc-*, Cloudron manifest (id preserved), LICENSE
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -337,7 +373,7 @@ git grep -ln 'design-system/textcaster' -- ':!docs/superpowers' | xargs -r sed -
 sed -i 's/Textcaster/RSC/g; s/github\.com\/rmdes\/textcaster/github.com\/rmdes\/rsc/g' README.md CLAUDE.md docs/superpowers/documentation/RUNNING.md design-system/rsc/MASTER.md
 sed -i 's/Textcaster/RSC/g' design-system/rsc/pages/*.md 2>/dev/null || true
 ```
-Then hand-fix in `README.md`: the intro must open with the full name once — `# RSC — Really Simple Conversations` — and the credit line above must appear where the old attribution paragraph was ("Built on Textcasting…" → the "Inspired by…" line). Hand-check `CLAUDE.md` still reads correctly (its first line describes the project; "textcasting" as a convention term stays where it names the protocol). In both files leave historical `docs/superpowers/specs/2026-07-15-textcaster-design.md` paths untouched (sed above doesn't match filenames — verify).
+Then hand-fix in `README.md`: the intro must open with the full name once — `# RSC — Really Simple Conversations` — the credit line above must appear where the old attribution paragraph was ("Built on Textcasting…" → the "Inspired by…" line), and the clone snippet (line ~108) becomes `git clone https://github.com/rmdes/rsc.git && cd rsc` (the sed fixes the URL, not the `cd`). Hand-check `CLAUDE.md` still reads correctly (its first line describes the project; "textcasting" as a convention term stays where it names the protocol). In both files leave historical `docs/superpowers/specs/2026-07-15-textcaster-design.md` paths untouched (sed above doesn't match filenames — verify).
 `docs/superpowers/ideas.md`: only rewrite forward-looking references to the app name; leave shipped/historical entries as records.
 
 - [ ] **Step 3: Run checks (docs can't break code, but the mv can break test imports)**
@@ -375,7 +411,7 @@ git grep -il textcaster | sort
 ```
 Expected output is ONLY files matching the allowlist:
 - `docs/superpowers/**` (historical records + the rename spec + this plan)
-- files whose only hits are `textcaster.app` domain values (`compose.prod.yaml` if any, `Caddyfile` if any), `cloudron/start.sh` (`/app/data/textcaster.db`), `cloudron/CloudronManifest.json` (`id`)
+- files whose only hits are `textcaster.app` domain values (`compose.prod.yaml` defaults, `Caddyfile` if any, `scripts/federation-demo.mjs` live-instance hosts), stored-state values (`cloudron/start.sh` `/app/data/textcaster.db`, `compose.prod.yaml` `/data/textcaster.db`), `cloudron/CloudronManifest.json` (`id`)
 - files whose only hits are the historical founding-design *filename* (`web/src/routes/about/+page.svelte`)
 - files whose only hits are "Textcasting" the convention (core/web internals, credit lines)
 
