@@ -7,6 +7,7 @@ test('author + snippet + url → text with an <a>, quoted snippet', () => {
   expect(body).toContain('In reply to aaronpk')
   expect(body).toContain('“hi”')
   expect(body).toContain('href="https://a/1"')
+  expect(body).toContain(`aria-label="Open aaronpk's post"`) // glyph link needs an accessible name
 })
 test('author only → no colon, no quotes (F5/P9 — never “”)', () => {
   const { body } = render(ReplyContext, { props: { author: 'aaronpk' } })
