@@ -64,7 +64,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       bus.emitNewPost(entry) // existing channel → SSE swap + push.onLocalPost fires (edit propagates)
       return entry
     },
-    getTimeline(limit = 100, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string }) {
+    getTimeline(limit = 100, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' }) {
       return repo.getTimeline(limit, before, filter)
     },
     getPost(id: string) {

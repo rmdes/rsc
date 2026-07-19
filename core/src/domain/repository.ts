@@ -26,7 +26,7 @@ export interface Repository {
   listFollowing(followerId: string): Promise<User[]>
   insertPost(p: Post): Promise<boolean>
   hasPostsByAuthor(authorId: string): Promise<boolean>
-  getTimeline(limit: number, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string }): Promise<TimelineEntry[]>
+  getTimeline(limit: number, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' }): Promise<TimelineEntry[]>
   /** Arrival-order replay scan: created_at >= sinceCreatedAt, ASC. Inclusive by
    *  design (same-ms batches re-deliver in full); consumers dedup by id. */
   getTimelineAfter(sinceCreatedAt: string, limit: number): Promise<TimelineEntry[]>

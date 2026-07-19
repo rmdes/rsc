@@ -218,7 +218,7 @@ export class SqliteRepository implements Repository {
     const r = await this.db.selectFrom('posts').select('id').where('author_id', '=', authorId).executeTakeFirst()
     return r !== undefined
   }
-  async getTimeline(limit: number, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string }): Promise<TimelineEntry[]> {
+  async getTimeline(limit: number, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' }): Promise<TimelineEntry[]> {
     let q = this.db
       .selectFrom('posts')
       .innerJoin('users', 'users.id', 'posts.author_id')
@@ -230,9 +230,12 @@ export class SqliteRepository implements Repository {
     if (before) {
       q = q.where((eb) => eb(eb.refTuple('posts.published_at', 'posts.id'), '<', eb.tuple(before.publishedAt, before.id)))
     }
+    if (filter?.source) q = q.where('posts.source', '=', filter.source)
+    if (filter?.feedType) q = q.where('users.feed_type', '=', filter.feedType)
     if (filter?.followedBy) {
       const followerId = filter.followedBy
       q = q.where('posts.author_id', 'in', (eb) => eb.selectFrom('follows').select('followed_id').where('follower_id', '=', followerId))
+      q = q.where((eb) => eb.or([eb('users.feed_type', 'is', null), eb('users.feed_type', '!=', 'instance')])) // Decision B: personal river never shows instances
     }
     if (filter?.authorId) {
       q = q.where('posts.author_id', '=', filter.authorId)

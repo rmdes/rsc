@@ -403,7 +403,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const followedByRaw = c.req.query('followed_by')
     const authorRaw = c.req.query('author')
     if (followedByRaw !== undefined && authorRaw !== undefined) return c.json({ error: 'followed_by and author are mutually exclusive' }, 400)
-    let filter: { followedBy?: string; authorId?: string } | undefined
+    const sourceRaw = c.req.query('source')
+    if (sourceRaw !== undefined && sourceRaw !== 'local') return c.json({ error: 'source invalid' }, 400)
+    const feedTypeRaw = c.req.query('feed_type')
+    if (feedTypeRaw !== undefined && feedTypeRaw !== 'instance') return c.json({ error: 'feed_type invalid' }, 400)
+    let filter: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' } | undefined
     if (followedByRaw !== undefined) {
       const u = await resolveUser(followedByRaw)
       if (!u) return c.json({ error: 'unknown user' }, 404)
@@ -412,6 +416,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       const u = await resolveUser(authorRaw)
       if (!u) return c.json({ error: 'unknown user' }, 404)
       filter = { authorId: u.id }
+    }
+    if (sourceRaw === 'local' || feedTypeRaw === 'instance') {
+      filter = { ...filter, ...(sourceRaw === 'local' ? { source: 'local' as const } : {}), ...(feedTypeRaw === 'instance' ? { feedType: 'instance' as const } : {}) }
     }
     const entries = await service.getTimeline(limit, before, filter)
     // Wedge shading needs to know, per page, which posts have replies — one
