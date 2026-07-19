@@ -716,3 +716,59 @@ rate-limit or cap on this route · `cloudron/nginx.conf` routes `= /stream` → 
 churn (a brief gap + the replay cost each cycle). Tune conservatively — only worth
 building if bot/abuse volume actually climbs; premature caps degrade honest
 viewers for a threat not yet observed.
+
+---
+
+## better-auth plugin & adapter surface (audit 2026-07-19)
+
+Audit of the better-auth building block against its plugin catalogue. **In use
+today** (`core/src/auth.ts`): `emailAndPassword` (hard verify), `magicLink`,
+`anonymous`, plus rate-limiting and x-forwarded-for IP handling. The items
+below are *available* but not adopted — each is a real feature (schema and/or
+UI and/or the load-bearing web proxy), so each goes through brainstorm→spec, not
+a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
+
+- **passkey (WebAuthn)** *(⭐ promoted 2026-07-19 — brainstorm queued)* — passwordless
+  login via platform/roaming authenticators. **Grounding:** better-auth ships
+  `passkey()`; we already have the emailed-link proxy that would relay its
+  ceremonies. **Why it fits:** phishing-resistant second/primary factor on top
+  of hard email verify. **Tradeoff:** adds `passkey`/`credential` tables
+  (schema migration), needs client-side `startRegistration`/`startAuthentication`
+  wiring in `web/` (JS-required flow — must degrade, per no-JS-first invariant),
+  and the proxy must pass the WebAuthn JSON through. Not a config toggle.
+
+- **username** *(candidate)* — login by username instead of/alongside email.
+  **Tradeoff:** Textcaster already has a `handle` on the core user row; a
+  better-auth `username` field would be a *second* name to keep in sync with
+  `handle`. Likely reject unless we want handle==auth-username unified — spec it
+  before touching, to avoid two sources of truth.
+
+- **multi-session** *(⭐ promoted 2026-07-19 — brainstorm queued)* — hold several signed-in accounts in one
+  browser, switch without re-login. **Tradeoff:** interacts with the anonymous
+  guest carry-over (`onLinkAccount`) and the cookie relay in
+  `web/src/lib/server/session.ts` — both assume one active session. Non-trivial;
+  needs its own brainstorm on how guest-upgrade behaves with N sessions.
+
+- **open-api** *(⭐ promoted 2026-07-19 — brainstorm first)* — serves an OpenAPI schema + a
+  reference UI for the better-auth routes. **Why it fits:** core is
+  internal/headless; a generated auth-route reference aids the web-proxy work.
+  **Tradeoff:** exposes an auth-surface doc endpoint — must stay behind the
+  internal boundary (never through Caddy's public allowlist). Lowest-risk of the
+  four; still verify it doesn't widen the public surface.
+
+- **`@better-auth/mongo-adapter`** *(deferred — YAGNI today)* — swap the
+  better-sqlite3 store for MongoDB. **Grounding:** the "future Cloudron→Mongo"
+  idea. **Reality:** Cloudron currently ships **SQLite/localstorage, not Mongo**
+  ([[cloudron]] memory); the shared `sqlite` handle from `repo.raw` is
+  load-bearing across auth + the domain DB. Switching auth to Mongo would split
+  the datastore (auth in Mongo, feeds/posts in SQLite) unless the *whole* repo
+  migrates. Not worth adding the dep until a concrete Cloudron-Mongo requirement
+  exists; revisit only then.
+
+- **SvelteKit official integration** *(likely reject)* — better-auth's stock
+  SvelteKit client/handler. **Reality:** we deliberately hand-roll the
+  `/api/auth/[...path]` proxy because emailed GET links carry no `Origin` and
+  better-auth 403s them (CLAUDE.md invariant + `web/.../[...path]/+server.ts`).
+  The stock integration doesn't inject `Origin` on native link-clicks, so
+  adopting it would regress verified/magic-link flows. Keep the proxy; only
+  adopt stock pieces that don't touch the emailed-GET path.

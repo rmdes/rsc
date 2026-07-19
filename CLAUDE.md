@@ -32,14 +32,36 @@ Load-bearing invariants — don't break these without understanding why:
 - **Feeds/federation are the ONLY core paths exposed publicly** (via Caddy in
   prod); the rest of core stays internal. See `Caddyfile`.
 
+## Core building blocks — Hono + better-auth
+
+These two carry the whole backend; lean on them for everything, and never
+reach for a new dependency where they already solve it.
+
+- **Hono is core's entire HTTP layer.** Any task in `core/` that touches
+  routing, middleware, request/response, SSE, error handling, or route tests
+  MUST invoke the project **`hono` skill** (`.claude/skills/hono/SKILL.md`)
+  first — it encodes the house style (hand-rolled validators over
+  `zValidator`, `c.json({error}, status)` over `HTTPException`, global
+  `ContextVariableMap`, `app.request` tests, no RPC client). Follow it.
+- **better-auth owns identity.** Before using any better-auth API, use the
+  **`better-auth` MCP** (`search_docs` → `get_doc`) for the current shape —
+  don't write it from memory (many bugs here came from an assumed API). Config
+  lives in `core/src/auth.ts`; the web proxy (`/api/auth` invariant above) is
+  load-bearing. Plugins in use: `emailAndPassword` (hard verify), `magicLink`,
+  `anonymous`. Candidate plugins/adapters (passkey, username, multi-session,
+  open-api; `@better-auth/mongo-adapter` for a future Cloudron-on-Mongo
+  switch) are **backlog** in `docs/superpowers/ideas.md`, not yet adopted —
+  each is a feature that goes through brainstorm→spec, not a drop-in.
+
 ## Working here
 
 - **Dev runs in Docker:** `docker compose up` (core + web + Mailpit, live
   reload). This is the dev environment — not host `npm run dev`. Details in
   `README.md`. `docker/`, `compose.yaml`, `compose.prod.yaml`, `Caddyfile`.
-- **Read the installed source before using an API** (better-auth, carta-md,
-  feedsmith, Caddy). Probe against the real version; never from memory. Many
-  bugs here came from an assumed API shape.
+- **Read the installed source before using an API** (Hono, better-auth,
+  carta-md, feedsmith, Caddy) — or the `better-auth` MCP / context7 MCP for
+  docs. Probe against the real version; never from memory. Many bugs here came
+  from an assumed API shape.
 - **Git:** shared checkout — a parallel session commits on `main` too, so
   **never `git add -A`**; stage explicit paths. End commit messages with
   `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. No remote yet
