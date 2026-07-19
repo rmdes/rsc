@@ -3,6 +3,10 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Spec:** `docs/superpowers/specs/2026-07-19-subscribe-manage-design.md` (**rev 2**)
+**Rev 1** — clean-context correctness + ponytail plan reviews folded
+(`docs/superpowers/reviews/2026-07-19-subscribe-manage-plan-review.md`):
+ImportDeps signature moved into Task 1 (typecheck gate), SSRF/DNS test-env
+notes, 4 redundant tests cut, discovery-test placement, path fixes.
 
 **Goal:** Wire the web to SP1's self-serve engine — home subscribe form, mode-switched following page, admin cap Settings tab — plus five core ride-alongs (central follow guard, local-URL resolve, OPML fixes, 201/200, displayName backfill).
 
@@ -27,9 +31,10 @@
 
 **Files:**
 - Modify: `core/src/domain/service.ts` (addFollow ~:117, subscribeByUrl ~:161)
-- Modify: `core/src/domain/opml.ts` (export `localHandleForUrl`, ~:69)
+- Modify: `core/src/domain/opml.ts` (export `localHandleForUrl` ~:69; `ImportDeps.addFollow` → `Promise<boolean>` — moved here from Task 2: `service.addFollow`'s new return type otherwise fails typecheck at the two wiring sites, `app.ts:279` and `opml.test.ts:42` — `Promise<boolean>` is NOT assignable to `Promise<void>`)
 - Modify: `core/src/api/app.ts` (`/me/subscriptions` route ~:294)
-- Test: `core/test/subscribe.test.ts`, `core/test/subscriptions-api.test.ts`, `core/test/api-follows.test.ts`
+- Modify: `core/src/domain/repository-contract.ts` (one comment at the "self-follow is allowed" test ~:276: the contract describes the REPO layer, which stays permissive; the SERVICE layer refuses self-follows as of SP3)
+- Test: `core/test/subscribe.test.ts`, `core/test/subscriptions-api.test.ts`, `core/test/opml.test.ts` (stub return only)
 
 **Interfaces:**
 - Consumes: `repo.addFollow(followerId, followedId): Promise<void>` (stays permissive — `repository-contract.ts:276`'s "self-follow is allowed" describes the REPO layer and stands unchanged; the service layer now refuses).
@@ -81,23 +86,25 @@ test('addFollow refuses self-follow and instance targets, minting nothing', asyn
 })
 ```
 
-`core/test/subscriptions-api.test.ts` — read the file first for its harness (app + registered session helpers), then append tests:
+`core/test/subscriptions-api.test.ts` — read the file first (harness: `registeredSession`/`anonSession` from auth-helper; `createApp` accepts `feeds?: FeedContext` so a `publicUrl` can be threaded per-test; **SSRF gate does real DNS for hostnames — use TEST-NET IP-LITERAL urls**, the file's header comment explains the convention). Then:
 
-1. **Reuse returns 200** (create then re-subscribe same URL as another registered user or the same one): first POST → 201, second POST same URL → **200**, both `followed: true` for a webfeed.
-2. **Local-URL resolve**: harness app must be built with a `publicUrl` (read how the app/feeds config is constructed in that file or `api.test.ts`; if the existing harness passes no publicUrl, construct one with it for this test). Create a registered user B (or use an existing local user's handle); POST `{ url: '<publicUrl>/users/<b-handle>/feed.xml', type: 'webfeed' }` → **200**, `user.kind === 'local'`, `followed: true`, and NO remote row with that feed_url exists afterward.
-3. **Own URL** → same shape but subscriber's own handle → `200`, `followed: false`.
-4. **Instance-URL reuse** over HTTP: admin-create an instance feed (`POST /users` with bearer token), then subscribe its URL → `200 { followed: false }` and the follows list does NOT contain it.
+1. **Tighten the existing double-POST test** (~:39): it currently accepts `[200, 201]` on both calls — assert first POST → **201**, second POST same URL → **200** (both `followed: true`). No new test.
+2. **Local-URL resolve + own URL** (new test): build an app with `feeds.publicUrl` set to an IP-literal origin (e.g. `https://203.0.113.9` — a hostname publicUrl would 400 at the SSRF gate before the resolve runs). Registered user B subscribes `<publicUrl>/users/<b-handle>/feed.xml` → **200**, `followed: false` (own URL, self-guard), `user.kind === 'local'`, and no remote row with that feed_url exists. A second registered user subscribing B's URL → **200**, `followed: true`, `user.kind === 'local'`.
 
-`core/test/api-follows.test.ts` — append one test: `POST /me/follows` targeting an instance handle still returns `200 {ok:true}` but `GET /users/<me>/follows` does not list it.
+(Instance-reuse over HTTP and `/me/follows`-on-instance re-tests are cut — the guard is service-level and fully covered by the subscribe.test.ts tests above; the route adds no logic between service result and response.)
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `npm run -w core test -- subscribe subscriptions-api api-follows`
+Run: `npm run -w core test -- subscribe subscriptions-api`
 Expected: FAIL — race test gets no `created` key; guard tests find edges minted; reuse POST returns 201 not 200.
 
 - [ ] **Step 3: Implement**
 
-`core/src/domain/opml.ts`: change `function localHandleForUrl` to `export function localHandleForUrl` (no other change).
+`core/src/domain/opml.ts`: change `function localHandleForUrl` to `export function localHandleForUrl`, and `ImportDeps.addFollow` becomes `(follower: User, target: User) => Promise<boolean>` (the loop `await`s and ignores the boolean until Task 2 adds the branches — behavior unchanged).
+
+`core/test/opml.test.ts`: the `importSetup` stub's `addFollow` (~:42) gains a `return true` so it satisfies the new signature (guard-faithful behavior arrives in Task 2). While in the file, drop the unused `repo` var at ~:111 (editor hint only — `noUnusedLocals` is off, so no typecheck change).
+
+`core/src/domain/repository-contract.ts` (~:276): add the one-line layering comment from the Files list.
 
 `core/src/domain/service.ts` — add the module-level helper (near `mintRemoteUser`):
 
@@ -153,6 +160,8 @@ Add the service passthrough (next to `getSetting`):
 ```ts
     // Own-instance feed URL → follow the local user; never mint a remote shadow (SP3 F1).
     // Requires publicUrl; without it (dev) the resolve never matches — accepted, spec S4.
+    // Note: this sits AFTER the SSRF gate, so a publicUrl host that resolves
+    // privately from core's vantage (split-horizon DNS) 400s before reaching here.
     const localHandle = localHandleForUrl(url, feeds.publicUrl)
     if (localHandle) {
       const local = await resolveUser(localHandle)
@@ -170,14 +179,13 @@ Add the service passthrough (next to `getSetting`):
 
 - [ ] **Step 4: Run tests + typecheck**
 
-Run: `npm run -w core test -- subscribe subscriptions-api api-follows opml` → PASS (opml.ts consumers: `ImportDeps.addFollow` is typed `Promise<void>` — a `Promise<boolean>` assignment is compatible, Task 2 tightens it).
 Run: `npm run -w core test` → full suite green (unfollow-cleanup, service, federation-following all use person/webfeed targets — unaffected; investigate ANY failure in a followed/follow path before proceeding).
-Run: `npm run -w core typecheck` → 0 errors.
+Run: `npm run -w core typecheck` → 0 errors (this is the gate the ImportDeps signature move exists for).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/src/domain/service.ts core/src/domain/opml.ts core/src/api/app.ts core/test/subscribe.test.ts core/test/subscriptions-api.test.ts core/test/api-follows.test.ts
+git add core/src/domain/service.ts core/src/domain/opml.ts core/src/api/app.ts core/src/domain/repository-contract.ts core/test/subscribe.test.ts core/test/subscriptions-api.test.ts core/test/opml.test.ts
 git commit -m "core: central follow guard (instance+self), subscribeByUrl created flag, local-URL resolve, 201/200 split
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -198,7 +206,11 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-Read `core/test/opml.test.ts` first (its deps-stub style; note the unused-`repo` TS6133 hint at ~:111 — fix it while in the file). Append:
+Read `core/test/opml.test.ts` first (its deps-stub style; Task 1 already
+bumped its `addFollow` stub to return `true` — Task 2 makes stubs
+guard-faithful where the test needs it, and `importSetup` gains
+`getRemoteUserByFeedUrl: (u) => repo.getRemoteUserByFeedUrl(u)` since the
+`ImportDeps` type grows — every existing test type-errors without it). Append:
 
 ```ts
 test('import: an existing instance feed in the OPML counts skipped, not followed', async () => {
@@ -213,14 +225,9 @@ test('import Case-3: a concurrent create winning the feed_url race is followed v
   // getRemoteUserByFeedUrl returns the winner (feedType 'webfeed').
   // Assert { followed: 1, created: 0, skipped: 0 } and the follow recorded.
 })
-
-test('import Case-3 re-resolve to an instance winner counts skipped', async () => {
-  // same as above but the winner has feedType 'instance' → guard-faithful
-  // addFollow returns false. Assert { followed: 0, skipped: 1 }.
-})
 ```
 
-Write these as REAL tests following the file's existing stub pattern (the sketches above name the required behavior; the file's own helpers dictate the shape). The guard-faithful `addFollow` stub is `async (f, t) => t.feedType === 'instance' || t.id === f.id ? false : (follows.push([f.id, t.id]), true)`.
+Write these as REAL tests following the file's existing `importSetup` stub pattern (the sketches name the required behavior; the file's helpers dictate the shape). The guard-faithful `addFollow` stub is `async (f, t) => t.feedType === 'instance' || t.id === f.id ? false : (follows.push([f.id, t.id]), true)`. Import `HandleTakenError` (not currently in the file's imports). (An instance winner of the Case-3 race is the covered-for-free cross-product of these two tests — not separately tested.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -231,7 +238,7 @@ Expected: FAIL — instance import counts `followed: 1` (no branch); race test g
 
 `core/src/domain/opml.ts`:
 
-1. `ImportDeps`: `addFollow: (follower: User, target: User) => Promise<boolean>` and add `getRemoteUserByFeedUrl: (url: string) => Promise<User | undefined>`.
+1. `ImportDeps`: add `getRemoteUserByFeedUrl: (url: string) => Promise<User | undefined>` (the `addFollow` signature already changed in Task 1).
 2. Case 1 becomes:
 
 ```ts
@@ -277,7 +284,7 @@ Expected: FAIL — instance import counts `followed: 1` (no branch); race test g
 
 - [ ] **Step 4: Run tests + typecheck**
 
-Run: `npm run -w core test -- opml` → PASS. `npm run -w core test` → green. `npm run -w core typecheck` → 0 errors.
+Run: `npm run -w core test` → full suite green. `npm run -w core typecheck` → 0 errors.
 
 - [ ] **Step 5: Commit**
 
@@ -295,7 +302,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Modify: `core/src/domain/ingest.ts` (`parseFeedWithMeta` ~:87-131, `ingestRemoteUser` ~:227, `ingestViaDiscovery` ~:253)
 - Modify: `core/src/storage/sqlite.ts` (new method near `updateFeedUrl` ~:108), `core/src/domain/repository.ts` (interface line)
-- Test: `core/test/ingest.test.ts`, `core/test/sqlite-repository.test.ts` (or the repo-contract file the suite uses — read `core/test/per-user-feeds-repo.test.ts` first and put the repo test where its siblings live)
+- Test: `core/test/ingest.test.ts` (plain-poll backfill — its `fakeFetch` + RSS-fixture helpers suffice), `core/test/ingest-discovery.test.ts` (the ordering test — the URL-dispatching `router()` stub, HTML alternate-link fixtures, and the R1 `updateFeedUrl` tests all live there at ~:19-46), and the repo test beside its siblings (read `core/test/per-user-feeds-repo.test.ts` first)
 
 **Interfaces:**
 - Consumes: nothing from Tasks 1-2 (independent).
@@ -319,22 +326,22 @@ test('updateDisplayNameIfUnset writes only while display_name equals feed_url', 
 Ingest test (read `core/test/ingest.test.ts` for its fetch-stub + fixture-feed pattern first; follow it):
 
 ```ts
+// in core/test/ingest.test.ts (fakeFetch + RSS fixture pattern):
 test('poll backfills display_name from the feed title while still URL-named', async () => {
   // createRemoteUser seeded displayName === feedUrl; fetch stub serves an RSS
   // body whose <title> is "Real Title"; ingestRemoteUser(...) → user's
-  // displayName becomes "Real Title". A second poll with a different title
-  // must NOT overwrite (displayName no longer equals feed_url).
+  // displayName becomes "Real Title". (No-clobber is the repo test's job.)
 })
 
+// in core/test/ingest-discovery.test.ts (router() stub + HTML fixtures):
 test('discovery pass backfills BEFORE rewriting feed_url', async () => {
-  // fetch stub: pageUrl returns HTML with an alternate link; feed URL returns
-  // an RSS body with a title. After ingestRemoteUser on the page URL:
-  // displayName === feed title AND feedUrl === discovered URL (the backfill
-  // ran against the pre-rewrite equality; ordering is the point).
+  // router: pageUrl → HTML with an alternate link; feed URL → RSS with a
+  // title. After ingestRemoteUser on the page URL: displayName === feed title
+  // AND feedUrl === discovered URL (backfill ran against pre-rewrite equality).
 })
 ```
 
-Write these as real tests per the file's pattern.
+Write these as real tests per each file's pattern.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -358,7 +365,7 @@ Expected: FAIL — `updateDisplayNameIfUnset` doesn't exist (type/runtime), titl
   updateDisplayNameIfUnset(userId: string, name: string): Promise<void>
 ```
 
-`core/src/domain/ingest.ts` — `parseFeedWithMeta` returns `title` in all four branches. **Verify the exact title field shapes against the installed feedsmith types (`node_modules/feedsmith`) before writing** — expected: `parsed.feed.title` is a string (json/rss/rdf) and a string for atom too; normalize with a tiny local helper if any branch differs:
+`core/src/domain/ingest.ts` — `parseFeedWithMeta` returns `title` in all four branches. Verified against installed feedsmith 2.9.6: `parsed.feed.title` is a plain string (optional) in all four formats, so `?? null` is the whole normalization:
 
 - json: `return { items, discovery: {...}, title: parsed.feed.title ?? null }`
 - atom: `return { items, discovery: {...}, title: parsed.feed.title ?? null }`
@@ -386,12 +393,12 @@ The h-feed branch gets no backfill (no feed-level title exists there — spec S7
 
 - [ ] **Step 4: Run tests + typecheck**
 
-Run: `npm run -w core test -- ingest sqlite-repository per-user-feeds-repo` → PASS. `npm run -w core test` → green (any repo-contract fake implementing `Repository` gains the method — add it to fakes the typecheck flags). `npm run -w core typecheck` → 0 errors.
+Run: `npm run -w core test` → full suite green (only `SqliteRepository` structurally implements `Repository` — the interface method lands there; test fakes are `as unknown as Repository` casts and don't break). `npm run -w core typecheck` → 0 errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/src/domain/ingest.ts core/src/domain/repository.ts core/src/storage/sqlite.ts core/test/ingest.test.ts <repo-test-file>
+git add core/src/domain/ingest.ts core/src/domain/repository.ts core/src/storage/sqlite.ts core/test/ingest.test.ts core/test/ingest-discovery.test.ts <repo-test-file>
 git commit -m "core: backfill display_name from feed title while URL-named (before discovery rewrite)
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -585,7 +592,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `web/src/routes/u/[handle]/following/+page.server.ts`, `+page.svelte`
-- Test: `web/src/routes/following.actions.test.ts` (extend), new load tests in the same file or `web/src/routes/following.load.test.ts`
+- Test: `web/src/routes/u/[handle]/following/following.actions.test.ts` (extend — the file EXISTS at this nested path; the follow/unfollow/import action tests in it stay untouched, the actions don't change)
 
 **Interfaces:**
 - Consumes: layout `me` via `await parent()`; `?/subscribe` on `/` (Task 4); `getFollowing` authors carry `feedType`.
@@ -732,13 +739,11 @@ Manual smoke: `http://127.0.0.1:5173/u/<some-handle>/following` as guest → rea
 - [ ] **Step 5: Commit**
 
 ```bash
-git add web/src/routes/u/[handle]/following/+page.server.ts web/src/routes/u/[handle]/following/+page.svelte web/src/routes/following.actions.test.ts
+git add "web/src/routes/u/[handle]/following/+page.server.ts" "web/src/routes/u/[handle]/following/+page.svelte" "web/src/routes/u/[handle]/following/following.actions.test.ts"
 git commit -m "web: mode-switched following page — owner manager vs read-only visitor; lens owner-inclusion + instance exclusion
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
-
-(If load tests went to a new `following.load.test.ts`, stage that path too.)
 
 ---
 
