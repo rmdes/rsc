@@ -12,7 +12,10 @@ async function instance(publicUrl: string | null) {
   return { repo, service, app }
 }
 
-test('OPML round-trip: instance 1 export → instance 2 import recreates remote follows', async () => {
+// OPML round-trip does a full export→import→re-follow cycle; slowest test in the
+// suite. Passes in ~1.8s isolated but tips over vitest's 5s default under
+// full-suite CPU contention — give it headroom rather than flake the whole run.
+test('OPML round-trip: instance 1 export → instance 2 import recreates remote follows', { timeout: 15000 }, async () => {
   const one = await instance('https://one.example')
   const aliceCookie = await registeredSession(one.app, 'alice@test.example', one.repo)
   await one.app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie: aliceCookie }, body: JSON.stringify({ handle: 'alice', displayName: 'Alice' }) })

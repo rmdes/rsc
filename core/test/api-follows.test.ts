@@ -46,7 +46,9 @@ test('follow errors: 404 unknown handle; anonymous session CAN follow', async ()
   expect((await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ handle: 'news' }) })).status).toBe(200)
 })
 
-test('POST /me/follows/opml requires registration: 403 anonymous, 200 registered', async () => {
+// OPML import is slow (multi-follow); passes ~1.8s isolated but can exceed
+// vitest's 5s default under full-suite contention — headroom, not a real hang.
+test('POST /me/follows/opml requires registration: 403 anonymous, 200 registered', { timeout: 15000 }, async () => {
   const { app, repo } = await makeApp()
   const opml = '<?xml version="1.0" encoding="UTF-8"?><opml version="2.0"><head><title>t</title></head><body><outline type="rss" text="News" xmlUrl="https://ex.com/f.xml"/></body></opml>'
   const anonCookie = await anonSession(app)
