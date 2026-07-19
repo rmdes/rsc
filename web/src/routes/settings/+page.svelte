@@ -44,4 +44,6 @@
 		</div>
 		<button>Save</button>
 	</form>
+
+	<p class="field-hint"><a href="/accounts">Manage accounts on this browser →</a></p>
 </div>
