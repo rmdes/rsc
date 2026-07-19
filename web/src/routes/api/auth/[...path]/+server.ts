@@ -14,6 +14,14 @@ const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 // the browser. Redirects are RELAYED (redirect: 'manual'), not followed: a
 // verify/magic link returns a 302 the browser must navigate to.
 const proxy: RequestHandler = async ({ request, params, url, cookies, getClientAddress }) => {
+	// Dev-only openAPI reference (spec 2026-07-19-auth-openapi): better-auth's
+	// openAPI() plugin serves /api/auth/reference + /api/auth/open-api/* under
+	// the auth base path, which this proxy would otherwise publish. Hard-404 them
+	// in EVERY environment — the second, independent guard beside the core flag
+	// defaulting off. 404 (not 403) so we don't even confirm the route exists.
+	if (params.path === 'reference' || params.path.startsWith('open-api')) {
+		return new Response(null, { status: 404 })
+	}
 	const target = `${base()}/api/auth/${params.path}${url.search}`
 	const headers = new Headers()
 	const cookie = cookies.getAll().map((c) => `${c.name}=${c.value}`).join('; ')
