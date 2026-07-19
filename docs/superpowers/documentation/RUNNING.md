@@ -384,6 +384,16 @@ database it cannot handle, with a clear error instead of silent 500s:
 
 From now on, schema upgrades apply automatically at startup.
 
+**Before deploying migration 11** (per-user feeds): verify no duplicate remote
+`feed_url` exists, or the `UNIQUE(feed_url)` index build will fail. On each
+instance, run:
+
+```sql
+SELECT feed_url, count(*) FROM users WHERE kind='remote' GROUP BY feed_url HAVING count(*)>1
+```
+
+This must be empty. If duplicates exist, merge/delete them before upgrading.
+
 ## Feature notes
 
 - Posts carry an optional title: remote feed items keep the title from
@@ -415,6 +425,7 @@ From now on, schema upgrades apply automatically at startup.
   stripped at render time, server-side. Feeds always re-emit remote
   content untouched (pass-through); only display is sanitized.
 - Post edits are tracked in the `post_revisions` table + `edited_at` column (migration 9). Local posts can be edited by their author; all revisions are retained and queryable via `GET /posts/<id>/revisions`.
+- Instance-wide settings live in the `instance_settings` table (migration 11), keyed by name. Admin-only `GET/PATCH /admin/settings` exposes configurable knobs (e.g., `max_subs_per_user` for the per-user subscription cap).
 
 ## Following & lenses
 
@@ -426,6 +437,23 @@ two lens views of the timeline:
 - `GET /u/<handle>/following` — followed lens: followed users' posts, with
   forms to manage follows (follow/unfollow), export following as OPML (`GET
   /users/:handle/following.opml`), and import follows from OPML.
+
+**Self-serve subscriptions** (`POST /me/subscriptions`): registered sessions
+only. Subscribe by feed URL (`{ url, type }`, where `type` is `"person"` or
+`"webfeed"`); creates a follow edge. The endpoint is SSRF-guarded and enforces
+a per-user cap (configurable via `GET/PATCH /admin/settings`, key
+`max_subs_per_user`, default 500). Exceeding the cap returns `429`.
+
+**Feed type taxonomy**: remote feeds carry a `feed_type` field (`"person"`,
+`"webfeed"`, or `"instance"`). `"person"` and `"webfeed"` are self-serve
+(created via `POST /me/subscriptions` or OPML import); `"instance"` is
+admin-only (created via `POST /users`). On migration 11, existing rows were
+classified as `"instance"` if their ingested items carried `source:markdown`
+(Textcasting peer signal), else `"webfeed"`.
+
+**Cleanup on orphaned feeds**: unfollowing the last follower of a self-serve
+(`"person"` or `"webfeed"`) feed cascades deletion (polling stops); `"instance"`
+feeds are never auto-cleaned, even if unused.
 
 **Polling note:** Following an OPML import, feeds are picked up by the next
 poller cycle — no synchronous fetch on import.
