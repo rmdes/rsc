@@ -67,7 +67,7 @@ test('addRemote posts to the core (no mint, plain cookie forward) and redirects'
 	const fetch = vi.fn(async () => new Response(null, { status: 201 }))
 	const event = sessionedEvent(formRequest('addRemote', { handle: 'bob', feedUrl: 'https://example.com/feed.xml' }), fetch)
 	// Redirect carries the added handle so the home page can flash a confirmation.
-	await expect(actions.addRemote(event as never)).rejects.toMatchObject({ status: 303, location: '/?feed=bob' })
+	await expect(actions.addRemote(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=public&feed=bob' })
 	expect(fetch).toHaveBeenCalled()
 })
 
@@ -92,4 +92,20 @@ test('SvelteKit CSRF origin check stays on (SEC-2: it is the real browser-bounda
 	const cfg = readFileSync(new URL('../../vite.config.ts', import.meta.url), 'utf8')
 	expect(cfg).not.toMatch(/checkOrigin\s*:\s*false/)
 	expect(cfg).not.toMatch(/csrf\s*:\s*false/)
+})
+
+test('compose redirects back to the active tab; invalid tab params are dropped', async () => {
+	const fetch = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 201 }))
+	const good = sessionedEvent(formRequest('compose', { content: 'hi' }), fetch)
+	good.url = new URL('http://x/?tab=local&/compose')
+	await expect(actions.compose(good as never)).rejects.toMatchObject({ status: 303, location: '/?tab=local' })
+	const bad = sessionedEvent(formRequest('compose', { content: 'hi' }), fetch)
+	bad.url = new URL('http://x/?tab=evil&/compose')
+	await expect(actions.compose(bad as never)).rejects.toMatchObject({ status: 303, location: '/' })
+})
+
+test('addRemote redirects to the public tab where the new feed is visible', async () => {
+	const fetch = vi.fn(async (..._args: unknown[]) => new Response(JSON.stringify({ user: {} }), { status: 201 }))
+	const event = sessionedEvent(formRequest('addRemote', { handle: 'news', feedUrl: 'https://ex.com/f.xml' }), fetch)
+	await expect(actions.addRemote(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=public&feed=news' })
 })
