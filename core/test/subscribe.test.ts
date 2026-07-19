@@ -2,6 +2,9 @@ import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { HandleTakenError } from '../src/domain/types.ts'
+import type { Repository } from '../src/domain/repository.ts'
+import type { User } from '../src/domain/types.ts'
 
 async function setup() {
   const repo = await createSqliteRepository(':memory:')
@@ -48,4 +51,30 @@ test('subscribeByUrl returns {error: cap} at the limit and creates nothing', asy
   expect(result).toEqual({ error: 'cap' })
   const after = await repo.listRemoteUsers()
   expect(after).toHaveLength(before.length) // nothing created
+})
+
+test('subscribeByUrl re-resolves and follows the winner when a concurrent create races the UNIQUE(feed_url) index (addendum B)', async () => {
+  // mintRemoteUser exhausts MAX_HANDLE_ATTEMPTS retries because createRemoteUser
+  // always throws HandleTakenError — same error insertUser maps a feed_url
+  // collision to (indistinguishable from a handle collision). subscribeByUrl
+  // must re-resolve by feed_url instead of throwing.
+  const url = 'https://race.example/feed.xml'
+  const winner: User = { id: 'winner-id', kind: 'remote', handle: 'winner', displayName: 'Winner', feedUrl: url, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null, feedType: 'webfeed' }
+  let getByUrlCalls = 0
+  const follows: Array<[string, string]> = []
+  const repo = {
+    getRemoteUserByFeedUrl: async () => { getByUrlCalls++; return getByUrlCalls === 1 ? undefined : winner },
+    getSetting: async () => undefined,
+    countRemoteSubscriptions: async () => 0,
+    createRemoteUser: async () => { throw new HandleTakenError('feed_url already taken') },
+    addFollow: async (followerId: string, followedId: string) => { follows.push([followerId, followedId]) },
+  } as unknown as Repository
+  const svc = createService(repo, createEventBus())
+  const alice: User = { id: 'alice-id', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+
+  const result = await svc.subscribeByUrl(alice, url, 'webfeed')
+
+  expect(result).toEqual({ user: winner, followed: true })
+  expect(follows).toEqual([['alice-id', 'winner-id']])
+  expect(getByUrlCalls).toBe(2) // initial miss, then the post-mint re-resolve
 })

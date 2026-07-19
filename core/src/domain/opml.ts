@@ -3,6 +3,7 @@ import { feedUrls } from './feed.ts'
 import { HandleTakenError } from './types.ts'
 import type { User, NewRemoteUser } from './types.ts'
 import { slugBase } from './subscribe.ts'
+import { checkCallbackUrl } from './push-guard.ts'
 
 export function buildFollowingOpml(displayName: string, following: User[], publicUrl: string | null): string {
   const outlines: Array<{ type: 'rss'; text: string; xmlUrl: string }> = []
@@ -59,6 +60,8 @@ export interface ImportDeps {
   getUserByHandle: (h: string) => Promise<User | undefined>
   addRemoteUser: (i: NewRemoteUser) => Promise<User>
   addFollow: (follower: User, target: User) => Promise<void>
+  getSetting: (key: string) => Promise<string | undefined>
+  countRemoteSubscriptions: (userId: string) => Promise<number>
   publicUrl: string | null
 }
 
@@ -83,6 +86,13 @@ export async function importFollowingOpml(deps: ImportDeps, follower: User, body
   const capped = flat.slice(0, MAX_OUTLINES)
   let followed = 0, created = 0, skipped = flat.length - capped.length // H5: over-cap outlines count as skipped
 
+  // Addendum A: bound the follower's total person/webfeed subscriptions, same
+  // limit + counting rule as service.subscribeByUrl. Only follows that grow
+  // the count (Case 1 existing-remote, Case 3 create+follow) are gated —
+  // Case 2 (local) is unlimited, matching countRemoteSubscriptions itself.
+  const subCap = Number((await deps.getSetting('max_subs_per_user')) ?? '500')
+  let subCount = await deps.countRemoteSubscriptions(follower.id)
+
   for (const o of capped) {
     const xmlUrl = o.xmlUrl as string
     if (seenUrls.has(xmlUrl)) { skipped++; continue } // duplicate xmlUrl in file
@@ -91,14 +101,21 @@ export async function importFollowingOpml(deps: ImportDeps, follower: User, body
     try {
       // Case 1: a remote user already has this feedUrl.
       const existing = byFeedUrl.get(xmlUrl)
-      if (existing) { await deps.addFollow(follower, existing); followed++; continue }
+      if (existing) {
+        if (subCount >= subCap) { skipped++; continue }
+        await deps.addFollow(follower, existing); followed++; subCount++; continue
+      }
       // Case 2: one of our own minted local feed URLs (H2).
       const localHandle = localHandleForUrl(xmlUrl, deps.publicUrl)
       if (localHandle) {
         const localUser = await deps.getUserByHandle(localHandle)
         if (localUser && localUser.kind === 'local') { await deps.addFollow(follower, localUser); followed++; continue }
       }
-      // Case 3: create a remote user, then follow.
+      // Case 3: create a remote user, then follow — gated by the cap, and by
+      // the SSRF guard (Addendum A) since this is the only case that mints a
+      // NEW remote row the poller will fetch on a schedule.
+      if (subCount >= subCap) { skipped++; continue }
+      if (!(await checkCallbackUrl(xmlUrl)).ok) { skipped++; continue }
       const displayName = (o.text ?? o.title ?? '').trim() || xmlUrl
       const base = slugBase(o.text ?? o.title ?? '')
       let handleUser: User | undefined
@@ -117,7 +134,7 @@ export async function importFollowingOpml(deps: ImportDeps, follower: User, body
       if (!handleUser) { skipped++; continue } // exhausted attempts
       byFeedUrl.set(xmlUrl, handleUser)
       await deps.addFollow(follower, handleUser)
-      created++; followed++
+      created++; followed++; subCount++
     } catch {
       skipped++ // create/follow errored (e.g. non-http(s) xmlUrl) — keep going
     }

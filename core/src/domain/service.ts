@@ -166,12 +166,22 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       if (await repo.countRemoteSubscriptions(user.id) >= cap) return { error: 'cap' }
       const base = slugBase(new URL(url).host)
       const target = await mintRemoteUser((i) => repo.createRemoteUser(i), base, url, url, type)
-      if (!target) throw new DomainError('could not allocate a handle')
+      if (!target) {
+        // mintRemoteUser exhausts on HandleTakenError, which insertUser also
+        // throws for a UNIQUE(feed_url) collision (indistinguishable from a
+        // handle collision) — i.e. this also fires when a concurrent create
+        // won the feed_url race while we were retrying. Re-resolve instead of
+        // 500ing: the race loser follows the winner.
+        const raced = await repo.getRemoteUserByFeedUrl(url)
+        if (raced) { await repo.addFollow(user.id, raced.id); return { user: raced, followed: true } }
+        throw new DomainError('could not allocate a handle')
+      }
       await repo.addFollow(user.id, target.id)
       return { user: target, followed: true }
     },
     getSetting(key: string) { return repo.getSetting(key) },
     setSetting(key: string, value: string) { return repo.setSetting(key, value) },
+    countRemoteSubscriptions(userId: string) { return repo.countRemoteSubscriptions(userId) },
   }
 }
 

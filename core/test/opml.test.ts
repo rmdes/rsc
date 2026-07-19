@@ -40,6 +40,8 @@ async function importSetup(publicUrl: string | null) {
     getUserByHandle: (h: string) => repo.getUserByHandle(h),
     addRemoteUser: (i: { handle: string; displayName: string; feedUrl: string }) => svc.addRemoteUser(i),
     addFollow: (f: typeof follower, t: typeof follower) => svc.addFollow(f, t),
+    getSetting: (k: string) => repo.getSetting(k),
+    countRemoteSubscriptions: (userId: string) => repo.countRemoteSubscriptions(userId),
     publicUrl,
   }
   return { repo, svc, follower, deps }
@@ -47,16 +49,19 @@ async function importSetup(publicUrl: string | null) {
 
 test('import walks nested folders (H1), creates+follows, dedups by xmlUrl', async () => {
   const { repo, follower, deps } = await importSetup('https://cast.example')
+  // checkCallbackUrl (addendum A) runs real DNS for hostnames; the test sandbox
+  // has no reliable network, so Case-3 URLs use public IP literals (TEST-NET-3,
+  // RFC 5737 — reserved for docs) which checkCallbackUrl accepts without DNS.
   const opml = `<opml version="2.0"><head><title>t</title></head><body>
-    <outline text="Tech"><outline type="rss" text="A Blog" xmlUrl="https://a.com/f.xml"/></outline>
-    <outline type="rss" text="B" xmlUrl="https://b.com/f.xml"/>
-    <outline type="rss" text="B dup" xmlUrl="https://b.com/f.xml"/>
+    <outline text="Tech"><outline type="rss" text="A Blog" xmlUrl="https://203.0.113.10/f.xml"/></outline>
+    <outline type="rss" text="B" xmlUrl="https://203.0.113.11/f.xml"/>
+    <outline type="rss" text="B dup" xmlUrl="https://203.0.113.11/f.xml"/>
     <outline text="empty folder no url"/>
   </body></opml>`
   const r = await importFollowingOpml(deps, follower, opml)
   expect(r).toEqual({ followed: 2, created: 2, skipped: 1 }) // dup xmlUrl skipped; folder outline is structure, not a skip
   const following = await repo.listFollowing(follower.id)
-  expect(following.map((u) => u.feedUrl).sort()).toEqual(['https://a.com/f.xml', 'https://b.com/f.xml'])
+  expect(following.map((u) => u.feedUrl).sort()).toEqual(['https://203.0.113.10/f.xml', 'https://203.0.113.11/f.xml'])
 })
 
 test('import follows an existing remote by feedUrl (case 1) without creating a duplicate', async () => {
@@ -93,8 +98,8 @@ test('import skips non-http(s) xmlUrls without creating users (P1)', async () =>
 test('same-slug outlines collide on handle and get suffixed (H3)', async () => {
   const { repo, follower, deps } = await importSetup(null)
   const opml = `<opml><body>
-    <outline type="rss" text="My Blog!" xmlUrl="https://one.com/f.xml"/>
-    <outline type="rss" text="My Blog?" xmlUrl="https://two.com/f.xml"/>
+    <outline type="rss" text="My Blog!" xmlUrl="https://203.0.113.20/f.xml"/>
+    <outline type="rss" text="My Blog?" xmlUrl="https://203.0.113.21/f.xml"/>
   </body></opml>`
   const r = await importFollowingOpml(deps, follower, opml)
   expect(r.created).toBe(2)
@@ -103,12 +108,45 @@ test('same-slug outlines collide on handle and get suffixed (H3)', async () => {
 })
 
 test('outlines beyond MAX_OUTLINES cap are counted as skipped (H5)', async () => {
-  const { repo, follower, deps } = await importSetup(null)
-  const outlines = Array.from({ length: 1001 }, (_, i) => `<outline type="rss" text="F${i}" xmlUrl="https://f${i}.example/feed.xml"/>`)
+  const { repo, svc, follower, deps } = await importSetup(null)
+  await svc.setSetting('max_subs_per_user', '2000') // isolate MAX_OUTLINES from the addendum-A subscription cap (default 500)
+  // Same IP literal, distinct paths — checkCallbackUrl only inspects the host,
+  // so this stays a single synchronous IP check per outline (no DNS × 1001).
+  const outlines = Array.from({ length: 1001 }, (_, i) => `<outline type="rss" text="F${i}" xmlUrl="https://203.0.113.30/feed${i}.xml"/>`)
   const opml = `<opml><body>${outlines.join('')}</body></opml>`
   const r = await importFollowingOpml(deps, follower, opml)
   expect(r.created + r.skipped).toBe(1001)
   expect(r.skipped).toBeGreaterThanOrEqual(1)
   expect(r.created).toBe(1000)
   expect(r.skipped).toBe(1)
+})
+
+test('import stops creating/following once the per-user cap is hit (addendum A)', async () => {
+  const { repo, svc, follower, deps } = await importSetup(null)
+  await svc.setSetting('max_subs_per_user', '1')
+  const opml = `<opml><body>
+    <outline type="rss" text="One" xmlUrl="https://203.0.113.40/feed.xml"/>
+    <outline type="rss" text="Two" xmlUrl="https://203.0.113.41/feed.xml"/>
+  </body></opml>`
+  const r = await importFollowingOpml(deps, follower, opml)
+  expect(r).toEqual({ followed: 1, created: 1, skipped: 1 })
+  expect((await repo.listRemoteUsers()).length).toBe(1)
+})
+
+test('import respects the cap for an existing-remote follow (case 1), not just creates', async () => {
+  const { repo, svc, follower, deps } = await importSetup(null)
+  await svc.addRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
+  await svc.setSetting('max_subs_per_user', '0')
+  const opml = `<opml><body><outline type="rss" text="News" xmlUrl="https://ex.com/f.xml"/></body></opml>`
+  const r = await importFollowingOpml(deps, follower, opml)
+  expect(r).toEqual({ followed: 0, created: 0, skipped: 1 })
+  expect(await repo.listFollowing(follower.id)).toEqual([])
+})
+
+test('import skips a private/loopback xmlUrl without creating a row (addendum A SSRF)', async () => {
+  const { repo, follower, deps } = await importSetup(null)
+  const opml = `<opml><body><outline type="rss" text="Local" xmlUrl="http://127.0.0.1/feed.xml"/></body></opml>`
+  const r = await importFollowingOpml(deps, follower, opml)
+  expect(r).toEqual({ followed: 0, created: 0, skipped: 1 })
+  expect((await repo.listRemoteUsers()).length).toBe(0)
 })
