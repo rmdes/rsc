@@ -2,6 +2,7 @@ import { generateOpml, parseOpml } from 'feedsmith'
 import { feedUrls } from './feed.ts'
 import { HandleTakenError } from './types.ts'
 import type { User, NewRemoteUser } from './types.ts'
+import { slugBase } from './subscribe.ts'
 
 export function buildFollowingOpml(displayName: string, following: User[], publicUrl: string | null): string {
   const outlines: Array<{ type: 'rss'; text: string; xmlUrl: string }> = []
@@ -51,11 +52,6 @@ function flatten(outlines: Outline[] | undefined, out: Outline[]): void {
     if (typeof o.xmlUrl === 'string') out.push(o)
     if (o.outlines) flatten(o.outlines, out) // folders are structure, not feeds (H1)
   }
-}
-
-function slugBase(text: string): string {
-  const s = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 61) // 64 − room for "-50" (H3)
-  return s || 'feed'
 }
 
 export interface ImportDeps {

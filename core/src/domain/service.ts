@@ -3,6 +3,7 @@ import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
 import type { NewRemoteUser, NewLocalUser, TimelineEntry, TimelineCursor, User, Post } from './types.ts'
+import { slugBase, mintRemoteUser } from './subscribe.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 
@@ -153,6 +154,20 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       await repo.deletePost(id)
       return { ok: true }
     },
+    async subscribeByUrl(user: User, url: string, type: 'person' | 'webfeed'): Promise<{ user: User; followed: true } | { error: 'cap' }> {
+      const existing = await repo.getRemoteUserByFeedUrl(url)
+      // caller is a registered LOCAL user → addFollow's local-follower guard is satisfied by construction; call repo directly (service methods close over `repo`, not `this`).
+      if (existing) { await repo.addFollow(user.id, existing.id); return { user: existing, followed: true } }
+      const cap = Number(await repo.getSetting('max_subs_per_user') ?? '500')
+      if (await repo.countRemoteSubscriptions(user.id) >= cap) return { error: 'cap' }
+      const base = slugBase(new URL(url).host)
+      const target = await mintRemoteUser((i) => repo.createRemoteUser(i), base, url, url, type)
+      if (!target) throw new DomainError('could not allocate a handle')
+      await repo.addFollow(user.id, target.id)
+      return { user: target, followed: true }
+    },
+    getSetting(key: string) { return repo.getSetting(key) },
+    setSetting(key: string, value: string) { return repo.setSetting(key, value) },
   }
 }
 
