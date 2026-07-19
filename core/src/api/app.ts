@@ -6,6 +6,7 @@ import { sessionAuth, registeredOnly, requireAdmin, adminOrToken } from './auth.
 import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
+import { hideResolvedReplyContext } from '../domain/types.ts'
 import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, emittedGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml } from '../domain/opml.ts'
 import type { FeedContext } from '../domain/feed.ts'
@@ -107,6 +108,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     }
     const me = c.get('coreUser')
     const post = await service.createLocalPostAs(me.handle, me.displayName, content, replyTarget)
+    // local post — never carries reply-context (h-feed ingest only); no gate needed
     return c.json({ post }, 201)
   })
 
@@ -121,13 +123,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
     if (content === post.content) return c.json({ post }, 200) // no-op: no phantom revision
     const entry = await service.editLocalPost(post, content, me)
+    // local post — never carries reply-context (h-feed ingest only); no gate needed
     return c.json({ post: entry }, 200)
   })
 
   app.get('/posts/:id/revisions', async (c) => {
     const post = await service.getPost(c.req.param('id'))
     if (!post) return c.json({ error: 'unknown post' }, 404)
-    return c.json({ post, revisions: await service.getRevisions(post.id) })
+    return c.json({ post: hideResolvedReplyContext(post), revisions: await service.getRevisions(post.id) })
   })
 
   async function resolveUser(handleRaw: string): Promise<import('../domain/types.ts').User | undefined> {

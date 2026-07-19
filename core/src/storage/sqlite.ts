@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
+import { hideResolvedReplyContext } from '../domain/types.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -32,10 +33,10 @@ function rowToPushSubscription(r: PushSubscriptionsTable): PushSubscription {
 type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string; u_auth_user_id: string | null }
 
 function joinedRowToEntry(r: JoinedRow): TimelineEntry {
-  return {
+  return hideResolvedReplyContext({
     ...rowToPost(r),
     author: { id: r.u_id, kind: r.u_kind, handle: r.u_handle, displayName: r.u_display_name, feedUrl: r.u_feed_url, createdAt: r.u_created_at, authUserId: r.u_auth_user_id },
-  }
+  })
 }
 
 // A flat thread must never show a reply before the post it replies to. RSS's

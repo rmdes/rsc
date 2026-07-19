@@ -3,6 +3,7 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createApp } from '../src/api/app.ts'
+import { ingestItems, toParsedItem } from '../src/domain/ingest.ts'
 import { makeAuth, anonSession } from './auth-helper.ts'
 
 async function makeApp() {
@@ -150,6 +151,28 @@ test('rsscloud notify routes are 404 when pushInApi is not wired', async () => {
   const app = await makeApp()
   expect((await app.request('/rsscloud/notify?url=x&challenge=y')).status).toBe(404)
   expect((await app.request('/rsscloud/notify', { method: 'POST', body: new URLSearchParams({ url: 'x' }) })).status).toBe(404)
+})
+
+test('reply-context is nulled on a resolved reply, kept on an orphan (timeline + revisions)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus)
+  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo })
+  const feed = await repo.createRemoteUser({ handle: 'aaron', displayName: 'Aaron', feedUrl: 'https://e/f.xml' })
+  await repo.insertPost({ id: 'P', authorId: feed.id, source: 'remote', guid: 'pg', title: null, content: 'parent', url: 'https://a/1', publishedAt: '2026-07-19T00:00:00Z', createdAt: '2026-07-19T00:00:00Z', inReplyTo: null, inReplyToPostId: null, threadRootId: null })
+  const items = [
+    toParsedItem('rg', null, 'my reply', 'https://a/2', '2026-07-19T00:01:00Z', new Date().toISOString(), 'https://a/1', undefined, null, null, { author: 'aaronpk', snippet: 'nice one' }),
+    toParsedItem('rg-orphan', null, 'orphan reply', 'https://a/3', '2026-07-19T00:02:00Z', new Date().toISOString(), 'https://a/unknown', undefined, null, null, { author: 'someone', snippet: 'orphaned' }),
+  ]
+  await ingestItems(repo, bus, feed, items)
+  const { timeline } = await (await app.request('/timeline')).json()
+  const resolved = timeline.find((e: any) => e.inReplyToPostId)
+  const orphan = timeline.find((e: any) => !e.inReplyToPostId && e.replyContextAuthor)
+  expect(resolved.replyContextAuthor).toBeNull()
+  expect(orphan.replyContextAuthor).not.toBeNull()
+  // P2: the revisions route serializes getPost — also gated
+  const rev = await (await app.request(`/posts/${resolved.id}/revisions`)).json()
+  expect(rev.post.replyContextAuthor).toBeNull()
 })
 
 test('rsscloud notify route enforces the 64KB form body cap', async () => {

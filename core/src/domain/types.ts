@@ -36,6 +36,14 @@ export interface Post {
   replyContextSnippet?: string | null
 }
 
+// A resolved reply's reply-context is the replier's unverified claim about a
+// parent we now have for real — it must never leave core. Generic so it wraps
+// both a TimelineEntry (joinedRowToEntry, emitNewPost) and a bare Post (the
+// revisions route). Applied at every client-facing serialization site.
+export function hideResolvedReplyContext<T extends { inReplyToPostId?: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }>(e: T): T {
+  return e.inReplyToPostId ? { ...e, replyContextAuthor: null, replyContextSnippet: null } : e
+}
+
 export interface PostRevision {
   id: string
   postId: string
