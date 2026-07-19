@@ -91,7 +91,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (displayName !== undefined && !isString(displayName, 0, 200)) return c.json({ error: 'displayName invalid' }, 400)
     if (!isString(feedUrl, 1, 2048) || !isValidFeedUrl(feedUrl)) return c.json({ error: 'feedUrl invalid' }, 400)
     const effectiveDisplayName = typeof displayName === 'string' && displayName.trim() !== '' ? displayName : handle
-    const user = await service.addRemoteUser({ handle, displayName: effectiveDisplayName, feedUrl })
+    const user = await service.addRemoteUser({ handle, displayName: effectiveDisplayName, feedUrl, feedType: 'instance' })
     return c.json({ user }, 201)
   })
 

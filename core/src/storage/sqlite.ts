@@ -2,20 +2,21 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 
-interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null }
+interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
 interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
 interface PostRevisionsTable { id: string; post_id: string; title: string | null; content: string; content_markdown: string | null; seen_at: string }
-interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable; follows: FollowsTable; post_revisions: PostRevisionsTable }
+interface InstanceSettingsTable { key: string; value: string }
+interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable; follows: FollowsTable; post_revisions: PostRevisionsTable; instance_settings: InstanceSettingsTable }
 
 function rowToUser(r: UsersTable): User {
-  return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at, authUserId: r.auth_user_id }
+  return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at, authUserId: r.auth_user_id, feedType: r.feed_type }
 }
 
 function rowToPost(r: PostsTable): Post {
@@ -86,21 +87,23 @@ export class SqliteRepository implements Repository {
     return this.sqlite
   }
 
-  private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null, authUserId: string | null): Promise<User> {
-    const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString(), auth_user_id: authUserId }
+  private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null, authUserId: string | null, feedType: FeedType | null): Promise<User> {
+    const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString(), auth_user_id: authUserId, feed_type: feedType }
     try {
       await this.db.insertInto('users').values(row).execute()
     } catch (err) {
-      // In the createUser paths the reachable UNIQUE constraints are users.handle
-      // and users.auth_user_id (ids are fresh UUIDs). Both surface as HandleTakenError
-      // here; callers that need to distinguish re-check via getUserByAuthUserId.
+      // In the createUser paths the reachable UNIQUE constraints are users.handle,
+      // users.auth_user_id, and (as of migration 11) users.feed_url. handle/auth_user_id
+      // surface as HandleTakenError here; callers that need to distinguish re-check via
+      // getUserByAuthUserId. feed_url collisions also throw HandleTakenError — callers
+      // (opml.ts) already treat that as "try another handle" / skip, which is correct here too.
       if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new HandleTakenError('handle already taken')
       throw err
     }
     return rowToUser(row)
   }
-  createLocalUser(u: NewLocalUser) { return this.insertUser('local', u.handle, u.displayName, null, u.authUserId ?? null) }
-  createRemoteUser(u: NewRemoteUser) { return this.insertUser('remote', u.handle, u.displayName, u.feedUrl, null) }
+  createLocalUser(u: NewLocalUser) { return this.insertUser('local', u.handle, u.displayName, null, u.authUserId ?? null, null) }
+  createRemoteUser(u: NewRemoteUser) { return this.insertUser('remote', u.handle, u.displayName, u.feedUrl, null, u.feedType ?? 'webfeed') }
 
   async updateFeedUrl(userId: string, feedUrl: string) {
     await this.db.updateTable('users').set({ feed_url: feedUrl }).where('id', '=', userId).execute()
@@ -169,7 +172,7 @@ export class SqliteRepository implements Repository {
     const rows = await this.db
       .selectFrom('follows')
       .innerJoin('users', 'users.id', 'follows.followed_id')
-      .select(['users.id as id', 'users.kind as kind', 'users.handle as handle', 'users.display_name as display_name', 'users.feed_url as feed_url', 'users.created_at as created_at', 'users.auth_user_id as auth_user_id'])
+      .select(['users.id as id', 'users.kind as kind', 'users.handle as handle', 'users.display_name as display_name', 'users.feed_url as feed_url', 'users.created_at as created_at', 'users.auth_user_id as auth_user_id', 'users.feed_type as feed_type'])
       .where('follows.follower_id', '=', followerId)
       .orderBy('follows.created_at', 'asc')
       .orderBy('users.handle', 'asc') // deterministic tiebreak for same-ms follows (P2)
@@ -635,6 +638,17 @@ const MIGRATIONS: string[][] = [
   [
     'ALTER TABLE posts ADD COLUMN reply_context_author text',
     'ALTER TABLE posts ADD COLUMN reply_context_snippet text',
+  ],
+  [
+    'ALTER TABLE users ADD COLUMN feed_type text',
+    // instances = Textcasting peers: their items carry source:markdown (content_markdown).
+    `UPDATE users SET feed_type = 'instance'
+       WHERE kind='remote' AND EXISTS (SELECT 1 FROM posts p WHERE p.author_id = users.id AND p.content_markdown IS NOT NULL)`,
+    `UPDATE users SET feed_type = 'webfeed' WHERE kind='remote' AND feed_type IS NULL`,
+    // atomic find-or-create + backs getRemoteUserByFeedUrl. SQLite UNIQUE ignores NULLs (local rows). Same as users_auth_user_idx.
+    'CREATE UNIQUE INDEX users_feed_url_idx ON users (feed_url)',
+    `CREATE TABLE instance_settings (key text PRIMARY KEY, value text)`,
+    `INSERT INTO instance_settings (key, value) VALUES ('max_subs_per_user', '500')`,
   ],
 ]
 

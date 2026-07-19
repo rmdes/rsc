@@ -110,7 +110,7 @@ export async function importFollowingOpml(deps: ImportDeps, follower: User, body
         const candidate = n === 1 ? base : `${base}-${n}`
         if (assignedHandles.has(candidate)) continue // same-slug collision within this file (H3)
         try {
-          handleUser = await deps.addRemoteUser({ handle: candidate, displayName, feedUrl: xmlUrl })
+          handleUser = await deps.addRemoteUser({ handle: candidate, displayName, feedUrl: xmlUrl, feedType: 'webfeed' })
           assignedHandles.add(candidate)
           break
         } catch (err) {

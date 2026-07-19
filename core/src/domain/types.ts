@@ -4,6 +4,7 @@ export class HandleTakenError extends DomainError {}
 
 export type UserKind = 'local' | 'remote'
 export type PostSource = 'local' | 'remote'
+export type FeedType = 'person' | 'webfeed' | 'instance'
 
 export interface User {
   id: string
@@ -13,6 +14,7 @@ export interface User {
   feedUrl: string | null
   createdAt: string
   authUserId: string | null
+  feedType?: FeedType | null
 }
 
 export interface Post {
@@ -54,7 +56,7 @@ export interface PostRevision {
 }
 
 export interface NewLocalUser { handle: string; displayName: string; authUserId?: string }
-export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string }
+export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string; feedType?: FeedType }
 export type TimelineEntry = Post & { author: User }
 export interface TimelineCursor { publishedAt: string; id: string }
 
