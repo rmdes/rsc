@@ -21,3 +21,15 @@ test('thread lens keeps the root and its descendants only', () => {
   expect(keepEvent({ ...entry('a'), threadRootId: 'root' }, lens)).toBe(true)
   expect(keepEvent(entry('a'), lens)).toBe(false)
 })
+
+test('source lens keeps only local posts', () => {
+  expect(keepEvent({ ...entry('a'), source: 'local' }, { kind: 'source', source: 'local' })).toBe(true)
+  expect(keepEvent(entry('a'), { kind: 'source', source: 'local' })).toBe(false)
+})
+
+test('feedType lens keeps only instance authors', () => {
+  const e = entry('a')
+  e.author.feedType = 'instance'
+  expect(keepEvent(e, { kind: 'feedType', feedType: 'instance' })).toBe(true)
+  expect(keepEvent(entry('b'), { kind: 'feedType', feedType: 'instance' })).toBe(false) // feedType absent → dropped
+})

@@ -7,7 +7,7 @@ export interface TimelineEntry {
 	url: string | null
 	publishedAt: string
 	source: 'local' | 'remote'
-	author: { id: string; handle: string; displayName: string; kind: 'local' | 'remote'; feedUrl?: string | null }
+	author: { id: string; handle: string; displayName: string; kind: 'local' | 'remote'; feedUrl?: string | null; feedType?: 'person' | 'webfeed' | 'instance' | null }
 	inReplyTo?: string | null
 	inReplyToPostId?: string | null
 	replyContextAuthor?: string | null

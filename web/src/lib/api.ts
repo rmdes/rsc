@@ -20,7 +20,7 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 
 export async function getTimeline(
 	f: typeof fetch,
-	opts: { before?: string; followedBy?: string; author?: string } = {}
+	opts: { before?: string; followedBy?: string; author?: string; source?: 'local'; feedType?: 'instance' } = {}
 ): Promise<TimelinePage> {
 	// Build the query manually with encodeURIComponent — NOT URLSearchParams.
 	// The cursor wire format is `<publishedAt>~<id>`; URLSearchParams'
@@ -30,6 +30,8 @@ export async function getTimeline(
 	if (opts.before) params.push(`before=${encodeURIComponent(opts.before)}`)
 	if (opts.followedBy) params.push(`followed_by=${encodeURIComponent(opts.followedBy)}`)
 	if (opts.author) params.push(`author=${encodeURIComponent(opts.author)}`)
+	if (opts.source) params.push(`source=${opts.source}`)
+	if (opts.feedType) params.push(`feed_type=${opts.feedType}`)
 	if (params.length) url.search = params.join('&')
 	const res = await f(url.toString())
 	if (!res.ok) throw new Error(await errorMessage(res, `timeline ${res.status}`))

@@ -194,3 +194,11 @@ test('revokeSession POSTs the token to the revoke endpoint', async () => {
 	expect(url).toContain('/api/auth/multi-session/revoke')
 	expect(JSON.parse(String(init.body))).toEqual({ sessionToken: 'old' })
 })
+
+test('getTimeline threads source and feed_type params', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 }))
+	await getTimeline(f as unknown as typeof fetch, { source: 'local' })
+	expect(String((f.mock.calls[0] as unknown as [string])[0])).toContain('source=local')
+	await getTimeline(f as unknown as typeof fetch, { feedType: 'instance' })
+	expect(String((f.mock.calls[1] as unknown as [string])[0])).toContain('feed_type=instance')
+})
