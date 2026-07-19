@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // federation-demo.mjs — end-to-end proof that one conversation federates across
-// three SEPARATE Textcaster instances over nothing but RSS.
+// three SEPARATE RSC instances over nothing but RSS.
 //
 // It drives each instance's INTERNAL core API (core is not publicly exposed;
 // only feeds/federation are), reaching it via `cloudron exec <app> -- curl
@@ -153,7 +153,7 @@ async function main() {
 
   log('\n═══════════ ✅ FEDERATION PROVEN ═══════════')
   log('A 4-hop conversation federated main→alice→bob→main across three separate')
-  log('Textcaster instances over plain RSS, threading correctly at each hop.')
+  log('RSC instances over plain RSS, threading correctly at each hop.')
   log(`\nView the full thread on any instance, e.g.: ${p1.url}`)
 }
 

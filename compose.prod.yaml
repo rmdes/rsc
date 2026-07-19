@@ -1,10 +1,10 @@
-# Textcaster — PROD stack for VPS self-host. Caddy terminates HTTPS and fronts
+# RSC — PROD stack for VPS self-host. Caddy terminates HTTPS and fronts
 # everything; core publishes NO host ports (backend-only isolation). Federation
 # (WebSub/rssCloud) is ON. Run: docker compose -f compose.prod.yaml up -d --build
 services:
   caddy:
     image: caddy:2-alpine
-    container_name: textcaster-caddy
+    container_name: rsc-caddy
     depends_on:
       web:
         condition: service_healthy
@@ -28,7 +28,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.web
-    container_name: textcaster-web
+    container_name: rsc-web
     environment:
       CORE_API_URL: http://core:8787
       PORT: "3000"
@@ -55,7 +55,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.core
-    container_name: textcaster-core
+    container_name: rsc-core
     environment:
       RSC_AUTH_SECRET: ${RSC_AUTH_SECRET:?Set RSC_AUTH_SECRET (run scripts/generate-env.sh)}
       RSC_TOKEN: ${RSC_TOKEN:?Set RSC_TOKEN (run scripts/generate-env.sh)}
@@ -66,7 +66,7 @@ services:
       RSC_RSSCLOUD: ${RSC_RSSCLOUD:-on}
       RSC_PUSH_IN: ${RSC_PUSH_IN:-on}
       RSC_SMTP_URL: ${RSC_SMTP_URL:-smtp://mailpit:1025}
-      RSC_MAIL_FROM: ${RSC_MAIL_FROM:-textcaster@${RSC_DOMAIN}}
+      RSC_MAIL_FROM: ${RSC_MAIL_FROM:-rsc@${RSC_DOMAIN}}
     volumes:
       - core-data:/data
     healthcheck:
@@ -84,7 +84,7 @@ services:
 
   mailpit:
     image: axllent/mailpit:latest
-    container_name: textcaster-mailpit
+    container_name: rsc-mailpit
     environment:
       MP_WEBROOT: /mail
     restart: unless-stopped

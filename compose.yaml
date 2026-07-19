@@ -1,10 +1,10 @@
-# Textcaster — DEV stack. `docker compose up` and edit on the host; core
+# RSC — DEV stack. `docker compose up` and edit on the host; core
 # (node --watch) and web (vite) hot-reload in the containers. Push federation
 # is OFF here (no PUBLIC_URL). Mailpit UI is unprotected — localhost only.
 services:
   mailpit:
     image: axllent/mailpit:latest
-    container_name: textcaster-mailpit
+    container_name: rsc-mailpit
     ports:
       - "127.0.0.1:8025:8025" # web UI (read verify/magic-link emails here)
       - "127.0.0.1:1025:1025" # SMTP (also reachable in-network as mailpit:1025)
@@ -12,7 +12,7 @@ services:
 
   core:
     image: node:22-bookworm-slim
-    container_name: textcaster-core
+    container_name: rsc-core
     working_dir: /app
     # One npm ci populates the shared root node_modules volume (workspaces
     # hoist), then core runs in watch mode. web waits for core to be healthy.
@@ -21,7 +21,7 @@ services:
       RSC_AUTH_SECRET: dev-secret-not-for-production-000000000000
       RSC_TOKEN: dev-token
       RSC_SMTP_URL: smtp://mailpit:1025
-      RSC_MAIL_FROM: textcaster@localhost
+      RSC_MAIL_FROM: rsc@localhost
       RSC_DB: /app/core/data/dev.db
       RSC_WEB_ORIGIN: http://localhost:5173
       # Dev-only: serves the better-auth OpenAPI reference at
@@ -52,7 +52,7 @@ services:
 
   web:
     image: node:22-bookworm-slim
-    container_name: textcaster-web
+    container_name: rsc-web
     working_dir: /app
     # node_modules is already populated by core's npm ci (shared volume); just
     # run vite. --host exposes the dev server outside the container.

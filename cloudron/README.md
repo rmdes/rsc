@@ -1,6 +1,6 @@
-# Textcaster on Cloudron
+# RSC on Cloudron
 
-Packages Textcaster (core + web + nginx) as a single Cloudron app. SQLite on
+Packages RSC (core + web + nginx) as a single Cloudron app. SQLite on
 the `localstorage` addon; email via the `sendmail` addon. See the design at
 `docs/superpowers/specs/2026-07-18-textcaster-cloudron-design.md`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate .env for Textcaster. Prod (default) fills domain + strong secrets +
+# Generate .env for RSC. Prod (default) fills domain + strong secrets +
 # the Mailpit bcrypt hash; --dev writes a localhost dev .env (weak, push off).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,7 +18,7 @@ EOF
 	exit 0
 fi
 
-read -rp "Domain (e.g. textcaster.example.com): " DOMAIN
+read -rp "Domain (e.g. rsc.example.com): " DOMAIN
 read -rsp "Mailpit /mail password: " MP_PW; echo
 # Pipe the password via stdin, NOT --plaintext as an argv: a CLI arg is visible
 # in `ps`/audit logs to any local user, defeating the silent read above.

@@ -1,5 +1,5 @@
 {
-	"name": "@textcaster/web",
+	"name": "@rsc/web",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",

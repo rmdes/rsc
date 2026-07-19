@@ -56,10 +56,10 @@ export XFF_DEPTH="2"
 chown -R cloudron:cloudron /app/data
 
 # nginx first, so the health check answers during boot.
-cp /app/pkg/nginx.conf /run/textcaster-nginx.conf
+cp /app/pkg/nginx.conf /run/rsc-nginx.conf
 mkdir -p /run/nginx-body /run/nginx-proxy /run/nginx-fastcgi /run/nginx-uwsgi /run/nginx-scgi
 echo "==> Starting nginx on :8000"
-nginx -c /run/textcaster-nginx.conf &
+nginx -c /run/rsc-nginx.conf &
 
 # core (migrations run automatically at boot) — write diagnostics under /tmp.
 echo "==> Starting core on :8787"

@@ -1,4 +1,4 @@
-# Textcaster — common tasks. `make` (no target) lists everything.
+# RSC — common tasks. `make` (no target) lists everything.
 # Two ways to run: Docker (one command) or local Node (npm workspaces).
 .DEFAULT_GOAL := help
 .PHONY: help up down logs install dev-core dev-web test check \

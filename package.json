@@ -1,5 +1,5 @@
 {
-  "name": "textcaster",
+  "name": "rsc",
   "private": true,
   "type": "module",
   "workspaces": ["core", "web"],
