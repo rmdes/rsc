@@ -38,6 +38,7 @@
 - **Modify `core/src/domain/bus.ts`** — `emitNewPost` (gate) + value import.
 - **Modify `core/src/api/app.ts`** — `GET /posts/:id/revisions` (gate) + value import; comments on `POST`/`PATCH`.
 - **Create `web/src/lib/ReplyContext.svelte`** — the plain-text context render.
+- **Modify `web/vitest.config.ts`** — add `plugins: [svelte()]` (already-present devDep) so `.svelte` imports compile in tests.
 - **Modify `web/src/lib/types.ts`** (`TimelineEntry`), **`web/src/app.css`** (`.reply-context`), the **four** surfaces.
 - **Tests:** `core/test/discovery.test.ts` (create/extend), `core/test/ingest.test.ts` (extend), `core/test/api.test.ts` (extend — **not** `app.test.ts`), `web/src/lib/ReplyContext.test.ts` (create).
 
@@ -335,7 +336,27 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 <span class="reply-context">In reply to {author}{#if snippet}: “{snippet}”{/if}{#if url} <a class="reply-context" href={url} rel="noreferrer">↗</a>{/if}</span>
 ```
 
-- [ ] **Step 5: Write the failing component test** (`web/src/lib/ReplyContext.test.ts`) — SSR via `svelte/server` (already installed; no DOM env needed, runs in the existing node harness)
+- [ ] **Step 5: Enable Svelte-component compilation in the test config** — `web/vitest.config.ts` currently has **no svelte plugin**, so an `import … from './ReplyContext.svelte'` won't compile at all. Add the plugin (already a devDependency `@sveltejs/vite-plugin-svelte` — no new dep):
+
+```ts
+import { defineConfig } from 'vitest/config'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
+
+export default defineConfig({
+	plugins: [svelte()],
+	test: { include: ['src/**/*.test.ts'] },
+	resolve: {
+		alias: {
+			'$env/dynamic/private': new URL('./test/env-stub.ts', import.meta.url).pathname,
+			$lib: new URL('./src/lib', import.meta.url).pathname
+		}
+	}
+})
+```
+
+vitest's node environment runs the SSR transform, so `svelte/server`'s `render()` works with no DOM env.
+
+- [ ] **Step 6: Write the failing component test** (`web/src/lib/ReplyContext.test.ts`) — SSR via `svelte/server` (runs in the node harness, DOM-free)
 
 ```ts
 import { test, expect } from 'vitest'
@@ -362,7 +383,7 @@ test('author/snippet are escaped text, not HTML (security boundary)', () => {
 
 Run: `npm test -w web -- ReplyContext` → FAIL (component absent).
 
-- [ ] **Step 6: Place the block on the four surfaces**
+- [ ] **Step 7: Place the block on the four surfaces**
 
 **Three timeline surfaces — identical** (`web/src/routes/+page.svelte`, `web/src/routes/u/[handle]/+page.svelte`, `web/src/routes/u/[handle]/following/+page.svelte`): add `import ReplyContext from '$lib/ReplyContext.svelte'` and replace each existing bare-link block (the `{#if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}<a class="source">in reply to ↗</a>{/if}`) with:
 
@@ -386,12 +407,12 @@ Run: `npm test -w web -- ReplyContext` → FAIL (component absent).
 {/if}
 ```
 
-- [ ] **Step 7: Verify** — `npm test -w web -- ReplyContext` → PASS; `npm run check -w web` (0 errors), `npm run build -w web`, `npm test -w web`. If a `.vite-temp` EACCES blocks host svelte-check, clear it: `sudo rm -rf web/node_modules/.vite-temp` (do NOT route tests through the container — `CORE_API_URL` breaks URL-asserting tests).
+- [ ] **Step 8: Verify** — `npm test -w web -- ReplyContext` → PASS; `npm run check -w web` (0 errors), `npm run build -w web`, `npm test -w web`. If a `.vite-temp` EACCES blocks host svelte-check, clear it: `sudo rm -rf web/node_modules/.vite-temp` (do NOT route tests through the container — `CORE_API_URL` breaks URL-asserting tests).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add web/src/lib/ReplyContext.svelte web/src/lib/ReplyContext.test.ts web/src/lib/types.ts web/src/app.css web/src/routes/+page.svelte "web/src/routes/post/[id]/+page.svelte" "web/src/routes/u/[handle]/+page.svelte" "web/src/routes/u/[handle]/following/+page.svelte"
+git add web/vitest.config.ts web/src/lib/ReplyContext.svelte web/src/lib/ReplyContext.test.ts web/src/lib/types.ts web/src/app.css web/src/routes/+page.svelte "web/src/routes/post/[id]/+page.svelte" "web/src/routes/u/[handle]/+page.svelte" "web/src/routes/u/[handle]/following/+page.svelte"
 git commit -m "web: render embedded reply-context (ReplyContext.svelte) on the four unresolved-reply surfaces
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
@@ -404,4 +425,5 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - **Order:** 1 (parse) → 2 (persist) → 3 (gate) → 4 (web). 2 depends on 1's `ParsedItem` fields; 3 depends on 2's `Post`/`rowToPost`; 4 depends on 2–3's serialized fields.
 - **Reviews folded:** the spec is rev 4 (ponytail rev 1 + parallel-session spec review rev 2 + plan ponytail rev 3 + plan parallel-session review rev 4). This plan incorporates the plan review's P1–P10: component-based render tested via `svelte/server` (P1, no new dep); three gate sites incl. `/posts/:id/revisions` (P2); `truncate` trims-before-cut (P3) + exported + tested (P8); author-required context (P4); post-detail's own block (P5); explicit value imports (P6); `api.test.ts` not `app.test.ts` (P7); author-only render test (P9); real Task-2 helpers (P10); `hono`-skill step on Task 3 (minor).
 - **Verify test-file names against the real tree** before writing; match each file's existing harness. `u/[handle]`'s inner `others` stacked-conversation loop intentionally renders no context block (those are resolved + gated) — leave it.
+- **Rev 5 (plan re-review):** Task 4 Step 5 adds `plugins: [svelte()]` to `web/vitest.config.ts` — it had no svelte plugin, so a `.svelte` import wouldn't compile in tests. `@sveltejs/vite-plugin-svelte` is already a devDependency (no new dep); the config file is staged in Task 4's commit.
 - **Shared checkout:** confirm `npm test -w core` is green on HEAD before starting.
