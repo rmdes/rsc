@@ -82,6 +82,9 @@ function parseInReplyTo(irt: unknown): {
       cite.author && typeof cite.author === 'object' && typeof (cite.author as { name?: unknown }).name === 'string'
         ? (cite.author as { name: string }).name
         : typeof cite.author === 'string' ? cite.author : null
+    // P4: context is author-keyed at render (§4). A snippet with no author is
+    // unrenderable dead data — drop the whole context (keep the ref for threading).
+    if (!author) return { ref, contextAuthor: null, contextSnippet: null }
     // content is { html, text } — but `text` is omitted for html-only content,
     // so that case yields no snippet → author-only line (§4), not “”.
     const rawSnippet =
@@ -214,22 +217,25 @@ maps them — **no new Hono route, no field whitelist.** (Read the installed Hon
 if any route/serialization detail is uncertain; do not add a route.)
 
 **Trust gate at the serialization choke points (F8) — enforce "the real post
-always wins" ONCE:** a resolved reply must never ship its unverified claim. Null
-`replyContextAuthor`/`replyContextSnippet` whenever `inReplyToPostId` is set, via
-one helper `hideResolvedReplyContext(e: TimelineEntry): TimelineEntry` applied at
-the **two** places client-facing entries are produced:
+always wins":** a resolved reply must never ship its unverified claim. A helper
+`hideResolvedReplyContext<T extends { inReplyToPostId?: string | null;
+replyContextAuthor?: string | null; replyContextSnippet?: string | null }>(e: T):
+T` (generic — it wraps both `TimelineEntry` and bare `Post`) nulls the two fields
+when `inReplyToPostId` is set, applied at the **three** places a reply's context
+can reach the client:
 - **`joinedRowToEntry`** (`sqlite.ts:34`) — the single `TimelineEntry` mapper
   (`{ ...rowToPost(r), author }`) behind `getTimeline`, `getThread`, **and
-  `getTimelineAfter` (the SSE reconnect-replay path)** and the firehose; and
+  `getTimelineAfter` (the SSE reconnect-replay path)** and the firehose;
 - **`emitNewPost`** (`core/src/domain/bus.ts`) — the live SSE emit, whose
-  in-memory literals bypass the DB mapper.
+  in-memory literals bypass the DB mapper; and
+- **`GET /posts/:id/revisions`** (`core/src/api/app.ts:127-130`) — returns a bare
+  `getPost` `Post` to the web history page (P2: `getPost` is **not** internal-only).
 
-These two cover **every** client-facing path — including the reconnect-replay an
-app-route-level gate would miss — while leaving `getPost` (internal, never
-client-serialized for reply-context) raw. Both sites take/return `TimelineEntry`,
-so the helper needs no generic. The four render copies (§4) can't individually
-leak it, and the render guard still checks `!inReplyToPostId` as
-defense-in-depth.
+`getPost`'s other client-facing callers are safe by invariant, not by the gate:
+`POST /posts` and `PATCH /posts/:id` serialize only **local** posts, which never
+carry reply-context (it is captured on the h-feed ingest path only) — worth one
+code comment where each returns. The render guard still checks `!inReplyToPostId`
+as defense-in-depth.
 
 Web-type change: add `replyContextAuthor?`/`replyContextSnippet?` to
 `TimelineEntry` (`web/src/lib/types.ts`); check whether `web/src/lib/api.ts`
@@ -310,6 +316,17 @@ serializes with `replyContext*` = `null`; an unresolved one keeps them.
 - The RSS/Atom reply path (already string-based, unaffected).
 
 ## Revisions
+
+**Rev 4 (2026-07-19)** — folded a parallel-session review of the *plan*
+(`docs/superpowers/reviews/2026-07-19-reply-context-plan-review.md`), two items of
+which touch this spec: **P2** — the gate covers **three** sites, not two: the
+reviewer falsified "getPost is internal / covers every path" by finding
+`GET /posts/:id/revisions` ships a raw `getPost` `Post` to the web history page,
+so `hideResolvedReplyContext` is **generic** again (Post + TimelineEntry),
+reversing rev-3's "no generic" (rev-3's path analysis was incomplete). **P4** —
+`parseInReplyTo` now **requires an author** for any context (a snippet with no
+author is unrenderable under §4's author-keyed guard — dead data). The other
+eight findings are plan-only (test harness, code-sketch bugs, implementer traps).
 
 **Rev 3 (2026-07-19)** — folded a ponytail review of the *plan* that traced the
 real serialization paths: the §5 gate moves from an app-route-level shaping step
