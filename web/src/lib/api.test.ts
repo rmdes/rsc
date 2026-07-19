@@ -15,7 +15,10 @@ import {
 	listDeviceSessions,
 	getActiveAuthUserId,
 	setActiveSession,
-	revokeSession
+	revokeSession,
+	subscribeToFeed,
+	getAdminSettings,
+	patchAdminSettings
 } from './api.ts'
 
 const entry = {
@@ -201,4 +204,26 @@ test('getTimeline threads source and feed_type params', async () => {
 	expect(String((f.mock.calls[0] as unknown as [string])[0])).toContain('source=local')
 	await getTimeline(f as unknown as typeof fetch, { feedType: 'instance' })
 	expect(String((f.mock.calls[1] as unknown as [string])[0])).toContain('feed_type=instance')
+})
+
+test('subscribeToFeed posts url+type and returns user/followed', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'u1', handle: 'feed', displayName: 'F', kind: 'remote' }, followed: true }), { status: 201 }))
+	const out = await subscribeToFeed(f as unknown as typeof fetch, { url: 'https://ex.com/f.xml', type: 'webfeed' })
+	expect(out.followed).toBe(true)
+	const [, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(JSON.parse(String(init.body))).toEqual({ url: 'https://ex.com/f.xml', type: 'webfeed' })
+})
+
+test('subscribeToFeed surfaces the cap error string', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'subscription limit reached' }), { status: 429 }))
+	await expect(subscribeToFeed(f as unknown as typeof fetch, { url: 'https://ex.com/f.xml', type: 'webfeed' })).rejects.toThrow('subscription limit reached')
+})
+
+test('admin settings wrappers hit GET and PATCH', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ maxSubsPerUser: 500 }), { status: 200 }))
+	expect(await getAdminSettings(f as unknown as typeof fetch)).toEqual({ maxSubsPerUser: 500 })
+	await patchAdminSettings(f as unknown as typeof fetch, { maxSubsPerUser: 250 })
+	const [, patchInit] = f.mock.calls[1] as unknown as [string, RequestInit]
+	expect(patchInit.method).toBe('PATCH')
+	expect(JSON.parse(String(patchInit.body))).toEqual({ maxSubsPerUser: 250 })
 })

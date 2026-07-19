@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getTimeline, getPeers, getFollowing, createPost, addRemoteUser, deletePost } from '$lib/api'
+import { getTimeline, getPeers, getFollowing, createPost, subscribeToFeed, deletePost } from '$lib/api'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 import { TABS, resolveTab, tabFilter } from '$lib/tabs'
@@ -47,20 +47,24 @@ export const actions = {
 		}
 		throw redirect(303, tabHome(event.url))
 	},
-	addRemote: async (event) => {
+	subscribe: async (event) => {
 		const form = await event.request.formData()
-		const handle = String(form.get('handle') ?? '').trim()
-		const displayName = String(form.get('displayName') ?? '').trim() || handle
-		const feedUrl = String(form.get('feedUrl') ?? '').trim()
-		if (!handle || !feedUrl) return fail(400, { error: 'handle and feedUrl are required' })
+		const url = String(form.get('url') ?? '').trim()
+		const type = String(form.get('type') ?? '')
+		if (!url) return fail(400, { error: 'url is required' })
+		if (type !== 'person' && type !== 'webfeed') return fail(400, { error: 'type invalid' })
+		let result
 		try {
-			// no mint: adding feeds is registered-only; a sessionless POST gets core's 401/403
+			// no mint: subscribing is registered-only; a sessionless POST gets core's 401/403
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
-			await addRemoteUser(f, { handle, displayName, feedUrl })
+			result = await subscribeToFeed(f, { url, type })
 		} catch (err) {
-			return fail(400, { error: err instanceof Error ? err.message : 'addRemoteUser failed' })
+			return fail(400, { error: err instanceof Error ? err.message : 'subscribe failed' })
 		}
-		throw redirect(303, `/?tab=public&feed=${encodeURIComponent(handle)}`)
+		// Landing tab = where the outcome is visible (deliberate exception to tabHome):
+		// followed → personal (+flash); instance → federated; own feed → personal. No flash unless followed.
+		if (result.followed) throw redirect(303, `/?tab=personal&feed=${encodeURIComponent(result.user.handle)}`)
+		throw redirect(303, result.user.kind === 'local' ? '/?tab=personal' : '/?tab=federated')
 	},
 	deletePost: async (event) => {
 		const form = await event.request.formData()

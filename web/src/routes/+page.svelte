@@ -84,12 +84,13 @@
 
 		{#if data.me && !data.me.isAnonymous}
 			<details class="panel">
-				<summary>Add remote user</summary>
-				<form method="POST" action="?tab={data.tab}&/addRemote" class="add-remote">
-					<input name="handle" placeholder="remote handle" required />
-					<input name="displayName" placeholder="display name (optional)" />
-					<input name="feedUrl" type="url" placeholder="https://their-site.com/feed.xml" required />
-					<button>Add remote user</button>
+				<summary>Subscribe to a feed</summary>
+				<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
+					<label class="visually-hidden" for="sub-url">Feed URL</label>
+					<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
+					<label><input type="radio" name="type" value="webfeed" checked /> a site or publication</label>
+					<label><input type="radio" name="type" value="person" /> an individual</label>
+					<button>Subscribe</button>
 				</form>
 			</details>
 		{:else}
@@ -109,7 +110,7 @@
 		{/if}
 
 		{#if data.addedFeed}
-			<p class="notice confirm" role="status">Now monitoring <strong>@{data.addedFeed}</strong> — its posts appear in your timeline as they publish.</p>
+			<p class="notice confirm" role="status">Now following <strong>@{data.addedFeed}</strong>.</p>
 		{/if}
 
 		{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}

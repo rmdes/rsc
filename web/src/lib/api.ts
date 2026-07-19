@@ -228,3 +228,31 @@ export async function revokeSession(f: typeof fetch, sessionToken: string): Prom
 	if (!res.ok) throw new Error(await errorMessage(res, `revoke ${res.status}`))
 	return res
 }
+
+export async function subscribeToFeed(
+	f: typeof fetch,
+	input: { url: string; type: 'person' | 'webfeed' }
+): Promise<{ user: TimelineEntry['author']; followed: boolean }> {
+	const res = await f(`${base()}/me/subscriptions`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(input)
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, `subscribe ${res.status}`))
+	return (await res.json()) as { user: TimelineEntry['author']; followed: boolean }
+}
+
+export async function getAdminSettings(f: typeof fetch): Promise<{ maxSubsPerUser: number }> {
+	const res = await f(`${base()}/admin/settings`)
+	if (!res.ok) throw new Error(await errorMessage(res, 'getAdminSettings failed'))
+	return (await res.json()) as { maxSubsPerUser: number }
+}
+
+export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser: number }): Promise<void> {
+	const res = await f(`${base()}/admin/settings`, {
+		method: 'PATCH',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body)
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, 'patchAdminSettings failed'))
+}

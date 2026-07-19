@@ -63,27 +63,32 @@ test('compose returns fail(400) when the core rejects the request', async () => 
 	expect((res as { data: { error: string } }).data.error).toMatch(/createPost/)
 })
 
-test('addRemote posts to the core (no mint, plain cookie forward) and redirects', async () => {
-	const fetch = vi.fn(async () => new Response(null, { status: 201 }))
-	const event = sessionedEvent(formRequest('addRemote', { handle: 'bob', feedUrl: 'https://example.com/feed.xml' }), fetch)
-	// Redirect carries the added handle so the home page can flash a confirmation.
-	await expect(actions.addRemote(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=public&feed=bob' })
-	expect(fetch).toHaveBeenCalled()
+
+test('subscribe follows a feed and redirects to the personal river', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'r1', handle: 'blog', displayName: 'B', kind: 'remote', feedType: 'webfeed' }, followed: true }), { status: 201 }))
+	const event = sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'webfeed' }), fetch)
+	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=blog' })
 })
 
-test('addRemote fails without feedUrl', async () => {
-	const fetch = vi.fn()
-	const event = sessionedEvent(formRequest('addRemote', { handle: 'bob' }), fetch)
-	const res = await actions.addRemote(event as never)
-	expect(res).toMatchObject({ status: 400 })
+test('subscribe to an instance URL lands on federated with no flash', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'i1', handle: 'peer', displayName: 'P', kind: 'remote', feedType: 'instance' }, followed: false }), { status: 200 }))
+	const event = sessionedEvent(formRequest('subscribe', { url: 'https://peer.ex/f.xml', type: 'webfeed' }), fetch)
+	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=federated' })
 })
 
-test('addRemote returns fail(400) when the core rejects the request', async () => {
-	const fetch = vi.fn(async () => new Response(null, { status: 400 }))
-	const event = sessionedEvent(formRequest('addRemote', { handle: 'bob', feedUrl: 'https://example.com/feed.xml' }), fetch)
-	const res = await actions.addRemote(event as never)
-	expect(res).toMatchObject({ status: 400 })
-	expect((res as { data: { error: string } }).data.error).toMatch(/addRemoteUser/)
+test('subscribe to your own feed URL lands on personal with no flash', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'me1', handle: 'me', displayName: 'Me', kind: 'local' }, followed: false }), { status: 200 }))
+	const event = sessionedEvent(formRequest('subscribe', { url: 'https://x/users/me/feed.xml', type: 'webfeed' }), fetch)
+	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal' })
+})
+
+test('subscribe surfaces the cap error and rejects a bad type', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'subscription limit reached' }), { status: 429 }))
+	const capped = await actions.subscribe(sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'webfeed' }), fetch) as never)
+	expect(capped).toMatchObject({ status: 400 })
+	expect((capped as { data: { error: string } }).data.error).toMatch(/subscription limit reached/)
+	const bad = await actions.subscribe(sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'nope' }), fetch) as never)
+	expect(bad).toMatchObject({ status: 400 })
 })
 
 test('SvelteKit CSRF origin check stays on (SEC-2: it is the real browser-boundary defense)', () => {
@@ -104,8 +109,3 @@ test('compose redirects back to the active tab; invalid tab params are dropped',
 	await expect(actions.compose(bad as never)).rejects.toMatchObject({ status: 303, location: '/' })
 })
 
-test('addRemote redirects to the public tab where the new feed is visible', async () => {
-	const fetch = vi.fn(async (..._args: unknown[]) => new Response(JSON.stringify({ user: {} }), { status: 201 }))
-	const event = sessionedEvent(formRequest('addRemote', { handle: 'news', feedUrl: 'https://ex.com/f.xml' }), fetch)
-	await expect(actions.addRemote(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=public&feed=news' })
-})
