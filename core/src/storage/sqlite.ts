@@ -234,7 +234,13 @@ export class SqliteRepository implements Repository {
     if (filter?.feedType) q = q.where('users.feed_type', '=', filter.feedType)
     if (filter?.followedBy) {
       const followerId = filter.followedBy
-      q = q.where('posts.author_id', 'in', (eb) => eb.selectFrom('follows').select('followed_id').where('follower_id', '=', followerId))
+      // Personal river includes its owner — no self-follow edge exists (SP2 rev 1).
+      q = q.where((eb) =>
+        eb.or([
+          eb('posts.author_id', '=', followerId),
+          eb('posts.author_id', 'in', eb.selectFrom('follows').select('followed_id').where('follower_id', '=', followerId)),
+        ])
+      )
       q = q.where((eb) => eb.or([eb('users.feed_type', 'is', null), eb('users.feed_type', '!=', 'instance')])) // Decision B: personal river never shows instances
     }
     if (filter?.authorId) {

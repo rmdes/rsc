@@ -44,9 +44,10 @@ describe('timeline tabs', () => {
     expect(tl.map((e) => e.id)).toEqual([instancePostId])
   })
 
-  it('Personal river: the webfeed post, excluding the instance despite the stale follow', async () => {
+  it('Personal river: own + webfeed posts, excluding the instance despite the stale follow', async () => {
     const tl = await repo.getTimeline(10, undefined, { followedBy: alice })
-    expect(tl.map((e) => e.id)).toEqual([webfeedPostId])
+    // webfeed post (01-02) sorts before alice's own local post (01-01)
+    expect(tl.map((e) => e.id)).toEqual([webfeedPostId, localPostId])
   })
 
   it('Public river: all three', async () => {
