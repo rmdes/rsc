@@ -28,6 +28,11 @@ follow), and **Public** (everything). Logged-in users land on Personal, guests
 on Public. Works with JavaScript off — tabs are plain links and the live
 updates are a progressive enhancement, not a requirement.
 
+**Your own feed reader.** Registered users subscribe to any RSS/JSON/Atom
+feed by URL (capped per user, admin-configurable), follow people, and manage
+it all — subscribe, unfollow, OPML import/export — from their following page.
+Feed titles become display names automatically on first fetch.
+
 **Rich posting.** A Markdown composer (built on [Carta](https://github.com/BearToCode/carta))
 with syntax highlighting and a live preview. Line breaks, `:shortcode:`
 emoji, GFM tables/strikethrough, and syntax-highlighted code blocks all

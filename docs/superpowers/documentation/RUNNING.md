@@ -443,6 +443,7 @@ only. Subscribe by feed URL (`{ url, type }`, where `type` is `"person"` or
 `"webfeed"`); creates a follow edge. The endpoint is SSRF-guarded and enforces
 a per-user cap (configurable via `GET/PATCH /admin/settings`, key
 `max_subs_per_user`, default 500). Exceeding the cap returns `429`.
+The cap is editable in the web UI at `/admin/settings`.
 
 **Feed type taxonomy**: remote feeds carry a `feed_type` field (`"person"`,
 `"webfeed"`, or `"instance"`). `"person"` and `"webfeed"` are self-serve
