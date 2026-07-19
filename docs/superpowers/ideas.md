@@ -817,3 +817,21 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   The stock integration doesn't inject `Origin` on native link-clicks, so
   adopting it would regress verified/magic-link flows. Keep the proxy; only
   adopt stock pieces that don't touch the emailed-GET path.
+
+## SP3 follow-ups (final review 2026-07-19)  *(polish/backlog)*
+
+- **Visitor Follow-button restyle** — the following page's visitor-mode Follow
+  button reuses `.unfollow-form` and renders in `--color-destructive` red on a
+  positive action. ~3-line fix (second class + one accent rule in app.css),
+  through the UI skill + MASTER.md. Grounding:
+  `docs/superpowers/reviews/2026-07-19-subscribe-manage-final-review.md`.
+  Status: queued.
+- **Near-miss own-instance URL 404-shadow** — subscribing to
+  `<publicUrl>/users/<nonexistent>/feed.xml` falls through the local resolve
+  and mints a remote row that polls our own 404 forever (pre-existing OPML
+  Case-2 shape; cap+SSRF-gated). Fix: 404 the subscribe when the local parse
+  matches but the handle doesn't resolve. Status: backlog.
+- **Stranded URL-named rows one-time heal** — rows discovery-rewritten before
+  the displayName backfill shipped have `display_name ≠ feed_url` forever
+  (spec S6). A one-time heal query could rename them from current feed
+  titles. Status: backlog, YAGNI until it annoys someone.
