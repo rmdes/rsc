@@ -9,6 +9,7 @@ export interface Config {
   websub: WebSubMode
   rssCloud: boolean
   pushIn: boolean
+  authOpenApi: boolean
   authSecret: string
   webOrigin: string
   anonTtlDays: number
@@ -60,6 +61,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (rawPushIn !== 'on' && rawPushIn !== 'off') throw new Error(`TEXTCASTER_PUSH_IN must be "on" or "off", got "${rawPushIn}"`)
   const pushIn = rawPushIn === 'on'
 
+  const rawAuthOpenApi = env.TEXTCASTER_AUTH_OPENAPI ?? 'off'
+  if (rawAuthOpenApi !== 'on' && rawAuthOpenApi !== 'off') throw new Error(`TEXTCASTER_AUTH_OPENAPI must be "on" or "off", got "${rawAuthOpenApi}"`)
+  const authOpenApi = rawAuthOpenApi === 'on'
+
   // Fail-fast ONLY for explicitly enabled push (spec H1): defaults stay bootable.
   if ((websub.mode !== 'off' || rssCloud) && !publicUrl) {
     throw new Error('TEXTCASTER_PUBLIC_URL is required when TEXTCASTER_WEBSUB or TEXTCASTER_RSSCLOUD is enabled')
@@ -86,6 +91,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     websub,
     rssCloud,
     pushIn,
+    authOpenApi,
     authSecret,
     webOrigin,
     anonTtlDays,

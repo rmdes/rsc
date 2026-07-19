@@ -72,3 +72,11 @@ test('mail config: absent SMTP url disables mail; present enables it', () => {
   expect(c2.mailEnabled).toBe(true)
   expect(c2.mailFrom).toBe('hi@ex.test')
 })
+
+test('authOpenApi defaults off, accepts on, rejects garbage', () => {
+  const base = { TEXTCASTER_TOKEN: 't', TEXTCASTER_AUTH_SECRET: 's' }
+  expect(loadConfig(base).authOpenApi).toBe(false)
+  expect(loadConfig({ ...base, TEXTCASTER_AUTH_OPENAPI: 'on' }).authOpenApi).toBe(true)
+  expect(loadConfig({ ...base, TEXTCASTER_AUTH_OPENAPI: 'off' }).authOpenApi).toBe(false)
+  expect(() => loadConfig({ ...base, TEXTCASTER_AUTH_OPENAPI: 'maybe' })).toThrow('TEXTCASTER_AUTH_OPENAPI')
+})
