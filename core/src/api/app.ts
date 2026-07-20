@@ -57,7 +57,12 @@ export interface PushInApi {
 
 const MAX_FAT_PING_BYTES = 5 * 1024 * 1024
 const MAX_FORM_BYTES = 64 * 1024
+// Authed JSON writes: cap the body before it is buffered. 512 KB clears the
+// largest valid payload (100 000-char content is ≤ ~300 KB of UTF-8) with room
+// to spare; every other write route carries only small fields.
+const MAX_JSON_BYTES = 512 * 1024
 const rejectOversized = (c: Context) => c.text('payload too large', 413)
+const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOversized })
 
 export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean }): Hono {
   const { service, bus, token } = deps
@@ -88,7 +93,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   app.on(['GET', 'POST'], '/api/auth/*', (c) => deps.auth.handler(c.req.raw))
 
-  app.post('/users', adminOrToken(token, deps.auth, deps.users, adminEmails), async (c) => {
+  app.post('/users', adminOrToken(token, deps.auth, deps.users, adminEmails), jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
     const { handle, displayName, feedUrl } = body
@@ -96,11 +101,18 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (displayName !== undefined && !isString(displayName, 0, 200)) return c.json({ error: 'displayName invalid' }, 400)
     if (!isString(feedUrl, 1, 2048) || !isValidFeedUrl(feedUrl)) return c.json({ error: 'feedUrl invalid' }, 400)
     const effectiveDisplayName = typeof displayName === 'string' && displayName.trim() !== '' ? displayName : handle
-    const user = await service.addRemoteUser({ handle, displayName: effectiveDisplayName, feedUrl, feedType: 'instance' })
-    return c.json({ user }, 201)
+    try {
+      const user = await service.addRemoteUser({ handle, displayName: effectiveDisplayName, feedUrl, feedType: 'instance' })
+      return c.json({ user }, 201)
+    } catch (err) {
+      // UNIQUE(handle) or UNIQUE(feed_url) both surface as HandleTakenError.
+      // 409 to match PATCH /me; anything else bubbles to app.onError.
+      if (err instanceof HandleTakenError) return c.json({ error: 'handle or feed already exists' }, 409)
+      throw err
+    }
   })
 
-  app.post('/posts', authed, async (c) => {
+  app.post('/posts', authed, jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
     const { content, inReplyTo } = body
@@ -117,7 +129,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ post }, 201)
   })
 
-  app.patch('/posts/:id', authed, async (c) => {
+  app.patch('/posts/:id', authed, jsonWrite, async (c) => {
     const me = c.get('coreUser')
     const post = await service.getPost(c.req.param('id'))
     if (!post) return c.json({ error: 'unknown post' }, 404)
@@ -144,19 +156,26 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   app.get('/me', authed, (c) => c.json({ user: c.get('coreUser'), isAnonymous: c.get('sessionIsAnonymous'), isAdmin: c.get('isAdmin') }))
 
-  app.get('/admin/overview', authed, requireAdmin(), (c) => c.json({
+  // One gate for the whole admin surface — every /admin/* route is admin-only by
+  // construction, so a new one can't ship ungated by forgetting the guard. Must
+  // precede the /admin/* handlers to run before them. NOTE: the token-or-admin
+  // routes (POST /users, DELETE /users/:handle) live under /users, not /admin,
+  // and keep their own adminOrToken gate — this prefix does not touch them.
+  app.use('/admin/*', authed, requireAdmin())
+
+  app.get('/admin/overview', (c) => c.json({
     counts: service.instanceStats(),
     federation: { websub: websubMode, rssCloud: feeds.rssCloud, pushIn: pushInEnabled, publicUrl: feeds.publicUrl },
     mailEnabled,
     adminEmails: [...adminEmails],
   }))
 
-  app.get('/admin/users', authed, requireAdmin(), (c) => c.json({ users: service.listUsers() }))
+  app.get('/admin/users', (c) => c.json({ users: service.listUsers() }))
 
-  app.get('/admin/settings', authed, requireAdmin(), async (c) =>
+  app.get('/admin/settings', async (c) =>
     c.json({ maxSubsPerUser: Number(await service.getSetting('max_subs_per_user') ?? '500') }))
 
-  app.patch('/admin/settings', authed, requireAdmin(), async (c) => {
+  app.patch('/admin/settings', jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
     const { maxSubsPerUser } = body
@@ -167,7 +186,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ maxSubsPerUser }, 200)
   })
 
-  app.get('/admin/feeds', authed, requireAdmin(), async (c) => {
+  app.get('/admin/feeds', async (c) => {
     const feeds = await service.listRemoteUsers()
     return c.json({ feeds: feeds.map((u) => ({ handle: u.handle, displayName: u.displayName, feedUrl: u.feedUrl })) })
   })
@@ -178,19 +197,19 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ ok: true }, 200)
   })
 
-  app.delete('/admin/users/:handle', authed, requireAdmin(), async (c) => {
+  app.delete('/admin/users/:handle', async (c) => {
     const result = await service.deleteLocalAccount(c.req.param('handle') ?? '')
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown user' : 'not a local account' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })
 
-  app.delete('/admin/posts/:id', authed, requireAdmin(), async (c) => {
+  app.delete('/admin/posts/:id', async (c) => {
     const result = await service.deletePost(c.req.param('id') ?? '')
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })
 
-  app.patch('/me', authed, async (c) => {
+  app.patch('/me', authed, jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
     const { handle, displayName } = body
@@ -209,7 +228,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     }
   })
 
-  app.post('/me/follows', authed, async (c) => {
+  app.post('/me/follows', authed, jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body || !isString(body.handle, 1, 64)) return c.json({ error: 'handle invalid' }, 400)
     const target = await resolveUser(body.handle)
@@ -292,7 +311,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // can't grow the remote-user table) + SSRF-checked (checkCallbackUrl —
   // same gate as push callbacks, no lookupFn DI needed: a literal loopback
   // IP is rejected without a DNS round-trip).
-  app.post('/me/subscriptions', authed, registeredOnly(), async (c) => {
+  app.post('/me/subscriptions', authed, registeredOnly(), jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
     const { url, type } = body

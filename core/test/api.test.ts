@@ -72,6 +72,15 @@ test('POST /posts with oversized content returns 400', async () => {
   expect(res.status).toBe(400)
 })
 
+test('POST /posts rejects an over-cap body with 413 (bodyLimit fires before the length guard)', async () => {
+  const app = await makeApp()
+  const cookie = await anonSession(app)
+  // 600 KB body > the 512 KB JSON cap → 413 from bodyLimit, never reaching the
+  // in-handler isString length check (which would otherwise 400 on >100 000 chars).
+  const res = await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'x'.repeat(600 * 1024) }) })
+  expect(res.status).toBe(413)
+})
+
 test('POST /posts with malformed JSON returns 400, not 500', async () => {
   const app = await makeApp()
   const cookie = await anonSession(app)
@@ -85,11 +94,11 @@ test('POST /users with malformed JSON returns 400, not 500', async () => {
   expect(res.status).toBe(400)
 })
 
-test('POST /users with a handle that is already taken returns 400', async () => {
+test('POST /users with a handle that is already taken returns 409 (matches PATCH /me)', async () => {
   const app = await makeApp()
   await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) })
   const res = await app.request('/users', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer secret' }, body: JSON.stringify({ handle: 'news', displayName: 'News Again', feedUrl: 'https://ex.com/g.xml' }) })
-  expect(res.status).toBe(400)
+  expect(res.status).toBe(409)
 })
 
 test('timeline pages with before cursor: two pages cover all posts exactly once', async () => {
