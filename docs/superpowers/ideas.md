@@ -766,6 +766,60 @@ viewers for a threat not yet observed.
 
 ---
 
+## Force-refresh — a *paced* re-poll you can trigger, scoped by feed class
+
+**Status:** candidate (operational; the pacing is the feature, not the trigger).
+
+**Mechanism.** Today the only way a feed refreshes is the timer, and the cycle is
+a **strictly sequential walk of every remote feed**: `runPollCycle` does
+`for (const user of await repo.listRemoteUsers())`, one `ingestRemoteUser` at a
+time, and the loop re-arms `pollSeconds` *after* the whole cycle finishes. Add a
+**force-refresh** trigger (admin action, and/or "refresh my subscriptions" for a
+user) that does **not** fan out: it marks a set of feeds due-now and hands them to
+a **paced drainer** — a bounded queue pulled at a small fixed concurrency (or one
+fetch every M ms), reusing `ingestRemoteUser` and its per-feed `try/catch`
+verbatim so one dead feed can't stall the batch. **Scope the refresh by
+`feed_type`** — the partition already exists (`person` · `webfeed` · `instance`):
+*"re-poll the instances we're federated with"* is a small, bounded set, while
+*"re-poll every feed every user subscribed to"* is the unbounded one. They
+deserve different **scopes, priorities and cadences**, not one button.
+
+**Why novel / why it fits.** `grep force.?refresh|poll.?now|repoll|/refresh` over
+`core/src` + `web/src` = **zero** — polling is purely timer-driven, with no manual
+trigger anywhere, so a stuck or newly-added feed can only be waited out. And the
+differentiated-cadence instinct is *already in the codebase, in one line*:
+`if (tick % 10 !== 0 && (await pushIn.hasActivePush(user.id))) continue` —
+push-subscribed feeds already poll 1-tick-in-10 because WebSub/rssCloud deliver
+them. This generalizes that existing split (**pushed vs polled**) to a second axis
+(**instance vs user-added**), which is exactly the axis SP1's `feed_type` taxonomy
+introduced but polling never consumed.
+
+**Grounding.** `core/src/domain/push-in.ts:258-273` `runPollCycle` — the sequential
+`listRemoteUsers()` walk, the `tick % 10` push-skip precedent, and the trailing
+`renewDue()`/`purgeExpiredSubscriptions()` · `core/src/domain/ingest.ts:290-296`
+`pollAll` (same unbounded shape on the non-push path) · `core/src/server.ts:58-68`
+the self-scheduling `setTimeout(loop, config.pollSeconds * 1000)` — the cycle's
+*duration* silently stretches the real interval, so at hundreds of feeds the
+configured `pollSeconds` stops meaning anything · `users.feed_type ∈
+{person, webfeed, instance}` (SP1 migration) — the partition key already stored and
+unused by the poller · `ingestRemoteUser` + per-feed try/catch = the reusable unit
+of work, no new ingest logic needed.
+
+**Tradeoff.** Two real ones. **(1) A force-refresh is a stampede button.** N feeds
+of outbound fetches from one instance, and every target sees a synchronized burst
+— which is why the queue/rate-limit *is* the feature and an unpaced "refresh all"
+would be the bug. **(2) Sequential-and-safe vs concurrent-and-fast.** Today's loop
+structurally cannot overrun itself (serial, re-arms only after finishing), which is
+why it has survived untouched; adding concurrency introduces overlap and
+reentrancy questions (two cycles touching one feed, `maybeSubscribe` racing) and
+needs a "cycle already running" guard to keep the current safety. Worth naming the
+scale caveat too: past a certain feed count the honest fix is **wider push
+(WebSub/rssCloud) coverage**, not faster polling — force-refresh should stay a
+manual escape hatch, with a cheap operator-visible *"last cycle: N feeds in Xs"*
+so you can see the interval degrading before users do.
+
+---
+
 ## better-auth plugin & adapter surface (audit 2026-07-19)
 
 Audit of the better-auth building block against its plugin catalogue. **In use
