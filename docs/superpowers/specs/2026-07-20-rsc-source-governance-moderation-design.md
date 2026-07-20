@@ -1,7 +1,7 @@
 # RSC source governance and durable remote moderation — design
 
 **Date:** 2026-07-20
-**Status:** Approved foundation design; ready for repository review
+**Status:** Repository review complete; ready for vertical planning
 **Revision:** 2 — incorporates post-commit review of selection, structural
 thread retention, subscription transitions, local-feed resolution, and
 implementation sequencing.
