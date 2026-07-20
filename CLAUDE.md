@@ -65,11 +65,10 @@ reach for a new dependency where they already solve it.
 - **Read the installed source before using an API** (Hono, better-auth,
   carta-md, feedsmith, Caddy) — or the `better-auth` MCP / context7 MCP for
   docs. Probe against the real version; never from memory. Many bugs here came
-  from an assumed API shape.
+  from an assumed API shape or assumptions without first reading the code 
+  and its existing patterns, always read the code first. 
 - **Git:** shared checkout — a parallel session commits on `main` too, so
-  **never `git add -A`**; stage explicit paths. End commit messages with
-  `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`. No remote yet
-  (push pending repo creation — ask first).
+  **never `git add -A`**; stage explicit paths. End commit messages with "developed with the help of AI tools". remote is github.com/rmdes/rsc
 
 ## How work gets done here
 
