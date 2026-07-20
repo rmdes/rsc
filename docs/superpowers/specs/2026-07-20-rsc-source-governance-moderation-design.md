@@ -2,6 +2,9 @@
 
 **Date:** 2026-07-20
 **Status:** Approved foundation design; ready for repository review
+**Revision:** 2 — incorporates post-commit review of selection, structural
+thread retention, subscription transitions, local-feed resolution, and
+implementation sequencing.
 **Scope:** Architectural foundation only. Implementation will be divided into vertical plans after review.
 
 ## Purpose
@@ -61,11 +64,12 @@ observations, never federation authority.
 
 ### Subscription
 
-A local account's decision to follow a concrete source. Direct URL subscription
-and OPML create source subscriptions, never publisher-wide follows. Local
-account following remains a separate author-follow relation. Publisher-wide
-following is reserved for a future explicit feature and will require a stable
-bound or verified publisher.
+A local account's decision to follow a concrete remote source. Remote URL
+subscription and OPML create source subscriptions, never publisher-wide
+follows. A canonical feed URL belonging to this RSC instance instead creates
+the separate local-account follow relation. Publisher-wide following is
+reserved for a future explicit feature and will require a stable bound or
+verified publisher.
 
 ### Logical item
 
@@ -128,6 +132,31 @@ and purge audit facts.
     grants no authority to replace selected content, author, or ancestry.
 12. Federation approval of a transport never verifies its third-party claims.
 
+### Deterministic author and delivery selection
+
+"Strongest eligible" uses one shared comparator in reconciliation, policy
+reads, fan-out, and event projection. Remote evidence strength, strongest
+first, is:
+
+1. verified containment from the publisher's eligible direct-origin source;
+2. an eligible delivery and bound-publisher claim from a direct
+   `single_publisher` source;
+3. an eligible aggregate delivery with a valid publisher-URL assertion;
+4. an eligible source-scoped unattributed fallback.
+
+For display delivery, choose the highest available evidence level. Keep the
+current selected delivery when it remains eligible at that same highest level;
+otherwise choose the earliest first-seen delivery at that level, then lexical
+delivery ID as the final stable tie-breaker. The selected version within that
+delivery follows the remote-update rules in Section 6.
+
+Selected-author claims use the equivalent ordering. Keep the current publisher
+when its claim remains at the strongest available level; otherwise choose the
+earliest first-seen claim at that level, then lexical claim ID. Local origin is
+outside this remote comparator and always wins for local items. If no eligible
+delivery exists, the item has no ordinary display representation, while its
+retained remote selected author remains stable for administrator inspection.
+
 ## 3. URL and identifier rules
 
 URL canonicalization is deliberately narrow:
@@ -158,7 +187,12 @@ aggregate redirect cannot merge publishers.
 
 ### Transactional find-or-resolve
 
-All creation paths transactionally resolve the normalized canonical URL and
+All creation paths first recognize canonical feed URLs belonging to this RSC
+instance. Such a URL creates or reuses the separate local-account follow and
+never creates a remote source shadow. URL subscription and OPML use the same
+local resolution rule.
+
+All other valid URLs transactionally resolve the normalized canonical URL and
 known aliases. A retained non-blocked source is reused without changing its
 mode or axes. Blocked sources and tombstones return a generic unavailable
 result. Concurrent creators converge without overwriting policy.
@@ -197,15 +231,22 @@ Public following, counts, and OPML expose active subscriptions only.
 Owner-authenticated management/export may include active and pending URLs with
 neutral status. Administrator surfaces may show full governance context.
 
+An ordinary `pending` subscription becomes active automatically when its
+source becomes allowed, provided the source remains `single_publisher`.
+`pending_review` never activates automatically. Quarantined or blocked source
+subscriptions are excluded from Personal, public following/counts, and public
+OPML regardless of retained user intent.
+
 Personal membership is determined by an eligible delivery from a source the
 viewer subscribed to. Presentation still uses the logical item's strongest
 eligible representation, possibly from another transport.
 
-Changing `single_publisher` to `aggregate` atomically moves all active user
-subscriptions to `pending_review`, records audit, and appends a reset event.
-They require explicit reviewed activation or may be removed normally. This
-prevents silent Personal-river expansion. Federation approval alone does not
-deactivate existing subscriptions while mode remains `single_publisher`.
+Changing `single_publisher` to `aggregate` atomically moves every active and
+ordinary pending user subscription to `pending_review`, records audit, and
+appends a reset event. They require explicit reviewed activation or may be
+removed normally. This prevents later allow from silently expanding Personal.
+Federation approval alone does not deactivate existing subscriptions while
+mode remains `single_publisher`.
 
 Cap checking and subscription insertion happen in one serialized write
 transaction. Migrated over-cap users are grandfathered but cannot add another
@@ -216,8 +257,11 @@ subscription until below the cap.
 An allowed self-service source with no subscription, federation relationship,
 verification-evidence role, or administrative retention reason is removed
 without a tombstone. Shared logical items survive and reselect; unsupported
-remote items are deleted. Local items always survive. Unreferenced publishers
-are deleted. Quarantined and blocked sources remain administrator-retained.
+remote items are deleted. When a surviving descendant references such an item,
+replace it with the content-free structural tombstone defined in Section 8 so
+the thread edge remains reconstructable. Local items always survive.
+Unreferenced publishers are deleted. Quarantined and blocked sources remain
+administrator-retained.
 
 ## 5. Source lifecycle
 
@@ -429,9 +473,14 @@ an eligible delivery exists. There is no rejected state.
 Purge is allowed only from blocked. It deletes the source's deliveries, every
 claim belonging to those deliveries, versions, push and health state, and
 operational records. Shared logical items survive and reselect. A remote item
-whose last retained delivery disappears is deleted and may honestly orphan
-replies. Local items always survive. Publishers referenced elsewhere survive;
-fully unreferenced publishers are deleted.
+whose last retained delivery disappears is deleted unless a surviving
+descendant references it. In that case it becomes a content-free structural
+tombstone retaining only logical ID, parent/root IDs, placeholder kind, and
+neutral text. It retains no source, publisher, content, moderation reason, or
+delivery evidence. Structural tombstones remain only while needed by surviving
+descendants and serialize through the ordinary placeholder contract. Local
+items always survive. Publishers referenced elsewhere survive; fully
+unreferenced publishers are deleted.
 
 The tombstone always survives with canonical URL, necessary aliases, and
 terminal block/purge action, category, actor, optional note, and timestamp.
@@ -596,6 +645,15 @@ Idempotency tests retry every governance/moderation command and assert one
 mutation, audit, and journal effect. Concurrent final-slot subscription tests
 prove serialized cap enforcement.
 
+Selection tests give the same item multiple eligible deliveries and publisher
+claims at every evidence level, including equal-level ties, and prove that
+reconciliation, policy reads, fan-out, restart, and replay choose the same
+winner. Subscription-transition tests prove ordinary pending activation on
+allow, permanent non-automatic `pending_review`, aggregate-mode demotion of
+active and pending subscriptions, and exclusion under quarantine/block. URL
+and OPML tests prove canonical local feeds create local-account follows without
+remote source shadows.
+
 ### Mandatory moderation scenario
 
 Hide one item from an approved aggregate peer; verify removal from rivers,
@@ -620,10 +678,12 @@ and emits classification reconciliation.
 
 Purge a blocked source containing an item shared with another remote source and
 a delivery converged on a local item. Prove local origin and other eligible
-deliveries survive, unsupported remote items are deleted, visible descendants
-retain structural placeholders, tombstone URL/aliases block resurrection by
-direct subscription and redirect, and terminal audit plus required reset/remove
-effects survive restart.
+deliveries survive, unsupported remote items are deleted, and unsupported
+ancestors of visible descendants become content-free structural tombstones
+that preserve their exact thread edges across restart. Prove tombstone
+URL/aliases block resurrection by direct subscription and redirect, and
+terminal audit plus required reset/remove effects survive restart. Apply the
+same structural-tombstone assertion to last-subscription cleanup.
 
 ### Migration tests
 
@@ -655,8 +715,8 @@ foundation completion gate requires fresh successful runs of:
 ## 14. Implementation sequencing after review
 
 This document deliberately specifies one foundation but not one monolithic
-implementation plan. After repository review, split it into vertical plans that
-keep schema/domain/API/web behavior testable end to end. Likely cuts are:
+implementation plan. The following are dependency areas, not implementation
+slices:
 
 1. schema, migration preflight, and entity repositories;
 2. source resolution, subscriptions, operation/governance/federation lifecycle;
@@ -665,5 +725,13 @@ keep schema/domain/API/web behavior testable end to end. Likely cuts are:
 5. administrative APIs and no-JS web surfaces;
 6. migration execution, compatibility retirement, and full acceptance hardening.
 
-The exact split is decided only after this spec's external review. No
-implementation plan or code change is authorized by this document alone.
+Implementation planning must instead define true end-to-end vertical slices.
+Each slice includes the storage, central visibility policy, domain behavior,
+API, web behavior, migration compatibility where applicable, and tests needed
+to leave both old and new paths safe. The visibility boundary lands with the
+first new remote reader/writer; it cannot wait until remote reconciliation is
+otherwise complete. New readers and writers must be ready before migration
+conversion, which remains the final cutover slice.
+
+The exact slices are decided only after this amended spec's external review.
+No implementation plan or code change is authorized by this document alone.
