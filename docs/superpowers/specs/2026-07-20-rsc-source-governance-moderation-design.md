@@ -2,9 +2,8 @@
 
 **Date:** 2026-07-20
 **Status:** Repository review complete; ready for vertical planning
-**Revision:** 2 — incorporates post-commit review of selection, structural
-thread retention, subscription transitions, local-feed resolution, and
-implementation sequencing.
+**Revision:** 3 — adds the narrowly scoped operator-token audit actor while
+retaining administrator/system authority for all other transitions.
 **Scope:** Architectural foundation only. Implementation will be divided into vertical plans after review.
 
 ## Purpose
@@ -325,8 +324,13 @@ block, unblock, and purge require a category. Initial categories are:
 `spam`, `abuse`, `illegal_content`, `compromised_source`, `migration_review`,
 `operator_policy`, `false_positive`, `remediated`, and `other`.
 
-Actors may be administrators or the system. The system actor is limited to
-specified migration and automated transitions.
+Actors may be administrators, the system, or the narrowly scoped
+`operator_token` actor. The system actor is limited to specified migration and
+automated transitions. `operator_token` is limited to the explicit
+ops-token compatibility operation that establishes a federation relationship;
+it grants no administrative read, moderation, purge, evidence, subscriber, or
+general lifecycle authority. Its audit identity is a stable non-secret
+fingerprint of the configured token, never the raw token.
 
 ## 6. Ingestion and reconciliation
 
@@ -560,7 +564,8 @@ Administrative route tests cover unauthenticated, anonymous, registered
 non-admin, verified administrator, valid ops token, and invalid ops token.
 The ops token may access only explicitly scoped compatibility operations—not
 moderation, purge, retained evidence, subscriber intent, migration findings, or
-audit APIs.
+audit APIs. Such an operation records the `operator_token` audit actor and its
+stable non-secret fingerprint.
 
 Credential-redaction tests assert secrets and callback tokens never appear in
 list/detail/error/audit output.

@@ -4,9 +4,10 @@
 
 **Goal:** Add a disabled v2 source registry and exercise source resolution, subscriptions, federation, and lifecycle management end to end without changing legacy ingestion or breaking the default-off web experience.
 
-**Revision:** 3 — adds default-off web branching, ordinary/admin DTO separation,
-federation establishment on retained sources, complete ops/audit contracts, and
-small independently tested storage/domain/API/web tasks.
+**Revision:** 4 — adds exact pending mutation responses, subscription side
+effects on allow/approval, the spec-approved operator-token actor, deterministic
+public labels, explicit verification-source retention, and smaller mutation
+substeps.
 
 **Architecture:** Add expand-only v2 tables behind a repository whose mutation
 commands each own one `BEGIN IMMEDIATE` transaction and one general command
@@ -19,7 +20,7 @@ SvelteKit/Svelte 5.
 
 ## Global Constraints
 
-- Governing spec: `docs/superpowers/specs/2026-07-20-rsc-source-governance-moderation-design.md` rev 2.
+- Governing spec: `docs/superpowers/specs/2026-07-20-rsc-source-governance-moderation-design.md` rev 3.
 - `RSC_SOURCE_MODEL_V2` accepts only `on | off` and defaults to `off`.
 - No dual writes, rollout percentages, distributed locks, new dependencies, or remote-item migration.
 - Normalize only scheme/host/default port and remove fragments; preserve path, query, trailing slash, and HTTP/HTTPS. Reject credentials and URLs longer than 2048 characters.
@@ -84,7 +85,7 @@ export interface SourceAuditEvent {
   sourceId: string
   commandId: string
   actorId: string | null
-  actorKind: 'administrator' | 'ops' | 'system'
+  actorKind: 'administrator' | 'operator_token' | 'system'
   action: string
   category: AuditCategory | null
   note: string | null
@@ -139,6 +140,10 @@ Ordinary routes return only `OwnerSourceFollow` or `PublicFollowingEntry`.
 `RemoteSource`, provenance, governance, operation, policy generation, retention,
 audit, subscriber counts, push, and health are restricted to authenticated
 administrative routes.
+
+`PublicSourceFollow.displayName` is deterministic presentation data, not stored
+source identity: use `new URL(canonicalUrl).hostname`; if URL construction fails
+for already-retained corrupt evidence, fall back to the complete canonical URL.
 
 ---
 
@@ -219,7 +224,7 @@ CREATE TABLE source_subscriptions_v2 (
 CREATE TABLE source_audit_v2 (
  id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES remote_sources_v2(id) ON DELETE CASCADE,
  command_id TEXT NOT NULL, actor_id TEXT,
- actor_kind TEXT NOT NULL CHECK(actor_kind IN ('administrator','ops','system')),
+ actor_kind TEXT NOT NULL CHECK(actor_kind IN ('administrator','operator_token','system')),
  action TEXT NOT NULL,
  category TEXT CHECK(category IS NULL OR category IN ('spam','abuse','illegal_content','compromised_source','migration_review','operator_policy','false_positive','remediated','other')),
  note TEXT, result_json TEXT NOT NULL, created_at TEXT NOT NULL
@@ -319,7 +324,7 @@ Run: `npm test -w core -- source-ledger source-reads`
 
 Expected: FAIL because the repository/helper/read mappings are absent.
 
-- [ ] **Step 4: Implement one ledger helper and read queries**
+- [ ] **Step 4: Implement the ledger helper**
 
 The helper runs inside the caller's `BEGIN IMMEDIATE` transaction:
 
@@ -330,10 +335,13 @@ storeCommand<T>(tx: Database, command: CommandEnvelope, result: T, now: string):
 ```
 
 Same key+fingerprint deserializes `result_json`; changed fingerprint conflicts.
+
+- [ ] **Step 5: Implement administrative read queries**
+
 Encode cursors as base64url JSON of the displayed timestamp and stable ID/URL,
 order descending by both columns, fetch `limit + 1`, and cap limits to 1–100.
 
-- [ ] **Step 5: Run green tests and commit**
+- [ ] **Step 6: Run green tests and commit**
 
 Run: `npm test -w core -- source-ledger source-reads && npm run typecheck -w core`
 
@@ -363,8 +371,8 @@ single ledger-backed transaction. Produces owner-projected subscription results.
 
 ```ts
 export type SubscribeResult =
-  | {kind:'source'; subscription:OwnerSourceFollow}
-  | {kind:'local'; follow:PublicLocalFollow}
+  | {kind:'source'; created:boolean; subscription:OwnerSourceFollow}
+  | {kind:'local'; created:boolean; follow:PublicLocalFollow}
   | {kind:'unavailable'|'not_subscribable'|'cap'|'conflict'}
 export interface SourceService {
   subscribeByUrl(owner:User, url:string, commandId:string): Promise<SubscribeResult>
@@ -399,13 +407,15 @@ redirect hop.
 
 ```ts
 expect(await service.subscribeByUrl(owner, 'https://203.0.113.9/feed', 'c1'))
-  .toMatchObject({kind:'source',subscription:{attributionMode:'single_publisher',subscriptionState:'active',availability:'available'}})
+  .toMatchObject({kind:'source',created:true,subscription:{attributionMode:'single_publisher',subscriptionState:'active',availability:'available'}})
 expect(await service.subscribeByUrl(owner, 'http://127.0.0.1/feed', 'c2')).toEqual({kind:'unavailable'})
 const [a, b] = await Promise.all([
   service.subscribeByUrl(finalSlotOwner, 'https://203.0.113.10/a', 'c3'),
   service.subscribeByUrl(finalSlotOwner, 'https://203.0.113.11/b', 'c4'),
 ])
 expect([a.kind,b.kind].sort()).toEqual(['cap','source'])
+const existing = await service.subscribeByUrl(owner, 'https://203.0.113.9/feed', 'c5')
+expect(existing).toMatchObject({kind:'source',created:false})
 ```
 
 - [ ] **Step 3: Run red tests**
@@ -414,7 +424,7 @@ Run: `npm test -w core -- source-subscribe push-guard`
 
 Expected: FAIL because normalization and commands are absent.
 
-- [ ] **Step 4: Implement the two atomic commands and service**
+- [ ] **Step 4: Implement command entry and ledger replay**
 
 ```ts
 followLocalAccount(input:{command:CommandEnvelope;ownerId:string;targetId:string;now:string}): Promise<SubscribeResult>
@@ -423,9 +433,17 @@ resolveAndSubscribeSource(input:{command:CommandEnvelope;ownerId:string;canonica
 
 Each command performs ledger check, resolution, cap check where applicable,
 writes, result storage, and commit in one `BEGIN IMMEDIATE`. Compute SHA-256
-fingerprints from `[operation, normalizedUrl]`; never include secrets.
+fingerprints from `[operation, normalizedUrl]`; never include secrets. First add
+the transaction wrapper and return stored results or conflict before resolving.
 
-- [ ] **Step 5: Run green tests and commit**
+- [ ] **Step 5: Implement resolution and mutation**
+
+Resolve local feed/source/alias/tombstone, set `created` from whether this
+command inserted the follow/subscription, serialize the result, and commit. An
+existing subscription reached with a different command ID returns
+`created:false`; an identical replay returns its originally stored value.
+
+- [ ] **Step 6: Run green tests and commit**
 
 Run: `npm test -w core -- source-subscribe push-guard && npm run typecheck -w core`
 
@@ -491,16 +509,20 @@ Run: `npm test -w core -- opml`
 
 Expected: FAIL in the v2 import cases.
 
-- [ ] **Step 4: Implement parse/partition followed by one write transaction**
+- [ ] **Step 4: Implement bounded parse and partition**
 
 Bound to 1000 flattened outlines and the existing request-body cap. Resolve
 local feeds first; normalize and SSRF-check each remaining URL; pass
 `localTargetIds`, approved canonical URLs, and `unavailableCount` to one
 `importSourceSubscriptions` command. Fingerprint `["import-opml", boundedXml]`.
-The repository inserts local follows, resolves/creates sources, enforces the cap,
-stores one result, and commits once.
 
-- [ ] **Step 5: Run green test and commit**
+- [ ] **Step 5: Implement the import write transaction**
+
+Perform ledger check, insert local follows, resolve/create sources, enforce the
+cap, store the serialized result, and commit as explicit sequential substeps in
+one transaction.
+
+- [ ] **Step 6: Run green test and commit**
 
 Run: `npm test -w core -- opml && npm run typecheck -w core`
 
@@ -550,13 +572,15 @@ const publicJson = JSON.stringify(await service.publicFollowing(owner.id))
 for (const key of ['governance','operation','provenance','provenanceNote','policyGeneration','adminRetained'])
   expect(publicJson).not.toContain(key)
 expect(publicJson).not.toContain(pending.id)
+expect((await service.publicFollowing(owner.id)).find((x) => x.kind === 'source'))
+  .toMatchObject({displayName:'example.test'})
 ```
 
 - [ ] **Step 2: Test cleanup matrix**
 
 Unsubscribe the final subscriber and assert an allowed self-service source is
 removed without a tombstone only when it has no federation relationship,
-verification role, or admin-retention flag. Assert quarantined, blocked,
+`origin_verification` provenance, or admin-retention flag. Assert quarantined, blocked,
 federated, shared, and admin-retained sources survive. Retry the command and
 receive the original `{kind:'removed',sourceRemoved}` result from the ledger.
 
@@ -564,7 +588,7 @@ receive the original `{kind:'removed',sourceRemoved}` result from the ledger.
 const removed = await service.unsubscribe(owner.id, orphan.id, 'unsub-1')
 expect(removed).toEqual({kind:'removed',sourceRemoved:true})
 expect(await service.unsubscribe(owner.id, orphan.id, 'unsub-1')).toEqual(removed)
-for (const retained of [quarantined, blocked, federated, verificationEvidence, adminRetained])
+for (const retained of [quarantined, blocked, federated, originVerificationSource, adminRetained])
   expect((await service.unsubscribe(owner.id, retained.id, `unsub-${retained.id}`))).toEqual({kind:'removed',sourceRemoved:false})
 ```
 
@@ -574,14 +598,22 @@ Run: `npm test -w core -- source-following source-cleanup`
 
 Expected: FAIL because projection and cleanup commands are absent.
 
-- [ ] **Step 4: Implement reads and cleanup transaction**
+- [ ] **Step 4: Implement projected reads**
 
-Project with explicit column selection, never object spreading. Cleanup deletes
-subscription and eligible orphan source in one `BEGIN IMMEDIATE`; Vertical 2
-extends this same command with shared-item/structural-tombstone handling when v2
-items exist.
+Project with explicit column selection, never object spreading. Compute public
+source display name from normalized hostname, falling back to canonical URL.
 
-- [ ] **Step 5: Run green tests and commit**
+- [ ] **Step 5: Implement cleanup transaction**
+
+Add ledger check, delete the subscription, evaluate retention, store the result,
+and commit as explicit sequential substeps in one `BEGIN IMMEDIATE`. In Vertical
+1, `provenance = 'origin_verification'` is the temporary verification-role
+retention condition because evidence relations do not exist yet. Vertical 3
+replaces/extends that check with actual retained verification-evidence
+references. Vertical 2 extends the same command with shared-item/structural-
+tombstone handling when v2 items exist.
+
+- [ ] **Step 6: Run green tests and commit**
 
 Run: `npm test -w core -- source-following source-cleanup && npm run typecheck -w core`
 
@@ -609,7 +641,7 @@ developed with the help of AI tools"
 matrix. No HTTP routes yet.
 
 ```ts
-establishFederation(input:{url:string;attributionMode:AttributionMode;category:AuditCategory;note:string|null;commandId:string;actorId:string;actorKind:'administrator'|'ops'}): Promise<{kind:'established';source:RemoteSource;federation:FederationRelationship}|{kind:'exists'|'unavailable'|'conflict'}>
+establishFederation(input:{url:string;attributionMode:AttributionMode;category:AuditCategory;note:string|null;commandId:string;actorId:string;actorKind:'administrator'|'operator_token'}): Promise<{kind:'established';source:RemoteSource;federation:FederationRelationship}|{kind:'exists'|'unavailable'|'conflict'}>
 transition(input:{sourceId:string;action:'pause'|'resume'|'quarantine'|'allow'|'approve'|'reject'|'revoke'|'block'|'unblock'|'set_attribution_mode';category:AuditCategory|null;note:string|null;attributionMode?:AttributionMode;commandId:string;actorId:string;actorKind:'administrator'|'system'}): Promise<SourceTransitionResult>
 ```
 
@@ -632,6 +664,12 @@ expect(await countFederationRows(repo, retained.id)).toBe(1)
 expect(await countAuditRows(repo, retained.id)).toBe(1)
 ```
 
+Seed a quarantined single-publisher source with one `pending` and one
+`pending_review` subscription. After establishment, assert governance allowed,
+pending active, and pending_review unchanged. Seed an already-allowed
+single-publisher source with an active subscription and assert establishment
+preserves it as active.
+
 - [ ] **Step 2: Test the complete transition table**
 
 ```ts
@@ -651,21 +689,38 @@ from blocked conflict. Governance/federation/block/unblock/mode actions require
 an enum category; pause/resume allow null. Each successful mutation increments
 policy generation once and writes one audit/ledger record.
 
+For both `allow` and `approve`, seed a single-publisher source with pending and
+pending_review subscriptions; assert pending becomes active atomically when the
+source becomes allowed and pending_review is unchanged.
+
 - [ ] **Step 3: Run red tests**
 
 Run: `npm test -w core -- source-federation source-lifecycle`
 
 Expected: FAIL because commands are absent.
 
-- [ ] **Step 4: Implement each repository command as one transaction**
+- [ ] **Step 4: Implement federation ledger entry and source resolution**
 
 Federation establishment resolves canonical URL/aliases/tombstones, creates or
-reuses the source, establishes approved status, applies the quarantined-to-allowed
-approval rule, writes audit/result, and commits once. Transitions preserve
-unmentioned axes. No item journal exists here because no v2 item is publishable;
-Vertical 2 adds the reset barrier before its first item route or stream.
+reuses the source, and returns replay/conflict before mutation.
 
-- [ ] **Step 5: Run green tests and commit**
+- [ ] **Step 5: Implement federation mutation and subscription effects**
+
+Establish approved status, apply quarantined-to-allowed, activate ordinary
+pending subscriptions only for single-publisher sources, preserve
+pending_review and already-active subscriptions, then write audit/result and
+commit once.
+
+- [ ] **Step 6: Implement lifecycle transitions and subscription effects**
+
+Apply the transition while preserving unmentioned axes. `allow` and `approve`
+activate ordinary pending subscriptions when the resulting source is allowed
+and single-publisher. Aggregate conversion moves active and pending to
+pending_review. Store audit/result before commit. No item journal exists here
+because no v2 item is publishable; Vertical 2 adds the reset barrier before its
+first item route or stream.
+
+- [ ] **Step 7: Run green tests and commit**
 
 Run: `npm test -w core -- source-federation source-lifecycle && npm run typecheck -w core`
 
@@ -705,7 +760,19 @@ expect((await appOn.request('/admin/sources', admin)).status).toBe(200)
 
 Repeat for legacy following/subscribe/OPML routes off and v2 owner/public routes
 on. Assert active subscribe JSON contains `OwnerSourceFollow`, never
-`RemoteSource`.
+`RemoteSource`. Assert pending mutation responses are exactly the two allowed
+keys and never contain the owner projection:
+
+```ts
+expect(await postSubscription(appOn, quarantinedUrl, 'pending-1')).toEqual({
+  status:202,
+  body:{subscription:'pending',message:'This source is awaiting review.'},
+})
+expect(await postSubscription(appOn, quarantinedUrl, 'pending-2')).toEqual({
+  status:200,
+  body:{subscription:'pending',message:'This source is awaiting review.'},
+})
+```
 
 - [ ] **Step 2: Test admin authorization/redaction matrix**
 
@@ -736,6 +803,7 @@ and accepts:
 
 It calls `establishFederation` only. Derive audit actor ID as
 `ops:<first 16 hex chars of SHA-256(RSC_TOKEN)>`; never store/return the token.
+Record `actorKind:'operator_token'` as authorized by spec revision 3.
 No ops token can read admin collections or call lifecycle/moderation/purge.
 
 - [ ] **Step 4: Run red API tests**
@@ -744,30 +812,39 @@ Run: `npm test -w core -- source-capability-api subscriptions-api source-admin-a
 
 Expected: FAIL because route branches are absent.
 
-- [ ] **Step 5: Implement exact endpoints**
+- [ ] **Step 5: Implement capability and ordinary endpoints**
 
-Always serve `GET /capabilities`. While v2 is on, add:
+Always serve `GET /capabilities`. Add the ordinary routes and exact response
+projection/status rules while v2 is on:
 
 | Endpoint | Result |
 |---|---|
-| `POST /me/subscriptions` `{url,commandId}` | owner projection, 201 active / 202 pending |
+| `POST /me/subscriptions` `{url,commandId}` | active/local: owner projection, 201 when `created`, otherwise 200; pending: exact neutral payload, 202 when `created`, otherwise 200 |
 | `DELETE /me/subscriptions/:sourceId` `{commandId}` | removal result |
 | `POST /me/follows/opml` + `x-rsc-command-id` | import counts |
 | `GET /me/following` | `OwnerFollowingView` |
 | `GET /users/:handle/follows` | `PublicFollowingEntry[]` |
 | `GET /users/:handle/following.opml` | active/allowed entries only |
-| `GET /admin/sources`, `GET /admin/sources/:id` | paginated summary/detail |
-| `GET /admin/sources/:id/{aliases,subscriptions,audit}` | paginated subresource |
-| `POST /admin/sources` | `{url,attributionMode,category,note,commandId}` |
-| `POST /admin/sources/:id/:action` | `{category,note,commandId,attributionMode?}` |
-| `POST /ops/sources/federation` | exact ops contract from Step 3 |
 
 Unavailable/not-subscribable are the same neutral 409; cap is 429; changed
 command reuse is 409. `:action=attribution-mode` rejects a missing
 `attributionMode`. While off, do not register v2 routes and preserve legacy
 behavior.
 
-- [ ] **Step 6: Run green API tests and commit**
+- [ ] **Step 6: Implement administrative and ops endpoints**
+
+| Endpoint | Result |
+|---|---|
+| `GET /admin/sources`, `GET /admin/sources/:id` | paginated summary/detail |
+| `GET /admin/sources/:id/{aliases,subscriptions,audit}` | paginated subresource |
+| `POST /admin/sources` | `{url,attributionMode,category,note,commandId}` |
+| `POST /admin/sources/:id/:action` | `{category,note,commandId,attributionMode?}` |
+| `POST /ops/sources/federation` | exact ops contract from Step 3 |
+
+Wire the authorization matrix and hand validators separately from the ordinary
+route branch.
+
+- [ ] **Step 7: Run green API tests and commit**
 
 Run: `npm test -w core -- source-capability-api subscriptions-api source-admin-api source-ops-api && npm test -w core && npm run typecheck -w core`
 
@@ -819,7 +896,7 @@ Run: `npm test -w web -- api page.load following.actions`
 
 Expected: FAIL in capability/v2 cases; existing off assertions remain green.
 
-- [ ] **Step 3: Implement capability-aware wrappers/loaders/actions**
+- [ ] **Step 3: Implement capability-aware API wrappers**
 
 ```ts
 export async function getCapabilities(f:typeof fetch): Promise<{sourceModelV2:boolean}>
@@ -827,11 +904,15 @@ export async function getCapabilities(f:typeof fetch): Promise<{sourceModelV2:bo
 
 Fetch once per changed server load/action. Explicit off uses current code paths
 unchanged; failure returns core-down/no mutation; on uses owner/public
-projections. Generate mutation command IDs with
-`crypto.randomUUID()` and retain them through no-JS form submission/retry. Do
-not render governance, operation, provenance, or retention state.
+projections.
 
-- [ ] **Step 4: Run green web tests and commit**
+- [ ] **Step 4: Implement ordinary loaders, actions, and markup**
+
+Generate mutation command IDs with `crypto.randomUUID()` and retain them through
+no-JS form submission/retry. Render pending neutral state only in owner
+management; do not render governance, operation, provenance, or retention state.
+
+- [ ] **Step 5: Run green web tests and commit**
 
 Run: `npm test -w web -- api page.load following.actions && npm run check -w web`
 
@@ -879,13 +960,18 @@ Run: `npm test -w web -- source-actions`
 
 Expected: FAIL in the v2 capability cases; legacy cases remain green.
 
-- [ ] **Step 3: Implement the branch without changing the legacy branch**
+- [ ] **Step 3: Implement the capability-aware admin load**
 
 Use `getCapabilities`. On, render only safe `SourceSummary` fields and explicit
-no-JS forms; off, retain current markup/actions. Follow the 42rem editorial
-layout and tokenized colors. Do not add item/delivery evidence UI.
+source groups; off, return the current legacy view model unchanged.
 
-- [ ] **Step 4: Run full web gate and commit**
+- [ ] **Step 4: Implement admin actions and markup branches**
+
+On, render explicit no-JS forms and stable-ID actions; off, retain current
+markup/actions. Follow the 42rem editorial layout and tokenized colors. Do not
+add item/delivery evidence UI.
+
+- [ ] **Step 5: Run full web gate and commit**
 
 Run: `npm test -w web && npm run check -w web && npm run build -w web`
 

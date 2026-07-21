@@ -1,7 +1,7 @@
 # RSC source-governance vertical roadmap
 
-**Spec:** `docs/superpowers/specs/2026-07-20-rsc-source-governance-moderation-design.md` rev 2
-**Revision:** 3 — folds in the second parallel plan review.
+**Spec:** `docs/superpowers/specs/2026-07-20-rsc-source-governance-moderation-design.md` rev 3
+**Revision:** 4 — folds in the third parallel plan review.
 
 **Cutover strategy:** Build the new model behind `RSC_SOURCE_MODEL_V2=off` by
 default. Do not dual-write. The final vertical performs the one atomic data
