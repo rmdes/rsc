@@ -1,9 +1,9 @@
 # RSC logical items and ordinary reads — Vertical 2 design
 
 **Date:** 2026-07-22
-**Status:** Revision 2 ready for final whole-document review
-**Revision:** 2 — aligns logical-v2 river membership, reply counts, and durable
-reply invalidation with the root-only timeline design.
+**Status:** Revision 3 ready for final whole-document review
+**Revision:** 3 — restores the approved evidence comparator, defines the exact
+logical-item wire contract, and completes durable reply-count invalidation.
 **Foundation:** `2026-07-20-rsc-source-governance-moderation-design.md` rev 3
 **Roadmap:** `2026-07-20-rsc-source-governance-vertical-roadmap.md` rev 4
 **Timeline presentation:** `2026-07-22-root-only-timelines-design.md`
@@ -404,24 +404,36 @@ pointers.
 
 ### 3.2 Deterministic selection
 
-Display precedence is:
+The evidence levels, strongest first, are:
 
-1. strongest eligible direct-origin delivery;
-2. current selected delivery if still eligible at the strongest available
-   evidence level;
-3. strongest remaining eligible delivery;
-4. none.
+1. `verified_origin`;
+2. `bound_single_publisher`;
+3. `aggregate_assertion`;
+4. `source_scoped_fallback`.
 
-Direct origin outranks bound single-publisher delivery, which outranks aggregate
-assertion and source-scoped fallback. Equal-level selection uses earliest
-durable first-arrival tuple followed by stable source, delivery, claim, and
-publisher IDs as applicable. Selected-author claims use the equivalent ordering
-independently from content delivery.
+For display-delivery selection, first determine the strongest evidence level
+that contains an ordinary-eligible delivery. Retain the persisted/current
+delivery only when it remains ordinary-eligible at that strongest level.
+Otherwise select the earliest delivery at that level by the complete durable
+first-arrival tuple:
 
-A quarantined direct-origin observation may strengthen retained attribution
-evidence but cannot become displayed content. A later weaker or unverified
-delivery cannot overwrite selected presentation. Permalink convergence grants
-no authority to replace content or author.
+```text
+(acquisitionCommittedAt, runId, wireOrdinal, observationVersionId)
+```
+
+Resolve any remaining tie by stable lexical delivery ID.
+
+Selected-author resolution is independent. Determine the strongest level
+containing an ordinary-eligible author claim. Retain the persisted/current
+publisher only while a claim at that strongest level still supports it.
+Otherwise select the earliest claim by the complete first-arrival tuple, then
+stable lexical claim ID.
+
+Vertical 2 defines `verified_origin` for forward compatibility but creates no
+verified-origin evidence. Quarantined and blocked evidence remains retained for
+administration but is not ordinary-eligible and participates in neither
+ordinary comparator. Permalink convergence grants no authority to replace
+content or author.
 
 ### 3.3 Chronology and pagination
 
@@ -458,26 +470,10 @@ are placed by immutable order rather than blindly prepended.
 
 ### 3.4 Logical item and selected author DTOs
 
-Ordinary collection DTOs include at least stable logical ID, origin, selected
-author, semantic presentation fields, `publishedAt`, update metadata,
-`threadRootId: string | null`, distinct reply counts, and bounded
-classification fields.
-
 ```ts
-directReplyCount: number;
-conversationReplyCount: number;
-```
+type LogicalItemId = string;
+type SourceId = string;
 
-`directReplyCount` counts ordinary-visible direct children and supports nested
-conversation controls. `conversationReplyCount` counts all ordinary-visible
-resolved descendants in the conversation and supports the root-level affordance
-whose expansion reveals that conversation. Neither field changes meaning by
-endpoint. Quarantined, blocked, deleted, unsupported, or otherwise unavailable
-items do not count merely because retained evidence exists. Neutral connective
-placeholders are structure, not replies, and do not count independently of
-their surviving ordinary-visible descendants.
-
-```ts
 type SelectedAuthor =
   | {
       kind: 'local';
@@ -497,11 +493,122 @@ type SelectedAuthor =
         | 'aggregate_assertion'
         | 'source_scoped_fallback';
     };
+
+type ReplyContextDto = {
+  kind: 'asserted_external';
+  authorLabel: string | null;
+  snippet: string | null;
+  url: string | null;
+};
+
+type EnclosureDto = {
+  url: string;
+  mimeType: string | null;
+  title: string | null;
+  sizeBytes: number | null;
+  durationSeconds: number | null;
+};
+
+type LogicalItemDto = {
+  kind: 'logical_item';
+  id: LogicalItemId;
+  origin: 'local' | 'remote';
+
+  parentResolutionState: 'none' | 'missing' | 'ambiguous' | 'resolved';
+  parentLogicalItemId: LogicalItemId | null;
+  threadRootId: LogicalItemId | null;
+
+  selectedAuthor: SelectedAuthor;
+
+  title: string | null;
+  content: string | null;
+  contentMarkdown: string | null;
+  permalink: string | null;
+  sourceLink: string | null;
+  replyContext: ReplyContextDto | null;
+  enclosures: EnclosureDto[];
+
+  publishedAt: string;
+  updatedAt: string | null;
+  updatedAtProvenance: 'explicit' | 'arrival' | null;
+
+  directReplyCount: number;
+  conversationReplyCount: number;
+
+  eligibleSourceIds: SourceId[];
+  classification: {
+    federated: boolean;
+  };
+};
+
+type LogicalSingleItemEnvelope = {
+  model: 'logical-v2';
+  item: LogicalItemDto;
+  journalCursor: string;
+};
 ```
 
-Attribution level is item-specific, not publisher state. Vertical 2 defines
-`verified_origin` for stable comparison but creates no such evidence. Fallback
-authors are neutral, non-navigable, and normally expose no feed URL.
+The wire bounds and invariants are exact:
+
+- logical-item, source, account, publisher, and claim IDs are non-empty opaque
+  ASCII strings of at most 128 bytes;
+- local handles are non-empty validated handles of at most 64 UTF-8 bytes;
+- public display names and `ReplyContextDto.authorLabel` are normalized,
+  HTML-escaped by Web, and at most 200 Unicode code points;
+- `title`, `content`, `contentMarkdown`, reply-context text, and enclosure
+  metadata remain inside the versioned 1 MiB combined item-evidence bound;
+- `ReplyContextDto.snippet` has an additional 4,096 UTF-8-byte public bound;
+- every exposed URL is credential-free HTTP(S), contains no fragment, and
+  satisfies both the 2,048-code-point and 8,192-UTF-8-byte operational limits;
+- `mimeType` is a normalized ASCII media type of at most 255 bytes;
+- enclosure `title` is at most 1,024 Unicode code points; the array contains at
+  most 32 entries in accepted presentation order;
+- `sizeBytes` is a non-negative safe integer or null; `durationSeconds` is a
+  finite non-negative number or null;
+- `publishedAt` and non-null `updatedAt` are normalized UTC instants;
+- `updatedAtProvenance` is null exactly when `updatedAt` is null;
+- reply counts are non-negative safe integers;
+- `eligibleSourceIds` contains every source currently supplying eligible
+  ordinary support, sorted lexically and duplicate-free; its serialized bytes
+  remain within the same 1 MiB ordinary-item envelope bound;
+- `classification.federated` is true exactly when at least one ID in the
+  current eligible support has a currently approved federation relationship.
+
+At least one of `title`, `content`, or `contentMarkdown` is non-null. Core
+returns semantic text only; Web derives sanitized HTML. `permalink` is the
+ordinary navigation URL for the logical item. `sourceLink` is the selected
+presentation's independently safe external item link and is null when no such
+link is ordinary-safe. A resolved reply has a non-null
+`parentLogicalItemId` and null `replyContext`; `missing` or `ambiguous` has a
+null parent and may expose bounded asserted external context; `none` has neither
+a parent nor reply context. A non-null `replyContext` contains at least one
+non-null semantic field. Remote `profileAvailable` is true only for a
+navigable feed-anchored publisher with an ordinary-safe canonical feed URL;
+source-scoped fallback is always non-navigable with `profileAvailable: false`.
+
+`directReplyCount` counts ordinary-visible direct children and supports nested
+conversation controls. `conversationReplyCount` counts all ordinary-visible
+resolved descendants in the conversation and supports the root-level
+affordance. Neither field changes meaning by endpoint. Retained unavailable
+evidence and neutral connective placeholders do not independently count.
+
+The DTO contains exactly the ordinary classification needed by Web:
+`origin` selects Local, `selectedAuthor` selects local-author or publisher,
+`eligibleSourceIds` permits Personal reevaluation against active source
+subscriptions, and `classification.federated` selects Federated. Public is the
+ordinary-visible superset; parent fields reconstruct flat threads. No
+administrator evidence, raw claims, conflicts, governance explanations,
+credentials, secrets, unsafe URLs, or displaced delivery data appears.
+
+Local-origin items always expose `eligibleSourceIds: []` and
+`classification.federated: false`. Remote echo evidence cannot provide ordinary
+support, Personal membership, or Federated classification for local origin.
+
+Attribution level is item-specific, not publisher state. Fallback authors are
+neutral, non-navigable, and normally expose no feed URL. Unknown or currently
+unavailable single-item reads return the existing neutral ordinary `404`.
+`LogicalSingleItemEnvelope.journalCursor` is captured from the same consistent
+snapshot as `item`.
 
 ### 3.5 Lenses
 
@@ -894,29 +1001,34 @@ Logical-v2 does not adopt v1's transient `rootReplyCount` SSE enrichment. Reply
 counts are ordinary projection fields derived from current logical ancestry and
 visibility. Their live correctness comes from durable journal effects.
 
-A transaction that changes ordinary-visible reply cardinality appends the
-reply's own required journal effect and, when the affected conversation root is
-uniquely and safely derived, an `upsert` for that root. This includes:
+A bounded mutation affecting a resolved reply appends deduplicated durable
+journal effects for every affected ordinary projection:
 
-- creation or visibility gain of a resolved reply;
-- loss or restoration of ordinary reply visibility;
-- terminal local reply deletion;
-- a `missing -> resolved` orphan adoption, which also removes the reply from
-  root-only rivers;
-- any ancestry correction or later moderation transition that changes the
-  conversation represented by the root.
+- the reply's own required `upsert` or `remove`;
+- an `upsert` for its immediate logical parent because that parent's
+  `directReplyCount` changed;
+- an `upsert` for the derived conversation root because its
+  `conversationReplyCount` changed.
 
-The root upsert is a durable journal row committed atomically with the reply or
-ancestry mutation. Send-time projection supplies the current authoritative
-`directReplyCount` and `conversationReplyCount`; clients never increment a
-count optimistically. Replay and duplicate delivery are therefore idempotent.
+If parent and root are the same logical item, only one upsert is appended for
+that ID. All effects commit atomically with the domain mutation. Send-time
+projection supplies authoritative counts and may convert an unavailable target
+to an effective remove. Clients never increment or decrement optimistically;
+replay and duplicate delivery are idempotent.
 
-If a bounded mutation cannot safely identify every affected root, or changes
-reply visibility/cardinality across an unbounded set, it commits one reset
-barrier instead of transient or partial count metadata. Existing source-policy,
-account-deletion, and publisher-wide reset rules may subsume this invalidation.
-A reply edit that changes no ancestry or ordinary visibility emits no root
-count upsert.
+This rule applies to bounded resolved-reply creation, terminal deletion, and
+bounded ordinary visibility gain or loss. A content-only reply edit that
+changes neither ancestry nor ordinary visibility emits no parent/root count
+invalidation.
+
+Section 4.2's reset remains authoritative for orphan-adoption batches. A
+`missing -> resolved` adoption can move a subtree, alter river membership, and
+change several counts, so it does not append the ordinary parent/root upsert
+set. Existing source-policy, account-deletion, and other reset-producing
+transactions likewise use their single reset without redundant count upserts.
+
+If every affected parent and root cannot be identified safely within the
+bounded transaction, append one reset rather than partial upserts.
 
 ### 5.6 Capability and cutover
 
@@ -956,10 +1068,11 @@ state. Reset discards event-derived assumptions, refetches SSR, and reconnects
 from its snapshot cursor.
 
 For river lenses, a resolved-reply upsert never inserts that reply as a card.
-The durable root upsert replaces the visible root's authoritative conversation
-count when that root is loaded. Author and publisher activity lenses may insert
-the reply itself according to immutable timeline order. An off-page root is not
-materialized merely because one of its replies arrived.
+The durable parent and root upserts replace authoritative direct and
+conversation counts when those items are loaded. Author and publisher activity
+lenses may insert the reply itself according to immutable timeline order. An
+off-page parent or root is not materialized merely because one of its replies
+arrived.
 
 Administrative retained content requires both authenticated administrator and
 an explicitly administrative route. Ordinary routes never reveal hidden or
@@ -1297,8 +1410,9 @@ The implementation plan must preserve the detailed contracts above and include:
   lenses retain replies;
 - stable `directReplyCount` and `conversationReplyCount` semantics across
   endpoints, with ordinary visibility applied before counting;
-- atomic durable root upserts for bounded reply-count changes and reset barriers
-  for unsafe or unbounded invalidation, with no transient v1 count metadata;
+- atomic deduplicated reply, parent, and root journal effects for bounded
+  reply-count changes, with reset barriers for adoption and unsafe or unbounded
+  invalidation and no transient v1 count metadata;
 - presentation watermark, rollback, arrival fallback, job-order, history, and
   direct-comments-feed tests;
 - journal atomicity, epoch/floor/pruning, opaque cursor, reset-close,
