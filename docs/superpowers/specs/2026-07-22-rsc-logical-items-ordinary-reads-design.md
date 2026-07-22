@@ -1,9 +1,22 @@
 # RSC logical items and ordinary reads — Vertical 2 design
 
 **Date:** 2026-07-22
-**Status:** Revision 4 ready for final whole-document review
+**Status:** Revision 4 + review rev 1 folded; ready for V2 plan review
 **Revision:** 4 — binds the logical-v2 single-item envelope to its explicit
 Core route after the Revision 3 comparator, DTO, and journal corrections.
+**Review rev 1:** folds `../reviews/2026-07-22-v2-logical-items-spec-review.md`
+(C1–C5, P1–P8). Headline changes: the §5.6 fail-closed rule is carved into
+capability-fetch-failure → legacy/OFF vs successful-v2 + malformed envelope →
+fail closed (C1); reply-count journal fan-out and journal epochs/ring/floor
+are cut to the root-only rev 1 patterns — authoritative count on the reply's
+own stream frame, monotonic seq + one reset generation (P1, P5);
+single-process simplifications replace claim fences, worker leases, and the
+four-slot scheduler with in-process serial equivalents (P4, P6, P7); contract
+pins for the refresh route's `jsonWrite` guard, idempotency fingerprint
+inputs, body-field `commandId`, and the capability wire-shape supersession
+(C2–C5); deferrals to Vertical 3 of `verified_origin`, push-capability
+persistence, and the `eligibleSourceIds` array — Personal membership becomes
+a boolean (P2, P3, P8).
 **Foundation:** `2026-07-20-rsc-source-governance-moderation-design.md` rev 3
 **Roadmap:** `2026-07-20-rsc-source-governance-vertical-roadmap.md` rev 4
 **Timeline presentation:** `2026-07-22-root-only-timelines-design.md`
@@ -62,61 +75,65 @@ Origin verification remains deferred.
 
 ### 1.2 Push boundary
 
-Vertical 2 may persist bounded WebSub and rssCloud capability claims observed
-in successfully parsed feeds. They are inert evidence: they convey neither
-federation nor trust and cannot be contacted, treated as trusted URLs, or
-converted to lease state. Vertical 3 must revalidate them against then-current
-URL, SSRF, governance, and ownership rules.
+Vertical 2 persists no WebSub or rssCloud capability claims and exposes no
+observed-capability state (review rev 1, P3). Vertical 3 re-parses push
+capability from the stored raw feed evidence when it builds its push
+subsystem, and must validate what it finds against then-current URL, SSRF,
+governance, and ownership rules — so a V2-era claim store would carry no
+authority anyway.
 
-Vertical 2 creates no leases, callback credentials, subscriptions, renewals,
+Vertical 2 creates no push subscriptions, callback credentials, renewals,
 unsubscriptions, or push ingestion. With v2 disabled, the unchanged v1 branch
 continues legacy push. With v2 enabled, legacy polling and inbound push handlers
 are not started or routed.
 
-### 1.3 Durable scheduler
+### 1.3 Polling scheduler
 
-The scheduler has four acquisition slots and orders eligible work by
-`(nextPollAt ASC, sourceId ASC)`. `baseInterval = RSC_POLL_SECONDS`. Startup
-uses the same slots and ordering and has no separate overdue-source catch-up
-launch.
+Scheduling reuses the existing pattern: one global serial poll loop in the
+single Core process, one source at a time, in stable `sourceId` order
+(review rev 1, P7). Each pass skips a source whose durable per-source
+`lastPollAt` is more recent than `baseInterval = RSC_POLL_SECONDS`. Startup
+runs the same loop and has no separate overdue-source catch-up launch.
 
-Health state is durable: `nextPollAt`, last attempt/success/failure times, and
-consecutive failures. Adding the first scheduling reason makes a source due
-through the normal queue. Removing the last reason preserves health but makes
-scheduled acquisition ineligible.
+Per-source acquisition health is durable and administrator-visible:
+`lastPollAt`, last success/failure times, and consecutive failures. Adding
+the first scheduling reason makes a source eligible on the next pass.
+Removing the last reason preserves health but makes scheduled acquisition
+ineligible.
 
-Success, `304`, successful item truncation, and committed domain conflicts reset
-the failure count and calculate the next poll from completion. Operational
-network, HTTP, timeout, body-limit, and feed-level parse failures use:
-
-```text
-failureDelay = min(
-  baseInterval * 2^(consecutiveFailures - 1),
-  max(baseInterval, 1 hour)
-)
-```
+Success, `304`, successful item truncation, and committed domain conflicts
+reset the failure count. Operational network, HTTP, timeout, body-limit, and
+feed-level parse failures increment it. Per-source failure backoff is a
+deliberately deferred upgrade — the consecutive-failure counter is retained
+so it can be added without schema change
+(`ponytail: single-lane poll + skip-if-recent; add backoff/slots only when a
+real feed misbehaves or feed count grows`).
 
 Cancellation, supersession, and policy rejection are not operational failures.
-Manual success advances normal `nextPollAt`; manual operational failure updates
-the same health and backoff state.
+Manual refresh updates the same durable health state.
 
-### 1.4 Acquisition claim and fencing
+### 1.4 Acquisition exclusivity
 
-At most one fenced network acquisition may be active for a source. The active
-claim covers fetching, parsing, and the acquisition-result transaction, not the
-run's later reconciliation. A later command may start a new run after that
-claim is released even while an older run has pending or retrying jobs.
+Core is one Node process, so there is nothing to fence against (review rev 1,
+P4). At most one network acquisition may be active for a source, enforced by a
+per-source in-process in-flight flag
+(`ponytail: in-process boolean; distributed claims only if core ever becomes
+multi-process`). The flag covers fetching, parsing, and the
+acquisition-result transaction, not the run's later reconciliation. A later
+command may start a new run after the flag clears even while an older run has
+pending or retrying jobs. The flag is process state: a crash clears it with
+the process, and startup begins with no active acquisitions.
 
-Every claim has a monotonically changing fence. An expired claim is recovered
-on the same run ID with a higher fence. Pause and block invalidate it
-immediately. Acquisition commit verifies current run ID, fence, source policy,
-and, for a scheduled run, a still-current scheduling reason. A manual command
-association supplies its one-shot reason. A stale response commits nothing.
+The real correctness need lives at commit time: the acquisition-result
+transaction rechecks current source policy and, for a scheduled run, a
+still-current scheduling reason. A manual command association supplies its
+one-shot reason. Pause and block make that recheck reject the result; a stale
+or policy-rejected response commits nothing.
 
-Different administrator commands may join only the currently active
-acquisition claim. Their command-to-run associations are separate and commit
-before the acquisition result. The same command always returns its original
-run.
+An administrator command arriving while a source's acquisition is in flight
+joins the active run instead of starting a second fetch. Command-to-run
+associations are separate and commit before the acquisition result. The same
+command always returns its original run.
 
 ### 1.5 Network and evidence bounds
 
@@ -188,8 +205,8 @@ allowed without duplication.
 
 An ownership collision commits the run outcome, redirect evidence, and
 conflict, but no aliases, observations, jobs, validators, or conditional-fetch
-changes. It is a domain outcome, not a scheduler failure. The fence guards the
-whole result.
+changes. It is a domain outcome, not a scheduler failure. The commit-time
+policy recheck guards the whole result.
 
 Polling always begins at the unchanged canonical URL. Validators are source
 acquisition state indexed by the final effective URL that produced them.
@@ -204,8 +221,8 @@ source aliases only, never publisher-feed aliases.
 
 Every acquisition has a durable run ID. The acquisition-result transaction
 atomically persists bounded observation versions, unique reconciliation jobs,
-and their run association. After commit it wakes the shared worker. Correctness
-never depends on immediate draining.
+and their run association. After commit it triggers the in-process
+reconciliation drain. Correctness never depends on immediate draining.
 
 Acquisition counters are `candidates`, `seen`, `observed`, `unchanged`,
 `skipped`, `omitted`, `itemsTruncated`, `bodyLimitExceeded`, and `notModified`.
@@ -251,7 +268,7 @@ An unchanged refetch creates no version, run-association row, job, or journal
 event. It updates bounded `lastSeenAt`, `lastSeenRunId`, and `seenCount` on both
 the delivery identity and the exact matched historical observation version. It
 may wake immediately eligible unfinished work but cannot change a retrying
-job's next attempt, count, lease, or fence.
+job's next attempt or count.
 
 Distinct canonical versions under one delivery key are all persisted. If they
 occur in one response, each retains its wire ordinal and gets its own job; the
@@ -265,14 +282,16 @@ All versions have a durable total first-arrival key:
 
 Every rule depending on first or latest arrival uses this complete tuple.
 
-### 2.3 Reconciliation worker
+### 2.3 Reconciliation drain
 
-One worker executes one reconciliation job at a time. It may read a candidate
-window of 16 ordered by `(nextAttemptAt ASC, jobId ASC)` but claims only the job
-it is about to execute. Claims use a 60-second lease and monotonic fence.
-
-The worker runs continuously, recovers expired claims at startup, wakes after
-acquisition, and checks scheduled retries. Operational failures retry with:
+Reconciliation is an in-process serial drain in the single Core process: one
+loop, one job at a time (review rev 1, P6 —
+`ponytail: serial drain; leases/fences only if reconciliation ever leaves the
+process`). The drain runs after each acquisition commit and once at startup to
+pick up jobs a crash left pending or retrying, and checks scheduled retries.
+Jobs are taken in `(nextAttemptAt ASC, jobId ASC)` order; there is no lease,
+fence, or candidate window. Operational failures increment the job's durable
+attempt counter and retry with:
 
 ```text
 min(5 seconds * 2^(attempt - 1), 15 minutes)
@@ -283,16 +302,16 @@ under that limit is 320 seconds. Deterministic invariant/data failures become
 terminal immediately. Failure category is stored separately from redacted
 diagnostic.
 
-Lost-fence and policy-generation supersession consume no attempt or backoff;
-current work is left or requeued. If a domain transaction rolls back because
-of an operational failure, a separate small fenced transaction records the
-attempt, next time, or terminal exhaustion and no logical, claim, selection, or
-journal effects. Lost fence prevents even that bookkeeping.
+Policy-generation supersession consumes no attempt or backoff; superseded work
+is left or requeued. If a domain transaction rolls back because of an
+operational failure, a separate small transaction records the attempt, next
+time, or terminal exhaustion and no logical, claim, selection, or journal
+effects.
 
-Successful or conflicted reconciliation atomically verifies fence and current
-policy, then writes all affected logical relationships, claims, conflicts,
-presentation state, selection hints, journal effects, job state, and run
-counters. Expected identity or attribution conflicts are successful
+Successful or conflicted reconciliation atomically verifies current policy
+generation at commit, then writes all affected logical relationships, claims,
+conflicts, presentation state, selection hints, journal effects, job state,
+and run counters. Expected identity or attribution conflicts are successful
 `conflicted` outcomes.
 
 Jobs for one delivery finalize in first-arrival order. A later version waits
@@ -400,16 +419,13 @@ selects bounded candidates using current eligible-support existence; related
 deliveries and claims are batch-loaded. Ordinary reads never repair stored
 pointers.
 
-`eligibleSourceIds` is sorted and duplicate-free.
-
 ### 3.2 Deterministic selection
 
 The evidence levels, strongest first, are:
 
-1. `verified_origin`;
-2. `bound_single_publisher`;
-3. `aggregate_assertion`;
-4. `source_scoped_fallback`.
+1. `bound_single_publisher`;
+2. `aggregate_assertion`;
+3. `source_scoped_fallback`.
 
 For display-delivery selection, first determine the strongest evidence level
 that contains an ordinary-eligible delivery. Retain the persisted/current
@@ -429,8 +445,10 @@ publisher only while a claim at that strongest level still supports it.
 Otherwise select the earliest claim by the complete first-arrival tuple, then
 stable lexical claim ID.
 
-Vertical 2 defines `verified_origin` for forward compatibility but creates no
-verified-origin evidence. Quarantined and blocked evidence remains retained for
+Vertical 2 ships exactly these three levels (review rev 1, P2). Vertical 3
+prepends its verified-origin rung as the new strongest level when it adds
+origin verification; because the comparator is strongest-first, that addition
+is purely additive. Quarantined and blocked evidence remains retained for
 administration but is not ordinary-eligible and participates in neither
 ordinary comparator. Permalink convergence grants no authority to replace
 content or author.
@@ -472,7 +490,6 @@ are placed by immutable order rather than blindly prepended.
 
 ```ts
 type LogicalItemId = string;
-type SourceId = string;
 
 type SelectedAuthor =
   | {
@@ -488,7 +505,6 @@ type SelectedAuthor =
       canonicalFeedUrl: string | null;
       profileAvailable: boolean;
       attributionLevel:
-        | 'verified_origin'
         | 'bound_single_publisher'
         | 'aggregate_assertion'
         | 'source_scoped_fallback';
@@ -535,8 +551,8 @@ type LogicalItemDto = {
   directReplyCount: number;
   conversationReplyCount: number;
 
-  eligibleSourceIds: SourceId[];
   classification: {
+    personal: boolean;
     federated: boolean;
   };
 };
@@ -568,10 +584,10 @@ The wire bounds and invariants are exact:
 - `publishedAt` and non-null `updatedAt` are normalized UTC instants;
 - `updatedAtProvenance` is null exactly when `updatedAt` is null;
 - reply counts are non-negative safe integers;
-- `eligibleSourceIds` contains every source currently supplying eligible
-  ordinary support, sorted lexically and duplicate-free; its serialized bytes
-  remain within the same 1 MiB ordinary-item envelope bound;
-- `classification.federated` is true exactly when at least one ID in the
+- `classification.personal` is true exactly when the item currently belongs to
+  the Personal lens for the authenticated requesting account under Section
+  3.5's membership rules; unauthenticated requests always receive `false`;
+- `classification.federated` is true exactly when at least one source in the
   current eligible support has a currently approved federation relationship.
 
 At least one of `title`, `content`, or `contentMarkdown` is non-null. Core
@@ -594,15 +610,20 @@ evidence and neutral connective placeholders do not independently count.
 
 The DTO contains exactly the ordinary classification needed by Web:
 `origin` selects Local, `selectedAuthor` selects local-author or publisher,
-`eligibleSourceIds` permits Personal reevaluation against active source
-subscriptions, and `classification.federated` selects Federated. Public is the
-ordinary-visible superset; parent fields reconstruct flat threads. No
-administrator evidence, raw claims, conflicts, governance explanations,
-credentials, secrets, unsafe URLs, or displaced delivery data appears.
+`classification.personal` selects Personal, and `classification.federated`
+selects Federated (review rev 1, P8 — the client never re-derives membership
+from per-item source IDs; Core computes both booleans from current eligible
+support in the same read snapshot, mirroring the rule that client lens
+filtering is never the visibility boundary). Public is the ordinary-visible
+superset; parent fields reconstruct flat threads. No administrator evidence,
+raw claims, conflicts, governance explanations, credentials, secrets, unsafe
+URLs, or displaced delivery data appears.
 
-Local-origin items always expose `eligibleSourceIds: []` and
-`classification.federated: false`. Remote echo evidence cannot provide ordinary
-support, Personal membership, or Federated classification for local origin.
+Local-origin items always expose `classification.federated: false`; their
+`classification.personal` follows Section 3.5's local rules (the subject's own
+items and followed local authors). Remote echo evidence cannot provide
+ordinary support, Personal membership, or Federated classification for local
+origin.
 
 Attribution level is item-specific, not publisher state. Fallback authors are
 neutral, non-navigable, and normally expose no feed URL. Unknown or currently
@@ -953,27 +974,29 @@ administrator evidence. Domain mutation and journal effect commit in the same
 transaction; live notification occurs after commit and contains sequence hints
 only.
 
-The journal retains the newest 10,000 records. Metadata stores persistent epoch,
-high-water sequence, and `replayFloorSeq`, the greatest pruned sequence. Within
-an epoch sequences strictly increase and are never reused. Rows above the floor
-remain available; a cursor equal to the floor is replayable, below it is not.
-Pruning and floor advancement are atomic and do not append reset or change
-epoch. Explicit reconstruction changes epoch and creates its initial reset
-atomically. Ordinary policy barriers append reset without changing epoch.
+Journal metadata stores one high-water sequence and one reset-generation
+integer (review rev 1, P5). Sequences strictly increase monotonically and are
+never reused. There is no retention ring, pruned floor, or epoch arithmetic
+(`ponytail: no pruning; add retention when the journal table measurably
+matters`): any cursor Core cannot serve — unknown, stale, or from an older
+reset generation — is answered with a single `reset` event, and the client
+refetches SSR. Ordinary policy barriers append a `reset` record without
+changing the generation. Explicit journal reconstruction increments the
+generation and creates its initial reset atomically.
 
 ### 5.2 Snapshot and replay cursors
 
-An opaque journal cursor encodes model, cursor version, epoch, and sequence.
-Clients never parse the numeric sequence. Journal cursors are distinct from
-pagination cursors.
+An opaque journal cursor encodes model, cursor version, reset generation, and
+sequence. Clients never parse the numeric sequence. Journal cursors are
+distinct from pagination cursors.
 
 Every hydrated ordinary JSON view—including timeline, publisher, single item,
 thread, and history—includes a journal cursor captured in the same consistent
 snapshot as its content. After reset, Web refetches SSR and reconnects from that
 cursor.
 
-Malformed, empty, v1, unsupported-version, wrong-epoch, future, or below-floor
-cursors are invalid for v2.
+Malformed, empty, v1, unsupported-version, wrong-generation, or future cursors
+are invalid for v2.
 
 ### 5.3 SSE transport and reset
 
@@ -983,30 +1006,39 @@ value as Core's `Last-Event-ID`. On browser automatic reconnect, the browser's
 through that header. Missing or empty is invalid and resets; Core never silently
 starts at current high water.
 
-SSE `id:` is the encoded epoch-qualified cursor, not numeric sequence.
+SSE `id:` is the encoded generation-qualified cursor, not numeric sequence.
 
 ```ts
+type ReplyCountOverlay = {
+  rootLogicalItemId: string;
+  rootConversationReplyCount: number;
+};
+
 type LogicalV2StreamEvent =
   | { model: 'logical-v2'; kind: 'upsert'; logicalItemId: string;
-      item: LogicalItemDto }
-  | { model: 'logical-v2'; kind: 'remove'; logicalItemId: string }
+      item: LogicalItemDto; replyCounts?: ReplyCountOverlay }
+  | { model: 'logical-v2'; kind: 'remove'; logicalItemId: string;
+      replyCounts?: ReplyCountOverlay }
   | { model: 'logical-v2'; kind: 'reset' };
 ```
 
+`replyCounts` is present exactly when the frame's subject is a resolved reply
+whose bounded mutation changed its derived root's ordinary-visible
+conversation count (Section 5.5).
+
 A stored reset uses that row's encoded cursor. A synthesized recovery reset has
-no invented ID. A stored reset, invalid/expired cursor, unreconstructable event,
-or mid-stream retention overrun emits exactly one reset, stops replay, and
-closes the connection. The client closes its EventSource, refetches SSR, and
-creates a new connection. It never applies later events from that attempt.
+no invented ID. A stored reset, an unserveable cursor (unknown, stale, or
+older-generation), or an unreconstructable event emits exactly one reset, stops
+replay, and closes the connection. The client closes its EventSource, refetches
+SSR, and creates a new connection. It never applies later events from that
+attempt.
 
 ### 5.4 Ordered streaming
 
 The stream registers a listener before replay and maintains a bounded,
-coalesced highest-sequence hint. It reads floor, high water, and replay rows in
-one snapshot, replays ascending, and queries committed rows after the last sent
-sequence. Before every batch it rechecks the replay floor; falling below it
-resets and closes. Heartbeats are SSE comments and also trigger database
-catch-up.
+coalesced highest-sequence hint. It reads the high water and replay rows in
+one snapshot, replays ascending, and queries committed rows after the last
+sent sequence. Heartbeats are SSE comments and also trigger database catch-up.
 
 The in-memory bus is never event-content authority. A historical upsert is
 projected under current policy: current visible item becomes current upsert,
@@ -1014,40 +1046,35 @@ unavailable becomes remove, and unsafe reconstruction becomes reset. Stored
 remove remains remove. Placeholders are never streamed as timeline entries;
 conversation clients refetch their thread.
 
-### 5.5 Durable reply-count invalidation
+### 5.5 Live reply counts
 
-Logical-v2 does not adopt v1's transient `rootReplyCount` SSE enrichment. Reply
-counts are ordinary projection fields derived from current logical ancestry and
-visibility. Their live correctness comes from durable journal effects.
+Reply counts are ordinary projection fields derived at query time from current
+logical ancestry and visibility (review rev 1, P1 — the root-only rev 1
+pattern). SSR and every hydrated JSON view compute `directReplyCount` and
+`conversationReplyCount` in the read snapshot; the journal stores no counts
+and never fans a reply mutation out to other items.
 
-A bounded mutation affecting a resolved reply appends deduplicated durable
-journal effects for every affected ordinary projection:
+A bounded mutation affecting a resolved reply appends exactly one journal
+effect: the reply's own `upsert` or `remove`. There is no parent upsert, no
+root upsert, and no reset-fallback branch. Live count correctness rides that
+single frame: send-time projection attaches `replyCounts` — the derived root's
+ID and its current ordinary-visible `conversationReplyCount`, computed in the
+same projection snapshot as the frame. Clients overlay that authoritative
+value onto the root card when it is loaded and never increment or decrement
+optimistically. Because every frame carries an authoritative total rather than
+a delta, replay and duplicate delivery are idempotent.
 
-- the reply's own required `upsert` or `remove`;
-- an `upsert` for its immediate logical parent because that parent's
-  `directReplyCount` changed;
-- an `upsert` for the derived conversation root because its
-  `conversationReplyCount` changed.
-
-If parent and root are the same logical item, only one upsert is appended for
-that ID. All effects commit atomically with the domain mutation. Send-time
-projection supplies authoritative counts and may convert an unavailable target
-to an effective remove. Clients never increment or decrement optimistically;
-replay and duplicate delivery are idempotent.
-
-This rule applies to bounded resolved-reply creation, terminal deletion, and
+This applies to bounded resolved-reply creation, terminal deletion, and
 bounded ordinary visibility gain or loss. A content-only reply edit that
-changes neither ancestry nor ordinary visibility emits no parent/root count
-invalidation.
+changes neither ancestry nor ordinary visibility carries no `replyCounts`.
+Send-time projection may still convert an unavailable target to an effective
+remove.
 
 Section 4.2's reset remains authoritative for orphan-adoption batches. A
 `missing -> resolved` adoption can move a subtree, alter river membership, and
-change several counts, so it does not append the ordinary parent/root upsert
-set. Existing source-policy, account-deletion, and other reset-producing
-transactions likewise use their single reset without redundant count upserts.
-
-If every affected parent and root cannot be identified safely within the
-bounded transaction, append one reset rather than partial upserts.
+change several counts, so clients recover through that single reset rather
+than count overlays. Existing source-policy, account-deletion, and other
+reset-producing transactions likewise use their single reset.
 
 ### 5.6 Capability and cutover
 
@@ -1062,18 +1089,38 @@ type Capabilities =
     };
 ```
 
+This shape deliberately supersedes and widens Vertical 1's capability
+contract (review rev 1, C5): V1 types the Web client's `getCapabilities` as
+`{sourceModelV2: boolean}` and asserts the enabled body with exact equality
+(`toEqual({sourceModelV2: true})`). When V2 ships, that exact-equality test
+must be updated and the Web capability type widened to carry `model`,
+`journalCursorVersion`, and `streamProtocolVersion`. The widening is an
+intentional supersession, not drift.
+
 `sourceModelV2` is startup-immutable. Capability reports v2 only after schema,
-projector, journal, activation reconciliation, scheduler, reconciliation
-worker, and orphan-resolution worker are ready. Configured-v2 initialization
+projector, journal, activation reconciliation, poll loop, reconciliation
+drain, and orphan-resolution worker are ready. Configured-v2 initialization
 failure fails startup/readiness rather than serving v1.
 
 Existing ordinary route paths remain stable and branch internally;
 `GET /post/:id` is the deliberate new v2-only single-item route defined in
 Section 3.4. Every v2 JSON envelope identifies `model: 'logical-v2'`; Web
 validates each envelope and stream event instead of trusting capability alone.
-Capability failure, representation mismatch, or malformed event fails closed:
-discard, close, revalidate capability and SSR, and never fall back or cast to
-v1.
+
+Failure handling is carved into two cases, matching the adjudicated V1 carve
+(`../reviews/2026-07-22-v1-source-control-plane-review.md`, Findings 1 and 8;
+review rev 1, C1):
+
+- **Capability fetch failure** — `/capabilities` unreachable, non-200, or a
+  fetch throw: Web degrades to the legacy path for that request (legacy is
+  exactly what OFF is) and retries capability on the next request. Web
+  memoizes only a successful capability reading; a failure is never cached as
+  sticky state, so a transient blip during a rolling deploy cannot pin a pod
+  to the wrong branch or error-page surfaces that today have no capability
+  dependency.
+- **Successful v2 capability, then a missing, malformed, or mismatched
+  envelope or stream event** — fail closed: discard the payload, close the
+  stream, revalidate capability and SSR, and never fall back or cast to v1.
 
 Core returns semantic content. Web enriches only upserts through the existing
 server renderer and sanitizer and passes remove/reset unchanged. Current policy
@@ -1088,12 +1135,14 @@ and river surfaces; conversation views refetch to obtain pruning or placeholder
 state. Reset discards event-derived assumptions, refetches SSR, and reconnects
 from its snapshot cursor.
 
-For river lenses, a resolved-reply upsert never inserts that reply as a card.
-The durable parent and root upserts replace authoritative direct and
-conversation counts when those items are loaded. Author and publisher activity
-lenses may insert the reply itself according to immutable timeline order. An
-off-page parent or root is not materialized merely because one of its replies
-arrived.
+For river lenses, a resolved-reply frame never inserts that reply as a card.
+When the frame carries a `replyCounts` overlay and its root is a loaded card,
+the client replaces that card's conversation count with the authoritative
+value; otherwise it does nothing. Author and publisher activity lenses may
+insert the reply itself according to immutable timeline order. An off-page
+parent or root is not materialized merely because one of its replies arrived.
+Expanded conversation views remain snapshot-only, matching root-only rev 1: a
+live reply becomes visible on the next thread fetch or reload.
 
 Administrative retained content requires both authenticated administrator and
 an explicitly administrative route. Ordinary routes never reveal hidden or
@@ -1116,11 +1165,16 @@ a verified administrator; operator tokens cannot access them.
 
 ```http
 POST /admin/sources/:sourceId/refresh
-Idempotency-Key: <command-id>
-{}
+{"commandId": "<command-id>"}
 ```
 
-The route accepts only stable source ID. A valid command against paused,
+The route accepts only stable source ID and composes the house `jsonWrite`
+bodyLimit guard positionally like every other authed JSON write
+(`jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES })`,
+`core/src/api/app.ts:65` — review rev 1, C2). The command ID travels as the
+`commandId` JSON body field, the Vertical 1 command-ledger convention for
+every mutating command, so the shared ledger helper is not forked; there is
+no `Idempotency-Key` header (review rev 1, C4). A valid command against paused,
 blocked, removed, tombstoned, or unknown source is ledgered and returns exactly:
 
 ```http
@@ -1128,8 +1182,12 @@ blocked, removed, tombstoned, or unknown source is ledgered and returns exactly:
 {"model":"logical-v2","error":"source unavailable"}
 ```
 
-Replay returns that refusal even after source state changes. A reused command ID
-with mismatched fingerprint returns:
+Replay returns that refusal even after source state changes. The refresh
+command's request fingerprint inputs are exactly
+`[command name, sourceId, actor]` (review rev 1, C3) — the body carries only
+`commandId` and the source ID is in the path, so these three inputs are the
+whole identity of the request. A reused command ID with a mismatched
+fingerprint — a different command, source, or actor — returns:
 
 ```http
 409
@@ -1250,13 +1308,13 @@ GET /admin/acquisition-runs/:runId/jobs
 Pages include model, items, and opaque next cursor. Source runs order by
 `(startedAt DESC, runId DESC)`; jobs by `(createdAt ASC, jobId ASC)`. Default
 limit is 50 and maximum 100. Cursors encode route version and exact immutable
-tuple; mutable status, retry, and lease fields never order pagination. Invalid
+tuple; mutable status and retry fields never order pagination. Invalid
 cursors return `400 {"model":"logical-v2","error":"invalid cursor"}`.
 
-Job summaries expose status, attempts, next attempt, lease expiry, stable
-failure category, and redacted diagnostic, but never fence. Waiting for an
-earlier version is pending and consumes no attempt. Vertical 2 cannot reopen a
-terminal run or retry a terminal job.
+Job summaries expose status, attempts, next attempt, stable failure category,
+and redacted diagnostic. Waiting for an earlier version is pending and
+consumes no attempt. Vertical 2 cannot reopen a terminal run or retry a
+terminal job.
 
 ```ts
 type AdminReconciliationJobSummary = {
@@ -1271,7 +1329,6 @@ type AdminReconciliationJobSummary = {
     | 'failed';
   attempts: number;
   nextAttemptAt: string | null;
-  leaseExpiresAt: string | null;
   failureCategory:
     | 'operational_exhausted'
     | 'invariant_or_data_failure'
@@ -1280,9 +1337,8 @@ type AdminReconciliationJobSummary = {
 };
 ```
 
-Source detail adds scheduling reasons, current acquisition claim, durable
-health, latest run, inert observed capability summary, retained evidence counts
-without links, and:
+Source detail adds scheduling reasons, any in-flight acquisition, durable
+health, latest run, retained evidence counts without links, and:
 
 ```ts
 nonterminalRuns: {
@@ -1292,7 +1348,7 @@ nonterminalRuns: {
 };
 ```
 
-`activeAcquisition` describes only an unexpired fenced fetch/acquisition claim,
+`activeAcquisition` describes only a currently in-flight fetch/acquisition,
 not older reconciliation work.
 
 ```ts
@@ -1305,12 +1361,10 @@ type AdminSourceAcquisitionSummary = {
   };
   activeAcquisition: {
     runId: string;
-    claimedAt: string;
-    leaseExpiresAt: string;
+    startedAt: string;
   } | null;
   health: {
-    nextPollAt: string | null;
-    lastAttemptAt: string | null;
+    lastPollAt: string | null;
     lastSuccessAt: string | null;
     lastFailureAt: string | null;
     consecutiveFailures: number;
@@ -1325,10 +1379,6 @@ type AdminSourceAcquisitionSummary = {
     count: number;
     oldestRunId: string | null;
     oldestStartedAt: string | null;
-  };
-  observedCapabilities: {
-    websub: boolean;
-    rssCloud: boolean;
   };
   retainedCounts: {
     deliveries: number;
@@ -1350,9 +1400,12 @@ and never describes parsing or terminal completion as trust or federation.
 Vertical 2 adds transactional schema for publishers and names; logical items,
 local bridges, and deleted-local markers; delivery identities, versions, and
 presentation chains; claims, conflicts, keys, parent edges, and orphan work;
-runs, command associations, fenced claims, health, and validators; jobs; source
-redirect evidence and aliases; and journal metadata/records. It does not bulk
-convert legacy remote content. Final migration remains Vertical 4.
+runs, command associations, health, and validators; jobs; source redirect
+evidence and aliases; and journal metadata/records. It does not bulk convert
+legacy remote content. Final migration remains Vertical 4. Every new migration
+entry is appended strictly at the tail of the existing `user_version`-indexed
+`MIGRATIONS` array; mid-array insertion would renumber applied migrations and
+corrupt `user_version` on populated databases.
 
 Activation metadata is independent of journal identity:
 
@@ -1372,52 +1425,55 @@ process evaluates the marker before listening or starting workers.
 For first activation or reactivation, the local-state read, reconciliation
 effects, journal initialization if needed, one reset, timestamps, and transition
 to `active` all occur inside one pre-listen SQLite write transaction. No
-supported application mutation can intervene. First activation creates epoch
-and first reset in that transaction. Reactivation preserves epoch and appends
-one reset.
+supported application mutation can intervene. First activation creates the
+journal's reset generation and first reset in that transaction. Reactivation
+preserves the generation and appends one reset.
 
-A continuous-v2 restart seeing `active` preserves epoch and activation
-timestamps and appends no reset. Failure leaves state non-active and fails
-startup/readiness.
+A continuous-v2 restart seeing `active` preserves the reset generation and
+activation timestamps and appends no reset. Failure leaves state non-active
+and fails startup/readiness.
 
-Required readiness components are schema, projector, journal, scheduler,
-reconciliation worker, orphan-resolution worker, and completed activation
+Required readiness components are schema, projector, journal, poll loop,
+reconciliation drain, orphan-resolution worker, and completed activation
 barrier.
 
 ### 7.2 Crash boundaries
 
-Acquisition has two transactions. Before network access, the claim transaction
-commits run creation/reuse, active claim, higher fence, command association, and
-initial state. A crash may legitimately leave that visible; expiry recovers the
-same run with a higher fence.
+Acquisition has two transactions. Before network access, the run transaction
+commits run creation/reuse, command association, and initial state, and the
+process sets the in-flight flag. A crash may legitimately leave a nonterminal
+run visible; the flag dies with the process, startup begins with no active
+acquisitions, and the crashed run remains nonterminal history — it is never
+resumed.
 
-The result transaction verifies current fence/policy/reason and atomically
-commits aliases, redirect evidence, validators, observations, jobs, counters,
-outcome, scheduler state, and claim release. Fenced operational-failure
-bookkeeping atomically commits run outcome, claim release, scheduler health,
-and backoff. Lost fence commits none.
+The result transaction rechecks current policy and scheduling reason and
+atomically commits aliases, redirect evidence, validators, observations, jobs,
+counters, outcome, and scheduler health. Operational-failure bookkeeping
+atomically commits run outcome and health. A policy-rejected or superseded
+result commits nothing beyond its outcome.
 
 Reconciliation domain effects, job terminal/retry state, run counters, and
-journal effects commit atomically. After rollback, only the separate fenced
+journal effects commit atomically. After rollback, only the separate
 failure-bookkeeping transaction may commit.
 
 Fault injection also covers local create/edit/reply/delete and account deletion;
 orphan adoption; source, subscription, federation, follow, and profile reset
-transitions; publisher-label changes; journal initialization, reconstruction,
-and pruning; and refresh association/ledger replay. Each multi-table mutation
-commits domain, audit/ledger, and journal effects together or none.
+transitions; publisher-label changes; journal initialization and
+reconstruction; and refresh association/ledger replay. Each multi-table
+mutation commits domain, audit/ledger, and journal effects together or none.
 
 ### 7.3 Required acceptance coverage
 
 The implementation plan must preserve the detailed contracts above and include:
 
-- source-state acquisition matrix and scheduler/backoff/restart tests;
+- source-state acquisition matrix and serial-loop scheduling tests
+  (per-source `lastPollAt` skip-if-recent, restart behavior);
 - network deadline, streaming body limit, SSRF, redirects, alias collision, and
   effective-URL validator tests;
 - every item/evidence bound and adapter wire-order boundary;
 - observation deduplication, collision, seen metadata, and multi-version tests;
-- acquisition/reconciliation fencing, crash, ordering, retry, and concurrent
-  convergence tests;
+- acquisition/reconciliation crash, ordering, retry, and commit-time
+  policy-recheck tests;
 - local bridge, terminal deletion, ancestry, orphan adoption, depth-64,
   node-500, truncation, placeholder, and unavailable-leaf tests;
 - evidence-level delivery/author ranking, current strongest-level stability,
@@ -1431,20 +1487,24 @@ The implementation plan must preserve the detailed contracts above and include:
   lenses retain replies;
 - stable `directReplyCount` and `conversationReplyCount` semantics across
   endpoints, with ordinary visibility applied before counting;
-- atomic deduplicated reply, parent, and root journal effects for bounded
-  reply-count changes, with reset barriers for adoption and unsafe or unbounded
-  invalidation and no transient v1 count metadata;
+- count-on-reply-frame tests: a resolved reply's frame carries the
+  authoritative root conversation count, applying the same frame twice is
+  idempotent, SSR counts are computed query-time, and orphan adoption
+  recovers through Section 4.2's reset rather than count overlays;
 - `GET /post/:id` enabled-v2 success and neutral `404`, disabled-v2 isolation,
-  snapshot-consistent single-item `journalCursor`, and Web fail-closed handling
-  for malformed or mismatched envelopes;
+  snapshot-consistent single-item `journalCursor`, Web fail-closed handling
+  for malformed or mismatched envelopes, and Web capability-fetch-failure
+  degradation to legacy with success-only memoization;
 - presentation watermark, rollback, arrival fallback, job-order, history, and
   direct-comments-feed tests;
-- journal atomicity, epoch/floor/pruning, opaque cursor, reset-close,
-  listener-before-replay, retention overrun, heartbeat catch-up, and malformed
-  event tests;
-- administrator authorization, ledgered refusal, idempotency, disposition,
-  zero-job completion, counters, pagination, redaction, and nonterminal-run
-  tests.
+- journal atomicity, opaque cursor, reset-generation recovery (an unknown,
+  stale, or older-generation cursor emits exactly one reset and the client
+  refetches SSR), reset-close, listener-before-replay, heartbeat catch-up,
+  and malformed event tests;
+- administrator authorization, ledgered refusal, idempotency — including a
+  mismatched-fingerprint `409` constructed from the pinned
+  `[command name, sourceId, actor]` inputs — disposition, zero-job completion,
+  counters, pagination, redaction, and nonterminal-run tests.
 
 Every ordinary projector test uses deliberately stale materialized selection
 hints. Reads, reconciliation, feeds, history, and SSE must choose identically.
@@ -1475,8 +1535,8 @@ Vertical 2 is complete only when:
 - the Web production build passes;
 - committed-diff whitespace validation passes;
 - disabled-v2 regression and enabled-v2 cross-model isolation tests pass;
-- activation, crash, fencing, policy-race, deterministic projection, replay,
-  and credential-redaction suites pass.
+- activation, crash, commit-time policy-recheck, deterministic projection,
+  replay, and credential-redaction suites pass.
 
 Passing this gate does not authorize enabling v2 by default, deleting v1,
 migrating legacy remote items, or beginning Vertical 3 functionality.
