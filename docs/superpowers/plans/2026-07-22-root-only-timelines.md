@@ -4,7 +4,9 @@
 
 **Goal:** Show each conversation once in river-style timelines, keep expanded threads live with replay-safe reply counts, and replace the oversized wedge pill with a compact accessible reply-count control.
 
-**Architecture:** Add an opt-in `topLevel` filter at the core repository/API boundary so SQL filters resolved replies before pagination while preserving existing callers. Core adds authoritative total-descendant counts to root-only HTTP results and new-reply SSE frames. Web river pages consume those frames through pure, tested thread-state reducers and a reusable progressive-enhancement anchor component.
+**Architecture:** Add an opt-in `topLevel` filter at the core repository/API boundary so SQL filters resolved replies before pagination while preserving existing callers. Core adds authoritative total-descendant counts to root-only HTTP results and new-reply SSE frames. Web river pages consume those frames with a small visible-root count overlay — expanded inline threads stay snapshot-only (today's behavior; rev 1 removed the reconciliation/queue layer) — plus a reusable progressive-enhancement anchor component.
+
+**Spec:** `docs/superpowers/specs/2026-07-22-root-only-timelines-design.md` (**rev 1** — R1–R9 folded; this plan is rev 1 to match).
 
 **Tech Stack:** Node 22 native TypeScript stripping, Hono, Kysely/SQLite, Vitest, SvelteKit, Svelte 5 runes, server-rendered Svelte, plain CSS.
 
@@ -16,7 +18,7 @@
 - Use Node 22-compatible erasable TypeScript in `core/src`; no parameter properties.
 - Do not change reply storage, feed output/ingest, federation, comments feeds, conversation-page semantics, or author-profile grouping.
 - Resolved replies are absent only from river-style timelines; unresolved replies remain visible with their existing context.
-- New replies without `rootReplyCount` must remain absent from cards and expanded/loading inline trees; reply edits may reconcile without it.
+- Resolved-reply SSE frames only ever update a visible root's count (when `rootReplyCount` is present) — they are never prepended, never passed to `mergeIncoming`, and never enter expanded/loading inline trees. Expanded threads are snapshot-only; reload repairs.
 - Preserve the server-side sanitizer boundary at `/post/:id/thread.json`; do not render un-enriched remote content.
 - Keep real anchors and 44×44 CSS-pixel targets for no-JavaScript and accessibility behavior; no raw hex colors or new dependencies.
 - Use explicit `git add <paths>` only. Every implementation commit message ends with `developed with the help of AI tools`.
@@ -122,7 +124,10 @@ Use the same `TimelineFilter` signature in `service.ts` instead of the repeated 
 
 - [ ] **Step 5: Implement SQL filtering and total-descendant counts**
 
-In `SqliteRepository.getTimeline()`, add the filter before `execute()`:
+In `SqliteRepository.getTimeline()`, first widen the impl's own inline filter
+type at `sqlite.ts:226` to `TimelineFilter` (the fourth of the four filter
+sites — interface, impl, service, route; missing it fails typecheck), then add
+the filter before `execute()`:
 
 ```ts
 if (filter?.topLevel) q = q.where('posts.in_reply_to_post_id', 'is', null)
@@ -308,6 +313,8 @@ expect(replyFrame).toMatchObject({
 
 Create a nested reply and assert its authoritative root total is `2`. Edit that reply and assert the edit frame has `editedAt` but no own `rootReplyCount` property. Emit/create an unresolved reply and assert it has no `rootReplyCount`.
 
+Assert per-frame content only — never cross-frame emit ordering: the count query makes the bus handler async, so frames from closely-spaced posts may interleave (harmless; totals are authoritative).
+
 - [ ] **Step 2: Add failing replay and degradation tests**
 
 For replay, create a root plus two descendants after an anchor, reconnect from the anchor, and assert both replayed reply frames carry the same authoritative total `2` (not deltas).
@@ -384,125 +391,7 @@ git commit -m "feat: stream authoritative reply totals" -m "developed with the h
 
 ---
 
-### Task 4: Build pure live-thread reconciliation and expansion state
-
-**Files:**
-- Modify: `web/src/lib/wedge.ts`
-- Modify: `web/src/lib/wedge.test.ts`
-- Create: `web/src/lib/river-replies.ts`
-- Create: `web/src/lib/river-replies.test.ts`
-
-**Interfaces:**
-- Produces: `reconcileThreadEntry(thread, entry): TimelineEntry[]`.
-- Produces: immutable `RiverThreads` reducers for start/success/failure and resolved SSE events.
-- Enforces: count-less new replies never enter expanded/loading trees; edits may enter without counts.
-
-- [ ] **Step 1: Add failing ordering and idempotence tests**
-
-Extend `wedge.test.ts` with tests showing that `reconcileThreadEntry()`:
-
-```ts
-const once = reconcileThreadEntry(thread, entry('r3', 'root'))
-const twice = reconcileThreadEntry(once, entry('r3', 'root'))
-expect(twice.filter((e) => e.id === 'r3')).toHaveLength(1)
-expect(twice.map((e) => e.id)).toEqual(['root', 'r1', 'rr', 'r2', 'r3'])
-```
-
-Also assert an edit replaces content by ID and siblings with older `publishedAt` are inserted in `(publishedAt, id)` order rather than blindly appended.
-
-- [ ] **Step 2: Add failing reducer tests for every approved event state**
-
-Define fixtures around this public state:
-
-```ts
-export interface RiverThreads {
-  expanded: Record<string, TimelineEntry[]>
-  loading: Record<string, boolean>
-  queued: Record<string, TimelineEntry[]>
-  enhancementFailed: Record<string, boolean>
-}
-```
-
-Tests must assert:
-
-1. New reply + `rootReplyCount` reconciles into an expanded root.
-2. Replaying the same new reply does not duplicate it.
-3. Reply edit without `rootReplyCount` replaces the expanded card.
-4. New reply + count queues while loading, then appears after `finishThreadLoad()`.
-5. Reply edit without count queues while loading, then replaces the fetched card.
-6. New reply without count is ignored for an expanded root.
-7. New reply without count during loading invalidates that pending expansion; `finishThreadLoad()` discards the snapshot, clears the queue/loading state, leaves the root closed, and sets `enhancementFailed[root] = true` so a response containing that reply cannot leak it into the inline tree.
-8. Events for roots neither expanded nor loading retain no thread content.
-
-- [ ] **Step 3: Run focused web tests and confirm failure**
-
-Run:
-
-```bash
-docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm test -w web -- src/lib/wedge.test.ts src/lib/river-replies.test.ts"
-```
-
-Expected: missing exports/module failures.
-
-- [ ] **Step 4: Implement deterministic reconciliation**
-
-In `wedge.ts`, export `reconcileThreadEntry()`. Replace by ID through a map, sort sibling groups by `publishedAt` then `id`, and walk from the existing root (`thread[0].threadRootId ?? thread[0].id`) with a visited-set cycle guard. Keep `childrenOf()` for rendering. Remove `subtreeIds()` and `hiddenIds()` only after Task 6 removes their last consumers.
-
-```ts
-export function reconcileThreadEntry(thread: TimelineEntry[], entry: TimelineEntry): TimelineEntry[] {
-  const byId = new Map(thread.map((e) => [e.id, e]))
-  byId.set(entry.id, entry)
-  const rootId = thread[0]?.threadRootId ?? thread[0]?.id ?? entry.threadRootId ?? entry.id
-  // Group resolved children, sort siblings by publishedAt/id, DFS with visited.
-  // Any entry whose parent is absent remains retained after the ordered nodes;
-  // a later parent event makes it reachable on the next reconciliation.
-  return orderFlatThread([...byId.values()], rootId)
-}
-```
-
-- [ ] **Step 5: Implement immutable river-thread reducers**
-
-Create `river-replies.ts` with these exact exports:
-
-```ts
-export interface RiverThreads {
-  expanded: Record<string, TimelineEntry[]>
-  loading: Record<string, boolean>
-  queued: Record<string, TimelineEntry[]>
-  enhancementFailed: Record<string, boolean>
-}
-
-export const emptyRiverThreads = (): RiverThreads => ({ expanded: {}, loading: {}, queued: {}, enhancementFailed: {} })
-export function startThreadLoad(state: RiverThreads, rootId: string): RiverThreads
-export function applyResolvedReply(state: RiverThreads, entry: TimelineEntry): RiverThreads
-export function finishThreadLoad(state: RiverThreads, rootId: string, fetched: TimelineEntry[]): RiverThreads
-export function failThreadLoad(state: RiverThreads, rootId: string): RiverThreads
-export function closeThread(state: RiverThreads, rootId: string): RiverThreads
-```
-
-`applyResolvedReply()` uses `entry.editedAt != null` to classify an edit. A new reply without `rootReplyCount` invalidates only a currently loading root; it does not disable an already-expanded root, because ignoring the event preserves the existing internally consistent snapshot. Queue entries idempotently by ID. `finishThreadLoad()` must check `enhancementFailed[rootId]` before installing the fetched response.
-
-- [ ] **Step 6: Run focused tests and web check**
-
-Run:
-
-```bash
-docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm test -w web -- src/lib/wedge.test.ts src/lib/river-replies.test.ts"
-docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm run check -w web"
-```
-
-Expected: all helper/reducer tests pass; Svelte check exits 0.
-
-- [ ] **Step 7: Commit Task 4**
-
-```bash
-git add web/src/lib/wedge.ts web/src/lib/wedge.test.ts web/src/lib/river-replies.ts web/src/lib/river-replies.test.ts
-git commit -m "feat: reconcile live replies in open threads" -m "developed with the help of AI tools"
-```
-
----
-
-### Task 5: Create the compact progressive-enhancement reply control
+### Task 4: Create the compact progressive-enhancement reply control
 
 **Files:**
 - Create: `web/src/lib/reply-toggle.ts`
@@ -512,19 +401,15 @@ git commit -m "feat: reconcile live replies in open threads" -m "developed with 
 - Modify: `web/src/app.css`
 
 **Interfaces:**
-- Produces: `activationMode(busy, enhanced): 'suppress' | 'activate' | 'navigate'`.
-- Produces: `ReplyToggle` props `count`, `href`, `expanded`, `busy`, `enhanced`, `onactivate`.
+- Produces: `replyToggleLabel(count, expanded, busy): string`.
+- Produces: `ReplyToggle` props `count`, `href`, `expanded`, `busy`, `onactivate` (rev 1 — no `enhanced` prop; the fetch-failure fallback is handled by the parent clearing `loading` and the `href` remaining a real link).
 
-- [ ] **Step 1: Add failing activation-contract tests**
+- [ ] **Step 1: Add failing label-contract tests**
 
 ```ts
-expect(activationMode(true, true)).toBe('suppress')
-expect(activationMode(false, true)).toBe('activate')
-expect(activationMode(false, false)).toBe('navigate')
-expect(replyToggleLabel(1, false, false, true)).toBe('Loading 1 reply')
-expect(replyToggleLabel(2, false, true, true)).toBe('Show 2 replies')
-expect(replyToggleLabel(2, true, false, true)).toBe('Hide 2 replies')
-expect(replyToggleLabel(2, false, false, false)).toBe('Open conversation with 2 replies')
+expect(replyToggleLabel(1, false, true)).toBe('Loading 1 reply')
+expect(replyToggleLabel(2, false, false)).toBe('Show 2 replies')
+expect(replyToggleLabel(2, true, false)).toBe('Hide 2 replies')
 ```
 
 - [ ] **Step 2: Add failing server-render tests for component semantics**
@@ -541,19 +426,11 @@ docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm test -w web -- src
 
 Expected: missing modules/component.
 
-- [ ] **Step 4: Implement the pure activation and label helpers**
+- [ ] **Step 4: Implement the pure label helper**
 
 ```ts
-export type ActivationMode = 'suppress' | 'activate' | 'navigate'
-
-export function activationMode(busy: boolean, enhanced: boolean): ActivationMode {
-  if (!enhanced) return 'navigate'
-  return busy ? 'suppress' : 'activate'
-}
-
-export function replyToggleLabel(count: number, expanded: boolean, busy: boolean, enhanced: boolean): string {
+export function replyToggleLabel(count: number, expanded: boolean, busy: boolean): string {
   const replies = `${count} ${count === 1 ? 'reply' : 'replies'}`
-  if (!enhanced) return `Open conversation with ${replies}`
   if (busy) return `Loading ${replies}`
   return `${expanded ? 'Hide' : 'Show'} ${replies}`
 }
@@ -563,42 +440,40 @@ export function replyToggleLabel(count: number, expanded: boolean, busy: boolean
 
 ```svelte
 <script lang="ts">
-  import { activationMode, replyToggleLabel } from './reply-toggle'
+  import { replyToggleLabel } from './reply-toggle'
   let {
     count,
     href,
     expanded,
     busy = false,
-    enhanced = true,
     onactivate,
   }: {
     count: number
     href: string
     expanded: boolean
     busy?: boolean
-    enhanced?: boolean
     onactivate: () => void
   } = $props()
   function activate(event: MouseEvent) {
-    const mode = activationMode(busy, enhanced)
-    if (mode === 'navigate') return
     event.preventDefault()
-    if (mode === 'activate') onactivate()
+    if (!busy) onactivate()
   }
 </script>
 
 <a class="reply-toggle" {href} aria-expanded={expanded} aria-busy={busy || undefined}
-   aria-label={replyToggleLabel(count, expanded, busy, enhanced)} onclick={activate}>
-  <svg aria-hidden="true" viewBox="0 0 24 24"><!-- checked-in outline bubble path --></svg>
+   aria-label={replyToggleLabel(count, expanded, busy)} onclick={activate}>
+  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 8.5 8.5z"/></svg>
   <span aria-hidden="true">{count}</span>
 </a>
 ```
 
-Type the props explicitly. The SVG path uses `fill="none"`, `stroke="currentColor"`, rounded line caps/joins, and no external icon dependency.
+Without JavaScript the `onclick` never runs and the anchor navigates to the
+conversation — the progressive-enhancement fallback needs no prop. No external
+icon dependency.
 
 - [ ] **Step 6: Replace `.wedge` styling with compact `.reply-toggle` styling**
 
-Add a transparent, borderless inline-flex control with a 44×44 minimum hit target, approximately 1rem SVG, secondary resting color, accent expanded state, muted hover surface, and the existing tokenized focus ring. Leave `.wedge`, `.wedge.light`, and `.wedge .glyph` in place until Task 6 removes all markup consumers.
+Add a transparent, borderless inline-flex control with a 44×44 minimum hit target (via padding on the compact glyph — the tabs' idiom, not `::after`), approximately 1rem SVG, secondary resting color, accent expanded state, muted hover surface, and the existing tokenized focus ring. Leave `.wedge`, `.wedge.light`, and `.wedge .glyph` in place until Task 5 removes all markup consumers.
 
 - [ ] **Step 7: Run focused tests and web check**
 
@@ -611,7 +486,7 @@ docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm run check -w web"
 
 Expected: helper and render tests pass; check exits 0.
 
-- [ ] **Step 8: Commit Task 5**
+- [ ] **Step 8: Commit Task 4**
 
 ```bash
 git add web/src/lib/reply-toggle.ts web/src/lib/reply-toggle.test.ts web/src/lib/ReplyToggle.svelte web/src/lib/ReplyToggle.test.ts web/src/app.css
@@ -620,7 +495,7 @@ git commit -m "feat: add compact reply-count control" -m "developed with the hel
 
 ---
 
-### Task 6: Integrate root-only live behavior and reply controls across web surfaces
+### Task 5: Integrate root-only live behavior and reply controls across web surfaces
 
 **Files:**
 - Modify: `web/src/routes/+page.svelte`
@@ -633,7 +508,7 @@ git commit -m "feat: add compact reply-count control" -m "developed with the hel
 - Modify: `web/src/lib/wedge.test.ts`
 
 **Interfaces:**
-- Consumes: `RiverThreads` reducers from Task 4 and `ReplyToggle` from Task 5.
+- Consumes: `ReplyToggle` from Task 4.
 - Produces: visible-root count overlay helper in `live.ts`.
 - Removes: root-only river dependency on `hiddenIds()`.
 
@@ -676,35 +551,45 @@ export function overlayVisibleRootCount(
 
 - [ ] **Step 4: Integrate Home and Following river state**
 
-For both river pages:
+For both river pages (rev 1 — no `RiverThreads` reducers; today's simple maps
+plus a loading guard):
 
-- replace separate `expanded`/`hidden` state with one `$state<RiverThreads>(emptyRiverThreads())`;
-- maintain `pageIds`, `edited`, and derived `posts` on Following as Home already does;
-- in `onPost`, branch on `inReplyToPostId` before the lens: apply `rootReplyCount` to a matching visible root, then call `applyResolvedReply()`; never pass a resolved reply to `mergeIncoming()`;
+- keep `expanded: Record<string, TimelineEntry[]>` and add
+  `loading: Record<string, boolean>`; drop the `hidden` derivation;
+- maintain `pageIds`, `edited`, and derived `posts` on Following as Home
+  already does (Following gains Home's `mergeIncoming`/`edited` handler —
+  today it is prepend-only);
+- in `onPost`, branch on `inReplyToPostId` BEFORE the lens: if
+  `rootReplyCount` and `threadRootId` are present,
+  `edited = overlayVisibleRootCount(edited, posts, entry.threadRootId, entry.rootReplyCount)`;
+  then return — a resolved reply is never passed to the lens or
+  `mergeIncoming()`, and expanded threads are not touched (snapshot-only);
 - for roots/unresolved replies, retain existing lens then `mergeIncoming()`;
-- implement `toggleReplies(id)` with `startThreadLoad`, `fetchThread`, `finishThreadLoad`, and `failThreadLoad`; do nothing when failed because `ReplyToggle` will navigate instead;
-- render `ReplyToggle` with `busy`, `enhanced`, and `onactivate` props;
-- render `ReplyTree` from `threads.expanded[id]`;
+- implement `toggleReplies(id)`: collapse if expanded; otherwise
+  `if (loading[id]) return`, set loading, `await fetchThread(id)` into
+  `expanded[id]`, clear loading; on failure clear loading and leave closed
+  (the user can re-click, or follow the permalink);
+- render `ReplyToggle` with `count`, `href`, `expanded`, `busy={loading[id]}`,
+  and `onactivate`;
+- render `ReplyTree` from `expanded[id]`;
 - iterate `posts` directly, removing `hiddenIds()` filtering.
-
-Use assignment after every reducer call so Svelte runes observe the immutable state.
 
 - [ ] **Step 5: Integrate Author profile and recursive ReplyTree controls**
 
-On the author profile, preserve grouping and live activity behavior. Add per-ID loading/failure state around its existing `fetchThread()` calls and use `ReplyToggle`; a failed fetch disables enhancement so later clicks navigate. Do not apply `topLevel` or river reply suppression.
+On the author profile, preserve grouping and live activity behavior. Add the same per-ID `loading` guard around its existing `fetchThread()` calls and use `ReplyToggle`. Do not apply `topLevel` or river reply suppression — its direct counts are honest (ReplyTree nests collapsed by default, so opening reveals exactly the counted direct children).
 
-In `ReplyTree.svelte`, replace each nested wedge with `ReplyToggle` using direct-child count, `busy={false}`, `enhanced={true}`, and the existing local open-state callback. Preserve recursive rendering, `openAll`, highlighting, Reply/source links, and the fully unfolded conversation-page behavior.
+In `ReplyTree.svelte`, replace each nested wedge with `ReplyToggle` using direct-child count, `busy={false}`, and the existing local open-state callback. Preserve recursive rendering, `openAll`, highlighting, Reply/source links, and the fully unfolded conversation-page behavior.
 
 - [ ] **Step 6: Remove obsolete duplicate-hiding helpers and CSS**
 
-After `rg "hiddenIds|subtreeIds|class=\"wedge\"|glyph" web/src` shows no consumers except tests/styles, delete `hiddenIds()` and `subtreeIds()` plus their tests, and remove the old `.wedge` CSS. Keep `childrenOf()`, `fetchThread()`, `reconcileThreadEntry()`, and `.replies` nesting styles.
+After `rg "hiddenIds|subtreeIds|class=\"wedge\"|glyph" web/src` shows no consumers except tests/styles, delete `hiddenIds()` and `subtreeIds()` plus their tests, and remove the old `.wedge` CSS. Keep `childrenOf()`, `fetchThread()`, and `.replies` nesting styles.
 
 - [ ] **Step 7: Run all affected web tests and check**
 
 Run:
 
 ```bash
-docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm test -w web -- src/lib/live.test.ts src/lib/wedge.test.ts src/lib/river-replies.test.ts src/lib/reply-toggle.test.ts src/lib/ReplyToggle.test.ts src/routes/page.load.test.ts src/routes/u/[handle]/following/following.actions.test.ts src/routes/post/[id]/reply.actions.test.ts"
+docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm test -w web -- src/lib/live.test.ts src/lib/wedge.test.ts src/lib/reply-toggle.test.ts src/lib/ReplyToggle.test.ts src/routes/page.load.test.ts src/routes/u/[handle]/following/following.actions.test.ts src/routes/post/[id]/reply.actions.test.ts"
 docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm run check -w web"
 ```
 
@@ -721,7 +606,7 @@ At `http://localhost:5173` verify:
 5. The conversation page remains fully expanded and author profile replies remain grouped.
 6. Both themes retain legible rest/hover/focus/expanded states.
 
-- [ ] **Step 9: Commit Task 6**
+- [ ] **Step 9: Commit Task 5**
 
 ```bash
 git add web/src/routes/+page.svelte web/src/routes/u/\[handle\]/following/+page.svelte web/src/routes/u/\[handle\]/+page.svelte web/src/lib/ReplyTree.svelte web/src/lib/live.ts web/src/lib/live.test.ts web/src/lib/wedge.ts web/src/lib/wedge.test.ts
@@ -730,7 +615,7 @@ git commit -m "feat: render root-only live conversations" -m "developed with the
 
 ---
 
-### Task 7: Update live documentation and run full verification
+### Task 6: Update live documentation and run full verification
 
 **Files:**
 - Modify: `README.md`
@@ -785,7 +670,7 @@ git status --short
 
 Expected: `git diff --check` is silent; the obsolete-symbol search returns no matches; status contains only intentional task files plus pre-existing unrelated user files.
 
-- [ ] **Step 5: Commit Task 7**
+- [ ] **Step 5: Commit Task 6**
 
 ```bash
 git add README.md design-system/rsc/MASTER.md
@@ -794,4 +679,4 @@ git commit -m "docs: describe root-only conversation rivers" -m "developed with 
 
 - [ ] **Step 6: Request final code review**
 
-Invoke `superpowers:requesting-code-review` against the complete implementation range. Require the reviewer to check the approved design’s pagination, unresolved-reply visibility, authoritative SSE counts, count-less reply suppression, fetch-race invalidation, no-JS navigation fallback, and unchanged feeds/conversation/author behavior. Address findings through `superpowers:receiving-code-review`, then rerun the complete verification commands before declaring completion.
+Invoke `superpowers:requesting-code-review` against the complete implementation range. Require the reviewer to check the approved design’s pagination, unresolved-reply visibility, authoritative SSE counts (idempotent overlay, never optimistic), resolved replies never prepending or entering expanded threads, the duplicate-fetch loading guard on all three expansion handlers, no-JS navigation fallback, and unchanged feeds/conversation/author behavior. Address findings through `superpowers:receiving-code-review`, then rerun the complete verification commands before declaring completion.

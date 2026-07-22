@@ -1,6 +1,9 @@
 # Root-only timelines and compact reply affordance — design
 
-**Date:** 2026-07-22
+**Date:** 2026-07-22 · **rev 1** (parallel-session correctness + ponytail
+review folded — see `../reviews/2026-07-22-root-only-timelines-spec-review.md`,
+R1–R9; the headline cut: no live reconciliation into open threads — count
+overlay only, matching today's snapshot-wedge behavior)
 **Status:** Approved brainstorm; ready for implementation planning after maintainer review
 **Scope:** Timeline presentation and live reply activity. Reply storage, feeds,
 federation, threading, and conversation pages retain their existing semantics.
@@ -88,17 +91,23 @@ For live counts, three approaches were considered:
   reconnect duplicates would inflate counts;
 - refetch the thread after every reply: correct but transfers full thread
   content just to learn a count;
-- authoritative count metadata on SSE reply entries: chosen. One small count
-  query for a live reply, and one grouped query for a replay batch, preserve the
-  existing replay contract without N+1 replay queries.
+- authoritative count metadata on SSE reply entries: chosen. ONE array-shaped
+  grouped query (mirroring `countRepliesByPostIds(ids) → Map`) serves both
+  paths: the live path calls it with a single root id, replay with the batch's
+  distinct root ids (bounded by the replay cap). No N+1 replay queries, no
+  separate single-reply query shape.
 
 ## Core timeline selection
 
 ### Filter contract
 
-Introduce a shared `TimelineFilter` type rather than extending the same inline
-object independently in the repository, service, and API. It retains the
-existing fields and adds `topLevel?: true`:
+The timeline filter object is currently repeated inline in FOUR places —
+the `Repository` interface (`repository.ts:30`), the SQLite implementation
+(`sqlite.ts:226`), the service (`service.ts:75`), and the API route
+(`app.ts:458`) — and all four must gain `topLevel?: true` (widening only some
+of them either breaks typecheck or silently drops the flag at the interface
+boundary). A shared `TimelineFilter` type is acceptable house cleanup while
+touching those lines, but it is optional, not load-bearing:
 
 ```ts
 interface TimelineFilter {
@@ -137,9 +146,10 @@ direct-child semantics. Add a distinct repository operation such as
 
 For each requested root ID, it counts rows whose `thread_root_id` equals that
 ID. This is the stored resolve-once conversation membership and therefore
-counts every resolved descendant. Roots with no descendants map to zero.
-Unresolved replies have no resolved descendants under normal construction; if
-they have children rooted at their own ID, the same query truthfully counts
+counts every resolved descendant. Roots with no descendants map to zero. An
+unresolved reply CAN routinely acquire resolved descendants rooted at its own
+ID (a reply targeting it resolves with `thread_root_id = its id` —
+`service.ts:59-60`, `ingest.ts:163-164`); the same query truthfully counts
 that visible subtree.
 
 The `/timeline` route uses conversation counts when `top_level=1` and preserves
@@ -160,16 +170,18 @@ it is transient timeline activity metadata. Edits do not carry
 `rootReplyCount`, because they do not change conversation cardinality.
 
 The core SSE route owns this enrichment because it handles both live events and
-replay:
+replay. Both paths use the same array-shaped count method: live with a
+one-entry batch, replay with the batch's distinct reply root IDs in one
+grouped query. Root posts, unresolved replies, and edits serialize as today.
+A count-enrichment failure degrades to the existing post frame — it must not
+kill the stream; the web then drops the reply without changing a visible
+count, and the next reload repairs presentation.
 
-- a live new reply performs one authoritative count query for its root before
-  writing the frame;
-- replay gathers the replay batch’s distinct reply root IDs, obtains all counts
-  in one grouped query, and annotates reply frames from that map;
-- root posts, unresolved replies, and edits serialize as today;
-- a count-enrichment failure degrades to the existing post frame. It must not
-  kill the stream. The web then hides the reply without changing a visible
-  count; the next reload repairs presentation.
+Note: `bus.onNewPost` handlers are today synchronous fire-and-forget; the
+count query makes the handler async, so frames from closely-spaced posts may
+write out of emit order. This is harmless — every frame carries an
+authoritative total, so ordering cannot corrupt counts — but tests must not
+assert cross-frame emit ordering.
 
 Inclusive replay may deliver the same reply more than once. Because every frame
 carries an authoritative total rather than a delta, applying it repeatedly is
@@ -177,19 +189,13 @@ idempotent.
 
 ### Home and following consumers
 
-For home and following river `onPost` handlers:
+For home and following river `onPost` handlers (rev 1 — the count overlay is
+the WHOLE live-reply behavior; there is no reconciliation into open threads):
 
 1. If the entry is a resolved reply (`inReplyToPostId` is set):
-   - never prepend it;
+   - never prepend it and never pass it to `mergeIncoming()`;
    - if `threadRootId`, `rootReplyCount`, and a matching visible root are
      present, overlay that root with the authoritative `replyCount`;
-   - for a new reply (`editedAt` absent), reconcile or queue it only when
-     `rootReplyCount` is present; without the authoritative count, hide the new
-     reply even when the root is expanded or loading so the visible tree cannot
-     disagree with its control;
-   - for a reply edit (`editedAt` present), reconcile it into an expanded root
-     or queue it for a loading root even without `rootReplyCount`, because
-     replacing an existing card does not change conversation cardinality;
    - otherwise do nothing. Do not fetch or insert an off-page root.
    Do this before applying the author/source lens: a remote reply still changes
    the count of a visible Local root, and a local reply still changes a visible
@@ -198,6 +204,19 @@ For home and following river `onPost` handlers:
 2. If the entry is a root or unresolved reply, apply the existing tab/follow
    lens and then pass it through `mergeIncoming()`. New entries prepend; edits
    swap in place.
+
+An expanded inline thread remains exactly what its `fetchThread()` snapshot
+returned — matching today's behavior, where a live reply never enters an open
+wedge either. New replies (and reply edits) inside an open thread become
+visible on the next expansion or reload, which re-fetches authoritative HTTP
+state. If live in-wedge updates are ever wanted, that is a separate future
+design; this milestone deliberately does not build reconciliation, queues, or
+browser-side thread re-ordering.
+
+The following river currently lacks home's live machinery (its `onPost` is
+prepend-only — no `mergeIncoming`, no `edited` map). It gains the home-style
+handler (`pageIds`, `edited`, `mergeIncoming`, and the count overlay) so both
+rivers share one behavior.
 
 There is a subtle Personal-river case: a followed author may reply inside a
 conversation whose root author is not followed. The root is absent, so the
@@ -208,26 +227,6 @@ update its count because opening the control reveals the whole conversation.
 This keeps Personal’s root membership author-based without making its displayed
 conversation counts partial.
 
-Thread reconciliation is a small pure helper in `web/src/lib/wedge.ts`. Given
-the currently loaded flat thread and an SSE entry, it replaces an existing
-entry with the same ID or adds a missing one, then restores the same ordering
-contract as core: root first, descendants depth-first beneath their resolved
-parent, and siblings ordered by `(publishedAt, id)` ascending with a cycle
-guard. Applying the same event repeatedly is therefore idempotent. A reply edit
-replaces its visible inline card without changing the root count; a new reply
-adds the card only when it can also apply `rootReplyCount`. A new reply without
-that metadata is neither reconciled nor queued; the next reload repairs both
-the tree and count from authoritative HTTP state.
-
-Each river keeps a per-root queue only while that root's first `fetchThread()`
-request is pending. On success it installs the fetched snapshot, reconciles the
-queued entries in arrival order, and clears the queue. This closes the race in
-which core emits a reply after its thread query has returned but before the
-browser installs the response. On fetch failure it clears that root's queue and
-falls back to normal conversation navigation as specified below. Events for a
-root that is neither expanded nor loading update a visible authoritative count
-when possible but do not retain hidden thread content.
-
 The conversation page and author profile retain their existing `onPost`
 semantics. They continue receiving and rendering reply posts because those
 surfaces are explicitly activity/thread views rather than root-only rivers.
@@ -236,9 +235,9 @@ surfaces are explicitly activity/thread views rather than root-only rivers.
 
 - Editing a root continues to update its visible timeline card.
 - Editing a resolved reply does not prepend it or change counts in root-only
-  rivers. If its root is expanded or loading, reconciliation updates or queues
-  the reply card; the conversation page updates it through its existing merge
-  path.
+  rivers (edits carry no `rootReplyCount`; the resolved-reply branch drops
+  them). An open inline thread shows the edit on its next expansion or reload;
+  the conversation page updates it live through its existing merge path.
 - Orphan adoption currently does not emit a distinct bus event. If an already
   visible unresolved reply is later adopted, the root-only river may retain
   that card until reload. This is an existing live-consistency limitation and
@@ -255,7 +254,6 @@ by the home timeline, following timeline, author profile, and nested
 - `href: string` (the conversation permalink and no-JS fallback);
 - `expanded: boolean`;
 - `busy: boolean` (default `false`);
-- `enhanced: boolean` (default `true`);
 - `onactivate: () => void`, an activation callback owned by the parent.
 
 The rendered element remains an `<a>`:
@@ -263,24 +261,24 @@ The rendered element remains an `<a>`:
 - without JavaScript, it navigates to the full conversation;
 - when `busy`, the component prevents navigation and does not call
   `onactivate`, suppressing duplicate requests;
-- when not busy and `enhanced`, the component prevents navigation and calls
-  `onactivate` to toggle the inline tree;
-- when `enhanced` is false, the component does not prevent navigation and does
-  not call `onactivate`; the browser follows the real `href` normally;
+- when not busy, the component prevents navigation and calls `onactivate` to
+  toggle the inline tree;
 - `aria-expanded` exposes state;
 - `aria-busy="true"` is present exactly while `busy`;
-- `aria-label` is `Loading N replies`, `Show N replies`, `Hide N replies`, or
-  `Open conversation with N replies` according to those states, with correct
-  singular wording;
+- `aria-label` is `Loading N replies`, `Show N replies`, or `Hide N replies`
+  according to those states, with correct singular wording;
 - the SVG is `aria-hidden="true"` and uses `currentColor`;
 - the numeric count remains visible; no tooltip is required for basic meaning.
 
-Visual treatment follows `design-system/rsc/MASTER.md`:
+Visual treatment (this section is the design source — it is folded INTO
+`design-system/rsc/MASTER.md` per §Documentation updates; MASTER.md has no
+reply-control content yet):
 
 - outline speech-bubble SVG, approximately 1rem;
 - count at the existing small metadata size;
 - transparent background and no persistent border;
-- minimum 44×44 hit target without a visually large pill;
+- minimum 44×44 hit target without a visually large pill — via padding on the
+  compact glyph (the tabs' `min-height` + padding idiom), not `::after` hacks;
 - secondary text color at rest, foreground/accent treatment on hover and focus;
 - expanded state uses accent color and `aria-expanded`, not rotation of a
   wedge glyph;
@@ -294,6 +292,14 @@ from their top-level datasets. Keep `subtreeIds()` only if another current
 consumer or test needs it; otherwise remove dead duplicate-prevention logic as
 part of this focused change.
 
+Count honesty note: `ReplyTree` nests collapsed by default (`open[id] ??
+openAll`), so a control's expansion reveals direct children with nested
+controls beneath — the standard drill-in pattern. On rivers the root control
+shows the conversation TOTAL while the first expansion shows direct children;
+this is the accepted reading of decision 7 ("what opening reveals" = the
+conversation reachable through it). On author profiles the direct count is
+already honest as-is: opening reveals exactly the counted direct children.
+
 The author profile’s special “N more in this conversation” stack is not a reply
 count and retains text. It may reuse the compact visual language later, but
 changing that activity-specific control is out of scope.
@@ -304,19 +310,23 @@ Inline thread fetching remains lazy through `/post/:id/thread.json` and retains
 server-side sanitation. The compact control does not change that security
 boundary.
 
-Add per-ID loading state around expansion:
+Add per-ID loading state around expansion. There are THREE divergent
+`toggleWedge` copies today (home, following, author profile) plus ReplyTree's
+local toggle — the guard applies to all expansion handlers, not just one:
 
-- the parent passes `busy={loading[id]}` and
-  `enhanced={!enhancementFailed[id]}` to `ReplyToggle`;
-- while loading, the component contract above suppresses repeated activation;
+- the handler starts with `if (loading[id]) return`, then sets `loading[id]`,
+  fetches, installs the snapshot, and clears loading;
+- the parent passes `busy={loading[id]}` to `ReplyToggle`; while busy, the
+  component contract above suppresses repeated activation (belt-and-braces
+  with the handler guard);
 - on success, open the tree;
-- on failure, clear loading and queued events, leave the tree closed, and set
-  `enhancementFailed[id] = true`; the next click is not intercepted and follows
-  the real conversation `href`;
+- on failure, clear loading and leave the tree closed — the user can re-click
+  (the fetch is an idempotent GET) or follow the conversation permalink;
 - do not replace the timeline with a global error for a failed enhancement.
 
-This closes an existing race where rapid clicks can launch duplicate thread
-requests or resolve after the user intended to close the wedge.
+This closes the existing race where rapid clicks launch duplicate thread
+requests, with one guard and one busy flag — no `enhancementFailed` state and
+no un-enhanced click mode.
 
 - Root-only selection happens during SSR, so no-JavaScript users see the same
   uncluttered river.
@@ -346,35 +356,31 @@ requests or resolve after the user intended to close the wedge.
   unresolved reply, and edit events do not.
 - SSE replay: reply counts are authoritative and replay-safe; the batch path
   uses grouped lookup behavior rather than one count query per replayed reply.
-- SSE failure path: count-enrichment failure does not terminate live delivery.
-  Its new reply remains absent from root-only rivers, including already-open or
-  loading inline threads, until authoritative reload.
+- SSE failure path: count-enrichment failure does not terminate live delivery;
+  the un-enriched reply frame is dropped by root-only rivers (no count change)
+  until authoritative reload.
+- SSE tests assert per-frame content only, never cross-frame emit ordering
+  (the enrichment makes the bus handler async).
 
 ### Web
 
 - API wrapper sends `top_level=1` only when requested.
 - Home load requests top-level mode for all four tabs.
 - Following load requests top-level mode; author load does not.
-- Home live handler never prepends resolved replies and overlays a visible
-  root’s count from `rootReplyCount`.
-- An expanded root reconciles a new live reply into its loaded thread only when
-  `rootReplyCount` is present; without it, the new reply stays hidden so count
-  and tree cannot disagree.
-- A live reply edit replaces the existing inline card even without
-  `rootReplyCount`, because cardinality is unchanged; duplicate/replayed events
-  do not create duplicate cards.
-- A reply arriving during the initial thread fetch is queued and reconciled
-  after the fetched snapshot only when it is an edit or carries
-  `rootReplyCount`, closing the response-install race while preserving
-  deterministic thread order.
+- Home and following live handlers never prepend resolved replies (and never
+  pass them to `mergeIncoming`), and overlay a visible root’s count from
+  `rootReplyCount`; applying the same frame twice yields the same count
+  (idempotent, replay-safe).
+- An expanded inline thread is snapshot-only: a live reply (new or edited)
+  does not alter it; the next expansion/reload shows it.
 - A resolved reply updates an already-visible root regardless of the replier’s
   lens membership, but never materializes an absent root.
-- Root and unresolved-reply events retain existing prepend/edit behavior.
+- Root and unresolved-reply events retain existing prepend/edit behavior;
+  following now shares home's `edited`/`mergeIncoming` handler.
 - `ReplyToggle` renders icon, count, href, accessible singular/plural label,
-  expansion state, `aria-busy`, and the exact enhanced/busy click contract.
-- Expansion tests cover success, double-click suppression, and failure setting
-  `enhanced=false`; a subsequent click must proceed to the real `href` rather
-  than being intercepted again.
+  expansion state, `aria-busy`, and the busy click contract.
+- Expansion tests cover success, double-click suppression (the loading guard),
+  and fetch failure leaving the tree closed with loading cleared.
 - Conversation-page tests confirm the complete reply tree remains visible and
   live.
 - Author-profile tests confirm grouped reply activity remains unchanged.
@@ -410,5 +416,8 @@ docker exec rsc-web sh -c "cd /app && env -u CORE_API_URL npm run check -w web"
 - Hiding unresolved replies.
 - Changing author-profile activity grouping.
 - Live orphan-adoption removal.
+- Live reconciliation of replies into open inline threads (queues, browser-side
+  thread re-ordering) — expanded threads are snapshot-only; a future design if
+  ever wanted.
 - Fetching or inserting off-page roots in response to reply activity.
 - Redesigning the reply composer or conversation page.
