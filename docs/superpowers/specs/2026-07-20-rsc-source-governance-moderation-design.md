@@ -405,6 +405,10 @@ bounded, resumable, and applies selection, classification, and item events in
 transactions. Reads always derive effective eligibility from current source
 state, independent of batch progress.
 
+> **Amendment 2026-07-22:** fan-out converges materialized hints only and
+> emits no item events — the transition's reset is the client barrier
+> (V2 §3.7, V3 §2). The "item events" wording above is superseded.
+
 ## 7. Bounded origin verification
 
 A valid publisher URL first seen in an aggregate claim schedules containment
@@ -421,6 +425,10 @@ explicit opaque ID. Success persists a direct-origin delivery and evidence,
 may establish a publisher alias, and may change remote selected author. It may
 be displayed only when its source is eligible. Quarantined origin evidence may
 strengthen attribution but cannot supply displayed content.
+
+> **Amendment 2026-07-22:** the quarantined-evidence sentence above is
+> superseded by V2 §3.2 (folded) — quarantined evidence participates in
+> neither ordinary comparator; see V3 review VC3.
 
 Feed absence is inconclusive because old items fall out of feeds. Exhausted
 retries leave `asserted/unverified`, never contradictory. Verification never

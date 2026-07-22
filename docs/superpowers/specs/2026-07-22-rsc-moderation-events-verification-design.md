@@ -1,9 +1,17 @@
 # RSC moderation, events, verification, and evidence review — Vertical 3 design
 
 **Date:** 2026-07-22
-**Status:** Draft; ready for repository review
-**Revision:** 1 — initial draft against the revved V1 contracts (post-deferral)
-and V2 spec rev 4 + review rev 1.
+**Status:** Reviewed; ready for the Vertical 3 implementation plan
+**Revision:** 1 — folds the dual review
+`../reviews/2026-07-22-v3-moderation-spec-review.md` (VP1–VP6 + VC1–VC4).
+Headline: the entire v2 push subsystem is **deferred out of V3** (VP1 — the
+one maintainer-vetoable scope call in this rev); Section 3 keeps only the
+pause/block forward constraint plus the recorded facts the future push
+vertical inherits. Origin verification now rides V2's reconciliation drain
+(VP2); the admin subresource routes collapse into bounded inline sections
+(VP3). All five flagged decisions were upheld by both reviewers (#2 and #5
+travel with the push deferral). Draft (rev 0) was written against the revved
+V1 contracts (post-deferral) and V2 spec rev 4 + review rev 1.
 **Foundation:** `2026-07-20-rsc-source-governance-moderation-design.md` rev 3
 **Roadmap:** `2026-07-20-rsc-source-governance-vertical-roadmap.md` rev 4, §Vertical 3
 **V1 contracts:** `../plans/2026-07-20-rsc-source-control-plane.md` rev 4, as
@@ -22,14 +30,18 @@ document.
 ## Purpose and boundary
 
 Vertical 3 makes the v2 model durably moderatable. It delivers hidden
-moderation, structural tombstones and placeholder continuity, resumable
-generation-qualified policy fan-out, the v2 push subsystem with its
-paused/blocked behavior, bounded origin verification with the `verified_origin`
-evidence rung, purge and block tombstones, conflict exposure, paginated
-evidence APIs, and the administrator review surfaces.
+moderation, resumable generation-qualified policy fan-out, bounded origin
+verification with the `verified_origin` evidence rung, purge, conflict
+exposure, bounded evidence APIs, the administrator review surfaces, and
+exactly two tombstone mechanisms: the source tombstone table
+(`blocked_source_tombstones_v2`, whose terminal action is `block | purge`)
+and the structural-tombstone terminal state on logical items. There is no
+third mechanism — "purge tombstone" is not a kind of tombstone; purge writes
+into the block-tombstone table (Section 5). The v2 push subsystem is deferred
+out of this vertical (Section 3).
 
 Everything remains behind startup-immutable `RSC_SOURCE_MODEL_V2=off` by
-default. With v2 off, no V3 table, worker, route, or push registration is
+default. With v2 off, no V3 table, worker, or route is
 active and legacy behavior — including legacy push — is unchanged. With v2 on,
 V3 extends the V2 branch only; it adds no second projection, journal, or
 command idiom. This is a single-user pre-release system in one Node process:
@@ -49,8 +61,8 @@ reviewed correction actions remain out of scope (see Out of scope).
 
 A logical item gains one reversible remote-item moderation state, `hidden`,
 stored as a nullable `hidden_at` timestamp on the logical-item row. Hidden is
-item-level: it overrides every delivery and survives polling, push
-redelivery, versions, verification, reselection, restart, and replay. There
+item-level: it overrides every delivery and survives polling, redelivery,
+versions, verification, reselection, restart, and replay. There
 is no rejected state and no second moderation rung.
 
 `hide` and `restore` are administrator commands against a stable logical-item
@@ -82,12 +94,17 @@ exactly like V1 source audit.
 
 V3 reintroduces the deferred audit categories `false_positive` and
 `remediated` — their first emitters are restore and unblock. `migration_review`
-stays deferred to Vertical 4 with its first emitter. (Coordination note: if
-the folded V1 rev narrowed the `source_audit_v2` SQL `CHECK` to the six
-V1-emitted categories, V3's migration must widen it, which in SQLite means a
-table rebuild; if V1 kept the full nine-value `CHECK` and deferred only the
-unused TS enum members, V3 adds two enum members and no DDL. The V1 fold
-should choose the latter — flagged for the plan review.)
+stays deferred to Vertical 4 with its first emitter. The V1 fold's decision
+here is made, not hypothetical: the three unused `AuditCategory` values were
+removed from V1 as removals — `source_audit_v2` ships a six-value SQL `CHECK`
+and the TS enum was narrowed to match. This costs V3 nothing: `false_positive`
+is emitted only into `item_audit_v2`, a new table V3 authors with its **own**
+`CHECK`, which must include `false_positive` and must not blindly mirror the
+narrowed six-value list (a mirrored `CHECK` would fail restore at runtime);
+`remediated` is emitted only by tombstone unblock, whose durable audit record
+is its command-ledger row (§5.5) — it lives in `result_json`, which carries no
+`CHECK`. Nothing ever widens `source_audit_v2`, so no SQLite table rebuild
+occurs. V3 re-adds the two TS enum members.
 
 ### 1.3 Surface policy
 
@@ -129,7 +146,8 @@ already the client barrier, **fan-out appends no journal events**. This
 deliberately narrows foundation §6's "applies selection, classification, and
 item events in transactions" wording to the V2 read-time-authority model:
 emitting per-item events after a reset would double-notify clients that must
-refetch anyway.
+refetch anyway. This narrowing is decided, not pending: foundation §6 carries
+a dated amendment note recording it (V3 review VC3).
 
 Mechanics — one durable row per source in `policy_fanout_v2`
 (source ID, generation, last-item cursor, state
@@ -138,10 +156,11 @@ Mechanics — one durable row per source in `policy_fanout_v2`
 - the transition transaction upserts the source's row with its new generation
   and a cleared cursor; a newer transition overwrites and supersedes older
   work by generation comparison alone;
-- a single in-process serial drain (the V2 reconciliation-drain pattern —
-  `ponytail: serial drain in the one Core process; leases/fences only if
-  fan-out ever leaves the process`) processes rows after each transition
-  commit and once at startup;
+- the V2 reconciliation drain (V2 §2.3) — this milestone's one serial
+  in-process scheduling loop — processes fan-out rows after each transition
+  commit and once at startup; there is no second drain
+  (`ponytail: one drain in the one Core process; leases/fences only if work
+  ever leaves the process`);
 - each batch (100 items, ascending logical-item ID over items holding any
   delivery from the source) runs in one transaction that first rechecks the
   stored source generation: a mismatch marks the row `superseded` and stops —
@@ -153,112 +172,70 @@ Mechanics — one durable row per source in `policy_fanout_v2`
 Bounded single-item mutations — hide, restore, verification success, purge
 reselection — recompute their own item's hints inline and need no fan-out.
 
-## 3. Push (v2)
+## 3. Push (deferred)
 
-Roadmap §V3 requires paused/blocked push behavior; that presupposes v2 push
-existing, and V2 §1.2 explicitly leaves building the push subsystem to
-Vertical 3. V3 therefore delivers v2 WebSub/rssCloud subscriptions end to
-end, reusing the legacy push-in machinery's shapes rather than inventing new
-ones.
+The v2 push subsystem — WebSub/rssCloud capability observation, registration,
+renewal, callbacks, and push ingestion — is deferred out of Vertical 3 to
+Vertical 4 or its own vertical (review VP1). Roadmap §V3's "paused/blocked
+push behavior" survives here only as a forward constraint binding whatever
+push eventually ships: paused and blocked sources are never subscribed or
+renewed and send no unsubscribe request (leases lapse at expiry — the
+foundation's "best-effort unsubscribe may defer to lease expiry", always
+deferred); fat pings for them authenticate, return the neutral success the
+caller expects, and are discarded unparsed and unstored; thin pings return
+normally without triggering a fetch; valid known in-flight challenges
+complete (avoiding retries and oracles) but cause no acquisition; blocked
+sources otherwise get no network of any kind; resume performs one paced
+catch-up poll before ordinary discovery and registration restart. On this
+single-user instance V2 §1.3's poll loop is fully functional; push is pure
+latency optimization behind a flag nobody enables before Vertical 4.
 
-### 3.1 Capability observation
+Recorded for the push vertical (so it inherits decided facts, not stale
+drafts):
 
-Each successful v2 acquisition parse already flows through the existing
-discovery shape (`FeedDiscovery { hubs, self, cloud }`,
-`core/src/domain/ingest.ts:12`, produced by `parseFeedWithMeta` at
-`ingest.ts:87` and merged with response headers at `ingest.ts:246`). V3
-records that discovery, bounded, on the acquisition run. Registration always
-acts on the **latest successful run's** claims, revalidated at use against
-current URL, SSRF (`checkCallbackUrl`, `core/src/domain/push-guard.ts:39`),
-governance, tombstone, and ownership rules.
-
-V2 §1.2 says V3 "re-parses push capability from the stored raw feed
-evidence"; V3 realizes this as capability captured at parse time on each run
-instead of retro-parsing stored blobs — equivalent authority (none, until
-revalidated) and fresher data, at the cost of push registration starting on a
-source's first post-V3 successful poll rather than at activation.
-`ponytail: capability from the next poll, not a backfill pass; the poll
-interval bounds the delay.`
-
-### 3.2 Registration lifecycle
-
-V3 adds one push-state row per source, `source_push_v2`, with the exact field
-set the foundation's migration section preserves: protocol, endpoint, topic,
-callback token, secret, state `pending | active | expired | invalid`, expiry,
-and creation time. Target selection reuses `choosePushTarget`
-(`core/src/domain/push-in.ts:30`); lease and renewal cadence reuse the
-existing constants (`push-in.ts:41-46`); fat-ping HMAC reuses
-`verifySignature` (`push-in.ts:16`).
-
-A source is push-registrable when it is `enabled`, governance `allowed` or
-`quarantined`, currently schedulable (an active subscription or a
-pending/approved federation relationship — V2 §1.1), and its latest
-successful run observed a usable capability. Registration and renewal run
-from the v2 poll loop pass (the pattern of `runPollCycle`,
-`core/src/domain/push-in.ts:258`), never from ordinary reads.
-
-Callback routes reuse the existing token-addressed endpoints
-(`GET/POST /websub/callback/:token`, `core/src/api/app.ts:407` and `:415`
-with the existing fat-ping body limit): with v2 enabled the token resolves a
-`source_push_v2` row instead of a legacy row. Callback tokens and secrets
-never appear in any list, detail, error, or audit body; administrative reads
-expose only safe state and an endpoint fingerprint.
-
-### 3.3 Paused and blocked behavior
-
-| Source state | Renew/subscribe | Fat ping | Thin ping | In-flight challenge |
-|---|---|---|---|---|
-| enabled + allowed | yes | authenticate, parse, store | fetch | completes |
-| enabled + quarantined | yes | authenticate, parse, store (admin-only) | fetch | completes |
-| paused | no | authenticate, ack, discard | return normally, no fetch | completes, no acquisition |
-| blocked | no | authenticate, ack, discard | return normally, no fetch | completes, no acquisition |
-
-- Discarded pings return the neutral success the caller expects and are not
-  parsed or stored.
-- Pause and block stop renewals and send no unsubscribe request; leases lapse
-  at expiry (the foundation's "best-effort unsubscribe may defer to lease
-  expiry" — V3 always defers: `ponytail: no unsubscribe call; lease expiry is
-  the unsubscribe`). Blocked additionally performs no network of any kind.
-- Valid known in-flight WebSub challenges (subscribe or unsubscribe) complete
-  to avoid retries and oracles, but cause no subsequent acquisition.
-- Resume performs one paced catch-up poll and then restores discovery and
-  registration on the normal pass.
-- Unknown tokens and unknown thin-ping URLs keep their existing neutral
-  responses.
-
-### 3.4 Push ingestion
-
-A fat ping is a push-delivered acquisition: same bounded parser, same
-acquisition-result transaction, same commit-time policy recheck, same
-reconciliation jobs (V2 §2). A thin ping schedules one immediate fetch of
-that source through the ordinary acquisition path. Both appear as runs with
-`reason: 'push'` — widening V2's `AdminAcquisitionRun.reason` enum by one
-value (an intentional additive supersession, like V2's widening of V1's
-capability shape). Quarantined sources continue acquiring; their evidence
-stays administrator-only through ordinary eligibility, with no push-specific
-branch.
+- **Capability capture is at parse time, per acquisition run — this is
+  forced, not a preference** (flagged decision #5, verified by review).
+  V2 §1.2's "re-parse push capability from the stored raw feed evidence"
+  wording is unfulfillable: V2 rev 1 stores digests for oversized evidence,
+  not re-parseable channel discovery. The push vertical must record the
+  discovery shape at parse time on each successful run and register from the
+  latest successful run's claims, revalidated at use against current URL,
+  SSRF, governance, tombstone, and ownership rules.
+- **The legacy `PushSubscription` state is `pending | active` only**
+  (`core/src/domain/types.ts:84`). Rev 0's `pending | active | expired |
+  invalid` widened that shape while claiming reuse (review VC4); whoever
+  ships push must define the expired/invalid lifecycle explicitly rather
+  than presenting it as legacy reuse — and must not source the v2 push
+  schema from foundation §12, an out-of-scope migration-preservation
+  section, not a live schema authority.
+- Flagged decision #2 (no unsubscribe call; lease expiry is the unsubscribe)
+  was judged right-if-push and moves to the push vertical with everything
+  else here.
 
 ## 4. Bounded origin verification
 
 ### 4.1 Scheduling
 
 A valid publisher URL first seen in an aggregate claim schedules containment
-verification. Checks are durable rows in `verification_checks_v2` keyed by
+verification as a new job **kind** on V2's reconciliation drain (V2 §2.3) —
+not a separate loop. The drain's semantics apply unchanged and are not
+re-specified here: one serial in-process loop, `(nextAttemptAt ASC, jobId
+ASC)` ordering, the shared operational backoff and eight-attempt exhaustion,
+startup pickup of pending/retrying work, and terminal-versus-operational
+failure handling. The milestone runs exactly two loops: the poll loop and
+the reconciliation drain.
+
+`verification_checks_v2` slims accordingly: one row per
 (logical item, publisher feed URL) — per item, not merely per publisher URL —
-with state `pending | verified | unverified`, attempt count, and next-attempt
-time.
+holding only the terminal state `pending | verified | unverified` and the
+publisher batch key. Attempt counts and next-attempt times live on the
+drain's job rows, nowhere else.
 
 Bounds (constants, plan-adjustable):
 
 - at most 25 previously unseen publisher URLs create checks per aggregate
   response; the rest are dropped as bounded evidence;
-- at most 50 pending checks per publisher URL and 200 per source;
-- retries use the V2 job backoff (`min(5s * 2^(attempt-1), 15 min)`, 8 total
-  operational attempts);
-- one in-process serial verification drain shares the reconciliation-drain
-  pattern; global concurrency is one
-  (`ponytail: serial fetches; a scheduler with slots only if verification
-  volume ever matters on a single-user instance`).
+- at most 50 pending checks per publisher URL and 200 per source.
 
 The drain deduplicates by key, batches all pending checks for one publisher
 URL into one bounded fetch (the V2 §1.5 network/bounds profile applies:
@@ -306,8 +283,9 @@ comparators only while its source is ordinary-eligible. Foundation §7's
 "quarantined origin evidence may strengthen attribution but cannot supply
 displayed content" is deliberately narrowed to V2 §3.2's single rule —
 quarantined evidence participates in **neither** ordinary comparator and
-remains administrator-visible only. One comparator, no per-axis exception;
-flagged for maintainer review as a foundation deviation.
+remains administrator-visible only. One comparator, no per-axis exception.
+This narrowing was decided when V2 folded its review; foundation §7 carries
+a dated amendment note recording it (V3 review VC3).
 
 A verified direct-origin publisher redirect (the V2 §1.6 permanent-chain
 proof, applied to the publisher's own feed) may establish a publisher-feed
@@ -345,7 +323,7 @@ worst source fits comfortably in one SQLite write transaction`):
 1. write the tombstone with canonical URL, alias rows, and terminal
    block+purge facts;
 2. delete the source's deliveries, observation versions, claims belonging to
-   those deliveries, push state, verification checks, redirect evidence,
+   those deliveries, verification checks, redirect evidence,
    validators, runs/jobs, and fan-out rows;
 3. delete the source row — aliases, subscriptions, federation relationship,
    and source-audit history cascade with it (the tombstone's terminal facts
@@ -367,7 +345,16 @@ for any client holding pre-block state, matching the foundation's required
 A structural tombstone is a terminal state of the logical-item row retaining
 only logical ID, parent/root edges, and the immutable sort key — no content,
 author, source, publisher, moderation reason, or delivery evidence (the
-remote sibling of V2's `deleted_local` marker). It serializes exclusively
+remote sibling of V2's `deleted_local` marker). It stays a **distinct**
+terminal state rather than merging with `deleted_local` under an origin
+discriminator because the retained-anchor asymmetry is load-bearing:
+`deleted_local` permanently keeps the canonical local permalink and its
+aliases as the anti-resurrection anchor reconciliation must check before
+creating or converging a remote echo (V2 §2.6), and the marker is never
+removed; a structural tombstone keeps no permalink or identity anchor at
+all and lives only as long as a descendant references it. One is a permanent
+identity claim, the other a sweepable connectivity edge — merging them would
+force the sweep rule and the anchor columns onto both. It serializes exclusively
 through the ordinary placeholder contract (`placeholderKind: 'unavailable'`),
 offers no reply/edit/feed/source action, is not a valid new reply or adoption
 target, and is removed when the deletion of its last referencing descendant
@@ -419,7 +406,6 @@ V3 appends only V2-shaped records; the table is exhaustive for V3:
 | purge | one `reset` |
 | last-subscription cleanup affecting ordinary items | one `reset` |
 | tombstone unblock | none |
-| push-delivered acquisition | ordinary V2 reconciliation effects |
 
 Hide/restore of a resolved reply is a bounded ordinary-visibility change, so
 its frame carries the V2 `ReplyCountOverlay` (root ID plus authoritative
@@ -465,9 +451,8 @@ All V3 administrative routes use the house
 reachable 403 for token bearers. The `operator_token` actor kind does not
 exist in V3 (see Out of scope).
 
-Credential-redaction tests assert push secrets, callback tokens, and auth
-material never appear in any list, detail, error, ledger-replay, or audit
-body; push state exposes only `{mode, state, endpointFingerprint, expiresAt}`.
+Credential-redaction tests assert auth material never appears in any list,
+detail, error, ledger-replay, or audit body.
 
 ### 7.3 Routes
 
@@ -480,23 +465,25 @@ POST /admin/sources/:sourceId/purge        {category, note?, commandId}
 POST /admin/tombstones/:tombstoneId/unblock {category, note?, commandId}
 ```
 
-Reads (all cursor-paginated with the V2 conventions — opaque versioned
-cursors over immutable tuples, default limit 50, maximum 100, invalid cursor
-`400 {"model":"logical-v2","error":"invalid cursor"}`):
+Reads:
 
 ```text
 GET /admin/items/:logicalItemId                     item review detail
-GET /admin/items/:logicalItemId/deliveries
-GET /admin/deliveries/:deliveryId/versions
-GET /admin/items/:logicalItemId/claims
-GET /admin/items/:logicalItemId/conflicts
 GET /admin/items/:logicalItemId/audit
 GET /admin/sources/:sourceId/items                  review navigation
 GET /admin/tombstones
 ```
 
-Detail responses return summary counts plus paginated subresources, never
-unbounded collections. Every envelope carries `model: 'logical-v2'`.
+Only the audit list and source→items are cursor-paginated (the V2
+conventions — opaque versioned cursors over immutable tuples, default limit
+50, maximum 100, invalid cursor
+`400 {"model":"logical-v2","error":"invalid cursor"}`). There are no
+per-item subresource routes: deliveries (with their versions), claims, and
+conflicts are bounded inline sections of `AdminItemDetail`, each capped at
+100 rows newest-first with the true total in `counts`
+(`ponytail: inline caps, no cursors; paginate a section only when a real
+item ever exceeds 100`). Detail responses never return unbounded
+collections. Every envelope carries `model: 'logical-v2'`.
 
 ```ts
 type AdminItemDetail = {
@@ -517,6 +504,11 @@ type AdminItemDetail = {
     deliveries: number; versions: number; claims: number;
     conflicts: number; audit: number;
   };
+  // bounded inline sections — cap 100 each, newest-first; counts above
+  // carry the true totals (row field lists are plan-level)
+  deliveries: AdminDeliveryRow[];   // versions inline per delivery row
+  claims: AdminClaimRow[];
+  conflicts: AdminConflictRow[];
   verification: {
     state: 'none' | 'pending' | 'verified' | 'unverified';
     attempts: number;
@@ -525,18 +517,18 @@ type AdminItemDetail = {
 };
 ```
 
-Subresource rows expose bounded normalized fields plus raw evidence as
+Inline section rows expose bounded normalized fields plus raw evidence as
 bounded escaped text (the V2 §1.5 digest-backed rules apply to anything
 oversized); a delivery row shows source ID, governance-derived eligibility,
-key kind/key, first-arrival tuple, and version count; a claim row shows level,
+key kind/key, first-arrival tuple, and its versions; a claim row shows level,
 publisher, first-arrival tuple, and conflict linkage; a conflict row shows
 kind, the disputed keys or references, and the involved IDs. Exact field
 lists are plan-level; the boundary — no secrets, no unbounded blobs, no
 rendered HTML from Core — is not.
 
-V2's `AdminSourceAcquisitionSummary` gains
-`push: {mode, state, endpointFingerprint, expiresAt} | null` (the V1-deferred
-shape, first written here) and `conflictCount`. Source detail's blocked group
+V2's `AdminSourceAcquisitionSummary` gains `conflictCount`
+(`SourceSummary.push` stays V1-deferred; the push vertical first writes it).
+Source detail's blocked group
 gains purge; `GET /admin/tombstones` supplies the blocked/tombstoned
 navigation group V1's admin page reserved.
 
@@ -549,11 +541,11 @@ escape raw evidence as text and render previews only through the existing
 shared sanitizer (`web/src/lib/server/render.ts`) — no second pipeline.
 
 - **Item review page** (`web/src/routes/admin/items/[id]/`): the
-  `AdminItemDetail` summary; paginated deliveries/versions, claims,
-  conflicts, and audit; hide and restore forms with required category select
-  and optional note.
-- **Source page additions** (extending V2's admin source page): safe push
-  state, conflict count, an items link, and — for blocked sources — the purge
+  `AdminItemDetail` summary; its bounded inline deliveries/versions, claims,
+  and conflicts; paginated audit; hide and restore forms with required
+  category select and optional note.
+- **Source page additions** (extending V2's admin source page): conflict
+  count, an items link, and — for blocked sources — the purge
   form. Purge and unblock confirmations state their distinct consequences
   (purge: evidence permanently deleted, URL stays blocked by tombstone;
   tombstone unblock: URL becomes creatable again, nothing is restored).
@@ -574,29 +566,26 @@ databases):
 
 - `hidden_at` and the structural-tombstone terminal state on the
   logical-item table;
-- `item_audit_v2`;
+- `item_audit_v2` (with its own category `CHECK` per §1.2 — `source_audit_v2`
+  is untouched);
 - `policy_fanout_v2`;
-- `verification_checks_v2`;
-- `source_push_v2`;
+- `verification_checks_v2` (terminal state + batch key only; scheduling lives
+  on V2's reconciliation-job rows, which gain the verification job kind);
 - `publisher_feed_aliases_v2`;
-- `blocked_source_tombstones_v2` (V1 DDL) plus its alias rows;
-- bounded per-run push-capability columns on the acquisition-run table;
-- the two reintroduced audit-category values (DDL impact per §1.2's
-  coordination note).
+- `blocked_source_tombstones_v2` (V1 DDL) plus its alias rows.
 
 Exact DDL is plan-level. V2's table names are not yet frozen (its plan is
 under review), so this spec binds columns and semantics, not identifiers.
 
 ## 10. Cross-model isolation
 
-With v2 off: no V3 route exists, no fan-out/verification/push worker starts,
-`source_push_v2` stays empty, the callback token namespace resolves legacy
-rows only, and legacy push and moderation behavior are byte-identical to
-today. With v2 on: legacy push handlers are not routed (V2 §7.4 stands; V3's
-push replaces, never coexists per-source), and every V3 effect flows through
-the V2 projector, journal, and ledger. The capability payload is unchanged —
-V3 adds no new capability field; Web discovers nothing new because ordinary
-contracts are unchanged.
+With v2 off: no V3 route exists, no fan-out or verification work is
+scheduled, and legacy behavior — moderation and legacy push alike, neither of
+which V3 touches — is byte-identical to today. With v2 on: every V3 effect
+flows through the V2 projector, journal, and ledger; push under v2 remains
+exactly where V2 §1.2 leaves it, deferred (Section 3). The capability payload
+is unchanged — V3 adds no new capability field; Web discovers nothing new
+because ordinary contracts are unchanged.
 
 ## 11. Acceptance
 
@@ -605,23 +594,17 @@ Focused suites new to V3 (file names indicative, fixed at plan time):
 - **Moderation** — the foundation's mandatory scenario: hide an item from an
   approved aggregate peer; verify absence from rivers, profiles, history,
   feeds, and live/replay state and the neutral thread placeholder; poll,
-  push-redeliver, edit, restart, replay, and origin-verify it hidden; restore
+  edit, restart, replay, and origin-verify it hidden; restore
   and verify eligible reselection. The shared-delivery variant: quarantine
   one approved source while an allowed source keeps the item public — it
   leaves Federated, reselects, and hint convergence follows.
 - **Fan-out** — restart mid-fan-out resumes from the cursor; rapid
   `quarantined -> allowed -> blocked` leaves only current-generation writes
   (stale batches supersede, never write); fan-out appends no journal records.
-- **Push** — the foundation's mandatory matrix: paused/blocked fat pings
-  authenticate and return neutral success without parse/store; paused/blocked
-  thin pings return normally without fetching; known in-flight challenges
-  complete without acquisition; no renewal while paused/blocked; quarantined
-  enabled sources keep storing admin-only deliveries; v2-off leaves legacy
-  push untouched (extends the existing `core/test/push-in.test.ts` coverage
-  pattern).
 - **Verification** — per-response/per-publisher/per-source caps; one fetch
   serves batched checks; no-match is terminal `unverified`; operational
-  retry/backoff/exhaustion; success creates the direct-origin source with
+  retry/backoff/exhaustion on the shared reconciliation drain; success
+  creates the direct-origin source with
   inherited governance, the verified rung wins selection, quarantined
   verified evidence stays out of both ordinary comparators; verification
   changes no governance/federation/subscription/moderation/ancestry.
@@ -638,7 +621,7 @@ Focused suites new to V3 (file names indicative, fixed at plan time):
   409; one mutation, audit, and journal effect per command; state-conflict
   bodies distinct from the idempotency body; the
   `[401, 403, 403, 200]` matrix and bearer-token 401 on every admin route;
-  redaction over all bodies including push secrets and callback tokens.
+  redaction over all bodies.
 
 Completion gate (unchanged from V2 §7.5): core Vitest, core
 `tsc --noEmit`, web Vitest, `svelte-check`, production web build, plus the
@@ -647,6 +630,11 @@ enabling v2 by default or beginning Vertical 4.
 
 ## Out of scope (Vertical 4 or later)
 
+- **The v2 push subsystem** — WebSub/rssCloud capability observation,
+  registration, renewal, callbacks, and push ingestion — deferred to
+  Vertical 4 (whose charter already includes push/follow preservation) or
+  its own vertical; Section 3 records the constraints and decided facts it
+  inherits.
 - **Ops-token compatibility route** (`POST /ops/sources/federation`), the
   `operator_token` actor kind, and the RSC_TOKEN fingerprint identity — V1
   deferred them to their first consumer; nothing in V3 consumes them. Their
@@ -665,9 +653,11 @@ enabling v2 by default or beginning Vertical 4.
    verification, §3.7 advancement), so V3 assumes it exists. The V2 plan must
    actually add it; if it does not, V3's fan-out migration adds column and
    advancement together.
-2. **Audit-category CHECK width** (§1.2): V1's fold should keep the nine-value
-   SQL CHECK while deferring only the TS enum members, or V3 pays a
-   table rebuild.
+2. **Audit-category CHECK width — resolved, no dependency remains** (§1.2):
+   V1's fold decided a six-value `source_audit_v2` CHECK with the TS enum
+   narrowed to match. V3 pays no rebuild: `item_audit_v2` defines its own
+   CHECK (including `false_positive`) and `remediated` lives only in the
+   command ledger's `result_json`. Kept here as a record, not an open item.
 3. **V2 interim cleanup:** V1's plan said "Vertical 2 extends the cleanup
    command with shared-item/structural-tombstone handling"; V2's spec defers
    structural tombstones here. Until V3, unsubscribing the last subscriber of
@@ -679,10 +669,11 @@ enabling v2 by default or beginning Vertical 4.
 
 Vertical 3 completes the governance story the foundation promised: one
 reversible hidden state enforced by the one projector, hint convergence that
-can never outrun policy, push that obeys pause and block to the byte,
+can never outrun policy,
 verification that strengthens attribution without manufacturing trust, and a
 purge that leaves nothing behind except the tombstone that stops it from
-coming back. It adds no event kind, no second command idiom, and no machinery
-for contention this single process cannot have. The next step after
-repository review is the Vertical 3 implementation plan; nothing here
+coming back. Push is deferred with its pause/block contract pre-written
+(Section 3). It adds no event kind, no second command idiom, no second
+scheduling loop, and no machinery for contention this single process cannot
+have. The next step is the Vertical 3 implementation plan; nothing here
 authorizes code.

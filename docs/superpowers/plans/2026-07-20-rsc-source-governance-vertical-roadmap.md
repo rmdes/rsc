@@ -38,6 +38,10 @@ verification, purge, conflicts, paginated evidence APIs, and administrator
 review surfaces. It extends the Vertical 2 journal; it does not introduce the
 first client-invalidation barrier.
 
+*Scope note 2026-07-22:* the v2 push subsystem is deferred out of Vertical 3
+(V3 spec rev 1, §3); "paused/blocked push behavior" survives only as a forward
+constraint on whichever vertical ships push (Vertical 4 or its own).
+
 ## Vertical 4 — Migration and final cutover
 
 Deliver the preflight command and versioned manifest, one atomic legacy-data
