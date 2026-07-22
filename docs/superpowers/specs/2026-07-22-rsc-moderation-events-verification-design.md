@@ -106,6 +106,15 @@ is its command-ledger row (§5.5) — it lives in `result_json`, which carries n
 `CHECK`. Nothing ever widens `source_audit_v2`, so no SQLite table rebuild
 occurs. V3 re-adds the two TS enum members.
 
+> **Lockstep amendment 2026-07-22 (V4 §10):** `source_audit_v2`'s SQL
+> `CHECK` pins the **full nine-value foundation vocabulary** at
+> V1-plan-fold time; the TS enum stays six. The earlier "nothing ever
+> widens `source_audit_v2`" sentence is superseded — nothing ever widens it
+> **after creation** because it is created wide. (A six-value CHECK would
+> abort V4's conversion the moment it writes `category='migration_review'`
+> inside the pre-listen transaction, forcing the table rebuild the pin
+> avoids; see the V4 review, WC1.)
+
 ### 1.3 Surface policy
 
 Hidden joins the single ordinary-visibility predicate in V2's central
@@ -653,11 +662,13 @@ enabling v2 by default or beginning Vertical 4.
    verification, §3.7 advancement), so V3 assumes it exists. The V2 plan must
    actually add it; if it does not, V3's fan-out migration adds column and
    advancement together.
-2. **Audit-category CHECK width — resolved, no dependency remains** (§1.2):
-   V1's fold decided a six-value `source_audit_v2` CHECK with the TS enum
-   narrowed to match. V3 pays no rebuild: `item_audit_v2` defines its own
-   CHECK (including `false_positive`) and `remediated` lives only in the
-   command ledger's `result_json`. Kept here as a record, not an open item.
+2. **Audit-category CHECK width — resolved via V4 §10's pin** (§1.2
+   lockstep amendment 2026-07-22): the V1 plan fold must create
+   `source_audit_v2` with the full nine-value `CHECK` (TS enum narrowed to
+   six). V3 still pays no rebuild: `item_audit_v2` defines its own CHECK
+   (including `false_positive`) and `remediated` lives only in the command
+   ledger's `result_json`. The cross-vertical contract review verifies the
+   wide CHECK landed.
 3. **V2 interim cleanup:** V1's plan said "Vertical 2 extends the cleanup
    command with shared-item/structural-tombstone handling"; V2's spec defers
    structural tombstones here. Until V3, unsubscribing the last subscriber of

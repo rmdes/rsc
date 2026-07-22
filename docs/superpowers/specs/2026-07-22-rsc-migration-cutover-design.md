@@ -1,8 +1,19 @@
 # RSC migration and final cutover — Vertical 4 design
 
 **Date:** 2026-07-22
-**Status:** Draft for repository review
-**Revision:** 0
+**Status:** Reviewed; ready for the Vertical 4 implementation plan (after the
+V1–V3 plans, per roadmap order)
+**Revision:** 1 — folds the dual review
+`../reviews/2026-07-22-v4-migration-spec-review.md` (WC1–WC3 + WP1–WP5).
+Headline: the v2 push lifecycle collapses to v1's two-state runtime shape
+(WP1); the migration report becomes conversion-time log lines plus per-kind
+marker counts (WP2); the §10 CHECK-pin closure now stands on its own with a
+lockstep amendment to V3 §1.2 (WC1); an `active`-without-marker anomaly fails
+startup loudly instead of silently skipping conversion (WC3). All five of
+rev 0's flagged decisions — one-big-transaction conversion, startup-error
+flip-back, lease-lapse/no-unsubscribe, inert legacy rows, `legacy_unknown`
+widening — were upheld by both reviewers and are **settled**: do not
+re-litigate them at plan time.
 **Foundation:** `2026-07-20-rsc-source-governance-moderation-design.md` rev 3,
 including its two dated 2026-07-22 amendment blockquotes (§6 fan-out emits no
 item events; §7 quarantined evidence in neither ordinary comparator). §12 is
@@ -34,8 +45,9 @@ authorized by this document.
 Vertical 4 finishes the milestone: it ships the v2 inbound push subsystem
 (WebSub/rssCloud) that V3 deferred, the preflight command and versioned
 manifest, the one atomic legacy-data conversion with exact push/follow
-preservation, permanent legacy-handle reservation, the durable migration
-report and cutover reset, the ops-token compatibility route, the cutover
+preservation, permanent legacy-handle reservation, the conversion findings
+(log lines plus marker counts) and cutover reset, the ops-token
+compatibility route, the cutover
 sequencing on the live single-node instances, and the legacy retirement that
 removes the v1 runtime branch. Migration is the final cutover, not an early
 schema task: no conversion runs until every v2 reader and writer from
@@ -49,8 +61,8 @@ rollback machinery — the rollback posture is a backup-restore point plus
 forward-only fixes, stated honestly in Section 5. The milestone keeps exactly
 two scheduling loops — V2's poll loop and V2's reconciliation drain — and V4
 adds no third: push renewal rides the poll loop pass exactly as v1's does
-today (`runPollCycle` ends with `pushIn.renewDue()`,
-`core/src/domain/push-in.ts:271`).
+today (`runPollCycle` ends with `pushIn.renewDue()` followed by
+`repo.purgeExpiredSubscriptions`, `core/src/domain/push-in.ts:271-272`).
 
 Outbound push for local feeds (`core/src/domain/push.ts` — the self-hub,
 publisher pings, and the `subscriptions` table, migration 2 at
@@ -85,36 +97,29 @@ mirroring the legacy `UNIQUE(user_id, mode)` at
 callback token, secret (WebSub only), state, expiry, and creation time.
 Exact table/column identifiers are plan-level.
 
-The legacy `PushSubscription` state is `pending | active` **only**
-(`core/src/domain/types.ts:84`); V3 §3 assigned the wider lifecycle to this
-vertical, and foundation §12 requires migrated `expired`/`invalid` rows to
-exist as retained evidence. The v2 lifecycle is:
+The runtime lifecycle is **v1's shape, kept verbatim**: state is
+`pending | active` only (`core/src/domain/types.ts:84`), a hub denial
+**deletes** the row (`push-in.ts:200-202`), and expired rows are **purged**
+every poll cycle (`repo.purgeExpiredSubscriptions`, `push-in.ts:272`). No
+third or fourth state exists: whenever the source is registration-eligible
+and the latest successful run still advertises the capability, the poll pass
+simply re-registers from that run's claim (1.3) — the claim is the durable
+fact; the row is live state, and a lapsed or denied subscription needs no
+retained re-attemptable row to come back. Migration-time expired or
+revalidation-failing legacy rows are therefore **not** carried as live rows;
+they become report findings in §3.6's form, and foundation §12's
+retained-evidence intent is satisfied by those findings plus the inert
+legacy `push_subscriptions` table that retirement never drops (Section 7).
+(Rev 1, WP1: this supersedes rev 0's four-state `expired`/`invalid`
+lifecycle, which bought a 4×4 transition matrix, half a push acceptance
+suite, and admin state/expiry rendering for states the re-registering poll
+pass made redundant.)
 
-```text
-state     meaning                                    counted "active push"?
-pending   registration sent, awaiting verification   no
-active    hub/publisher verified, lease unexpired    yes
-expired   lease or pending TTL passed unrenewed      no
-invalid   last attempt denied, or migration-flagged  no
-```
-
-Deliberate divergences from v1, both in the retain-evidence direction:
-
-- v1 **deletes** a subscription on hub denial (`push-in.ts:200-202`); v2 marks
-  it `invalid` and keeps the row.
-- v1 **purges** expired rows every poll cycle
-  (`repo.purgeExpiredSubscriptions`, `push-in.ts:272`); v2 flips them to
-  `expired` and keeps them.
-
-Neither state is terminal: the renewal pass (1.3) may re-attempt an
-`expired` or `invalid` row whenever the source is currently
-registration-eligible and the latest successful run still advertises the
-capability — a migration-flagged invalid endpoint simply fails the
-revalidation gate again and stays `invalid`. Re-attempts reuse the row's
-token and secret: the stored token/secret are the subscription's identity,
-generated only when no `(source, protocol)` row exists at all — the v1 R1
-rule (`push-in.ts:79-83`) kept verbatim, and the property that makes exact
-lease preservation across conversion work (Section 3.4). The v1
+Re-registration against a surviving row reuses that row's token and secret:
+the stored token/secret are the subscription's identity, generated only when
+no `(source, protocol)` row exists at all — the v1 R1 rule
+(`push-in.ts:79-83`) kept verbatim, and the property that makes exact lease
+preservation across conversion work (Section 3.4). The v1
 websub-over-rsscloud upgrade (a live hub retires the rsscloud fallback row,
 `push-in.ts:208-210`) is kept.
 
@@ -174,8 +179,9 @@ Behavior, per the V3 §3 pause/block matrix (binding) plus v1's hardening
 rules (kept):
 
 - **WebSub verification GET**: state-agnostic token+topic match (renewals
-  re-verify while active, `push-in.ts:196-211`); `denied` marks the row
-  `invalid`; success activates with the granted lease. A valid known
+  re-verify while active, `push-in.ts:196-211`); `denied` deletes the row —
+  v1's rule (`push-in.ts:200-202`), kept; success activates with the granted
+  lease. A valid known
   in-flight challenge completes even when the source is paused or blocked —
   avoiding hub retries and state oracles — but causes no acquisition and no
   renewal scheduling.
@@ -204,10 +210,13 @@ nothing extra is built.
 
 `SourceSummary.push` — declared by V1
 (`../plans/2026-07-20-rsc-source-control-plane.md` L127) and deferred to "the
-vertical that first writes it" — is first written here, with the V1 shape
-verbatim: `{ mode: PushProtocol | null; state: 'pending' | 'active' |
-'expired' | 'invalid' | null; endpointFingerprint: string | null }`. V1's
-declared state union already matches the 1.2 lifecycle exactly. The endpoint
+vertical that first writes it" — is first written here, **narrowed**:
+`{ mode: PushProtocol | null; state: 'pending' | 'active' | null;
+endpointFingerprint: string | null }`. V1's plan declared the four-value
+state union rev 0 planned; with the lifecycle collapsed to v1's shape (1.2),
+**the V1 plan fold must narrow the declared DTO union to
+`pending | active`** — an explicit V1-plan consequence of this rev, carried
+into the Section 10 cross-vertical review. The endpoint
 fingerprint is a stable non-secret digest; callback tokens and secrets never
 appear in any list, detail, error, or audit body (the standing redaction
 tests extend to push rows). The admin source page shows push mode, state,
@@ -274,9 +283,9 @@ Conversion writes one system-actor source-audit row, category
 `migration_review` (first emitter — re-added to the TS enum here), for each
 source whose outcome is not the plain allowed default: the quarantined
 instances and the manifest approvals. Default person/webfeed conversions are
-recorded in the migration report only, not audit
-(`ponytail: audit the governance-bearing outcomes; the report carries the
-bulk`). Section 10 records the SQL CHECK consequence.
+recorded as a finding count only (3.6), not audit
+(`ponytail: audit the governance-bearing outcomes; the finding counts carry
+the bulk`). Section 10 records the SQL CHECK consequence.
 
 ### 3.2 Items, deliveries, ancestry
 
@@ -304,7 +313,7 @@ administrator evidence, ordinarily ineligible from the first read.
 
 Historical posts are never merged automatically; a permalink or
 publisher+GUID collision between converted items becomes a non-aborting
-migration conflict in the report.
+conversion finding (3.6).
 
 Legacy revisions (`post_revisions`, `sqlite.ts:667-675`) convert into the
 delivery's accepted presentation chain preserving order and timestamps, with
@@ -339,14 +348,16 @@ is accepted until the user is below the cap.
 
 ### 3.4 Exact push preservation
 
-Every legacy `push_subscriptions` row (`sqlite.ts:607-620`) converts to a v2
-push row on the same-ID source, preserving **exactly**: protocol, endpoint,
-topic, callback token, secret, state, expiry, and creation time. State maps
-`pending → pending` and `active → active` when unexpired; an expired row
-becomes `expired` (inactive evidence); a row failing revalidation (malformed
-endpoint, SSRF-failing host, bad URL) becomes `invalid` and a report
-finding — reported, never discarded. Quarantined sources retain their active
-leases; their ingestion is admin-only by governance alone.
+Every **unexpired** legacy `push_subscriptions` row (`sqlite.ts:607-620`)
+that passes revalidation converts to a v2 push row on the same-ID source,
+preserving **exactly**: protocol, endpoint, topic, callback token, secret,
+state (`pending → pending`, `active → active`), expiry, and creation time.
+An expired row, or a row failing revalidation (malformed endpoint,
+SSRF-failing host, bad URL), converts to **no live row**: it becomes a
+conversion finding — a log line plus its per-kind marker count (3.6) — and
+the poll pass re-registers if the latest run still advertises the capability
+(1.2). Quarantined sources retain their active leases; their ingestion is
+admin-only by governance alone.
 
 Because the callback token, secret, topic, and route paths are all
 preserved (1.4), a hub's in-flight lease keeps delivering across cutover
@@ -362,23 +373,26 @@ relation maps handle → converted source/publisher ID, checked by local
 account creation (a reserved handle can never be registered — the
 impersonation guard) and surviving source removal and purge (foundation
 §12: "through removal/purge"). Web's `/u/:handle` for a reserved handle
-redirects permanently to `/p/:publisherId` while the publisher remains
-ordinarily navigable, and returns the neutral ordinary 404 after purge —
-the reservation outlives the redirect target. Remote logical items keep
+redirects permanently to `/p/:publisherId`; once purge removes the
+publisher, the redirect target 404s through the ordinary not-found path — no
+bespoke post-purge branch exists (rev 1, WP5), and the reservation itself
+still outlives the redirect target. Remote logical items keep
 their post IDs (3.2), so every existing `/post/:id` permalink survives
 cutover unchanged; legacy remote users never had local feed URLs to alias
 (`resolveLocalTopic` rejects non-local users, `core/src/domain/push.ts:49`).
 
-### 3.6 Report and cutover reset
+### 3.6 Findings and cutover reset
 
-The durable migration report contains **only non-aborting findings**:
-conversion conflicts, invalid push rows, over-cap grandfathering, collision
-records, and per-kind counts. The report rows and one journal `reset` — the
-cutover barrier for any connected client — commit inside the migration
-transaction. Administrators read it at `GET /admin/migration/report`
-(summary counts plus cursor-paginated findings under the V2 pagination
-conventions). It is evidence, not a to-do list; `migration_review` items
-surface through the ordinary V1/V3 admin navigation (the quarantine group).
+Non-aborting findings — conversion conflicts, expired/invalid push rows,
+over-cap grandfathering, collision records, default person/webfeed
+conversions — are **conversion-time log lines plus per-kind counts stored in
+the conversion marker** (4.1). There is no findings relation and no report
+route (`ponytail: add the queryable report if paging is ever requested`).
+The marker counts and one journal `reset` — the cutover barrier for any
+connected client — commit inside the migration transaction. Findings are
+evidence, not a to-do list; the governance-bearing outcomes
+(`migration_review` audit rows, 3.1) surface through the ordinary V1/V3
+admin navigation (the quarantine group).
 
 After commit, paced acquisition resumes for enabled allowed and enabled
 quarantined sources through the ordinary poll loop; paused and blocked
@@ -392,14 +406,22 @@ Conversion extends V2 §7.1's pre-listen activation transaction rather than
 adding a second barrier. A configured-v2 process, before listening:
 
 1. applies pending schema migrations (tail-appended entries only, Section 9);
-2. if the activation marker shows v2 never activated **and** conversion has
-   not been recorded: runs the in-process preflight checks — any aborting
-   finding fails startup with diagnostics and **commits nothing**, leaving
-   the old schema and data fully intact;
+2. reads the activation state and the conversion marker **together**.
+   Never activated and no marker — the only clean pre-conversion state —
+   runs the in-process preflight checks: any aborting finding fails startup
+   with diagnostics and **commits nothing**, leaving the old schema and data
+   fully intact. Marker present: conversion already ran; skip to step 4.
+   Activation `active` **without** the marker: **fail startup with a named
+   error** — an anomalous (hand-repaired or partially restored) database,
+   handled with the same fail-loud pattern as the existing
+   `database is newer than this build` guard
+   (`core/src/storage/sqlite.ts:696-697`), never a silent skip (rev 1, WC3:
+   silently skipping here would run v2 against unconverted data — the
+   dual-model state the roadmap forbids);
 3. inside the single pre-listen write transaction: conversion (Section 3),
-   the migration report, journal initialization with its first reset
-   generation, the cutover reset, the durable conversion marker, activation
-   timestamps, and the transition to `active`
+   journal initialization with its first reset generation, the cutover
+   reset, the durable conversion marker with its per-kind finding counts
+   (3.6), activation timestamps, and the transition to `active`
    (`ponytail: one transaction — a single-user instance's whole legacy
    dataset fits in one SQLite write transaction, same argument as V3's
    unchunked purge`);
@@ -434,7 +456,10 @@ converted database would resume legacy polling and legacy push writes beside
 live v2 state — a dual-model corruption the roadmap's no-dual-write rule
 exists to prevent. This one guard is the entire flip-back surface: before
 conversion commits, `off` is always safe; after, the only way back is the
-backup (Section 5).
+backup (Section 5). Its inverse anomaly — activation `active` with no
+conversion marker — is likewise a named startup error (4.1 step 2), never a
+silent skip: the two tripwires together make the activation/marker pair
+self-verifying in both directions.
 
 ## 5. Rollback posture
 
@@ -492,7 +517,7 @@ Authorization: Bearer <RSC_TOKEN>
   no better-auth session and receives 401 from `sessionAuth`
   (`core/src/api/auth.ts:64-66`) before any admin check — the ops columns of
   the admin matrix are 401, not 403. The token grants no read, moderation,
-  purge, evidence, subscriber, or migration-report access.
+  purge, evidence, or subscriber access.
 - The route exists only under v2 (it creates v2 sources); it is not part of
   the public Caddy exposure set — operators call core internally, exactly as
   they call `POST /users` today.
@@ -524,7 +549,7 @@ instances**, not part of the flip:
   value now; the migration array only ever appends`).
 
 Nothing in retirement changes wire contracts: it deletes the branch that the
-flag has kept dark, and the off-flag regression suites retire with it.
+flag has kept dark, and the off-flag gate assertions retire with it.
 
 ## 8. Operator runbook
 
@@ -539,8 +564,9 @@ production instance flips last.
    image.
 2. **Deploy dark.** Update all three instances to the V4 image with
    `RSC_SOURCE_MODEL_V2` unset/off. Verify: app healthy, `/capabilities`
-   reports `{sourceModelV2:false}`, legacy behavior byte-identical (the
-   off-flag suites promise this; spot-check timeline + a feed).
+   reports `{sourceModelV2:false}`, legacy behavior unchanged (the off-flag
+   gate assertions plus the existing legacy suites promise this; spot-check
+   timeline + a feed).
 3. **Preflight.** `cloudron exec` into the instance; run the preflight
    command against the live database (read-only). Fix findings via the
    documented correction procedure; rerun until clean. Stage the manifest
@@ -553,9 +579,10 @@ production instance flips last.
    investigate with the diagnostics.
 6. **Verify.** `/capabilities` reports the enabled v2 shape; SSR timeline
    renders converted items; a pre-cutover `/post/:id` permalink resolves; a
-   reserved `/u/:handle` redirects to its publisher page; admin migration
-   report is readable and its findings are sane; admin source page shows
-   preserved push state; post locally and see it live over SSE; if a peer
+   reserved `/u/:handle` redirects to its publisher page; the conversion log
+   lines and the marker's per-kind finding counts are sane; admin source
+   page shows preserved push state; post locally and see it live over SSE;
+   if a peer
    hub holds a lease, confirm the next fat ping ingests (or trigger a peer
    post).
 7. **Repeat** steps 3–6 per instance.
@@ -572,11 +599,13 @@ databases):
 
 - the v2 push-subscription relation (1.2);
 - the handle-reservation relation (3.5);
-- the migration-report findings relation and the conversion marker (3.6,
-  4.1 — the marker may extend V2's activation metadata rather than add a
-  table; plan-level);
-- run-level push-capability claim storage (1.1), if V2's run tables did not
-  already leave room.
+- the conversion marker with its per-kind finding counts (3.6, 4.1 — the
+  marker may extend V2's activation metadata rather than add a table;
+  plan-level).
+
+There is no findings relation (3.6) and no run-claim table: the parse-time
+push-capability claim (1.1) binds to V2's acquisition-run rows — one
+nullable column or blob — decided at V2 plan time (rev 1, WP4).
 
 Exact DDL is plan-level. V2's and V3's table names are still unfrozen (their
 plans are pre-execution), so this spec binds columns and semantics, not
@@ -600,10 +629,13 @@ review's checklist is:
    full foundation vocabulary in the SQL CHECKs (`source_audit_v2.category`
    all nine values; `actor_kind` including `operator_token`;
    `command_ledger_v2.actor_scope` including `ops`) while TS enums stay
-   narrowed per vertical — V3 §1.2 already proved enum-narrower-than-CHECK
-   is the workable pattern in the other direction. If the review instead
-   keeps the narrow CHECKs, V4's migration must rebuild `source_audit_v2`;
-   this spec assumes the pin.
+   narrowed per vertical. This directive stands on its own — rev 0 cited
+   V3 §1.2 as precedent, but that citation was inverted (V3 rev 1 kept
+   `source_audit_v2`'s CHECK and enum equal at six; review WC1); V3 §1.2 now
+   carries a dated 2026-07-22 lockstep amendment adopting this pin, and
+   V3's open V1/V2 dependency item 2 is reworded to match. If the review
+   instead keeps the narrow CHECKs, V4's migration must rebuild
+   `source_audit_v2`; this spec assumes the pin.
 2. **`policy_generation` owner (V3 open item 1) — closed upstream.** V2's
    plan adds it (V2 §2.3/§3.7 read it); the fallback (V3's fan-out migration
    adds it) still holds. V4 only requires that it exists; conversion sets
@@ -612,13 +644,17 @@ review's checklist is:
 3. **V2 interim cleanup (V3 open item 3) — closed by V3 §5.4.** Nothing
    lands in V4.
 4. **V3 §3 recorded push facts — all consumed here:** parse-time capability
-   capture (1.1), the explicit expired/invalid lifecycle replacing the
-   two-state legacy shape (1.2, `core/src/domain/types.ts:84`), the
-   pause/block matrix (1.4), no-unsubscribe/lease-expiry (1.3), and
-   foundation §12 treated as preservation charter, never push schema
-   authority (1.2, 3.4).
+   capture (1.1), the pause/block matrix (1.4),
+   no-unsubscribe/lease-expiry (1.3), foundation §12 treated as
+   preservation charter, never push schema authority (1.2, 3.4), and the
+   lifecycle question V3 flagged — any lifecycle wider than the legacy
+   `pending | active` (`core/src/domain/types.ts:84`) must be defined
+   explicitly, never presented as reuse — answered by keeping v1's
+   two-state runtime shape outright (1.2); migration-time expired/invalid
+   facts are report findings (3.6), not runtime states.
 5. **`SourceSummary.push` (V1-deferred, V3 §7.3 pointer) — first written
-   here** with V1's declared shape verbatim (1.5).
+   here**, narrowed to the two-state union (1.5); the V1 plan fold narrows
+   the declared DTO in lockstep.
 6. **`updatedAtProvenance` widens with `legacy_unknown` (3.2)** — an
    intentional supersession of V2 §3.4's exact enum; V2's plan tests must
    expect widening, mirroring how V3 widened `attributionLevel`.
@@ -637,30 +673,35 @@ matrix the foundation already mandates plus the cutover seams:
   manifest validation (each abort class), exact ID preservation (source =
   legacy user ID, item = legacy post ID), invalid-URL and
   normalized-collision aborts leaving the old schema intact, legacy-instance
-  follows → `pending_review`, over-cap grandfathering, push
-  preservation with byte-exact column assertions plus invalid-row evidence,
+  follows → `pending_review`, over-cap grandfathering, push preservation
+  with byte-exact column assertions for unexpired rows plus expired and
+  revalidation-failing rows becoming counted findings (no live row),
   `legacy_unknown` provenance never acting as an explicit watermark,
-  permanent handle reservation surviving purge, atomic report + cutover
-  reset, and full abort rollback.
+  permanent handle reservation surviving purge, atomic marker counts +
+  cutover reset, and full abort rollback.
 - **Push (foundation §13's mandatory scenarios, now V4's):** paused/blocked
   fat pings authenticate, return neutral success, and are neither parsed nor
   stored; paused/blocked thin pings return normally without fetching; known
   in-flight challenges complete without acquisition; no renewal while paused
   or blocked; quarantined enabled sources keep storing admin-only push
-  deliveries. Plus: lifecycle transitions (deny → `invalid`, lapse →
-  `expired`, re-attempt reuses token/secret), the rsscloud→websub upgrade,
-  the 10× poll cadence for active-push sources, and redaction over push
-  rows.
-- **Cutover seams:** conversion marker + flag-off startup error (4.3);
-  capability flip observed by an already-deployed web (memoized-success
-  path); a pre-conversion callback token authenticating a post-conversion
-  fat ping (lease continuity); resumed paced acquisition after commit.
+  deliveries. Plus: denial deletes the row and expired rows purge on the
+  poll sweep (v1's shape, 1.2), re-registration against a surviving row
+  reuses its token/secret (R1), the rsscloud→websub upgrade, the 10× poll
+  cadence for active-push sources, and redaction over push rows.
+- **Cutover seams:** conversion marker + flag-off startup error (4.3) and
+  the `active`-without-marker startup error (4.1 step 2); capability flip
+  observed by an already-deployed web (memoized-success path); a
+  pre-conversion callback token authenticating a post-conversion fat ping
+  (lease continuity); resumed paced acquisition after commit.
 - **Ops route:** the V1 Task 7 matrix restricted to this route — bearer
   succeeds here and 401s on every admin route; invalid token 403/401 per
   the pinned contract; ledger replay and mismatched-fingerprint 409; the
   fingerprint actor ID in audit; no raw token in any body.
-- **Off-flag regression:** the V4 image with the flag off is byte-identical
-  legacy behavior, including v1 push-in (nothing V4 adds may load).
+- **Off-flag regression:** gate-routing assertions — with the flag off the
+  legacy path (including v1 push-in) is routed and no V4 module is imported
+  (nothing V4 adds may load); the existing legacy suites are the behavioral
+  coverage (rev 1, WP3: no duplicated legacy suite — §7 would delete it one
+  release later).
 
 Completion gate (unchanged from V2 §7.5 / V3 §11): core Vitest, core
 `tsc --noEmit`, web Vitest, `svelte-check`, production web build, plus the
