@@ -1,9 +1,9 @@
 # RSC logical items and ordinary reads — Vertical 2 design
 
 **Date:** 2026-07-22
-**Status:** Revision 3 ready for final whole-document review
-**Revision:** 3 — restores the approved evidence comparator, defines the exact
-logical-item wire contract, and completes durable reply-count invalidation.
+**Status:** Revision 4 ready for final whole-document review
+**Revision:** 4 — binds the logical-v2 single-item envelope to its explicit
+Core route after the Revision 3 comparator, DTO, and journal corrections.
 **Foundation:** `2026-07-20-rsc-source-governance-moderation-design.md` rev 3
 **Roadmap:** `2026-07-20-rsc-source-governance-vertical-roadmap.md` rev 4
 **Timeline presentation:** `2026-07-22-root-only-timelines-design.md`
@@ -610,6 +610,25 @@ unavailable single-item reads return the existing neutral ordinary `404`.
 `LogicalSingleItemEnvelope.journalCursor` is captured from the same consistent
 snapshot as `item`.
 
+Core `GET /post/:id` is the deliberately new logical-v2 single-item JSON route.
+When `sourceModelV2` is enabled, a currently ordinary-visible item returns
+`200` with `LogicalSingleItemEnvelope`. An unknown or currently unavailable
+item returns the existing neutral ordinary `404`.
+
+This route is distinct from the existing surfaces:
+
+- `GET /post/:id/thread` remains the bounded conversation route and returns
+  `LogicalThreadEnvelope` in v2;
+- `GET /posts/:id/revisions` remains the ordinary history route and returns
+  `LogicalHistoryEnvelope` in v2.
+
+When v2 is disabled, the new single-item representation is unavailable and the
+current v1 route inventory and behavior remain unchanged. Web calls
+`GET /post/:id` only after capability validation and verifies the returned
+`model: 'logical-v2'` envelope before using it. A missing, malformed, or
+mismatched envelope fails closed under Section 5.6 rather than being cast to a
+v1 post.
+
 ### 3.5 Lenses
 
 V2 timeline selectors are:
@@ -1048,11 +1067,13 @@ projector, journal, activation reconciliation, scheduler, reconciliation
 worker, and orphan-resolution worker are ready. Configured-v2 initialization
 failure fails startup/readiness rather than serving v1.
 
-Ordinary route paths remain stable and branch internally. Every v2 JSON
-envelope identifies `model: 'logical-v2'`; Web validates each envelope and
-stream event instead of trusting capability alone. Capability failure,
-representation mismatch, or malformed event fails closed: discard, close,
-revalidate capability and SSR, and never fall back or cast to v1.
+Existing ordinary route paths remain stable and branch internally;
+`GET /post/:id` is the deliberate new v2-only single-item route defined in
+Section 3.4. Every v2 JSON envelope identifies `model: 'logical-v2'`; Web
+validates each envelope and stream event instead of trusting capability alone.
+Capability failure, representation mismatch, or malformed event fails closed:
+discard, close, revalidate capability and SSR, and never fall back or cast to
+v1.
 
 Core returns semantic content. Web enriches only upserts through the existing
 server renderer and sanitizer and passes remove/reset unchanged. Current policy
@@ -1413,6 +1434,9 @@ The implementation plan must preserve the detailed contracts above and include:
 - atomic deduplicated reply, parent, and root journal effects for bounded
   reply-count changes, with reset barriers for adoption and unsafe or unbounded
   invalidation and no transient v1 count metadata;
+- `GET /post/:id` enabled-v2 success and neutral `404`, disabled-v2 isolation,
+  snapshot-consistent single-item `journalCursor`, and Web fail-closed handling
+  for malformed or mismatched envelopes;
 - presentation watermark, rollback, arrival fallback, job-order, history, and
   direct-comments-feed tests;
 - journal atomicity, epoch/floor/pruning, opaque cursor, reset-close,
