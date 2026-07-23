@@ -936,9 +936,18 @@ Route action segments use hyphens: `:action=attribution-mode` maps to domain
 action `set_attribution_mode`; every other segment equals its domain action
 verbatim (rev 5, review minor). `attribution-mode` rejects a missing
 `attributionMode`. While off, do not register v2 routes and preserve legacy
-behavior. While ON, v2 shares the `POST /me/subscriptions` /
-`GET /me/following` paths with legacy — Hono first-match wins, so verify v2
-registration actually supersedes the legacy handlers when the flag is on.
+behavior. While ON, v2 shares paths with legacy — Hono first-match wins, so
+verify v2 registration actually supersedes the legacy handlers when the flag
+is on.
+
+> **Correction 2026-07-23 (Task 7 implementation):** this paragraph named
+> `POST /me/subscriptions` / `GET /me/following` as the shared pair. **There is
+> no legacy `GET /me/following` route in core** (legacy owns `/me/follows`,
+> `/me/follows/:target`, `/me/follows/opml`, `POST /me/subscriptions`), so
+> `GET /me/following` is v2-only and 404s while off. The genuinely shared paths
+> — all four verified as superseded while ON — are `POST /me/subscriptions`,
+> `POST /me/follows/opml`, `GET /users/:handle/follows`, and
+> `GET /users/:handle/following.opml`.
 
 **Every new v2 POST composes the house `jsonWrite` guard positionally**
 (rev 5, review Finding 6): reuse
