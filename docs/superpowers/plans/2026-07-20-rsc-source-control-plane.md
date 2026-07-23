@@ -1226,3 +1226,18 @@ git commit -m "docs: gate the v2 source control plane
 
 developed with the help of AI tools"
 ```
+
+---
+
+> **Post-review correction (2026-07-23, from V2 Task 2).** V1's cursor codec
+> (`encodeCursor`/`decodeCursor` in `core/src/domain/source-repository.ts`) was
+> GENERALIZED into one shared tuple codec now living in a neutral module
+> `core/src/domain/cursor.ts`. V1's functions remain as thin adapters over it
+> (signatures and all three call sites unchanged; `decodeCursor` still throws on
+> bad input, so the `app.ts` 400 path is unchanged). Every V1 test passed
+> unchanged — none asserted a literal encoded cursor string. The change was safe
+> to make now because v2 cursors are **opaque + ephemeral + pre-deploy** (the
+> flag is off on all instances and nothing v2-encoded is persisted). The opaque
+> wire format did change (JSON object → `[version,...tuple]` array). **WARNING
+> for V3/V4:** once anything ships with v2 cursors on the wire, this encoding is
+> FROZEN — do not re-shape `core/src/domain/cursor.ts`'s tuple format.

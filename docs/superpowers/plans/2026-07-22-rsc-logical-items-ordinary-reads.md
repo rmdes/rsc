@@ -748,3 +748,59 @@ capability rejects and revalidates instead of falling back.
 >    fetches, so an admin can create a `remote_sources_v2` row with an
 >    RFC1918 URL no owner could. This plan's acquisition fetcher must apply
 >    its own guard at fetch time — never assume rows were guarded at creation.
+
+---
+
+> **Task 2 execution correction (2026-07-23) — shipped V1 shapes vs. this
+> plan's prose.** Three deviations were applied during Task 2 implementation
+> after verifying each against the real V1 code; each is a mechanical
+> adaptation, not a scope change:
+>
+> 1. **Cursor codec home (File map + VP7 correction).** The plan's File map
+>    parks the shared `encodeCursor(version,tuple)`/`decodeCursor(cursor)`
+>    codec in `core/src/logical/types.ts`. It ships instead in a NEUTRAL module
+>    `core/src/domain/cursor.ts`. Parking it in the logical module would make
+>    V1's `source-repository.ts` import from the logical-items vertical — a
+>    dependency inversion (the source plane depending on a vertical built on
+>    top of it). Both verticals import the neutral module. V1's own
+>    `encodeCursor(c:Cursor)`/`decodeCursor(s):Cursor` stay as thin adapters
+>    over the shared tuple codec (`encodeCursor(c)=>encodeTuple(1,[createdAt,
+>    id])`; `decodeCursor` decodes the tuple and PRESERVES throw-on-bad-input so
+>    `app.ts`'s 400 path is unchanged). V1's three call sites and all V1 tests
+>    passed unchanged (no V1 test asserted a literal encoded cursor string —
+>    all round-trip or `expect.any(String)`). The opaque cursor WIRE FORMAT
+>    changed with the unification (JSON object → `[version,...tuple]` array);
+>    safe today because cursors are opaque + ephemeral and nothing is deployed
+>    with v2 on, but **after the first deploy this encoding is FROZEN wire
+>    format** — V3/V4 must not re-shape it.
+>
+> 2. **No `createSourceRepository(raw)→(db)` factory (Step 2 correction).** The
+>    plan's prose says to change `createSourceRepository(raw)` to
+>    `createSourceRepository(db)`. That factory never existed: V1 shipped
+>    `class SqliteRepository` (`storage/sqlite.ts`), and the free ledger helpers
+>    (`checkCommand`/`storeCommand`/`reapSourceIfOrphaned`) already take
+>    `tx: Db` where `Db = BetterSqlite3.Database` — exactly this plan's
+>    `WriteTx`. So that half of the refactor was already satisfied. Task 2
+>    instead adds `createDatabaseContext(raw)→{raw,read,write}` in
+>    `core/src/logical/database.ts` as thin wrappers over
+>    `raw.transaction(fn).deferred()`/`.immediate()` (the house idiom), and
+>    leaves the ledger-helper signatures untouched. `ReadTx`/`WriteTx` are the
+>    shared aliases (both `BetterSqlite3.Database`).
+>
+> 3. **Migration mechanism (Appendix A adaptation).** Appendix A names one
+>    migration entry "calling `installLogicalV2Schema(raw)`". The shipped
+>    `MIGRATIONS` array is `string[][]` run via `sqlite.exec(stmt)`; there is no
+>    function-based migration seam. So `core/src/logical/schema.ts` exports
+>    `LOGICAL_V2_SCHEMA: string[]` (DDL + additive ALTER + the two singleton
+>    INSERTs) and it is appended verbatim as the tail `MIGRATIONS` entry — the
+>    same additive-append-at-tail contract, adapted to the shipped shape (no
+>    dead `installLogicalV2Schema` function). Consequence: the pre-existing
+>    baseline was `user_version` 12, not 11; this append makes it 13, so
+>    `core/test/migrations.test.ts`'s four end-state `user_version` assertions
+>    were bumped 12→13 (mechanical; staged with Task 2).
+>
+> The temporary fail-closed guard (Step 4a) ships as a one-line throw in
+> `server.ts` immediately after `loadConfig()` — it fires during server
+> composition (before `mkdirSync`/`serve()`), never inside `createApp`, so the
+> V1 `createApp({sources})` route tests are unaffected. Task 10 replaces it with
+> the real runtime.
