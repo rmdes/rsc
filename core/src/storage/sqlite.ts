@@ -5,9 +5,9 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope } from '../domain/types.ts'
-import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult } from '../domain/source-repository.ts'
-import { encodeCursor, clampLimit, checkCommand, storeCommand } from '../domain/source-repository.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult } from '../domain/types.ts'
+import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit, checkCommand, storeCommand, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -89,6 +89,35 @@ function rowToSourceAuditV2(r: SourceAuditV2Row): SourceAuditEvent {
     action: r.action, category: r.category as SourceAuditEvent['category'],
     note: r.note, resultJson: r.result_json, createdAt: r.created_at,
   }
+}
+
+type Db = InstanceType<typeof Database>
+
+// Every audited mutation (Task 6) writes exactly one of these, inside the same
+// transaction as its effect. result_json is the outcome of THIS command, never
+// the envelope that carries the audit event itself.
+function insertAudit(tx: Db, a: {
+  sourceId: string; command: CommandEnvelope; actorKind: SourceAuditEvent['actorKind']
+  action: string; category: AuditCategory | null; note: string | null; result: unknown; now: string
+}): SourceAuditEvent {
+  const row: SourceAuditV2Row = {
+    id: randomUUID(), source_id: a.sourceId, command_id: a.command.commandId, actor_id: a.command.actorId,
+    actor_kind: a.actorKind, action: a.action, category: a.category, note: a.note,
+    result_json: JSON.stringify(a.result), created_at: a.now,
+  }
+  tx.prepare(
+    `INSERT INTO source_audit_v2 (id, source_id, command_id, actor_id, actor_kind, action, category, note, result_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.source_id, row.command_id, row.actor_id, row.actor_kind, row.action, row.category, row.note, row.result_json, row.created_at)
+  return rowToSourceAuditV2(row)
+}
+
+// Ordinary pending subscriptions become active only once the source is BOTH
+// allowed and single_publisher. pending_review never activates automatically
+// under any transition, and already-active subscriptions are left alone.
+function activatePendingSubscriptions(tx: Db, source: RemoteSourceV2Row): void {
+  if (source.governance !== 'allowed' || source.attribution_mode !== 'single_publisher') return
+  tx.prepare(`UPDATE source_subscriptions_v2 SET state = 'active' WHERE source_id = ? AND state = 'pending'`).run(source.id)
 }
 
 type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string; u_auth_user_id: string | null; u_feed_type: FeedType | null }
@@ -959,6 +988,120 @@ export class SqliteRepository implements Repository, SourceRepository {
       }
 
       const result: UnsubscribeResult = { kind: 'removed', sourceRemoved }
+      storeCommand(raw, input.command, result, input.now)
+      return result
+    }).immediate()
+  }
+
+  // Task 6, audited administrator commands. Both follow the same shape as every
+  // mutation above — one BEGIN IMMEDIATE transaction: ledger check, resolve,
+  // apply, write the audit row, store the result, commit — with one addition:
+  // a conflict NEVER writes, not even a ledger row, so a corrected retry is
+  // re-evaluated against live state instead of replaying a stale refusal.
+
+  async establishFederation(input: {
+    command: CommandEnvelope; canonicalUrl: string; attributionMode: AttributionMode
+    category: AuditCategory; note: string | null; actorKind: 'administrator'; now: string
+  }): Promise<EstablishFederationResult> {
+    if (!input.category) return { kind: 'conflict' } // every establishment is audited under a category
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<EstablishFederationResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' } as EstablishFederationResult
+
+      let row = raw.prepare(`SELECT * FROM remote_sources_v2 WHERE canonical_url = ?`).get(input.canonicalUrl) as RemoteSourceV2Row | undefined
+
+      // Blocked: unblock or purge first (design §5). Reveals nothing further.
+      if (row && row.governance === 'blocked') {
+        const result: EstablishFederationResult = { kind: 'unavailable' }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+      // The relationship's PK is source_id, so concurrent different commands
+      // converge on the one row: the loser reports it already exists.
+      if (row && raw.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(row.id)) {
+        const result: EstablishFederationResult = { kind: 'exists' }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+
+      if (!row) {
+        // New URL: the administrator picks the mode; a federated source starts
+        // enabled and allowed.
+        const id = randomUUID()
+        raw.prepare(
+          `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+           VALUES (?, ?, ?, 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+        ).run(id, input.canonicalUrl, input.attributionMode, input.now)
+        row = { id, canonical_url: input.canonicalUrl, attribution_mode: input.attributionMode, operation: 'enabled', governance: 'allowed', provenance: 'admin_federation', provenance_note: null, admin_retained: 0, created_at: input.now }
+      } else if (row.governance === 'quarantined') {
+        // A retained source keeps its own mode and operation; approval only
+        // lifts a quarantined candidate to allowed (design §5).
+        raw.prepare(`UPDATE remote_sources_v2 SET governance = 'allowed' WHERE id = ?`).run(row.id)
+        row = { ...row, governance: 'allowed' }
+      }
+
+      raw.prepare(
+        `INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, 'approved', ?, ?, ?)`,
+      ).run(row.id, input.note, input.now, input.now)
+      activatePendingSubscriptions(raw, row)
+
+      const source = rowToRemoteSourceV2(row)
+      const federation: FederationRelationship = { sourceId: row.id, status: 'approved', provenanceNote: input.note, createdAt: input.now, updatedAt: input.now }
+      const result: EstablishFederationResult = { kind: 'established', source, federation }
+      insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: input.actorKind, action: 'establish_federation', category: input.category, note: input.note, result, now: input.now })
+      storeCommand(raw, input.command, result, input.now)
+      return result
+    }).immediate()
+  }
+
+  async transition(input: {
+    command: CommandEnvelope; sourceId: string; action: SourceTransitionAction
+    category: AuditCategory | null; note: string | null; attributionMode?: AttributionMode
+    actorKind: 'administrator' | 'system'; now: string
+  }): Promise<SourceTransitionResult> {
+    // Malformed requests are refused before the ledger is touched.
+    if (!input.category && !CATEGORY_OPTIONAL_ACTIONS.has(input.action)) return { kind: 'conflict' }
+    if (input.action === 'set_attribution_mode' && !input.attributionMode) return { kind: 'conflict' }
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<SourceTransitionResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' } as SourceTransitionResult
+
+      const row = raw.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(input.sourceId) as RemoteSourceV2Row | undefined
+      if (!row) {
+        const result: SourceTransitionResult = { kind: 'unknown' }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+      const fed = raw.prepare(`SELECT status FROM federation_relationships_v2 WHERE source_id = ?`).get(row.id) as { status: FederationStatus } | undefined
+      const axes: SourceAxes = { operation: row.operation, governance: row.governance, federation: fed ? fed.status : 'none' }
+
+      const patch = SOURCE_TRANSITIONS[input.action](axes)
+      if (!patch) return { kind: 'conflict' } as SourceTransitionResult // invalid cell: refused, writes nothing
+
+      const operation = patch.operation ?? row.operation
+      const governance = patch.governance ?? row.governance
+      const attributionMode = input.action === 'set_attribution_mode' && input.attributionMode ? input.attributionMode : row.attribution_mode
+      if (operation !== row.operation || governance !== row.governance || attributionMode !== row.attribution_mode) {
+        raw.prepare(`UPDATE remote_sources_v2 SET operation = ?, governance = ?, attribution_mode = ? WHERE id = ?`).run(operation, governance, attributionMode, row.id)
+      }
+      if (patch.federation === 'none') raw.prepare(`DELETE FROM federation_relationships_v2 WHERE source_id = ?`).run(row.id)
+      else if (patch.federation) raw.prepare(`UPDATE federation_relationships_v2 SET status = ?, updated_at = ? WHERE source_id = ?`).run(patch.federation, input.now, row.id)
+
+      const updated: RemoteSourceV2Row = { ...row, operation, governance, attribution_mode: attributionMode }
+      if (input.action === 'allow' || input.action === 'approve') activatePendingSubscriptions(raw, updated)
+      // Converting to aggregate withdraws every ordinary subscription for review
+      // — active and pending alike — in the same transaction as the mode change.
+      if (attributionMode === 'aggregate' && row.attribution_mode !== 'aggregate') {
+        raw.prepare(`UPDATE source_subscriptions_v2 SET state = 'pending_review' WHERE source_id = ? AND state IN ('active', 'pending')`).run(row.id)
+      }
+
+      const source = rowToRemoteSourceV2(updated)
+      const audit = insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: input.actorKind, action: input.action, category: input.category, note: input.note, result: { kind: 'applied', source }, now: input.now })
+      const result: SourceTransitionResult = { kind: 'applied', source, audit }
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()

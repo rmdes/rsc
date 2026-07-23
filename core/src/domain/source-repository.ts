@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow, OwnerFollowingView, PublicFollowingEntry } from './types.ts'
+import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow, OwnerFollowingView, PublicFollowingEntry, AttributionMode, AuditCategory, FederationRelationship, FederationStatus, SourceGovernance, SourceOperation, SourceTransitionResult } from './types.ts'
 
 // Plain assignment instead of a parameter property everywhere in this file:
 // Node's native type stripping can't erase parameter properties (core/CLAUDE.md).
@@ -34,6 +34,60 @@ export interface ImportSourcesResult {
 // subscription exists for (ownerId, sourceId) — still ledgered, same as every
 // other negative result in this file, so a retry replays instead of re-reading.
 export type UnsubscribeResult = { kind: 'removed'; sourceRemoved: boolean } | { kind: 'unknown' | 'conflict' }
+
+// Outcome of administrator federation establishment (Task 6). 'exists' means the
+// resolved source already carries a relationship — a second, different command
+// converges on the one row (federation_relationships_v2's PK is source_id);
+// 'unavailable' is the blocked source, which reveals nothing more (design §4).
+export type EstablishFederationResult =
+  | { kind: 'established'; source: RemoteSource; federation: FederationRelationship }
+  | { kind: 'exists' | 'unavailable' | 'conflict' }
+
+export type SourceTransitionAction =
+  | 'pause' | 'resume' | 'quarantine' | 'allow' | 'approve' | 'reject' | 'revoke'
+  | 'block' | 'unblock' | 'set_attribution_mode'
+
+// The three independent lifecycle axes (design §5). A transition patches the
+// axes it names and preserves the rest: a pause never touches governance, a
+// quarantine never touches operation.
+export interface SourceAxes {
+  operation: SourceOperation
+  governance: SourceGovernance
+  federation: 'none' | FederationStatus
+}
+
+// The COMPLETE transition matrix (rev 5, review Finding 5 — every cell is
+// pinned). null = invalid transition, which is refused as a conflict and writes
+// nothing. Deliberate, non-obvious cells:
+//   - block is permitted from quarantined as well as allowed: it applies
+//     regardless of operation and is not restricted to allowed (design §5);
+//   - quarantine/allow from blocked are refused — the only source-governance
+//     exits from blocked are explicit unblock or purge;
+//   - unblock returns a source to quarantine, never straight to allowed;
+//   - approve needs a non-blocked source and lifts a quarantined candidate to
+//     allowed; reject/revoke stay permitted while blocked (they only end a
+//     relationship), and so do pause/resume (the operation axis is independent).
+export const SOURCE_TRANSITIONS: Record<SourceTransitionAction, (a: SourceAxes) => Partial<SourceAxes> | null> = {
+  pause: (a) => (a.operation === 'enabled' ? { operation: 'paused' } : null),
+  resume: (a) => (a.operation === 'paused' ? { operation: 'enabled' } : null),
+  quarantine: (a) => (a.governance === 'allowed' ? { governance: 'quarantined' } : null),
+  allow: (a) => (a.governance === 'quarantined' ? { governance: 'allowed' } : null),
+  approve: (a) =>
+    a.federation === 'pending' && a.governance !== 'blocked'
+      ? { federation: 'approved', governance: a.governance === 'quarantined' ? 'allowed' : a.governance }
+      : null,
+  reject: (a) => (a.federation === 'pending' ? { federation: 'none' } : null),
+  revoke: (a) => (a.federation === 'approved' ? { federation: 'none' } : null),
+  block: (a) => (a.governance !== 'blocked' ? { governance: 'blocked' } : null),
+  unblock: (a) => (a.governance === 'blocked' ? { governance: 'quarantined' } : null),
+  // Mode is not an axis of this table; the caller-supplied attributionMode is
+  // applied (and its subscription effect run) alongside the empty patch.
+  set_attribution_mode: () => ({}),
+}
+
+// pause/resume are operational rather than moderation decisions, so they alone
+// may carry a null category (design §5); every other action requires one.
+export const CATEGORY_OPTIONAL_ACTIONS: ReadonlySet<SourceTransitionAction> = new Set<SourceTransitionAction>(['pause', 'resume'])
 
 export interface SourceRepository {
   getSource(id: string): Promise<RemoteSource | undefined>
@@ -70,6 +124,29 @@ export interface SourceRepository {
   // admin_retained flag — the origin_verification evidence branch is
   // Vertical 3 (rev 5 deferral).
   unsubscribe(input: { command: CommandEnvelope; ownerId: string; sourceId: string; now: string }): Promise<UnsubscribeResult>
+
+  // Two more ledger-backed BEGIN IMMEDIATE transactions (Task 6). Each writes
+  // exactly one audit row and one ledger row on success; a conflict writes
+  // nothing at all, not even to the ledger.
+  establishFederation(input: {
+    command: CommandEnvelope
+    canonicalUrl: string
+    attributionMode: AttributionMode
+    category: AuditCategory
+    note: string | null
+    actorKind: 'administrator'
+    now: string
+  }): Promise<EstablishFederationResult>
+  transition(input: {
+    command: CommandEnvelope
+    sourceId: string
+    action: SourceTransitionAction
+    category: AuditCategory | null
+    note: string | null
+    attributionMode?: AttributionMode
+    actorKind: 'administrator' | 'system'
+    now: string
+  }): Promise<SourceTransitionResult>
 }
 
 // Every mutation command's requestFingerprint is SHA-256 of [operation, ...parts]

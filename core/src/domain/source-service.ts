@@ -1,7 +1,7 @@
 import { parseOpml } from 'feedsmith'
-import type { User, OwnerFollowingView, PublicFollowingEntry } from './types.ts'
+import type { User, OwnerFollowingView, PublicFollowingEntry, AttributionMode, AuditCategory, SourceTransitionResult } from './types.ts'
 import type { Repository } from './repository.ts'
-import type { SourceRepository, SubscribeResult, ImportSourcesResult, UnsubscribeResult } from './source-repository.ts'
+import type { SourceRepository, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction } from './source-repository.ts'
 import { fingerprintRequest } from './source-repository.ts'
 import { localHandleForUrl } from './opml.ts'
 import { normalizeSourceUrl } from './source-url.ts'
@@ -11,6 +11,9 @@ import type { LookupFn } from './push-guard.ts'
 const OPERATION = 'subscribe'
 const IMPORT_OPERATION = 'import-opml'
 const UNSUBSCRIBE_OPERATION = 'unsubscribe'
+// Pinned verbatim (rev 5, review Finding 4): V4 §6 adopts the same fingerprint
+// for the deferred ops route, so the literal must not drift.
+const FEDERATION_OPERATION = 'federation'
 const MAX_IMPORT_OUTLINES = 1000 // mirrors opml.ts's MAX_OUTLINES (H5)
 // Mirrors the existing POST /me/follows/opml body-size limit (api/app.ts) —
 // this service is callable directly (not only via that HTTP route), so it
@@ -40,6 +43,25 @@ export interface SourceService {
   ownerFollowing(ownerId: string): Promise<OwnerFollowingView>
   publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]>
   unsubscribe(ownerId: string, sourceId: string, commandId: string): Promise<UnsubscribeResult>
+  establishFederation(input: {
+    url: string
+    attributionMode: AttributionMode
+    category: AuditCategory
+    note: string | null
+    commandId: string
+    actorId: string
+    actorKind: 'administrator'
+  }): Promise<EstablishFederationResult>
+  transition(input: {
+    sourceId: string
+    action: SourceTransitionAction
+    category: AuditCategory | null
+    note: string | null
+    attributionMode?: AttributionMode
+    commandId: string
+    actorId: string
+    actorKind: 'administrator' | 'system'
+  }): Promise<SourceTransitionResult>
 }
 
 // SourceService.subscribeByUrl owns the raw-URL dispatch (Task 3, design §4
@@ -140,6 +162,48 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
       const now = new Date().toISOString()
       const command = { actorScope: 'owner' as const, actorId: ownerId, commandId, requestFingerprint: fingerprintRequest([UNSUBSCRIBE_OPERATION, sourceId, ownerId]) }
       return repo.unsubscribe({ command, ownerId, sourceId, now })
+    },
+
+    // Administrator federation establishment (Task 6). Normalizes the URL the
+    // same way subscribeByUrl does — an unparseable URL throws here rather than
+    // reaching the repository. No SSRF guard: V1 never fetches through a source,
+    // and the guard belongs with the first fetching path (Vertical 2).
+    async establishFederation(input: {
+      url: string; attributionMode: AttributionMode; category: AuditCategory
+      note: string | null; commandId: string; actorId: string; actorKind: 'administrator'
+    }): Promise<EstablishFederationResult> {
+      const now = new Date().toISOString()
+      const canonicalUrl = normalizeSourceUrl(input.url)
+      const command = {
+        actorScope: 'administrator' as const,
+        actorId: input.actorId,
+        commandId: input.commandId,
+        requestFingerprint: fingerprintRequest([FEDERATION_OPERATION, canonicalUrl, input.attributionMode]),
+      }
+      return repo.establishFederation({ command, canonicalUrl, attributionMode: input.attributionMode, category: input.category, note: input.note, actorKind: input.actorKind, now })
+    },
+
+    // The lifecycle transition matrix (Task 6). Fingerprint is exactly
+    // [action, sourceId, actorId, attributionMode ?? ''] (rev 5, review Finding
+    // 4): the [command, resource, actor] pattern plus the one payload field
+    // that changes what the command means, so reusing a command id with a
+    // different action or mode conflicts.
+    async transition(input: {
+      sourceId: string; action: SourceTransitionAction; category: AuditCategory | null
+      note: string | null; attributionMode?: AttributionMode
+      commandId: string; actorId: string; actorKind: 'administrator' | 'system'
+    }): Promise<SourceTransitionResult> {
+      const now = new Date().toISOString()
+      const command = {
+        actorScope: input.actorKind,
+        actorId: input.actorId,
+        commandId: input.commandId,
+        requestFingerprint: fingerprintRequest([input.action, input.sourceId, input.actorId, input.attributionMode ?? '']),
+      }
+      return repo.transition({
+        command, sourceId: input.sourceId, action: input.action, category: input.category,
+        note: input.note, attributionMode: input.attributionMode, actorKind: input.actorKind, now,
+      })
     },
   }
 }
