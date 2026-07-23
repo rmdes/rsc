@@ -4,6 +4,7 @@
 	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
@@ -47,9 +48,21 @@
 	})
 
 	let expanded = $state<Record<string, TimelineEntry[]>>({})
-	async function toggleWedge(id: string) {
-		if (expanded[id]) delete expanded[id]
-		else expanded[id] = await fetchThread(id)
+	let loading = $state<Record<string, boolean>>({})
+	async function toggleReplies(id: string) {
+		if (expanded[id]) {
+			delete expanded[id]
+			return
+		}
+		if (loading[id]) return
+		loading[id] = true
+		try {
+			expanded[id] = await fetchThread(id)
+		} catch {
+			// Leave it closed; the href is still a live link to the conversation.
+		} finally {
+			delete loading[id]
+		}
 	}
 	// Folded own-cards unfold locally — they're already loaded, no fetch.
 	let stackOpen = $state<Record<string, boolean>>({})
@@ -91,22 +104,20 @@
 				     permalink lives top-right like every byline, not in the action row -->
 				<div class="byline">
 					{#if post.sourceName}<strong>{post.sourceName}</strong>{/if}
-					<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 					<EditedMarker {post} />
 				</div>
 				{#if post.title}<h2 class="title">{post.title}</h2>{/if}
 				<PostBody {post} />
 				{#if post.replyCount}
-					<a
-						class="wedge"
-						class:light={!!expanded[post.id]}
+					<ReplyToggle
+						count={post.replyCount}
 						href="/post/{post.id}"
-						role="button"
-						aria-expanded={!!expanded[post.id]}
-						onclick={(e) => {
-							e.preventDefault()
-							toggleWedge(post.id)
-						}}><span class="glyph" aria-hidden="true">▸</span>{expanded[post.id] ? 'Hide replies' : `${post.replyCount} ${post.replyCount === 1 ? 'reply' : 'replies'}`}</a>
+						expanded={!!expanded[post.id]}
+						busy={!!loading[post.id]}
+						aria-describedby="by-{post.id}"
+						onactivate={() => toggleReplies(post.id)}
+					/>
 				{:else if others.length}
 					<a
 						class="wedge"

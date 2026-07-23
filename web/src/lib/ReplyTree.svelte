@@ -4,6 +4,7 @@
 	import PostBody from './PostBody.svelte'
 	import Avatar from './Avatar.svelte'
 	import ReplyTree from './ReplyTree.svelte'
+	import ReplyToggle from './ReplyToggle.svelte'
 	import EditedMarker from './EditedMarker.svelte'
 
 	let {
@@ -28,24 +29,21 @@
 			<div class="byline">
 				<Avatar author={reply.author} sourceName={reply.sourceName} />
 				<strong>{reply.sourceName ?? reply.author.displayName}</strong>
-				<a class="handle" href="/u/{reply.author.handle}">@{reply.author.handle}</a>
+				<a class="handle" id="rt-by-{reply.id}" href="/u/{reply.author.handle}">@{reply.author.handle}</a>
 				<a class="permalink" href="/post/{reply.id}"><time datetime={reply.publishedAt}>{reply.publishedAt.slice(0, 10)}</time></a>
 				<EditedMarker post={reply} />
 			</div>
 			{#if reply.title}<h3 class="title">{reply.title}</h3>{/if}
 			<PostBody post={reply} />
 			{#if childrenOf(thread, reply.id).length > 0}
-				{@const n = childrenOf(thread, reply.id).length}
-				<a
-					class="wedge"
-					class:light={isOpen(reply.id)}
+				<ReplyToggle
+					count={childrenOf(thread, reply.id).length}
 					href="/post/{reply.id}"
-					role="button"
-					aria-expanded={isOpen(reply.id)}
-					onclick={(e) => {
-						e.preventDefault()
-						open[reply.id] = !isOpen(reply.id)
-					}}><span class="glyph" aria-hidden="true">▸</span>{isOpen(reply.id) ? 'Hide replies' : `${n} ${n === 1 ? 'reply' : 'replies'}`}</a>
+					expanded={isOpen(reply.id)}
+					busy={false}
+					aria-describedby="rt-by-{reply.id}"
+					onactivate={() => (open[reply.id] = !isOpen(reply.id))}
+				/>
 			{/if}
 			<a class="source" href="/post/{reply.id}">Reply</a>
 			{#if reply.source === 'remote' && reply.url}<a class="source" href={reply.url} rel="noreferrer">source</a>{/if}

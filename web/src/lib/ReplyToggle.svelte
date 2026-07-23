@@ -1,28 +1,28 @@
 <script lang="ts">
-	import { replyToggleLabel } from './reply-toggle'
+	import type { HTMLAnchorAttributes } from 'svelte/elements'
+	import { replyToggleLabel, replyToggleClick } from './reply-toggle'
 
 	// Compact reply count. It is a real anchor to the conversation first: with
 	// no JS the click navigates to /post/<id>; with JS `onactivate` expands the
 	// thread inline instead. `count` is whatever the server last said — the
 	// caller never increments it.
+	// `rest` exists so the caller can make the name row-unique with
+	// aria-describedby (the label alone repeats across rows); the five pinned
+	// props are the contract.
 	let {
 		count,
 		href,
 		expanded,
 		busy = false,
-		onactivate
+		onactivate,
+		...rest
 	}: {
 		count: number
 		href: string
 		expanded: boolean
 		busy?: boolean
 		onactivate: () => void
-	} = $props()
-
-	function activate(event: MouseEvent) {
-		event.preventDefault()
-		if (!busy) onactivate()
-	}
+	} & HTMLAnchorAttributes = $props()
 </script>
 
 <a
@@ -31,7 +31,8 @@
 	aria-expanded={expanded}
 	aria-busy={busy || undefined}
 	aria-label={replyToggleLabel(count, expanded, busy)}
-	onclick={activate}
+	{...rest}
+	onclick={(e) => replyToggleClick(e, busy, onactivate)}
 >
 	<svg
 		aria-hidden="true"

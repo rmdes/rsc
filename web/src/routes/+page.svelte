@@ -5,13 +5,14 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
-	import { mergeIncoming } from '$lib/live'
-	import { hiddenIds, fetchThread } from '$lib/wedge'
+	import { applyRiverEvent } from '$lib/live'
+	import { fetchThread } from '$lib/wedge'
 	import { enhance } from '$app/forms'
 	import { confirmSubmit } from '$lib/confirm'
 	import { keepEvent, type Lens } from '$lib/lens'
@@ -34,8 +35,8 @@
 	})
 
 	function onPost(entry: TimelineEntry) {
-		if (lens && !keepEvent(entry, lens)) return
-		const r = mergeIncoming(live, edited, entry, pageIds)
+		const keep = !lens || keepEvent(entry, lens)
+		const r = applyRiverEvent({ live, edited }, entry, { posts, pageIds, keep })
 		live = r.live
 		edited = r.edited
 	}
@@ -50,13 +51,25 @@
 		return [...counts.entries()].map(([host, feeds]) => ({ host, feeds }))
 	})
 
-	// Open wedges: post id → its flat thread. Revealed subtrees hide from the
-	// top level (a post never shows twice) and return when the wedge folds.
+	// Open threads: post id → its flat thread snapshot. Root-only rivers never
+	// show a resolved reply as its own card, so there is nothing to hide — we
+	// iterate `posts` directly. Threads are snapshot-only; reload repairs.
 	let expanded = $state<Record<string, TimelineEntry[]>>({})
-	const hidden = $derived(hiddenIds(expanded))
-	async function toggleWedge(id: string) {
-		if (expanded[id]) delete expanded[id]
-		else expanded[id] = await fetchThread(id)
+	let loading = $state<Record<string, boolean>>({})
+	async function toggleReplies(id: string) {
+		if (expanded[id]) {
+			delete expanded[id]
+			return
+		}
+		if (loading[id]) return
+		loading[id] = true
+		try {
+			expanded[id] = await fetchThread(id)
+		} catch {
+			// Leave it closed; the href is still a live link to the conversation.
+		} finally {
+			delete loading[id]
+		}
 	}
 </script>
 
@@ -135,12 +148,12 @@
 		{/if}
 
 		<ul class="timeline">
-			{#each posts.filter((p) => !hidden.has(p.id)) as post (post.id)}
+			{#each posts as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
 						<Avatar author={post.author} sourceName={post.sourceName} />
 						<strong>{post.sourceName ?? post.author.displayName}</strong>
-						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
 						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<EditedMarker {post} />
@@ -149,16 +162,14 @@
 					{#if post.title}<h2 class="title">{post.title}</h2>{/if}
 					<PostBody {post} />
 					{#if post.replyCount}
-						<a
-							class="wedge"
-							class:light={!!expanded[post.id]}
+						<ReplyToggle
+							count={post.replyCount}
 							href="/post/{post.id}"
-							role="button"
-							aria-expanded={!!expanded[post.id]}
-							onclick={(e) => {
-								e.preventDefault()
-								toggleWedge(post.id)
-							}}><span class="glyph" aria-hidden="true">▸</span>{expanded[post.id] ? 'Hide replies' : `${post.replyCount} ${post.replyCount === 1 ? 'reply' : 'replies'}`}</a>
+							expanded={!!expanded[post.id]}
+							busy={!!loading[post.id]}
+							aria-describedby="by-{post.id}"
+							onactivate={() => toggleReplies(post.id)}
+						/>
 					{/if}
 					{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
 						<a class="source" href="/post/{post.id}">Reply</a>

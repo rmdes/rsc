@@ -5,28 +5,45 @@
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import { keepEvent } from '$lib/lens'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
-	import { hiddenIds, fetchThread } from '$lib/wedge'
+	import { applyRiverEvent } from '$lib/live'
+	import { fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 	const followSet = $derived(new Set(data.followIds))
 	const emptyNote = $derived(data.isOwner ? "You're not following anything yet — subscribe above." : `@${data.handle} isn't following anything yet.`)
 	let live = $state<TimelineEntry[]>([])
-	const posts = $derived([...live, ...data.timeline])
+	let edited = $state<Record<string, TimelineEntry>>({})
+	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
+	const posts = $derived([...live, ...data.timeline].map((p) => edited[p.id] ?? p))
 
 	function onPost(entry: TimelineEntry) {
 		const keep = keepEvent(entry, { kind: 'followed', followIds: followSet }) || entry.author.handle === data.handle
-		if (keep && !posts.some((p) => p.id === entry.id)) live = [entry, ...live]
+		const r = applyRiverEvent({ live, edited }, entry, { posts, pageIds, keep })
+		live = r.live
+		edited = r.edited
 	}
 
 	let expanded = $state<Record<string, TimelineEntry[]>>({})
-	const hidden = $derived(hiddenIds(expanded))
-	async function toggleWedge(id: string) {
-		if (expanded[id]) delete expanded[id]
-		else expanded[id] = await fetchThread(id)
+	let loading = $state<Record<string, boolean>>({})
+	async function toggleReplies(id: string) {
+		if (expanded[id]) {
+			delete expanded[id]
+			return
+		}
+		if (loading[id]) return
+		loading[id] = true
+		try {
+			expanded[id] = await fetchThread(id)
+		} catch {
+			// Leave it closed; the href is still a live link to the conversation.
+		} finally {
+			delete loading[id]
+		}
 	}
 </script>
 
@@ -165,12 +182,12 @@
 	<section>
 		<h2>Timeline</h2>
 		<ul class="timeline">
-			{#each posts.filter((p) => !hidden.has(p.id)) as post (post.id)}
+			{#each posts as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
 						<Avatar author={post.author} sourceName={post.sourceName} />
 						<strong>{post.sourceName ?? post.author.displayName}</strong>
-						<a class="handle" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						<span class="kind">{post.source}</span>
 						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
@@ -178,16 +195,14 @@
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
 					<PostBody {post} />
 					{#if post.replyCount}
-						<a
-							class="wedge"
-							class:light={!!expanded[post.id]}
+						<ReplyToggle
+							count={post.replyCount}
 							href="/post/{post.id}"
-							role="button"
-							aria-expanded={!!expanded[post.id]}
-							onclick={(e) => {
-								e.preventDefault()
-								toggleWedge(post.id)
-							}}><span class="glyph" aria-hidden="true">▸</span>{expanded[post.id] ? 'Hide replies' : `${post.replyCount} ${post.replyCount === 1 ? 'reply' : 'replies'}`}</a>
+							expanded={!!expanded[post.id]}
+							busy={!!loading[post.id]}
+							aria-describedby="by-{post.id}"
+							onactivate={() => toggleReplies(post.id)}
+						/>
 					{/if}
 					{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
 						<a class="source" href="/post/{post.id}">Reply</a>

@@ -6,3 +6,18 @@ export function replyToggleLabel(count: number, expanded: boolean, busy: boolean
   if (busy) return `Loading ${replies}`
   return `${expanded ? 'Hide' : 'Show'} ${replies}`
 }
+
+// Click routing for the control. It is a LINK first: a modified click
+// (cmd/ctrl/shift — new tab, new window) belongs to the browser, so the
+// conversation opens like any other permalink. Otherwise the click expands
+// inline instead of navigating — unless a fetch is already in flight, in which
+// case it is swallowed rather than starting a second one.
+export function replyToggleClick(
+  event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; preventDefault: () => void },
+  busy: boolean,
+  onactivate: () => void
+): void {
+  if (event.metaKey || event.ctrlKey || event.shiftKey) return
+  event.preventDefault()
+  if (!busy) onactivate()
+}

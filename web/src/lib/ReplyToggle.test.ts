@@ -1,4 +1,5 @@
 import { test, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { render } from 'svelte/server'
 import ReplyToggle from './ReplyToggle.svelte'
 
@@ -35,4 +36,22 @@ test('none of the oversized wedge pill survives', () => {
   const { body } = render(ReplyToggle, { props })
   expect(body).not.toContain('wedge')
   expect(body).not.toContain('▸')
+})
+
+// Row-unique accessible name: every row's control is "Show 2 replies" on its
+// own, so the parent points it at that post's byline handle. The component
+// must forward unknown attributes instead of swallowing them.
+test('unknown attributes reach the anchor (aria-describedby makes the name row-unique)', () => {
+  const { body } = render(ReplyToggle, { props: { ...props, 'aria-describedby': 'by-abc' } })
+  expect(body).toContain('aria-describedby="by-abc"')
+})
+
+// The 44x44 floor is a plan Global Constraint living in a 1100-line shared
+// stylesheet later tasks edit. Trimming it must fail CI, not a design review.
+test('the 44x44 touch target survives in app.css', () => {
+  const css = readFileSync(new URL('../app.css', import.meta.url), 'utf8')
+  const block = css.slice(css.indexOf('.reply-toggle {'))
+  const rules = block.slice(0, block.indexOf('}'))
+  expect(rules).toContain('min-height: 44px')
+  expect(rules).toContain('min-width: 44px')
 })
