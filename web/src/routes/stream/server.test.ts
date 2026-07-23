@@ -141,6 +141,22 @@ test('post events gain contentHtml; id and event lines are byte-verbatim (replay
 	expect(data.contentHtml).not.toContain('script')
 })
 
+test('a resolved-reply frame carrying rootReplyCount retains it after contentHtml enrichment', async () => {
+	const frame = `event: post\nid: p-4\ndata: ${JSON.stringify({ id: 'p-4', content: 'a reply', source: 'local', author: {}, inReplyToPostId: 'root-1', threadRootId: 'root-1', rootReplyCount: 3 })}\n\n`
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode(frame))
+			controller.close()
+		}
+	})
+	global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
+	const res = await GET({ request: new Request('http://x/stream') } as never)
+	const text = await res.text()
+	const data = JSON.parse(text.split('data: ')[1].split('\n')[0])
+	expect(data.contentHtml).toBeDefined()
+	expect(data.rootReplyCount).toBe(3)
+})
+
 test('an unparseable frame forwards untouched', async () => {
 	const frame = 'event: post\nid: p-2\ndata: not-json\n\n'
 	const body = new ReadableStream({

@@ -57,7 +57,11 @@ export interface PostRevision {
 
 export interface NewLocalUser { handle: string; displayName: string; authUserId?: string }
 export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string; feedType?: FeedType }
-export type TimelineEntry = Post & { author: User }
+// rootReplyCount is transient SSE timeline metadata (spec §Live updates): the
+// authoritative whole-conversation total for a newly-serialized resolved
+// reply, added only by the SSE route. It is never stored and never present on
+// roots, unresolved replies, or edits.
+export type TimelineEntry = Post & { author: User; rootReplyCount?: number }
 export interface TimelineCursor { publishedAt: string; id: string }
 
 export interface TimelineFilter {

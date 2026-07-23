@@ -112,3 +112,124 @@ test('a replay query failure degrades to live-only instead of killing the stream
   const buf = await readUntil(res, 'live despite replay failure')
   expect(buf).toContain('event: post')
 })
+
+// Reads post-event frames off the stream until every content string in
+// `wantContents` has been seen at least once, returning every parsed post
+// frame collected along the way (per-frame content is asserted — never
+// cross-frame emit ordering, since the count query makes the bus handler
+// async and closely-spaced frames may interleave).
+async function collectPostFrames(res: Response, wantContents: string[]): Promise<Record<string, unknown>[]> {
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  const frames: Record<string, unknown>[] = []
+  const remaining = new Set(wantContents)
+  while (remaining.size > 0) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value)
+    let idx: number
+    while ((idx = buf.indexOf('\n\n')) !== -1) {
+      const frame = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      if (/^event: post/m.test(frame)) {
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data: '))
+        if (dataLine) {
+          const obj = JSON.parse(dataLine.slice(6)) as Record<string, unknown>
+          frames.push(obj)
+          if (typeof obj.content === 'string') remaining.delete(obj.content)
+        }
+      }
+    }
+  }
+  await reader.cancel()
+  return frames
+}
+
+function frameFor(frames: Record<string, unknown>[], content: string): Record<string, unknown> {
+  const frame = frames.find((f) => f.content === content)
+  if (!frame) throw new Error(`no frame with content ${content}`)
+  return frame
+}
+
+test('live SSE reply frames carry authoritative rootReplyCount; roots, unresolved replies, and edits do not', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus)
+  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo })
+
+  const res = await app.request('/timeline/stream')
+  await new Promise((r) => setTimeout(r, 20))
+
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post')
+  const reply1 = await service.createLocalPostAs('alice', 'Alice', 'reply one', root)
+  const reply2 = await service.createLocalPostAs('alice', 'Alice', 'reply two', reply1)
+  const edited = await service.editLocalPost(reply2, 'reply two edited', reply2.author)
+  const orphan = { ...reply1, id: 'orphan-1', guid: 'g-orphan', content: 'orphan reply', inReplyTo: 'https://missing.example/post', inReplyToPostId: null, threadRootId: null, editedAt: null }
+  bus.emitNewPost(orphan)
+
+  const frames = await collectPostFrames(res, ['root post', 'reply one', 'reply two', 'reply two edited', 'orphan reply'])
+
+  expect(frameFor(frames, 'reply one')).toMatchObject({
+    inReplyToPostId: root.id,
+    threadRootId: root.id,
+    rootReplyCount: 1,
+  })
+  expect(frameFor(frames, 'reply two')).toMatchObject({
+    inReplyToPostId: reply1.id,
+    threadRootId: root.id,
+    rootReplyCount: 2,
+  })
+  const rootFrame = frameFor(frames, 'root post')
+  expect(rootFrame).not.toHaveProperty('rootReplyCount')
+
+  const editedFrame = frameFor(frames, 'reply two edited')
+  expect(editedFrame.editedAt).toBe(edited.editedAt)
+  expect(editedFrame).not.toHaveProperty('rootReplyCount')
+
+  const orphanFrame = frameFor(frames, 'orphan reply')
+  expect(orphanFrame).not.toHaveProperty('rootReplyCount')
+})
+
+test('SSE replay delivers the same authoritative reply totals as live (not deltas)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus)
+  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo })
+
+  const anchor = await service.createLocalPostAs('alice', 'Alice', 'anchor post')
+  const base = Date.parse(anchor.createdAt)
+  const t = (n: number) => new Date(base + n).toISOString()
+  await repo.insertPost({ id: 'root2', authorId: anchor.authorId, source: 'local', guid: 'g-root2', title: null, content: 'replay root', url: null, publishedAt: t(1), createdAt: t(1) })
+  await repo.insertPost({ id: 'r2reply1', authorId: anchor.authorId, source: 'local', guid: 'g-r2r1', title: null, content: 'replay reply one', url: null, publishedAt: t(2), createdAt: t(2), inReplyTo: 'root2', inReplyToPostId: 'root2', threadRootId: 'root2' })
+  await repo.insertPost({ id: 'r2reply2', authorId: anchor.authorId, source: 'local', guid: 'g-r2r2', title: null, content: 'replay reply two', url: null, publishedAt: t(3), createdAt: t(3), inReplyTo: 'root2', inReplyToPostId: 'root2', threadRootId: 'root2' })
+
+  const res = await app.request('/timeline/stream', { headers: { 'Last-Event-ID': anchor.id } })
+  const frames = await collectPostFrames(res, ['replay reply one', 'replay reply two'])
+
+  expect(frameFor(frames, 'replay reply one')).toMatchObject({ threadRootId: 'root2', rootReplyCount: 2 })
+  expect(frameFor(frames, 'replay reply two')).toMatchObject({ threadRootId: 'root2', rootReplyCount: 2 })
+})
+
+test('a reply-count enrichment failure degrades to an un-enriched frame instead of killing the stream', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus)
+  const broken = { ...service, countThreadRepliesByRootIds: async () => { throw new Error('count failed') } }
+  const app = createApp({ service: broken as typeof service, bus, token: 'secret', auth: makeAuth(repo), users: repo })
+
+  const res = await app.request('/timeline/stream')
+  await new Promise((r) => setTimeout(r, 20))
+
+  const root = await service.createLocalPostAs('alice', 'Alice', 'broken root')
+  await service.createLocalPostAs('alice', 'Alice', 'reply under broken', root)
+  await service.createLocalPostAs('alice', 'Alice', 'root two')
+
+  const frames = await collectPostFrames(res, ['broken root', 'reply under broken', 'root two'])
+
+  const replyFrame = frameFor(frames, 'reply under broken')
+  expect(replyFrame.inReplyToPostId).toBe(root.id)
+  expect(replyFrame).not.toHaveProperty('rootReplyCount')
+  // the stream stayed alive past the failure: a later, unrelated live post arrived
+  expect(frameFor(frames, 'root two')).toBeTruthy()
+})

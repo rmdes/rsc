@@ -7,7 +7,7 @@ import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { TimelineFilter } from '../domain/types.ts'
+import type { TimelineFilter, TimelineEntry } from '../domain/types.ts'
 import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, emittedGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml, localHandleForUrl } from '../domain/opml.ts'
 import { checkCallbackUrl } from '../domain/push-guard.ts'
@@ -736,12 +736,40 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ timeline, nextCursor })
   })
 
+  // Adds the authoritative whole-conversation reply total to every resolved,
+  // non-edit reply in the batch, in one grouped query (no N+1 — live batches
+  // are one entry, replay batches are the distinct root ids of the page).
+  // Roots, unresolved replies, and edits pass through untouched. A count
+  // query failure degrades to the un-enriched frames instead of dropping the
+  // batch or killing the stream (spec: "must not kill the stream").
+  async function withRootReplyCounts(entries: TimelineEntry[]): Promise<TimelineEntry[]> {
+    const roots = [...new Set(entries
+      .filter((e) => e.inReplyToPostId && e.threadRootId && !e.editedAt)
+      .map((e) => e.threadRootId as string))]
+    if (roots.length === 0) return entries
+    try {
+      const counts = await service.countThreadRepliesByRootIds(roots)
+      return entries.map((e) =>
+        e.inReplyToPostId && e.threadRootId && !e.editedAt
+          ? { ...e, rootReplyCount: counts.get(e.threadRootId) ?? 0 }
+          : e)
+    } catch (err) {
+      console.error('reply count enrichment failed:', err instanceof Error ? err.message : err)
+      return entries
+    }
+  }
+
   app.get('/timeline/stream', (c) =>
     streamSSE(c, async (stream) => {
       // Subscribe BEFORE replay (spec H2): a post landing between the replay
       // query and the subscription must not be lost. Double-delivery is fine —
       // clients dedup by id.
-      const off = bus.onNewPost((entry) => { void stream.writeSSE({ event: 'post', id: entry.id, data: JSON.stringify(entry) }) })
+      const off = bus.onNewPost((entry) => {
+        void (async () => {
+          const [enriched] = await withRootReplyCounts([entry])
+          await stream.writeSSE({ event: 'post', id: enriched.id, data: JSON.stringify(enriched) })
+        })()
+      })
       stream.onAbort(off)
       const lastEventId = c.req.header('Last-Event-ID')
       if (lastEventId) {
@@ -752,7 +780,8 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
             // re-deliver in full; the cap count includes the anchor row.
             const missed = await service.getTimelineAfter(anchorPost.createdAt, REPLAY_CAP + 1)
             if (missed.length <= REPLAY_CAP) {
-              for (const entry of missed) {
+              const enrichedMissed = await withRootReplyCounts(missed)
+              for (const entry of enrichedMissed) {
                 await stream.writeSSE({ event: 'post', id: entry.id, data: JSON.stringify(entry) })
               }
             }

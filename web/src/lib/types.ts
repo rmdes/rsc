@@ -17,6 +17,7 @@ export interface TimelineEntry {
 	sourceName?: string | null
 	sourceFeedUrl?: string | null
 	editedAt?: string | null
+	rootReplyCount?: number
 }
 
 // v2 source-registry DTOs (RSC_SOURCE_MODEL_V2), mirroring core's
