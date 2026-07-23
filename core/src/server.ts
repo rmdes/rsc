@@ -24,6 +24,12 @@ const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecr
 const push = createPush({ repo, config })
 const pushIn = createPushIn({ repo, config })
 if (config.pushIn && !config.publicUrl) console.log('push-in inactive: no public URL')
+// v2 source-control plane: built ONLY when RSC_SOURCE_MODEL_V2 is on, and
+// imported dynamically so the module does not even load while off. Its absence
+// is what keeps every v2 route unregistered (see createApp).
+const sources = config.sourceModelV2
+  ? { service: (await import('./domain/source-service.ts')).createSourceService(repo, config.publicUrl), repo }
+  : undefined
 const app = createApp({
   service,
   bus,
@@ -35,6 +41,7 @@ const app = createApp({
   feeds: { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud },
   websub: config.websub.mode,
   pushIn: config.pushIn,
+  sources,
   pushApi:
     config.websub.mode === 'self' || config.rssCloud
       ? {

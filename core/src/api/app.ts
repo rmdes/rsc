@@ -10,6 +10,10 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, emittedGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml, localHandleForUrl } from '../domain/opml.ts'
 import { checkCallbackUrl } from '../domain/push-guard.ts'
+import { decodeCursor, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import type { Cursor, SourceRepository, SourceTransitionAction } from '../domain/source-repository.ts'
+import type { SourceService } from '../domain/source-service.ts'
+import type { AttributionMode, AuditCategory, User } from '../domain/types.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
 import type { EventBus } from '../domain/bus.ts'
@@ -41,6 +45,48 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown> | null>
   }
 }
 
+// --- v2 source-control plane validators (RSC_SOURCE_MODEL_V2) ---
+
+function isAttributionMode(v: unknown): v is AttributionMode {
+  return v === 'single_publisher' || v === 'aggregate'
+}
+
+// Mirrors AuditCategory in types.ts (V1's narrowed set — the SQL CHECK is
+// deliberately wider). Typed as AuditCategory[] so removing a union member
+// fails typecheck here too.
+const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
+
+function isAuditCategory(v: unknown): v is AuditCategory {
+  return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
+}
+
+// normalizeSourceUrl signals a malformed/credentialed/oversized URL by throwing
+// (Task 3's contract, not a result kind) — every other error still bubbles to
+// app.onError.
+function isBadSourceUrl(err: unknown): boolean {
+  return err instanceof Error && err.message === 'source URL invalid'
+}
+
+const DEFAULT_PAGE_LIMIT = 50
+
+// Shared query parsing for every v2 admin listing; the repository clamps the
+// limit to 1..100 itself, so this only has to reject junk.
+function pageArgs(c: Context): { cursor: Cursor | undefined; limit: number } | Response {
+  let cursor: Cursor | undefined
+  const cursorRaw = c.req.query('cursor')
+  if (cursorRaw !== undefined) {
+    try {
+      cursor = decodeCursor(cursorRaw)
+    } catch {
+      return c.json({ error: 'cursor invalid' }, 400)
+    }
+    if (typeof cursor?.createdAt !== 'string' || typeof cursor.id !== 'string') return c.json({ error: 'cursor invalid' }, 400)
+  }
+  const limitRaw = c.req.query('limit')
+  if (limitRaw !== undefined && !Number.isInteger(Number(limitRaw))) return c.json({ error: 'limit invalid' }, 400)
+  return { cursor, limit: limitRaw === undefined ? DEFAULT_PAGE_LIMIT : Number(limitRaw) }
+}
+
 const REPLAY_CAP = 100
 
 export interface PushApi {
@@ -64,8 +110,8 @@ const MAX_JSON_BYTES = 512 * 1024
 const rejectOversized = (c: Context) => c.text('payload too large', 413)
 const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOversized })
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean }): Hono {
-  const { service, bus, token } = deps
+export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; sources?: { service: SourceService; repo: SourceRepository } }): Hono {
+  const { service, bus, token, sources } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const mailEnabled = deps.mailEnabled ?? true
   const adminEmails = deps.adminEmails ?? new Set<string>()
@@ -81,6 +127,12 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   })
 
   app.get('/health', (c) => c.json({ ok: true, mailEnabled }))
+
+  // The ONE v2 route served in both states: web discovers which source model
+  // this instance runs before it picks an API path, so it must answer while the
+  // flag is off too. Boolean shape is a frozen cross-vertical contract — V2
+  // supersedes the enabled branch with a discriminated union; do not pre-widen.
+  app.get('/capabilities', (c) => c.json({ sourceModelV2: sources !== undefined }))
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no
@@ -162,6 +214,193 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // routes (POST /users, DELETE /users/:handle) live under /users, not /admin,
   // and keep their own adminOrToken gate — this prefix does not touch them.
   app.use('/admin/*', authed, requireAdmin())
+
+  // --- v2 source-control plane routes (RSC_SOURCE_MODEL_V2) ---
+  // `deps.sources` exists ONLY when the flag is on (server.ts builds it behind
+  // the flag, importing the domain module dynamically), so while off not one
+  // route below is registered and every legacy route keeps today's behavior.
+  // Registered HERE — after the /admin/* gate, so the admin routes inherit it,
+  // and BEFORE the legacy /me/subscriptions, /me/follows/opml,
+  // /users/:handle/follows and /users/:handle/following.opml handlers, so that
+  // on those four shared paths the v2 handler answers first (Hono runs matched
+  // handlers in registration order and stops at the first response).
+  if (sources) {
+    const v2 = sources.service
+    const v2repo = sources.repo
+    // Blocked, not-subscribable and never-existed are ONE answer: a caller must
+    // not be able to tell them apart (design §4).
+    const NEUTRAL_UNAVAILABLE = { error: 'source unavailable' }
+    const IDEMPOTENCY_CONFLICT = { error: 'idempotency conflict' }
+
+    app.post('/me/subscriptions', authed, registeredOnly(), jsonWrite, async (c) => {
+      const body = await readJsonBody(c)
+      if (!body) return c.json({ error: 'body invalid' }, 400)
+      const { url, commandId } = body
+      if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
+      if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+      let result
+      try {
+        result = await v2.subscribeByUrl(c.get('coreUser'), url, commandId)
+      } catch (err) {
+        if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
+        throw err
+      }
+      switch (result.kind) {
+        case 'source': {
+          const subscription = result.subscription
+          // Pending answers the neutral payload ONLY — never the owner
+          // projection, which would leak that the source is under review.
+          if (subscription.subscriptionState !== 'active') {
+            return c.json({ subscription: 'pending', message: 'This source is awaiting review.' }, result.created ? 202 : 200)
+          }
+          return c.json({ subscription }, result.created ? 201 : 200)
+        }
+        case 'local':
+          return c.json({ follow: result.follow }, result.created ? 201 : 200)
+        case 'cap':
+          return c.json({ error: 'subscription limit reached' }, 429)
+        case 'conflict':
+          return c.json(IDEMPOTENCY_CONFLICT, 409)
+        default:
+          return c.json(NEUTRAL_UNAVAILABLE, 409)
+      }
+    })
+
+    app.delete('/me/subscriptions/:sourceId', authed, jsonWrite, async (c) => {
+      const body = await readJsonBody(c)
+      if (!body || !isString(body.commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+      const result = await v2.unsubscribe(c.get('coreUser').id, c.req.param('sourceId') ?? '', body.commandId)
+      if (result.kind === 'unknown') return c.json({ error: 'unknown subscription' }, 404)
+      if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
+      // sourceRemoved is deliberately NOT surfaced: whether the source row
+      // survived is a function of governance/federation/retention, which an
+      // ordinary DTO never reveals.
+      return c.json({ ok: true }, 200)
+    })
+
+    // Same 1 MB bound as the legacy OPML route below; the command id travels as
+    // a header because the body is XML, not JSON.
+    app.post('/me/follows/opml', authed, registeredOnly(), bodyLimit({ maxSize: 1024 * 1024, onError: rejectOversized }), async (c) => {
+      const commandId = c.req.header('x-rsc-command-id')
+      if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+      const result = await v2.importOpml(c.get('coreUser'), await c.req.text(), commandId)
+      if ('kind' in result) return c.json(IDEMPOTENCY_CONFLICT, 409)
+      return c.json(result, 200)
+    })
+
+    app.get('/me/following', authed, async (c) => c.json(await v2.ownerFollowing(c.get('coreUser').id)))
+
+    app.get('/users/:handle/follows', async (c) => {
+      const user = await resolveUser(c.req.param('handle') ?? '')
+      if (!user) return c.json({ error: 'unknown user' }, 404)
+      return c.json({ following: await v2.publicFollowing(user.id) })
+    })
+
+    app.get('/users/:handle/following.opml', async (c) => {
+      const user = await resolveUser(c.req.param('handle') ?? '')
+      if (!user) return c.json({ error: 'unknown user' }, 404)
+      // publicFollowing filters to active subscriptions on allowed sources in
+      // SQL, so nothing else can reach the export.
+      const entries = await v2.publicFollowing(user.id)
+      // buildFollowingOpml reads only kind/displayName/handle/feedUrl; the v2
+      // projection carries no other User field, hence the cast.
+      const following = entries.map((e) =>
+        e.kind === 'local'
+          ? { kind: 'local', handle: e.handle, displayName: e.displayName }
+          : { kind: 'remote', displayName: e.displayName, feedUrl: e.url },
+      ) as unknown as User[]
+      return c.body(buildFollowingOpml(user.displayName, following, feeds.publicUrl), 200, { 'content-type': 'text/xml; charset=utf-8' })
+    })
+
+    app.get('/admin/sources', async (c) => {
+      const args = pageArgs(c)
+      if (args instanceof Response) return args
+      return c.json(await v2repo.listSourceSummaries(args.cursor, args.limit))
+    })
+
+    app.get('/admin/sources/:id', async (c) => {
+      const detail = await v2repo.getSourceDetail(c.req.param('id') ?? '')
+      if (!detail) return c.json({ error: 'unknown source' }, 404)
+      return c.json(detail)
+    })
+
+    app.get('/admin/sources/:id/subscriptions', async (c) => {
+      const args = pageArgs(c)
+      if (args instanceof Response) return args
+      return c.json(await v2repo.listSourceSubscriptions(c.req.param('id') ?? '', args.cursor, args.limit))
+    })
+
+    app.get('/admin/sources/:id/audit', async (c) => {
+      const args = pageArgs(c)
+      if (args instanceof Response) return args
+      return c.json(await v2repo.listSourceAudit(c.req.param('id') ?? '', args.cursor, args.limit))
+    })
+
+    app.post('/admin/sources', jsonWrite, async (c) => {
+      const body = await readJsonBody(c)
+      if (!body) return c.json({ error: 'body invalid' }, 400)
+      const { url, attributionMode, category, note, commandId } = body
+      if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
+      if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
+      if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+      if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+      if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+      let result
+      try {
+        result = await v2.establishFederation({
+          url, attributionMode, category, note: typeof note === 'string' ? note : null,
+          commandId, actorId: c.get('coreUser').id, actorKind: 'administrator',
+        })
+      } catch (err) {
+        if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
+        throw err
+      }
+      if (result.kind === 'established') return c.json({ source: result.source, federation: result.federation }, 201)
+      if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
+      if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
+      return c.json(NEUTRAL_UNAVAILABLE, 409)
+    })
+
+    app.post('/admin/sources/:id/:action', jsonWrite, async (c) => {
+      // Route segments are hyphenated; only this one differs from its domain
+      // action, every other segment is its action verbatim.
+      const segment = c.req.param('action') ?? ''
+      const action = (segment === 'attribution-mode' ? 'set_attribution_mode' : segment) as SourceTransitionAction
+      // hasOwn, not `in`: `constructor`/`__proto__` are inherited keys.
+      if (!Object.hasOwn(SOURCE_TRANSITIONS, action)) return c.json({ error: 'action invalid' }, 400)
+      const body = await readJsonBody(c)
+      if (!body) return c.json({ error: 'body invalid' }, 400)
+      const { category, note, commandId, attributionMode } = body
+      if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+      if (category === undefined || category === null) {
+        if (!CATEGORY_OPTIONAL_ACTIONS.has(action)) return c.json({ error: 'category invalid' }, 400)
+      } else if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+      if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+      // Required for set_attribution_mode, optional-but-valid everywhere else.
+      if ((attributionMode !== undefined || action === 'set_attribution_mode') && !isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
+
+      const id = c.req.param('id') ?? ''
+      const detail = await v2repo.getSourceDetail(id)
+      if (!detail) return c.json({ error: 'unknown source' }, 404)
+      // The repository collapses an illegal transition and an idempotency
+      // conflict into one {kind:'conflict'}; the exported matrix is what tells
+      // them apart, so ask it here. A concurrent transition between this read
+      // and the command still lands as 'idempotency conflict' — a mislabel in a
+      // race, never a wrong write (the domain re-checks inside its transaction).
+      const axes = { operation: detail.source.operation, governance: detail.source.governance, federation: detail.federationStatus }
+      if (SOURCE_TRANSITIONS[action](axes) === null) return c.json({ error: 'invalid transition' }, 409)
+
+      const result = await v2.transition({
+        sourceId: id, action, category: isAuditCategory(category) ? category : null,
+        note: typeof note === 'string' ? note : null,
+        ...(isAttributionMode(attributionMode) ? { attributionMode } : {}),
+        commandId, actorId: c.get('coreUser').id, actorKind: 'administrator',
+      })
+      if (result.kind === 'applied') return c.json({ source: result.source, audit: result.audit }, 200)
+      if (result.kind === 'unknown') return c.json({ error: 'unknown source' }, 404)
+      return c.json(IDEMPOTENCY_CONFLICT, 409)
+    })
+  }
 
   app.get('/admin/overview', (c) => c.json({
     counts: service.instanceStats(),
