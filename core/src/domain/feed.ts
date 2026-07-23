@@ -1,7 +1,37 @@
 import { generateRssFeed, generateJsonFeed } from 'feedsmith'
 import type { WebSubMode } from '../config.ts'
 import type { Post, User, TimelineEntry } from './types.ts'
+import type { LogicalItemDto } from '../logical/types.ts'
 import { renderLocalHtml } from './markdown.ts'
+
+// Adapt a logical-v2 ordinary DTO to the TimelineEntry shape the existing feed
+// renderers consume (spec §4.6: all public feeds use the central projector). Local
+// content is the markdown source (itemContentFields renders it); remote content is
+// the stored feed HTML. A local reply carries in_reply_to = NULL in v1 too, so no
+// source:inReplyTo is emitted here either — parity with the v1 firehose.
+export function logicalToFeedEntry(dto: LogicalItemDto): TimelineEntry {
+  const a = dto.selectedAuthor
+  const author: User = a.kind === 'local'
+    ? { id: a.id, kind: 'local', handle: a.handle, displayName: a.displayName, feedUrl: null, createdAt: '', authUserId: null }
+    : { id: a.id, kind: 'remote', handle: '', displayName: a.displayName, feedUrl: a.canonicalFeedUrl, createdAt: '', authUserId: null }
+  return {
+    id: dto.id,
+    authorId: a.id,
+    source: dto.origin,
+    guid: dto.id,
+    title: dto.title,
+    content: dto.content ?? '',
+    url: dto.permalink,
+    publishedAt: dto.publishedAt,
+    createdAt: dto.publishedAt,
+    inReplyTo: null,
+    inReplyToPostId: dto.parentLogicalItemId,
+    threadRootId: dto.threadRootId,
+    contentMarkdown: dto.contentMarkdown,
+    editedAt: dto.updatedAt,
+    author,
+  }
+}
 
 export interface FeedContext {
   publicUrl: string | null

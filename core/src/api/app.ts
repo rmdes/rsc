@@ -4,7 +4,7 @@ import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, adminOrToken } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { mountLogicalRoutes } from './logical-routes.ts'
+import { mountLogicalRoutes, mountLogicalReadRoutes } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
@@ -149,6 +149,13 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       ? { sourceModelV2: true, model: 'logical-v2', journalCursorVersion: JOURNAL_CURSOR_VERSION, streamProtocolVersion: STREAM_PROTOCOL_VERSION }
       : { sourceModelV2: false },
   ))
+
+  // --- v2 ordinary read + feed surface (RSC_SOURCE_MODEL_V2) ---
+  // Registered HERE — before every v1 content route — so the v2 branch wins on
+  // the shared read/feed paths (Hono runs the first-registered matching handler).
+  // Present only when the flag is on (deps.logical is built behind the flag), so
+  // while off not one of these registers and every v1 route keeps today's behavior.
+  if (deps.logical) mountLogicalReadRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service, feeds })
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no

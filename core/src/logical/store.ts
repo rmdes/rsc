@@ -6,11 +6,13 @@ import type {
   RunCursor, JobCursor, AdminFetchProjection, AdminReconciliationCounters, AdminAcquisitionCounters,
 } from './types.ts'
 import type { User, CommandEnvelope } from '../domain/types.ts'
-import { getJournalMetadata } from './journal.ts'
+import { getJournalMetadata, snapshotJournalCursor } from './journal.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure } from './reconcile.ts'
-import { scheduleOrphanWork, claimOrphanWork, adoptOrphans } from './threading.ts'
+import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
+import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher } from './projector.ts'
+import type { ProjectionViewer, TimelineQuery, LogicalTimelineEnvelope, LogicalHistoryEnvelope, LogicalThreadEnvelope, PublicLocalAccount, PublicPublisher } from './types.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput } from './types.ts'
 import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
 import type { WriteTx } from './database.ts'
@@ -22,8 +24,20 @@ import { encodeCursor } from '../domain/cursor.ts'
 // reads; later tasks widen both the snapshot callback shape and the store's
 // write methods (claimAcquisition, commitAcquisition, reconcileClaim, …).
 
-// The subset of LogicalReadTx Task 2 implements. Later tasks broaden this Pick.
-type ReadSeam = Pick<LogicalReadTx, 'getActivation' | 'getJournalMetadata'>
+// The subset of LogicalReadTx implemented so far, plus the Task 8 ordinary-read
+// projection seam (projectItem/projectTimeline/projectThread/projectHistory) and
+// the two lens resolvers the routes call inside the same snapshot. Later tasks
+// broaden this further.
+type ReadSeam = Pick<LogicalReadTx, 'getActivation' | 'getJournalMetadata'> & {
+  projectItem(id: string, viewer: ProjectionViewer): LogicalItemDto | undefined
+  projectTimeline(query: TimelineQuery): LogicalTimelineEnvelope
+  projectThread(id: string, viewer: ProjectionViewer): LogicalThreadEnvelope | undefined
+  projectHistory(id: string, viewer: ProjectionViewer): LogicalHistoryEnvelope | undefined
+  projectLocalActivity(opts: { authorId: string | null; limit: number }): LogicalItemDto[]
+  resolveLocalAccount(handle: string): PublicLocalAccount | undefined
+  resolvePublisher(publisherId: string): PublicPublisher | undefined
+  journalCursor(): string
+}
 
 function makeReadTx(tx: ReadTx): ReadSeam {
   return {
@@ -40,6 +54,16 @@ function makeReadTx(tx: ReadTx): ReadSeam {
       }
     },
     getJournalMetadata: () => getJournalMetadata(tx),
+    projectItem: (id, viewer) => projectItem(tx, id, viewer),
+    projectTimeline: (query) => projectTimeline(tx, query),
+    // projectThread takes projectItem as an INJECTED dependency (Task 7's clean
+    // structure-vs-policy seam); bind it to the real projector here.
+    projectThread: (id, viewer) => projectThread(tx, id, (cid) => projectItem(tx, cid, viewer)),
+    projectHistory: (id, viewer) => projectHistory(tx, id, viewer),
+    projectLocalActivity: (opts) => projectLocalActivity(tx, opts),
+    resolveLocalAccount: (handle) => resolveLocalAccount(tx, handle),
+    resolvePublisher: (publisherId) => resolvePublisher(tx, publisherId),
+    journalCursor: () => snapshotJournalCursor(tx),
   }
 }
 
