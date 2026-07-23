@@ -213,6 +213,19 @@ export function reapSourceIfOrphaned(tx: Db, sourceId: string): boolean {
   if (!source || source.governance !== 'allowed' || source.admin_retained !== 0) return false
   if (tx.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId)) return false
   if (tx.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
+  // Interim RESTRICT-aware cleanup (rev 5 RC4 — V3 plan lockstep amendment 2,
+  // applied broadened). Once Vertical 2 acquisition/reconciliation has written v2
+  // child rows under ON DELETE RESTRICT foreign keys, DELETE FROM remote_sources_v2
+  // would FK-throw. Retain the source row while ANY RESTRICT child still references
+  // it, deleting only what can be deleted and reporting the retention. These six
+  // are exactly the ON DELETE RESTRICT children of remote_sources_v2 in
+  // logical/schema.ts; source_aliases_v2 is ON DELETE CASCADE and does NOT block
+  // deletion, so it is deliberately absent. INTERIM: Vertical 3's Task 7 replaces
+  // this with evidence-aware cleanup.
+  const RESTRICT_CHILDREN = ['deliveries_v2', 'source_health_v2', 'source_validators_v2', 'acquisition_runs_v2', 'publisher_names_v2', 'publisher_claims_v2'] as const
+  for (const child of RESTRICT_CHILDREN) {
+    if (tx.prepare(`SELECT 1 FROM ${child} WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
+  }
   tx.prepare(`DELETE FROM remote_sources_v2 WHERE id = ?`).run(sourceId)
   return true
 }

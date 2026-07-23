@@ -129,7 +129,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       return repo.setAuthUserId(userId, authUserId)
     },
     updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }) {
-      return repo.updateUserProfile(userId, {
+      const normalized = {
         ...patch,
         ...(patch.handle !== undefined ? { handle: normalizeHandle(patch.handle) } : {}),
         ...(patch.displayName !== undefined ? { displayName: (() => {
@@ -137,7 +137,9 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
           if (!trimmed) throw new DomainError('displayName must not be blank')
           return trimmed
         })() } : {}),
-      })
+      }
+      // v2-on: the update and its one Personal reset commit in one atomic write.
+      return logical ? logical.updateUserProfile(userId, normalized) : repo.updateUserProfile(userId, normalized)
     },
     createLocalUser(u: NewLocalUser) {
       return repo.createLocalUser(u)
@@ -150,10 +152,16 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     },
     async addFollow(follower: User, target: User): Promise<boolean> {
       if (follower.kind !== 'local') throw new DomainError('follower must be a local user')
+      // v2-on: a real new edge (not instance/self) commits with one Personal reset.
+      if (logical && target.feedType !== 'instance' && target.id !== follower.id) {
+        logical.addLocalFollow({ followerId: follower.id, followedId: target.id, now: new Date().toISOString() })
+        return true
+      }
       return followUnlessExcluded(repo, follower.id, target)
     },
     async removeFollow(followerId: string, target: User): Promise<void> {
-      await repo.removeFollow(followerId, target.id)
+      if (logical) logical.removeLocalFollow({ followerId, followedId: target.id, now: new Date().toISOString() })
+      else await repo.removeFollow(followerId, target.id)
       if (target.kind === 'remote' && (target.feedType === 'person' || target.feedType === 'webfeed')
           && (await repo.countFollowers(target.id)) === 0) {
         repo.deleteUserCascade(target.id) // orphaned self-serve feed → stop polling. Instances never auto-cleaned.

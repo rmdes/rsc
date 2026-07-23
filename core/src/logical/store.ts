@@ -6,7 +6,8 @@ import type {
   RunCursor, JobCursor, AdminFetchProjection, AdminReconciliationCounters, AdminAcquisitionCounters,
 } from './types.ts'
 import type { User, CommandEnvelope } from '../domain/types.ts'
-import { getJournalMetadata, snapshotJournalCursor } from './journal.ts'
+import { getJournalMetadata, snapshotJournalCursor, appendJournal } from './journal.ts'
+import { HandleTakenError } from '../domain/types.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure } from './reconcile.ts'
@@ -202,6 +203,52 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     deleteLocalAccount(input: { accountId: string; actorId: string; now: string }): void {
       db.write((tx) => deleteLocalAccount({ tx, ...input }))
+    },
+
+    // --- V1 membership/profile bridge (Task 9, spec §3.7) -----------------
+    // When v2 is on, service.ts routes local-account follow/unfollow and profile
+    // edits here so the domain mutation and its single Personal-membership reset
+    // commit in one atomic write. A reset is appended only when a row actually
+    // changes (an idempotent re-follow/unfollow appends nothing); a profile edit
+    // is an explicit command and always appends one. No source generation moves —
+    // these are membership/identity, not source policy. No fan-out.
+    addLocalFollow(input: { followerId: string; followedId: string; now: string }): void {
+      db.write((tx) => {
+        // follows has only its composite PK, so a bare DO NOTHING targets it.
+        const r = tx.prepare(`INSERT INTO follows (follower_id, followed_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`).run(input.followerId, input.followedId, input.now)
+        if (r.changes > 0) appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, input.now)
+      })
+    },
+    removeLocalFollow(input: { followerId: string; followedId: string; now: string }): void {
+      db.write((tx) => {
+        const r = tx.prepare(`DELETE FROM follows WHERE follower_id = ? AND followed_id = ?`).run(input.followerId, input.followedId)
+        if (r.changes > 0) appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, input.now)
+      })
+    },
+    // Mirrors SqliteRepository.updateUserProfile (RETURNING + HandleTakenError on a
+    // UNIQUE collision), plus the reset. Column-named UPDATE; the caller has
+    // already normalized handle/displayName.
+    updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }): User {
+      return db.write((tx) => {
+        const sets: string[] = []
+        const args: unknown[] = []
+        if (patch.handle !== undefined) { sets.push('handle = ?'); args.push(patch.handle) }
+        if (patch.displayName !== undefined) { sets.push('display_name = ?'); args.push(patch.displayName) }
+        const cols = `id, kind, handle, display_name, feed_url, created_at, auth_user_id, feed_type`
+        type Row = { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: User['feedType'] }
+        let row: Row | undefined
+        try {
+          row = sets.length === 0
+            ? tx.prepare(`SELECT ${cols} FROM users WHERE id = ?`).get(userId) as Row | undefined
+            : tx.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ? RETURNING ${cols}`).get(...args, userId) as Row | undefined
+        } catch (err) {
+          if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new HandleTakenError('handle already taken')
+          throw err
+        }
+        if (!row) throw new Error(`updateUserProfile: unknown user ${userId}`)
+        if (sets.length > 0) appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, new Date().toISOString())
+        return { id: row.id, kind: row.kind, handle: row.handle, displayName: row.display_name, feedUrl: row.feed_url, createdAt: row.created_at, authUserId: row.auth_user_id, feedType: row.feed_type }
+      })
     },
     // Acquisition write seam (Task 4). The two-transaction protocol (spec §1.4)
     // is driven by the acquisition engine: claim commits in its own db.write()

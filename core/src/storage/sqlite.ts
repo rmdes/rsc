@@ -9,6 +9,25 @@ import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSu
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA } from '../logical/schema.ts'
+import { appendJournal } from '../logical/journal.ts'
+
+// --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
+// These source-command methods run only when the source-control plane is wired
+// (RSC_SOURCE_MODEL_V2 on; server.ts builds `sources` only then), so the journal
+// effects below never fire in flag-off production. Governance/federation/
+// attribution-mode changes advance the SOURCE's policy_generation AND append ONE
+// ordinary in-generation reset — this is appendJournal, NOT reconstructJournal:
+// the journal's own reset_generation gates SSE cursor validity and must not move
+// for a per-source policy change. Active subscription create/remove and local
+// follow append a Personal-membership reset WITHOUT advancing generation. Exactly
+// ONE reset per command; NO source-wide item fan-out (reads recompute from current
+// policy — V3 adds durable fan-out). Replay/no-op/conflict append nothing.
+function journalPolicyReset(raw: Database.Database, now: string): void {
+  appendJournal(raw, { kind: 'reset', changeMask: 'barrier' }, now)
+}
+function advancePolicyGeneration(raw: Database.Database, sourceId: string): void {
+  raw.prepare(`UPDATE remote_sources_v2 SET policy_generation = policy_generation + 1 WHERE id = ?`).run(sourceId)
+}
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -757,6 +776,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       }
       const target = raw.prepare(`SELECT id, handle, display_name FROM users WHERE id = ?`).get(input.targetId) as { id: string; handle: string; display_name: string }
       const result: SubscribeResult = { kind: 'local', created, follow: { kind: 'local', id: target.id, handle: target.handle, displayName: target.display_name } }
+      if (created) journalPolicyReset(raw, input.now) // new Personal-membership edge
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()
@@ -840,6 +860,9 @@ export class SqliteRepository implements Repository, SourceRepository {
         availability: state === 'active' ? 'available' : 'awaiting_review',
       }
       const result: SubscribeResult = { kind: 'source', created, subscription }
+      // A newly created ACTIVE subscription changes Personal membership; a new
+      // pending one is inactive-to-inactive and a re-subscribe writes nothing.
+      if (created && state === 'active') journalPolicyReset(raw, input.now)
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()
@@ -995,7 +1018,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       if (check.kind === 'replay') return check.result
       if (check.kind === 'conflict') return { kind: 'conflict' } as UnsubscribeResult
 
-      const sub = raw.prepare(`SELECT id FROM source_subscriptions_v2 WHERE owner_id = ? AND source_id = ?`).get(input.ownerId, input.sourceId) as { id: string } | undefined
+      const sub = raw.prepare(`SELECT id, state FROM source_subscriptions_v2 WHERE owner_id = ? AND source_id = ?`).get(input.ownerId, input.sourceId) as { id: string; state: SourceSubscriptionState } | undefined
       if (!sub) {
         const result: UnsubscribeResult = { kind: 'unknown' }
         storeCommand(raw, input.command, result, input.now)
@@ -1004,6 +1027,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       raw.prepare(`DELETE FROM source_subscriptions_v2 WHERE id = ?`).run(sub.id)
 
       const result: UnsubscribeResult = { kind: 'removed', sourceRemoved: reapSourceIfOrphaned(raw, input.sourceId) }
+      if (sub.state === 'active') journalPolicyReset(raw, input.now) // active removal changes Personal membership
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()
@@ -1066,6 +1090,8 @@ export class SqliteRepository implements Repository, SourceRepository {
       const source = rowToRemoteSourceV2(row)
       const federation: FederationRelationship = { sourceId: row.id, status: 'approved', provenanceNote: input.note, createdAt: input.now, updatedAt: input.now }
       const result: EstablishFederationResult = { kind: 'established', source, federation }
+      advancePolicyGeneration(raw, row.id) // federation is a source-policy change
+      journalPolicyReset(raw, input.now)
       insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: input.actorKind, action: 'establish_federation', category: input.category, note: input.note, result, now: input.now })
       storeCommand(raw, input.command, result, input.now)
       return result
@@ -1113,6 +1139,16 @@ export class SqliteRepository implements Repository, SourceRepository {
       // — active and pending alike — in the same transaction as the mode change.
       if (attributionMode === 'aggregate' && row.attribution_mode !== 'aggregate') {
         raw.prepare(`UPDATE source_subscriptions_v2 SET state = 'pending_review' WHERE source_id = ? AND state IN ('active', 'pending')`).run(row.id)
+      }
+
+      // Governance, federation, or attribution-mode changes advance this source's
+      // policy generation and append ONE reset (even when several subscriptions
+      // change with it — no fan-out). pause/resume touch only the operation axis:
+      // no reset, generation retained (spec §3.7). patch.federation is set only by
+      // approve/reject/revoke, the genuine federation transitions.
+      if (governance !== row.governance || patch.federation !== undefined || attributionMode !== row.attribution_mode) {
+        advancePolicyGeneration(raw, row.id)
+        journalPolicyReset(raw, input.now)
       }
 
       const source = rowToRemoteSourceV2(updated)
