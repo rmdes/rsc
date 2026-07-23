@@ -173,6 +173,7 @@ RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | `RSC_DB` | no | `./data/rsc.db` | SQLite file path, or `:memory:`. |
 | `RSC_PORT` | no | `8787` | HTTP port core listens on. |
 | `RSC_POLL_SECONDS` | no | `60` | How often remote feeds are polled. |
+| `RSC_SOURCE_MODEL_V2` | no | `off` | v2 source registry — **development only**, `on`/`off` (anything else refuses to boot). See "Source model v2" below before touching it. |
 
 `web/.env`:
 
@@ -518,6 +519,59 @@ feed item as `<source:comments count="N" feedUrl="…"/>`, pointing at:
 | `GET` | `/post/<id>/thread` | The whole conversation (root + all descendants) as JSON. |
 | `PATCH` | `/posts/<id>` | Edit your own local post (session auth required, owner + source=`local` gate). No-op on unchanged content; records edit with prior version retained. |
 | `GET` | `/posts/<id>/revisions` | Edit history for `<id>`; returns `{ post, revisions }` (prior versions oldest→newest, then the current post). Public; 404 if unknown. |
+
+## Source model v2 (`RSC_SOURCE_MODEL_V2`) — development only
+
+A second, governance-aware source registry lives behind
+`RSC_SOURCE_MODEL_V2`. It defaults to `off`, it is `off` on every live
+instance, and **it should stay off until the migration ships**. Core refuses to
+boot on any value other than `on` or `off`.
+
+**What `on` actually does — read this before flipping it:**
+
+- **Development only.** There is no migration yet. Nothing converts today's
+  follows/remote-user rows into the v2 tables.
+- **It uses the EMPTY v2 tables.** `remote_sources_v2`,
+  `source_subscriptions_v2`, `federation_relationships_v2`, `source_audit_v2`
+  and `command_ledger_v2` start empty and stay empty until you subscribe *under
+  the flag*. On an instance with real data, every following surface will simply
+  look empty.
+- **It does NOT mirror legacy writes.** Turning it on does not copy anything in,
+  and anything you create while it is on is not copied back out when you turn it
+  off. The two models coexist without syncing.
+- **Web has no flag of its own.** It discovers the state per request from core's
+  `GET /capabilities` (`{"sourceModelV2": true|false}`) and switches the home,
+  following and `/admin/feeds` surfaces accordingly. Do not add a web-side
+  environment variable — a second switch could disagree with the routes core
+  actually serves.
+
+### Deploy ordering (core first, always)
+
+**Deploy core — the build that serves `/capabilities` — to ALL instances before
+promoting the new web.** If web cannot reach `/capabilities` (old core, 404,
+network error), `getCapabilities` returns `{sourceModelV2:false}` and that
+request renders the **legacy** path: never a broken page, never worse than
+today's behaviour. It is not cached as a failure, so the very next request
+re-probes and picks the answer up as soon as core is there. Web-first is not
+fatal, but it means every page silently sits on legacy until core catches up —
+so do core first and the window never exists.
+
+### Flipping the flag requires restarting web too
+
+Web memoizes the **first successful** capability reading for the lifetime of the
+web process. So:
+
+```bash
+# core-side flag change (dev):
+docker compose up -d core web      # BOTH — core alone leaves web on the stale branch
+```
+
+An operator who flips `RSC_SOURCE_MODEL_V2` on core and restarts only core gets
+a web process still serving the branch it read at startup — the pages look
+unchanged (or, worse, v2 markup posting to a legacy core) until web is
+restarted. Same rule on Cloudron/prod: restart the web container after any core
+flag change. (Only *successes* are memoized — a failed probe is retried on the
+next request, so a web that started while core was down recovers on its own.)
 
 ## Deployment note
 
