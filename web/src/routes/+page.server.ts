@@ -19,7 +19,7 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 	const tab = resolveTab(url.searchParams.get('tab'), me)
 	try {
 		// followIds feed the live lens only, and LiveTimeline mounts on the first page only.
-		const timelineP = getTimeline(fetch, { before, ...tabFilter(tab, me?.user.handle) })
+		const timelineP = getTimeline(fetch, { before, topLevel: true, ...tabFilter(tab, me?.user.handle) })
 		const followingP = tab === 'personal' && isFirstPage && me ? getFollowing(fetch, me.user.handle) : Promise.resolve(null)
 		// The capability rides ALONGSIDE the legacy calls, never ahead of them:
 		// getCapabilities never rejects, so a core without /capabilities simply

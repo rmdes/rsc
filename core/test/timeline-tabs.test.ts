@@ -11,6 +11,8 @@ import { makeAuth } from './auth-helper.ts'
 describe('timeline tabs', () => {
   let repo: SqliteRepository
   let alice: string
+  let webfeedAuthorId: string
+  let instanceAuthorId: string
   let localPostId: string
   let webfeedPostId: string
   let instancePostId: string
@@ -21,6 +23,8 @@ describe('timeline tabs', () => {
     alice = a.id
     const webfeed = await repo.createRemoteUser({ handle: 'feed', displayName: 'Feed', feedUrl: 'https://ex.com/feed.xml', feedType: 'webfeed' })
     const instance = await repo.createRemoteUser({ handle: 'peer', displayName: 'Peer', feedUrl: 'https://peer.ex/feed.xml', feedType: 'instance' })
+    webfeedAuthorId = webfeed.id
+    instanceAuthorId = instance.id
 
     localPostId = 'local-1'
     webfeedPostId = 'webfeed-1'
@@ -74,5 +78,37 @@ describe('timeline tabs', () => {
   it('getThread entries carry author.feedType (second select site)', async () => {
     const thread = await repo.getThread(webfeedPostId)
     expect(thread[0].author.feedType).toBe('webfeed')
+  })
+
+  it('top_level=1 composes independently with Local, Federated, Personal, and Public — excludes a resolved reply, keeps an eligible unresolved reply', async () => {
+    const bus = createEventBus()
+    const app = createApp({ service: createService(repo, bus), bus, token: 'secret', auth: makeAuth(repo), users: repo })
+    const idsOf = (json: { timeline: Array<{ id: string }> }) => json.timeline.map((e) => e.id)
+
+    // Local: reply/orphan authored locally (alice).
+    await repo.insertPost({ id: 'local-reply', authorId: alice, source: 'local', guid: 'g-local-reply', title: null, content: 'x', url: null, inReplyTo: localPostId, inReplyToPostId: localPostId, threadRootId: localPostId, publishedAt: '2026-01-05T00:00:00.000Z', createdAt: '2026-01-05T00:00:00.000Z' })
+    await repo.insertPost({ id: 'local-orphan', authorId: alice, source: 'local', guid: 'g-local-orphan', title: null, content: 'x', url: null, inReplyTo: 'https://missing.example/a', inReplyToPostId: null, threadRootId: null, publishedAt: '2026-01-06T00:00:00.000Z', createdAt: '2026-01-06T00:00:00.000Z' })
+    const local = await (await app.request('/timeline?top_level=1&source=local')).json()
+    expect(idsOf(local)).toEqual(expect.arrayContaining([localPostId, 'local-orphan']))
+    expect(idsOf(local)).not.toEqual(expect.arrayContaining(['local-reply']))
+
+    // Federated: reply/orphan authored by the instance user.
+    await repo.insertPost({ id: 'fed-reply', authorId: instanceAuthorId, source: 'remote', guid: 'g-fed-reply', title: null, content: 'x', url: null, inReplyTo: instancePostId, inReplyToPostId: instancePostId, threadRootId: instancePostId, publishedAt: '2026-01-07T00:00:00.000Z', createdAt: '2026-01-07T00:00:00.000Z' })
+    await repo.insertPost({ id: 'fed-orphan', authorId: instanceAuthorId, source: 'remote', guid: 'g-fed-orphan', title: null, content: 'x', url: null, inReplyTo: 'https://missing.example/b', inReplyToPostId: null, threadRootId: null, publishedAt: '2026-01-08T00:00:00.000Z', createdAt: '2026-01-08T00:00:00.000Z' })
+    const fed = await (await app.request('/timeline?top_level=1&feed_type=instance')).json()
+    expect(idsOf(fed)).toEqual(expect.arrayContaining([instancePostId, 'fed-orphan']))
+    expect(idsOf(fed)).not.toEqual(expect.arrayContaining(['fed-reply']))
+
+    // Personal: reply/orphan authored by the followed webfeed user.
+    await repo.insertPost({ id: 'pers-reply', authorId: webfeedAuthorId, source: 'remote', guid: 'g-pers-reply', title: null, content: 'x', url: null, inReplyTo: webfeedPostId, inReplyToPostId: webfeedPostId, threadRootId: webfeedPostId, publishedAt: '2026-01-09T00:00:00.000Z', createdAt: '2026-01-09T00:00:00.000Z' })
+    await repo.insertPost({ id: 'pers-orphan', authorId: webfeedAuthorId, source: 'remote', guid: 'g-pers-orphan', title: null, content: 'x', url: null, inReplyTo: 'https://missing.example/c', inReplyToPostId: null, threadRootId: null, publishedAt: '2026-01-10T00:00:00.000Z', createdAt: '2026-01-10T00:00:00.000Z' })
+    const personal = await (await app.request('/timeline?top_level=1&followed_by=alice')).json()
+    expect(idsOf(personal)).toEqual(expect.arrayContaining([webfeedPostId, 'pers-orphan']))
+    expect(idsOf(personal)).not.toEqual(expect.arrayContaining(['pers-reply']))
+
+    // Public: no filter — sees everything, still excludes every resolved reply and keeps every orphan.
+    const pub = await (await app.request('/timeline?top_level=1')).json()
+    expect(idsOf(pub)).toEqual(expect.arrayContaining(['local-orphan', 'fed-orphan', 'pers-orphan']))
+    expect(idsOf(pub)).not.toEqual(expect.arrayContaining(['local-reply', 'fed-reply', 'pers-reply']))
   })
 })

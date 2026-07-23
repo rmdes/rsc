@@ -14,7 +14,7 @@ const entry = (id: string, content: string) => ({
 
 test('load returns the first timeline page with isFirstPage and nextCursor', async () => {
 	const fetch = vi.fn(
-		async () => new Response(JSON.stringify({ timeline: [entry('p1', 'hello')], nextCursor: 'ts~p1' }), { status: 200 })
+		async (..._args: unknown[]) => new Response(JSON.stringify({ timeline: [entry('p1', 'hello')], nextCursor: 'ts~p1' }), { status: 200 })
 	)
 	const result = (await load({ fetch, url: new URL('http://x/'), parent: async () => ({ me: null }) } as never)) as {
 		timeline: TimelineEntry[]
@@ -26,6 +26,7 @@ test('load returns the first timeline page with isFirstPage and nextCursor', asy
 	expect(result.nextCursor).toBe('ts~p1')
 	expect(result.isFirstPage).toBe(true)
 	expect(result.tab).toBe('public')
+	expect(String(fetch.mock.calls[0][0])).toContain('top_level=1')
 })
 
 test('load passes ?before= through to the core call and clears isFirstPage', async () => {
@@ -38,6 +39,7 @@ test('load passes ?before= through to the core call and clears isFirstPage', asy
 		tab: string
 	}
 	expect(String(fetch.mock.calls[0][0])).toContain('before=ts~p9')
+	expect(String(fetch.mock.calls[0][0])).toContain('top_level=1')
 	expect(result.isFirstPage).toBe(false)
 	expect(result.nextCursor).toBeNull()
 	expect(result.tab).toBe('public')
@@ -76,6 +78,7 @@ test('registered default resolves to personal: followed_by filter, self-first fo
 	}
 	const calls = fetch.mock.calls.map((c) => String(c[0]))
 	expect(calls.some((s) => s.includes('followed_by=alice'))).toBe(true)
+	expect(calls.some((s) => s.includes('top_level=1'))).toBe(true)
 	expect(result.tab).toBe('personal')
 	expect(result.followIds).toEqual(['me1', 'f1'])
 })
@@ -87,7 +90,9 @@ test('paginated personal load skips the follows fetch', async () => {
 		url: new URL('http://x/?tab=personal&before=ts~p9'),
 		parent: async () => ({ me: meOf('alice') })
 	} as never)) as { tab: string; followIds?: string[] }
-	expect(fetch.mock.calls.map((c) => String(c[0])).some((s) => s.includes('/follows'))).toBe(false)
+	const calls = fetch.mock.calls.map((c) => String(c[0]))
+	expect(calls.some((s) => s.includes('/follows'))).toBe(false)
+	expect(calls.some((s) => s.includes('top_level=1'))).toBe(true)
 	expect(result.tab).toBe('personal')
 	expect(result.followIds).toBeUndefined()
 })
@@ -95,11 +100,24 @@ test('paginated personal load skips the follows fetch', async () => {
 test('explicit ?tab=local filters by source; guest-on-personal keeps the public firehose', async () => {
 	const fetch = vi.fn(async (..._args: unknown[]) => new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 }))
 	const local = (await load({ fetch, url: new URL('http://x/?tab=local'), parent: async () => ({ me: null }) } as never)) as { tab: string }
-	expect(fetch.mock.calls.map((c) => String(c[0])).some((s) => s.includes('source=local'))).toBe(true)
+	const localCalls = fetch.mock.calls.map((c) => String(c[0]))
+	expect(localCalls.some((s) => s.includes('source=local'))).toBe(true)
+	expect(localCalls.some((s) => s.includes('top_level=1'))).toBe(true)
 	expect(local.tab).toBe('local')
 	const guest = (await load({ fetch, url: new URL('http://x/?tab=personal'), parent: async () => ({ me: null }) } as never)) as { tab: string }
 	expect(guest.tab).toBe('public')
-	expect(fetch.mock.calls.map((c) => String(c[0])).some((s) => s.includes('followed_by'))).toBe(false)
+	const allCalls = fetch.mock.calls.map((c) => String(c[0]))
+	expect(allCalls.some((s) => s.includes('followed_by'))).toBe(false)
+	expect(allCalls.some((s) => s.includes('top_level=1'))).toBe(true)
+})
+
+test('explicit ?tab=federated filters by feed_type and requests top-level mode', async () => {
+	const fetch = vi.fn(async (..._args: unknown[]) => new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 }))
+	const result = (await load({ fetch, url: new URL('http://x/?tab=federated'), parent: async () => ({ me: null }) } as never)) as { tab: string }
+	const calls = fetch.mock.calls.map((c) => String(c[0]))
+	expect(calls.some((s) => s.includes('feed_type=instance'))).toBe(true)
+	expect(calls.some((s) => s.includes('top_level=1'))).toBe(true)
+	expect(result.tab).toBe('federated')
 })
 
 // --- v2 source registry (RSC_SOURCE_MODEL_V2) -------------------------------

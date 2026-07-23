@@ -210,6 +210,12 @@ test('getTimeline threads source and feed_type params', async () => {
 	expect(String((f.mock.calls[1] as unknown as [string])[0])).toContain('feed_type=instance')
 })
 
+test('getTimeline sends top_level=1 only when requested', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 }))
+	await getTimeline(f as unknown as typeof fetch, { topLevel: true })
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/timeline?top_level=1')
+})
+
 test('subscribeToFeed posts url+type and returns user/followed', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'u1', handle: 'feed', displayName: 'F', kind: 'remote' }, followed: true }), { status: 201 }))
 	const out = await subscribeToFeed(f as unknown as typeof fetch, { url: 'https://ex.com/f.xml', type: 'webfeed' })

@@ -105,6 +105,9 @@ test('following load lowercases the handle, computes isOwner, and instance-filte
 	expect(owner.handle).toBe('alice')
 	expect(owner.isOwner).toBe(true)
 	expect(owner.followIds).toEqual(['f1'])
+	const timelineCall = fetch.mock.calls.map((c) => String(c[0])).find((s) => s.includes('/timeline'))
+	expect(timelineCall).toContain('followed_by=alice')
+	expect(timelineCall).toContain('top_level=1')
 	const visitor = (await load({ fetch, params: { handle: 'bob' }, url: new URL('http://x/u/bob/following'), parent: async () => ({ me }) } as never)) as { isOwner: boolean }
 	expect(visitor.isOwner).toBe(false)
 })

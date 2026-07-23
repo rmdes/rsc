@@ -7,6 +7,7 @@ import type { UserDirectory } from './auth.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
+import type { TimelineFilter } from '../domain/types.ts'
 import { renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, renderFirehoseRss, emittedGuid } from '../domain/feed.ts'
 import { buildFollowingOpml, importFollowingOpml, localHandleForUrl } from '../domain/opml.ts'
 import { checkCallbackUrl } from '../domain/push-guard.ts'
@@ -702,7 +703,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (sourceRaw !== undefined && sourceRaw !== 'local') return c.json({ error: 'source invalid' }, 400)
     const feedTypeRaw = c.req.query('feed_type')
     if (feedTypeRaw !== undefined && feedTypeRaw !== 'instance') return c.json({ error: 'feed_type invalid' }, 400)
-    let filter: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' } | undefined
+    const topLevelRaw = c.req.query('top_level')
+    if (topLevelRaw !== undefined && topLevelRaw !== '1') return c.json({ error: 'top_level invalid' }, 400)
+    let filter: TimelineFilter | undefined
     if (followedByRaw !== undefined) {
       const u = await resolveUser(followedByRaw)
       if (!u) return c.json({ error: 'unknown user' }, 404)
@@ -715,10 +718,16 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (sourceRaw === 'local' || feedTypeRaw === 'instance') {
       filter = { ...filter, ...(sourceRaw === 'local' ? { source: 'local' as const } : {}), ...(feedTypeRaw === 'instance' ? { feedType: 'instance' as const } : {}) }
     }
+    // Include topLevel only when explicitly requested.
+    filter = { ...filter, ...(topLevelRaw === '1' ? { topLevel: true as const } : {}) }
     const entries = await service.getTimeline(limit, before, filter)
-    // Wedge shading needs to know, per page, which posts have replies — one
-    // grouped query on resolved ids (resolve-once: never re-matching refs).
-    const counts = await service.countRepliesByPostIds(entries.map((e) => e.id))
+    // Wedge shading needs to know, per page, which posts have replies. Root-only
+    // mode reports the whole conversation subtree (countThreadRepliesByRootIds);
+    // the default mode keeps direct-child counts (countRepliesByPostIds) — one
+    // grouped query either way (resolve-once: never re-matching refs).
+    const counts = topLevelRaw === '1'
+      ? await service.countThreadRepliesByRootIds(entries.map((e) => e.id))
+      : await service.countRepliesByPostIds(entries.map((e) => e.id))
     const timeline = entries.map((e) => ({ ...e, replyCount: counts.get(e.id) ?? 0 }))
     const last = timeline[timeline.length - 1]
     // Known accepted edge: an exactly-limit final page yields a non-null cursor

@@ -65,6 +65,28 @@ test('reply-to-reply threads to the TOP root', async () => {
   expect(t.thread).toHaveLength(3)
 })
 
+test('GET /timeline?top_level=1 keeps roots and honest orphans, excludes resolved replies, and reports conversation totals', async () => {
+  const { app, repo } = await makeApp()
+  const alice = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+  const base = { authorId: alice.id, source: 'local' as const, title: null, url: null }
+  const rootId = 'root'
+  const replyId = 'reply'
+  const nestedId = 'nested'
+  const orphanId = 'orphan'
+  await repo.insertPost({ ...base, id: rootId, guid: 'g-root', content: 'root', publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  await repo.insertPost({ ...base, id: replyId, guid: 'g-reply', content: 'reply', inReplyTo: rootId, inReplyToPostId: rootId, threadRootId: rootId, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z' })
+  await repo.insertPost({ ...base, id: nestedId, guid: 'g-nested', content: 'nested', inReplyTo: replyId, inReplyToPostId: replyId, threadRootId: rootId, publishedAt: '2026-01-03T00:00:00.000Z', createdAt: '2026-01-03T00:00:00.000Z' })
+  await repo.insertPost({ ...base, id: orphanId, guid: 'g-orphan', content: 'orphan', inReplyTo: 'https://missing.example/post', inReplyToPostId: null, threadRootId: null, publishedAt: '2026-01-04T00:00:00.000Z', createdAt: '2026-01-04T00:00:00.000Z' })
+
+  const top = await app.request('/timeline?top_level=1')
+  expect(top.status).toBe(200)
+  const body = (await top.json()) as { timeline: Array<{ id: string; replyCount: number }> }
+  expect(body.timeline.map((e) => e.id)).toEqual(expect.arrayContaining([rootId, orphanId]))
+  expect(body.timeline.map((e) => e.id)).not.toEqual(expect.arrayContaining([replyId, nestedId]))
+  expect(body.timeline.find((e) => e.id === rootId)?.replyCount).toBe(2)
+  expect((await app.request('/timeline?top_level=true')).status).toBe(400)
+})
+
 test('comments.xml serves direct replies; feed.xml advertises source:comments', async () => {
   const { app, repo } = await makeApp({ publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false })
   const aliceCookie = await registeredSession(app, 'alice@test.example', repo)

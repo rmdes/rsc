@@ -40,7 +40,7 @@ export const load: PageServerLoad = async ({ fetch, params, url, parent, cookies
 		// the already-in-flight legacy result standing (legacy is exactly what
 		// the flag off is) and can never turn into coreDown.
 		const [{ timeline, nextCursor }, following, cap] = await Promise.all([
-			getTimeline(fetch, { before, followedBy: handle }),
+			getTimeline(fetch, { before, followedBy: handle, topLevel: true }),
 			getFollowing(fetch, handle),
 			getCapabilities(fetch)
 		])
