@@ -379,17 +379,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       // Required for set_attribution_mode, optional-but-valid everywhere else.
       if ((attributionMode !== undefined || action === 'set_attribution_mode') && !isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
 
+      // The command runs FIRST, so the ledger answers before anything else: a
+      // replayed command id returns its stored result (spec §11) instead of
+      // being re-judged against state its own first run already changed.
       const id = c.req.param('id') ?? ''
-      const detail = await v2repo.getSourceDetail(id)
-      if (!detail) return c.json({ error: 'unknown source' }, 404)
-      // The repository collapses an illegal transition and an idempotency
-      // conflict into one {kind:'conflict'}; the exported matrix is what tells
-      // them apart, so ask it here. A concurrent transition between this read
-      // and the command still lands as 'idempotency conflict' — a mislabel in a
-      // race, never a wrong write (the domain re-checks inside its transaction).
-      const axes = { operation: detail.source.operation, governance: detail.source.governance, federation: detail.federationStatus }
-      if (SOURCE_TRANSITIONS[action](axes) === null) return c.json({ error: 'invalid transition' }, 409)
-
       const result = await v2.transition({
         sourceId: id, action, category: isAuditCategory(category) ? category : null,
         note: typeof note === 'string' ? note : null,
@@ -398,6 +391,16 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       })
       if (result.kind === 'applied') return c.json({ source: result.source, audit: result.audit }, 200)
       if (result.kind === 'unknown') return c.json({ error: 'unknown source' }, 404)
+      // The repository collapses an illegal transition and an idempotency
+      // conflict into one {kind:'conflict'}; the exported matrix is what tells
+      // them apart, so ask it here — only now that a replay is ruled out. A
+      // concurrent transition between the command and this read still lands as
+      // 'idempotency conflict' — a mislabel in a race, never a wrong write (the
+      // conflict already wrote nothing).
+      const detail = await v2repo.getSourceDetail(id)
+      if (!detail) return c.json({ error: 'unknown source' }, 404)
+      const axes = { operation: detail.source.operation, governance: detail.source.governance, federation: detail.federationStatus }
+      if (SOURCE_TRANSITIONS[action](axes) === null) return c.json({ error: 'invalid transition' }, 409)
       return c.json(IDEMPOTENCY_CONFLICT, 409)
     })
   }

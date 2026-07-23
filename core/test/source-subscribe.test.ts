@@ -76,6 +76,29 @@ test('subscribeByUrl follows a local account for its canonical feed URL, ledgere
   repo.close()
 })
 
+test('the local-follow branch fingerprints the NORMALIZED url, so two spellings of one local feed replay', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const target = await repo.createLocalUser({ handle: 'erin', displayName: 'Erin' })
+  const owner = await repo.createLocalUser({ handle: 'frank', displayName: 'Frank' })
+  // A public URL that is not already lowercase: the local branch matches it
+  // verbatim while a lowercase spelling of the same feed falls through to the
+  // remote branch, which normalizes. The frozen contract pins ONE fingerprint
+  // for both — [operation, normalizedUrl] — so the second call replays.
+  const publicLookup: LookupFn = async () => [{ address: '203.0.113.5' }]
+  const service = createSourceService(repo, 'https://Cast.Example', publicLookup)
+
+  const first = await service.subscribeByUrl(owner, 'https://Cast.Example/users/erin/feed.xml', 'l1')
+  expect(first).toEqual({ kind: 'local', created: true, follow: { kind: 'local', id: target.id, handle: 'erin', displayName: 'Erin' } })
+
+  const replay = await service.subscribeByUrl(owner, 'https://cast.example/users/erin/feed.xml', 'l1')
+  expect(replay).toEqual(first)
+  expect(countRows(raw, 'command_ledger_v2')).toBe(1)
+  expect(countRows(raw, 'remote_sources_v2')).toBe(0)
+
+  repo.close()
+})
+
 // --- Step 2: remote resolution and cap serialization ---
 
 test('a new remote URL creates single_publisher + enabled + allowed + federation none + user_subscription', async () => {
@@ -172,6 +195,41 @@ test('a blocked target returns the same generic unavailable result as a never-ex
   const result = await service.subscribeByUrl(owner, url, 'c1')
   expect(result).toEqual({ kind: 'unavailable' })
   expect(countRows(raw, 'source_subscriptions_v2')).toBe(0)
+
+  repo.close()
+})
+
+test('re-subscribing over a pending_review row reports pending_review, agreeing with ownerFollowing', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const admin = await repo.createLocalUser({ handle: 'boss', displayName: 'Boss' })
+  const owner = await repo.createLocalUser({ handle: 'owner7', displayName: 'Owner7' })
+  const service = createSourceService(repo, PUBLIC_URL)
+  const url = 'https://203.0.113.30/feed'
+
+  const subscribed = await service.subscribeByUrl(owner, url, 'p1')
+  expect(subscribed).toMatchObject({ kind: 'source', created: true, subscription: { subscriptionState: 'active', availability: 'available' } })
+  const sourceId = (subscribed as { subscription: { sourceId: string } }).subscription.sourceId
+
+  const setMode = (attributionMode: 'aggregate' | 'single_publisher', commandId: string) => service.transition({
+    sourceId, action: 'set_attribution_mode', attributionMode, category: 'operator_policy',
+    note: null, commandId, actorId: admin.id, actorKind: 'administrator',
+  })
+  expect(await setMode('aggregate', 'm1')).toMatchObject({ kind: 'applied' })
+  // The REVERSE conversion clears nothing — pending_review is terminal in V1.
+  expect(await setMode('single_publisher', 'm2')).toMatchObject({ kind: 'applied' })
+  const stored = raw.prepare(`SELECT state FROM source_subscriptions_v2 WHERE source_id = ?`).get(sourceId) as { state: string }
+  expect(stored.state).toBe('pending_review')
+
+  // Re-subscribing writes nothing, so it must not claim the row is active.
+  const again = await service.subscribeByUrl(owner, url, 'p2')
+  expect(again).toMatchObject({ kind: 'source', created: false, subscription: { subscriptionState: 'pending_review', availability: 'awaiting_review' } })
+  expect(stored.state).toBe('pending_review')
+
+  // The two owner projections must agree, and public still excludes it.
+  const following = await service.ownerFollowing(owner.id)
+  expect(following.sourceSubscriptions).toEqual([(again as { subscription: unknown }).subscription])
+  expect(await service.publicFollowing(owner.id)).toEqual([])
 
   repo.close()
 })

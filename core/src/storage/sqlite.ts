@@ -5,7 +5,7 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult } from '../domain/types.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 
@@ -770,10 +770,13 @@ export class SqliteRepository implements Repository, SourceRepository {
         ? (raw.prepare(`SELECT * FROM source_subscriptions_v2 WHERE owner_id = ? AND source_id = ?`).get(input.ownerId, source.id) as SourceSubscriptionV2Row | undefined)
         : undefined
 
-      let state: 'active' | 'pending'
+      let state: SourceSubscriptionState
       let created: boolean
       if (existingSub) {
-        state = existingSub.state === 'pending' ? 'pending' : 'active'
+        // Report the state that is STORED — re-subscribing writes nothing, so
+        // claiming 'active' over a pending_review row would contradict
+        // ownerFollowing. pending_review is terminal in V1; V2 owns its exit.
+        state = existingSub.state
         created = false
       } else {
         // Cap gates every NEW subscription (and the source it may create) —
@@ -808,7 +811,9 @@ export class SqliteRepository implements Repository, SourceRepository {
         url: source.canonical_url,
         attributionMode: source.attribution_mode,
         subscriptionState: state,
-        availability: state === 'pending' ? 'awaiting_review' : 'available',
+        // Same rule as ownerFollowing: only 'active' is available; pending and
+        // pending_review are awaiting_review regardless of governance (rev 5).
+        availability: state === 'active' ? 'available' : 'awaiting_review',
       }
       const result: SubscribeResult = { kind: 'source', created, subscription }
       storeCommand(raw, input.command, result, input.now)
@@ -870,8 +875,8 @@ export class SqliteRepository implements Repository, SourceRepository {
           : undefined
 
         if (existingSub) {
-          if (existingSub.state === 'pending') pending++
-          else active++ // pending_review also projects into the active bucket (matches resolveAndSubscribeSource)
+          if (existingSub.state === 'active') active++
+          else pending++ // pending and pending_review are both pending-ish (matches resolveAndSubscribeSource)
           continue
         }
 

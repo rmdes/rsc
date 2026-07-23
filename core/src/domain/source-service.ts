@@ -78,7 +78,10 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
       if (localHandle) {
         const target = await repo.getUserByHandle(localHandle)
         if (target && target.kind === 'local') {
-          const command = { actorScope: 'owner' as const, actorId: owner.id, commandId, requestFingerprint: fingerprintRequest([OPERATION, url]) }
+          // The frozen contract pins the subscribe fingerprint as
+          // [operation, normalizedUrl] — same as the remote branch below, so
+          // two spellings of one local feed URL replay instead of conflicting.
+          const command = { actorScope: 'owner' as const, actorId: owner.id, commandId, requestFingerprint: fingerprintRequest([OPERATION, normalizeSourceUrl(url)]) }
           return repo.followLocalAccount({ command, ownerId: owner.id, targetId: target.id, now })
         }
       }

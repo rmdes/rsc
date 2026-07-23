@@ -244,6 +244,51 @@ test('importOpml: mixed local/remote import is ledgered, idempotent, and conflic
   repo.close()
 })
 
+// The import command re-implements the subscribe branches as counters, so each
+// branch is pinned here through the import path too — a swapped counter is
+// exactly the drift a copy invites.
+test('importOpml buckets blocked as unavailable, aggregate/federated as notSubscribable, and pending_review as pending', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const owner = await repo.createLocalUser({ handle: 'bucketer', displayName: 'Bucketer' })
+  const service = createSourceService(repo, 'https://cast.example')
+  const at = '2026-01-01T00:00:00.000Z'
+  const insertSource = (canonicalUrl: string, attributionMode: string, governance: string): string => {
+    const id = randomUUID()
+    raw.prepare(
+      `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+       VALUES (?, ?, ?, 'enabled', ?, 'user_subscription', NULL, 0, ?)`,
+    ).run(id, canonicalUrl, attributionMode, governance, at)
+    return id
+  }
+  const insertSub = (sourceId: string, state: string): void => {
+    raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(randomUUID(), owner.id, sourceId, state, at)
+  }
+
+  insertSource('https://203.0.113.80/blocked', 'single_publisher', 'blocked')
+  insertSource('https://203.0.113.81/aggregate', 'aggregate', 'allowed')
+  const federated = insertSource('https://203.0.113.82/federated', 'single_publisher', 'allowed')
+  raw.prepare(`INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, 'approved', NULL, ?, ?)`).run(federated, at, at)
+  insertSub(insertSource('https://203.0.113.83/review', 'single_publisher', 'allowed'), 'pending_review')
+  insertSub(insertSource('https://203.0.113.84/active', 'single_publisher', 'allowed'), 'active')
+
+  const xml = `<opml version="2.0"><body>
+    <outline type="rss" xmlUrl="https://203.0.113.80/blocked"/>
+    <outline type="rss" xmlUrl="https://203.0.113.81/aggregate"/>
+    <outline type="rss" xmlUrl="https://203.0.113.82/federated"/>
+    <outline type="rss" xmlUrl="https://203.0.113.83/review"/>
+    <outline type="rss" xmlUrl="https://203.0.113.84/active"/>
+  </body></opml>`
+
+  expect(await service.importOpml(owner, xml, 'import-3')).toEqual({
+    localFollowed: 0, active: 1, pending: 1, unavailable: 1, notSubscribable: 2, capSkipped: 0,
+  })
+  expect(countRows(raw, 'source_subscriptions_v2')).toBe(2) // nothing new was written
+
+  repo.close()
+})
+
 test('importOpml commits what fits when the cap is hit mid-import and reports capSkipped', async () => {
   const repo = await createSqliteRepository(':memory:')
   const owner = await repo.createLocalUser({ handle: 'capimporter', displayName: 'CapImporter' })

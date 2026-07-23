@@ -233,6 +233,34 @@ test('POST /admin/sources/:id/:action drives the transition matrix and separates
   repo.close()
 })
 
+test('replaying a SUCCESSFUL transition returns the stored result, never invalid transition', async () => {
+  const { app, repo, cookie } = await adminApp()
+
+  // Each action's own success makes the cell illegal a second time, so the
+  // matrix pre-check would refuse the replay if it ran before the ledger —
+  // spec §11: repeating an ID returns the original result, no second mutation.
+  for (const [action, body] of [
+    ['pause', {}],
+    ['quarantine', { category: 'spam' }],
+    ['block', { category: 'abuse' }],
+  ] as const) {
+    const id = insertSourceRow(repo, { canonicalUrl: `https://203.0.113.9${action.length}/${action}.xml` })
+    const act = () => app.request(`/admin/sources/${id}/${action}`, post({ cookie }, { ...body, commandId: `replay-${action}` }))
+
+    const first = await act()
+    expect([action, first.status]).toEqual([action, 200])
+    const firstJson = await first.json()
+
+    const replay = await act()
+    expect([action, replay.status]).toEqual([action, 200])
+    expect(await replay.json()).toEqual(firstJson)
+
+    const { n } = repo.raw.prepare(`SELECT count(*) AS n FROM source_audit_v2 WHERE source_id = ?`).get(id) as { n: number }
+    expect([action, n]).toEqual([action, 1])
+  }
+  repo.close()
+})
+
 test('an admin mutation is reachable only under the /admin/* gate — the ops token cannot moderate', async () => {
   const { app, repo } = await makeApp()
   const id = insertSourceRow(repo, { canonicalUrl: 'https://203.0.113.80/f.xml' })
