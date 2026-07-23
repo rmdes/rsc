@@ -689,6 +689,52 @@ const MIGRATIONS: string[][] = [
     `CREATE TABLE instance_settings (key text PRIMARY KEY, value text)`,
     `INSERT INTO instance_settings (key, value) VALUES ('max_subs_per_user', '500')`,
   ],
+  [
+    // v2 source-control plane (RSC_SOURCE_MODEL_V2, dormant): nothing reads
+    // or writes these tables yet. The SQL CHECKs are deliberately WIDER than
+    // the V1 TS enums in domain/types.ts (source_audit_v2.category carries
+    // all nine foundation categories, actor_kind carries operator_token,
+    // command_ledger_v2.actor_scope carries ops) — SQLite cannot widen a
+    // CHECK without a table rebuild, so the vocabulary is pinned wide at
+    // creation (rev 5, V4 §10 pin; lockstep amendment in V3 §1.2).
+    `CREATE TABLE remote_sources_v2 (
+      id TEXT PRIMARY KEY, canonical_url TEXT NOT NULL UNIQUE,
+      attribution_mode TEXT NOT NULL CHECK(attribution_mode IN ('single_publisher','aggregate')),
+      operation TEXT NOT NULL CHECK(operation IN ('enabled','paused')),
+      governance TEXT NOT NULL CHECK(governance IN ('allowed','quarantined','blocked')),
+      provenance TEXT NOT NULL CHECK(provenance IN ('user_subscription','opml','admin_federation','origin_verification','migration')),
+      provenance_note TEXT, admin_retained INTEGER NOT NULL DEFAULT 0 CHECK(admin_retained IN (0,1)),
+      created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE federation_relationships_v2 (
+      source_id TEXT PRIMARY KEY REFERENCES remote_sources_v2(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('pending','approved')),
+      provenance_note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE source_subscriptions_v2 (
+      id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      source_id TEXT NOT NULL REFERENCES remote_sources_v2(id) ON DELETE CASCADE,
+      state TEXT NOT NULL CHECK(state IN ('active','pending','pending_review')),
+      created_at TEXT NOT NULL, UNIQUE(owner_id,source_id)
+    )`,
+    `CREATE TABLE source_audit_v2 (
+      id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES remote_sources_v2(id) ON DELETE CASCADE,
+      command_id TEXT NOT NULL, actor_id TEXT,
+      actor_kind TEXT NOT NULL CHECK(actor_kind IN ('administrator','operator_token','system')),
+      action TEXT NOT NULL,
+      category TEXT CHECK(category IS NULL OR category IN ('spam','abuse','illegal_content','compromised_source','migration_review','operator_policy','false_positive','remediated','other')),
+      note TEXT, result_json TEXT NOT NULL, created_at TEXT NOT NULL
+    )`,
+    `CREATE TABLE command_ledger_v2 (
+      actor_scope TEXT NOT NULL CHECK(actor_scope IN ('owner','administrator','ops','system')),
+      actor_id TEXT NOT NULL, command_id TEXT NOT NULL, request_fingerprint TEXT NOT NULL,
+      result_json TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY(actor_scope,actor_id,command_id)
+    )`,
+    'CREATE INDEX remote_sources_v2_page ON remote_sources_v2(created_at DESC,id DESC)',
+    'CREATE INDEX source_subscriptions_v2_owner_state ON source_subscriptions_v2(owner_id,state,source_id)',
+    'CREATE INDEX source_audit_v2_page ON source_audit_v2(source_id,created_at DESC,id DESC)',
+  ],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

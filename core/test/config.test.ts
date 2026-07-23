@@ -80,3 +80,10 @@ test('authOpenApi defaults off, accepts on, rejects garbage', () => {
   expect(loadConfig({ ...base, RSC_AUTH_OPENAPI: 'off' }).authOpenApi).toBe(false)
   expect(() => loadConfig({ ...base, RSC_AUTH_OPENAPI: 'maybe' })).toThrow('RSC_AUTH_OPENAPI')
 })
+
+test('RSC_SOURCE_MODEL_V2 defaults off and accepts only on/off', () => {
+  const base = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' }
+  expect(loadConfig(base).sourceModelV2).toBe(false)
+  expect(loadConfig({ ...base, RSC_SOURCE_MODEL_V2: 'on' }).sourceModelV2).toBe(true)
+  expect(() => loadConfig({ ...base, RSC_SOURCE_MODEL_V2: 'yes' })).toThrow('RSC_SOURCE_MODEL_V2')
+})

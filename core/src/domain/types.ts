@@ -85,3 +85,98 @@ export interface PushSubscription {
   expiresAt: string
   createdAt: string
 }
+
+// --- v2 source-control plane (RSC_SOURCE_MODEL_V2, dormant) ---
+
+export type AttributionMode = 'single_publisher' | 'aggregate'
+export type SourceOperation = 'enabled' | 'paused'
+export type SourceGovernance = 'allowed' | 'quarantined' | 'blocked'
+export type FederationStatus = 'pending' | 'approved'
+export type SourceSubscriptionState = 'active' | 'pending' | 'pending_review'
+// TS enum narrowed to V1's emitters; the SQL CHECK keeps all nine foundation
+// values (rev 5, V4 §10 pin). V3/V4 re-add the deferred members.
+export type AuditCategory =
+  | 'spam' | 'abuse' | 'illegal_content' | 'compromised_source'
+  | 'operator_policy' | 'other'
+
+export interface RemoteSource {
+  id: string
+  canonicalUrl: string
+  attributionMode: AttributionMode
+  operation: SourceOperation
+  governance: SourceGovernance
+  provenance: 'user_subscription' | 'opml' | 'admin_federation' | 'origin_verification' | 'migration'
+  provenanceNote: string | null
+  adminRetained: boolean
+  createdAt: string
+}
+export interface FederationRelationship {
+  sourceId: string
+  status: FederationStatus
+  provenanceNote: string | null
+  createdAt: string
+  updatedAt: string
+}
+export interface SourceSubscription {
+  id: string
+  ownerId: string
+  sourceId: string
+  state: SourceSubscriptionState
+  createdAt: string
+}
+export interface CommandEnvelope {
+  // TS narrowed for V1; the SQL CHECK keeps 'ops' (rev 5, V4 §10 pin)
+  actorScope: 'owner' | 'administrator' | 'system'
+  actorId: string
+  commandId: string
+  requestFingerprint: string
+}
+export interface SourceAuditEvent {
+  id: string
+  sourceId: string
+  commandId: string
+  actorId: string | null
+  // TS narrowed for V1; the SQL CHECK keeps 'operator_token' (rev 5, V4 §10 pin)
+  actorKind: 'administrator' | 'system'
+  action: string
+  category: AuditCategory | null
+  note: string | null
+  resultJson: string
+  createdAt: string
+}
+export interface OwnerSourceFollow {
+  sourceId: string
+  url: string
+  attributionMode: AttributionMode
+  subscriptionState: SourceSubscriptionState
+  availability: 'available' | 'awaiting_review' | 'unavailable'
+}
+export interface PublicLocalFollow {
+  kind: 'local'
+  id: string
+  handle: string
+  displayName: string
+}
+export interface PublicSourceFollow {
+  kind: 'source'
+  sourceId: string
+  url: string
+  displayName: string
+}
+export type PublicFollowingEntry = PublicLocalFollow | PublicSourceFollow
+export interface OwnerFollowingView {
+  localFollows: PublicLocalFollow[]
+  sourceSubscriptions: OwnerSourceFollow[]
+}
+export interface Page<T> { items: T[]; nextCursor: string | null }
+export interface SourceSummary {
+  source: RemoteSource
+  federationStatus: 'none' | FederationStatus
+  subscriptionCounts: { active: number; pending: number; pendingReview: number }
+}
+export interface SourceDetail extends SourceSummary {
+  latestAudit: SourceAuditEvent | null
+}
+export type SourceTransitionResult =
+  | {kind:'applied'; source:RemoteSource; audit:SourceAuditEvent}
+  | {kind:'unknown'|'conflict'}
