@@ -4,6 +4,7 @@ import type { DatabaseContext, WriteTx, ReadTx } from './database.ts'
 import { checkFetchHop } from '../domain/push-guard.ts'
 import type { LookupFn } from '../domain/push-guard.ts'
 import { parseFeedWithMeta, mergeDiscovery } from '../domain/ingest.ts'
+import { discoverFeed } from '../domain/discovery.ts'
 import { choosePushTarget } from '../domain/push-in.ts'
 import type {
   AcquisitionReason, AcquisitionRun, ClaimAcquisitionResult, CommitAcquisitionInput,
@@ -106,7 +107,7 @@ export interface Candidate {
 }
 
 export interface ParseResult {
-  adapter: 'rss' | 'atom' | 'jsonfeed'
+  adapter: 'rss' | 'atom' | 'jsonfeed' | 'hfeed'
   candidates: Candidate[]
   findings: AcquisitionFinding[]
   candidateCount: number
@@ -129,11 +130,42 @@ interface RawItem {
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null)
 
-// Wire order per adapter: RSS/Atom document order, JSON Feed array order (spec §1.5).
-// feedsmith yields items in document/array order, so ordinals follow directly.
-function extractRawItems(doc: string): { adapter: ParseResult['adapter']; items: RawItem[] } {
+// h-feed adapter (spec §1.5): a non-feed HTML body that parses as an h-feed with
+// ≥1 h-entry yields candidates in document order. Reuses ingest's discoverFeed
+// (microformats-parser + mf2tojf2) rather than a second microformats path.
+// ponytail: a dateless h-entry uses arrival time as its raw date, so its
+// fingerprint churns across polls; add raw-date passthrough only if that bites.
+function extractHfeed(html: string, pageUrl: string): RawItem[] {
+  const { hentries } = discoverFeed(html, pageUrl)
+  return hentries.map((e): RawItem => ({
+    opaqueId: null,
+    link: e.url,
+    title: e.title,
+    content: e.content,
+    rawDate: e.publishedAt,
+    updatedAt: e.updatedAt,
+    inReplyTo: e.inReplyTo,
+    sourceName: e.sourceName,
+    enclosures: [],
+  }))
+}
+
+// Wire order per adapter: RSS/Atom document order, JSON Feed array order, h-feed
+// document order (spec §1.5). feedsmith yields items in document/array order, so
+// ordinals follow directly. When the body is not a feedsmith-recognized feed we
+// fall back to h-feed (mirroring ingest.ts's feed-first, then-h-feed, then-"no
+// feed found" order); a body that is neither rethrows so acquireSource can
+// terminalize the run instead of crashing the caller.
+function extractRawItems(doc: string, pageUrl: string): { adapter: ParseResult['adapter']; items: RawItem[] } {
   const clean = doc.charCodeAt(0) === 0xfeff ? doc.slice(1) : doc
-  const parsed = parseFeed(clean)
+  let parsed
+  try {
+    parsed = parseFeed(clean)
+  } catch (err) {
+    const items = extractHfeed(clean, pageUrl)
+    if (items.length > 0) return { adapter: 'hfeed', items }
+    throw err
+  }
   if (parsed.format === 'json') {
     const items = (parsed.feed.items ?? []).map((it): RawItem => ({
       opaqueId: str(it.id),
@@ -213,8 +245,8 @@ function canonicalMaterialFor(it: RawItem, keyKind: KeyKind, key: string): Buffe
   return Buffer.from(JSON.stringify(material), 'utf8')
 }
 
-export function parseCandidates(doc: string): ParseResult {
-  const { adapter, items } = extractRawItems(doc)
+export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'): ParseResult {
+  const { adapter, items } = extractRawItems(doc, pageUrl)
   const candidateCount = items.length
   const examined = Math.min(candidateCount, BOUNDS.maxCandidates)
   const omitted = candidateCount - examined
@@ -261,7 +293,7 @@ type FetchResult =
   | { kind: 'not_modified'; effectiveUrl: string; redirects: RedirectObservation[] }
   | { kind: 'ownership_collision'; redirects: RedirectObservation[]; collidedUrl: string }
   | { kind: 'loop'; redirects: RedirectObservation[] }
-  | { kind: 'failure'; category: NonNullable<AdminFetchProjection['failureCategory']>; diagnostic: string }
+  | { kind: 'failure'; category: NonNullable<AdminFetchProjection['failureCategory']>; diagnostic: string; redirects: RedirectObservation[] }
 
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308])
 
@@ -289,7 +321,7 @@ async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<FetchResul
     // SSRF + credential guard at fetch time AND on every hop (V1 security handoff):
     // never assume a stored row's URL was guarded at creation.
     const guard = await checkFetchHop(current, ctx.lookupFn)
-    if (!guard.ok) return { kind: 'failure', category: 'network', diagnostic: `blocked ${guard.reason}` }
+    if (!guard.ok) return { kind: 'failure', category: 'network', diagnostic: `blocked ${guard.reason}`, redirects }
     // alias-ownership: a hop landing on a URL owned by a DIFFERENT source is an
     // ownership collision (a domain outcome, not a scheduler failure — spec §1.6).
     const owner = ctx.aliasOwner(current)
@@ -309,14 +341,14 @@ async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<FetchResul
     try {
       res = await ctx.fetchFn(current, { signal: ctx.signal, headers, redirect: 'manual' })
     } catch (err) {
-      return { kind: 'failure', category: 'network', diagnostic: err instanceof Error ? err.message : 'fetch failed' }
+      return { kind: 'failure', category: 'network', diagnostic: err instanceof Error ? err.message : 'fetch failed', redirects }
     }
 
     if (res.status === 304) return { kind: 'not_modified', effectiveUrl: current, redirects }
 
     const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null
     if (location && REDIRECT_CODES.has(res.status)) {
-      if (hop >= BOUNDS.maxRedirects) return { kind: 'failure', category: 'network', diagnostic: 'too many redirects' }
+      if (hop >= BOUNDS.maxRedirects) return { kind: 'failure', category: 'network', diagnostic: 'too many redirects', redirects }
       const target = new URL(location, current).toString()
       const permanent = res.status === 301 || res.status === 308
       const proven = permanent && chainPermanent
@@ -428,7 +460,12 @@ function markTerminal(tx: WriteTx, input: { runId: string; now: string; outcome:
   ).run(input.outcome, JSON.stringify(input.counters), input.failureCategory, input.diagnostic, input.committedAt, input.now, input.pushCapabilityJson, input.runId)
 }
 
-export function failAcquisition(tx: WriteTx, input: { runId: string; sourceId: string; now: string; outcome: 'operational_failure' | 'cancelled' | 'superseded' | 'policy_rejected'; category: AdminFetchProjection['failureCategory']; diagnostic: string | null }): AcquisitionRun {
+export function failAcquisition(tx: WriteTx, input: { runId: string; sourceId: string; now: string; outcome: 'operational_failure' | 'cancelled' | 'superseded' | 'policy_rejected'; category: AdminFetchProjection['failureCategory']; diagnostic: string | null; redirects?: RedirectObservation[]; findings?: AcquisitionFinding[] }): AcquisitionRun {
+  // A mid-chain rejected hop still retains its redirect evidence (spec §1.6); a
+  // parse failure still records its finding — while committing NO aliases,
+  // observations, jobs, or validators.
+  if (input.redirects?.length) insertRedirects(tx, input.runId, input.redirects)
+  if (input.findings?.length) insertFindings(tx, input.runId, input.findings, input.now)
   markTerminal(tx, { runId: input.runId, now: input.now, outcome: input.outcome, counters: ZERO_COUNTERS, failureCategory: input.category, diagnostic: input.diagnostic, committedAt: null, pushCapabilityJson: null })
   return { runId: input.runId, sourceId: input.sourceId, status: 'terminal', outcome: input.outcome }
 }
@@ -614,7 +651,7 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
       const committedAt = now()
 
       if (result.kind === 'failure') {
-        return db.write((tx) => failAcquisition(tx, { runId, sourceId, now: committedAt, outcome: 'operational_failure', category: result.category, diagnostic: result.diagnostic }))
+        return db.write((tx) => failAcquisition(tx, { runId, sourceId, now: committedAt, outcome: 'operational_failure', category: result.category, diagnostic: result.diagnostic, redirects: result.redirects }))
       }
       if (result.kind === 'loop') {
         return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl: null, validators: null, redirects: result.redirects, aliases: [], observations: [], findings: [{ kind: 'redirect_loop', evidenceJson: JSON.stringify({ hops: result.redirects.length }) }], counters: { ...ZERO_COUNTERS }, outcome: 'operational_failure', pushCapabilityJson: null }))
@@ -633,7 +670,16 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
         return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl: result.effectiveUrl, validators: null, redirects: result.redirects, aliases: [], observations: [], findings: [], counters: { ...ZERO_COUNTERS, bodyLimitExceeded: true }, outcome: 'operational_failure', pushCapabilityJson: null }))
       }
 
-      const parsed = parseCandidates(body)
+      // An unparseable body (not a feed, not an h-feed) must terminalize the run —
+      // never reject and leave it stuck in 'processing'. Redirect evidence is
+      // retained; nothing else is committed.
+      let parsed: ParseResult
+      try {
+        parsed = parseCandidates(body, result.effectiveUrl)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'unparseable body'
+        return db.write((tx) => failAcquisition(tx, { runId, sourceId, now: committedAt, outcome: 'operational_failure', category: 'feed_parse', diagnostic: message, redirects: result.redirects, findings: [{ kind: 'parser_item_error', evidenceJson: JSON.stringify({ message }) }] }))
+      }
       const observations: NewObservationVersion[] = parsed.candidates.map((c) => ({ id: randomUUID(), deliveryId: randomUUID(), wireOrdinal: c.wireOrdinal, arrivalAt: committedAt, fingerprintVersion: BOUNDS.fingerprintVersion, fingerprint: c.fingerprint, canonicalMaterial: c.canonicalMaterial, rawEvidenceJson: c.rawEvidenceJson, normalizedJson: c.normalizedJson }))
 
       // Inert push-capability evidence (spec §1.2): parse-time discovery only —

@@ -96,6 +96,31 @@ test('a body over 5 MiB is rejected without parsing and records bodyLimitExceede
   expect(count(raw, 'observation_versions_v2')).toBe(0)
 })
 
+test('the 5 MiB cap aborts mid-stream and never drains the whole body', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  let pulled = 0
+  let cancelled = false
+  const chunk = new Uint8Array(1024 * 1024) // 1 MiB per chunk
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= 100) { controller.close(); return } // ~100 MiB if fully drained
+      pulled++
+      controller.enqueue(chunk)
+    },
+    cancel() { cancelled = true },
+  })
+  const fetchFn = fakeFetch({ 'https://feed.test/f': () => new Response(stream, { status: 200 }) })
+  const eng = createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => NOW })
+
+  await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+  const counters = JSON.parse((raw.prepare(`SELECT counters_json FROM acquisition_runs_v2 WHERE source_id = 's1'`).get() as { counters_json: string }).counters_json)
+  expect(counters.bodyLimitExceeded).toBe(true)
+  expect(cancelled).toBe(true) // the producer was cancelled — buffer-everything never cancels
+  expect(pulled).toBeLessThan(100) // the stream was NOT fully consumed
+  expect(pulled).toBeLessThanOrEqual(8) // aborted right after crossing 5 MiB, not ~100 MiB later
+})
+
 test('an oversized declared Content-Length is rejected immediately', async () => {
   const { raw, db } = await fresh()
   seedSource(raw, 's1', 'https://feed.test/f')
@@ -150,6 +175,23 @@ test('a redirect hop resolving to a private address is blocked mid-chain', async
 
   await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
   expect(hitInternal).toBe(false)
+})
+
+test('a hop rejected mid-chain still retains its redirect evidence (spec §1.6)', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://public.test/f')
+  const lookupFn: LookupFn = async (h) => (h === 'public.test' ? [{ address: '93.184.216.34' }] : [{ address: '169.254.169.254' }])
+  const fetchFn = fakeFetch({
+    'https://public.test/f': () => redirect(301, 'https://metadata.test/latest'),
+    'https://metadata.test/latest': () => ok('x'),
+  })
+  const eng = createAcquisition({ db, fetchFn, lookupFn, now: () => NOW })
+  const run = await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(run).toMatchObject({ outcome: 'operational_failure' })
+  // the rejected hop's from/to/ordinal/status is persisted even though the fetch failed
+  const hop = raw.prepare(`SELECT ordinal, status, from_evidence, to_evidence FROM redirect_observations_v2`).get() as { ordinal: number; status: number; from_evidence: string; to_evidence: string } | undefined
+  expect(hop).toEqual({ ordinal: 0, status: 301, from_evidence: 'https://public.test/f', to_evidence: 'https://metadata.test/latest' })
+  expect(count(raw, 'source_aliases_v2')).toBe(0) // still no alias on a rejected chain
 })
 
 test('a URL carrying credentials is rejected before the fetch', async () => {
@@ -281,6 +323,17 @@ test('candidates carry a zero-based wire ordinal in RSS document order', () => {
   expect(parsed.candidates.map((c) => c.key)).toEqual(['g0', 'g1', 'g2', 'g3', 'g4'])
 })
 
+test('h-feed candidates use document order with zero-based ordinals (spec §1.5)', () => {
+  const entry = (n: number): string =>
+    `<article class="h-entry"><a class="u-url" href="https://blog.test/${n}">l</a><h1 class="p-name">Title ${n}</h1><div class="e-content">body ${n}</div><time class="dt-published">2026-01-0${n}</time></article>`
+  const html = `<html><body><div class="h-feed">${entry(1)}${entry(2)}${entry(3)}</div></body></html>`
+  const parsed = parseCandidates(html, 'https://blog.test/')
+  expect(parsed.adapter).toBe('hfeed')
+  expect(parsed.candidates.map((c) => c.wireOrdinal)).toEqual([0, 1, 2])
+  expect(parsed.candidates.map((c) => c.key)).toEqual(['https://blog.test/1', 'https://blog.test/2', 'https://blog.test/3'])
+  expect(parsed.candidates.map((c) => c.keyKind)).toEqual(['permalink', 'permalink', 'permalink'])
+})
+
 test('JSON Feed candidates use array order', () => {
   const items = Array.from({ length: 3 }, (_, i) => `{"id":"j${i}","content_text":"c"}`).join(',')
   const doc = `{"version":"https://jsonfeed.org/version/1.1","title":"T","items":[${items}]}`
@@ -321,6 +374,33 @@ test('item evidence over 1 MiB skips the whole item with an item_evidence_limit 
   const parsed = parseCandidates(RSS(bigItem + rssItem('small')))
   expect(parsed.candidates.map((c) => c.key)).toEqual(['small'])
   expect(parsed.findings.some((f) => f.kind === 'item_evidence_limit')).toBe(true)
+})
+
+test('an oversized optional name claim becomes inert digest-backed evidence and the item is kept', () => {
+  // 'あ' is 3 UTF-8 bytes; 3000 of them = 9000 bytes > the 4,096-byte raw bound.
+  const bigTitle = 'あ'.repeat(3000)
+  const item = `<item><guid isPermaLink="false">ok</guid><title>${bigTitle}</title><description>d</description></item>`
+  const parsed = parseCandidates(RSS(item))
+  expect(parsed.candidates.map((c) => c.key)).toEqual(['ok']) // valid content still kept
+  const evidence = JSON.parse(parsed.candidates[0].rawEvidenceJson)
+  expect(evidence.title).toMatchObject({ kind: 'title', truncated: true, byteLength: Buffer.byteLength(bigTitle, 'utf8') })
+  expect(evidence.title.prefix.length).toBeLessThanOrEqual(64) // bounded Unicode-safe prefix
+  expect(evidence.title.sha256).toMatch(/^[0-9a-f]{64}$/) // SHA-256 digest
+})
+
+test('a multi-byte operational identifier over the 8,192 UTF-8 byte bound is skipped', () => {
+  // 4-byte emoji: 2,100 code points = 8,400 UTF-8 bytes. maxOpStringBytes (8,192)
+  // = 4 x maxOpStringCodePoints (2,048), so in UTF-8 a byte-bound violation always
+  // co-trips the code-point bound (true isolation is impossible); this asserts the
+  // byte measurement is UTF-8 bytes, not JS string length.
+  const emojiGuid = '🎉'.repeat(2100)
+  const parsed = parseCandidates(RSS(rssItem(emojiGuid) + rssItem('ok')))
+  expect(parsed.candidates.map((c) => c.key)).toEqual(['ok'])
+  const finding = parsed.findings.find((f) => f.kind === 'operational_identifier_limit')
+  expect(finding).toBeTruthy()
+  const ev = JSON.parse(finding!.evidenceJson)
+  expect(ev.byteLength).toBe(Buffer.byteLength(emojiGuid, 'utf8')) // measured in UTF-8 bytes
+  expect(ev.byteLength).toBeGreaterThan(BOUNDS.maxOpStringBytes)
 })
 
 // ---- inert push discovery (spec §1.2, step 1b) ------------------------------

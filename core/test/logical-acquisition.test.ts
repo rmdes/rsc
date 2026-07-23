@@ -155,6 +155,21 @@ test('an administrator command associates a run in its own row that survives eve
   expect(count(raw, 'reconciliation_jobs_v2')).toBe(0)
 })
 
+test('an unparseable body terminalizes the run instead of leaving it processing', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  // an HTML error page: not a feedsmith feed and not an h-feed (no h-entry)
+  const html = '<!doctype html><html><body><h1>Just an error page</h1></body></html>'
+  const eng = createAcquisition({ db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(html) }), lookupFn: publicLookup, now: () => NOW })
+  const run = await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(run).toMatchObject({ status: 'terminal', outcome: 'operational_failure' })
+  const row = raw.prepare(`SELECT status, outcome, failure_category FROM acquisition_runs_v2 WHERE source_id = 's1'`).get() as { status: string; outcome: string; failure_category: string }
+  expect(row.status).toBe('terminal') // NOT stuck in 'processing'
+  expect(row.failure_category).toBe('feed_parse')
+  expect(count(raw, 'acquisition_findings_v2', 'WHERE kind = ?', 'parser_item_error')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(0)
+})
+
 test('claiming a blocked source is unavailable and never fetches', async () => {
   const { raw, db } = await fresh()
   seedSource(raw, 's1', 'https://feed.test/f', { governance: 'blocked' })
