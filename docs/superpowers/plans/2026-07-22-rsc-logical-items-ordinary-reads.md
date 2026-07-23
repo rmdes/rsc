@@ -634,9 +634,7 @@ measurably slows.`)
 
 ## Appendix B: exact Vertical 1 integration points
 
-Task 9 modifies only these planned Vertical 1 functions in
-`core/src/domain/source-repository.ts` and their service callers in
-`core/src/domain/source-service.ts`:
+Task 9 modifies these planned Vertical 1 functions:
 
 ```text
 resolveAndSubscribeSource: active creation/removal/activation appends reset
@@ -653,6 +651,29 @@ Each repository function receives the existing `WriteTx` from
 journal together. Fault-injection tests throw immediately before audit, journal,
 ledger, and commit and assert all four table families remain unchanged.
 
+> **Correction 2026-07-24 (Task 9 implementation):** this appendix said the
+> functions live in `core/src/domain/source-repository.ts`. In the shipped V1
+> code that file holds only the `SourceRepository` **interface** plus the free
+> helpers (`checkCommand`/`storeCommand`/`reapSourceIfOrphaned`/`SOURCE_TRANSITIONS`).
+> The command **bodies** — `followLocalAccount`, `resolveAndSubscribeSource`,
+> `unsubscribe`, `establishFederation`, `transition` — are `SqliteRepository`
+> methods in **`core/src/storage/sqlite.ts`**, so the `appendJournal`-before-
+> `storeCommand` calls for the SOURCE transitions land there (added to the Task 9
+> staged set below). The `policy_generation` advance rides the same source-command
+> transactions. `reapSourceIfOrphaned` (the interim RESTRICT-aware cleanup) stays
+> in `source-repository.ts`.
+>
+> **`removeLocalFollow` does not exist** — local unfollow is `removeFollow`
+> (`core/src/domain/service.ts:155` → `repo.removeFollow`). **`removeFollow`,
+> `addFollow`, and `updateUserProfile` are non-ledgered Kysely-async methods** (no
+> `storeCommand`); their Personal-membership / profile reset is **flag-gated at
+> the service layer via the existing `createService(repo,bus,publicUrl,logical?)`
+> `logical?` store** — exactly as Task 3 routes local post mutations onto the
+> atomic logical commands only when `logical` is present — so flag-OFF stays
+> byte-identical (**no journal rows written when off**). It is NOT an
+> unconditional `raw` append. The per-reply `upsert`/`remove` effect is already
+> emitted by Task 3's `local.ts`; no new store work is needed for it.
+
 ## Appendix C: mandatory per-task commands and commits
 
 A task is not complete until its row passes exactly.
@@ -666,7 +687,9 @@ A task is not complete until its row passes exactly.
 | 6 | `npm test -w core -- logical-reconcile logical-presentation && npm run typecheck -w core` | `core/src/logical/reconcile.ts core/src/logical/projector.ts core/src/logical/store.ts core/test/logical-reconcile.test.ts core/test/logical-presentation.test.ts` | `core: reconcile logical delivery evidence` |
 | 7 | `npm test -w core -- logical-threading && npm run typecheck -w core` | `core/src/logical/threading.ts core/src/logical/store.ts core/test/logical-threading.test.ts` | `core: resolve logical conversations` |
 | 8 | `npm test -w core -- logical-projector logical-routes logical-feeds && npm run typecheck -w core` | `core/src/logical/projector.ts core/src/api/logical-routes.ts core/src/api/app.ts core/src/domain/feed.ts core/test/logical-projector.test.ts core/test/logical-routes.test.ts core/test/logical-feeds.test.ts` | `core: project logical ordinary reads` |
-| 9 | `npm test -w core -- logical-policy-events source-federation source-lifecycle service && npm run typecheck -w core` | `core/src/domain/source-repository.ts core/src/domain/source-service.ts core/src/domain/service.ts core/src/logical/store.ts core/test/logical-policy-events.test.ts core/test/source-federation.test.ts core/test/source-lifecycle.test.ts core/test/service.test.ts` | `core: journal logical policy transitions` |
+| 9 | `npm test -w core -- logical-policy-events source-federation source-lifecycle service && npm run typecheck -w core` | `core/src/storage/sqlite.ts core/src/domain/source-repository.ts core/src/domain/source-service.ts core/src/domain/service.ts core/src/logical/store.ts core/test/logical-policy-events.test.ts core/test/source-federation.test.ts core/test/source-lifecycle.test.ts core/test/service.test.ts` | `core: journal logical policy transitions` |
+<!-- Correction 2026-07-24 (Task 9): added `core/src/storage/sqlite.ts` to the staged set — the V1 source-command bodies (transition/establishFederation/subscribe/unsubscribe) live there, not in source-repository.ts (see Appendix B correction). -->
+
 | 10 | `npm test -w core -- logical-sse logical-runtime sse push push-in && npm run typecheck -w core` | `core/src/logical/runtime.ts core/src/api/logical-routes.ts core/src/server.ts core/src/domain/bus.ts core/test/logical-sse.test.ts core/test/logical-runtime.test.ts` | `core: activate logical v2 runtime` |
 | 11 | `npm test -w web && npm run check -w web && npm run build -w web` | `web/src/lib/logical-types.ts web/src/lib/logical-api.ts web/src/lib/logical-live.ts web/src/lib/logical-api.test.ts web/src/lib/logical-live.test.ts web/src/routes/p/[publisherId]/+page.server.ts web/src/routes/p/[publisherId]/+page.svelte web/src/routes/+page.server.ts web/src/routes/+page.svelte web/src/routes/u/[handle]/+page.server.ts web/src/routes/u/[handle]/+page.svelte web/src/routes/u/[handle]/following/+page.server.ts web/src/routes/u/[handle]/following/+page.svelte web/src/routes/post/[id]/+page.server.ts web/src/routes/post/[id]/+page.svelte web/src/routes/post/[id]/history/+page.server.ts web/src/routes/post/[id]/history/+page.svelte web/src/routes/post/[id]/thread.json/+server.ts web/src/routes/stream/+server.ts web/src/lib/api.ts web/src/lib/types.ts web/src/routes/page.load.test.ts web/src/routes/stream/server.test.ts` | `web: render logical v2 ordinary surfaces` |
 | 12 | full completion gate in Task 12 | `core/test/logical-vertical.test.ts web/src/lib/logical-api.ts web/src/routes/admin/sources/[sourceId]/+page.server.ts web/src/routes/admin/sources/[sourceId]/+page.svelte web/src/routes/admin/sources/[sourceId]/runs/+page.server.ts web/src/routes/admin/sources/[sourceId]/runs/+page.svelte web/src/routes/admin/sources/[sourceId]/source-detail.test.ts` | `test: complete logical v2 vertical` |
