@@ -390,6 +390,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
         commandId, actorId: c.get('coreUser').id, actorKind: 'administrator',
       })
       if (result.kind === 'applied') return c.json({ source: result.source, audit: result.audit }, 200)
+      // An unknown source is ledgered like any other outcome, so this 404 consumes
+      // the commandId: reusing it against a VALID source then conflicts. The admin
+      // UI pins one commandId per (source, action), so only direct API callers can
+      // hit that; the alternative — pre-checking existence outside the command —
+      // is what caused replays of a SUCCESSFUL transition to 409.
       if (result.kind === 'unknown') return c.json({ error: 'unknown source' }, 404)
       // The repository collapses an illegal transition and an idempotency
       // conflict into one {kind:'conflict'}; the exported matrix is what tells

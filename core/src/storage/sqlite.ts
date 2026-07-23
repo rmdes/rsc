@@ -570,8 +570,11 @@ export class SqliteRepository implements Repository, SourceRepository {
     await this.db.deleteFrom('push_subscriptions').where('id', '=', id).execute()
   }
 
-  // Manual cascade for a user (no DB-level ON DELETE CASCADE; FKs are plain
-  // REFERENCES). Shared by sweepAnonymousUsers and DELETE /users. post_revisions
+  // Manual cascade for a user: the LEGACY tables' FKs are plain REFERENCES with
+  // no DB-level ON DELETE CASCADE. (The v2 tables DO declare ON DELETE CASCADE,
+  // which is why the v2 reap below runs explicitly — the cascade removes the
+  // subscription rows but cannot evaluate whether the source itself is retained.)
+  // Shared by sweepAnonymousUsers and DELETE /users. post_revisions
   // must go before posts — its post_id FK is RESTRICT and foreign_keys=ON.
   deleteUserCascade(id: string): void {
     const raw = this.raw
