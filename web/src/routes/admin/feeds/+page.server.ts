@@ -97,11 +97,17 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	// render a silently empty admin list.
 	const cap = await getCapabilities(fetch)
 	if (!cap.sourceModelV2) return { mode: 'legacy' as const, feeds: await listAdminFeeds(f) }
-	const page = await listSources(f, url.searchParams.get('cursor'))
+	const cursor = url.searchParams.get('cursor')
+	const page = await listSources(f, cursor)
 	const rows = page.items.map(toRow)
 	return {
 		mode: 'v2' as const,
 		groups: GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => r.group === g.key) })),
+		// The cursor that produced THIS page — echoed back so every mutating
+		// form's action can carry it forward (design: no-JS pagination must
+		// survive a mutation). `nextCursor` below is a different value: the
+		// cursor for the page AFTER this one.
+		cursor,
 		nextCursor: page.nextCursor,
 		establishCommandId: crypto.randomUUID()
 	}
@@ -141,18 +147,24 @@ export const actions: Actions = {
 		const form = await event.request.formData()
 		const action = String(form.get('action') ?? '')
 		const sourceId = String(form.get('sourceId') ?? '').trim()
+		const commandId = String(form.get('commandId') ?? '').trim()
 		const category = String(form.get('category') ?? '').trim()
 		const note = String(form.get('note') ?? '').trim()
 		if (!ACTIONS.includes(action as SourceAction)) return fail(400, { error: 'unknown action' })
 		if (!sourceId) return fail(400, { error: 'sourceId is required' })
-		if (!category && !CATEGORY_OPTIONAL.has(action)) return fail(400, { error: 'a moderation category is required' })
+		// A missing commandId is rejected, never minted: minting on a fail()
+		// re-render would hand a RETRY a fresh id, so core sees a new command
+		// instead of replaying the original result (design §11).
+		if (!commandId) return fail(400, { error: 'commandId is required' })
+		if (!category && !CATEGORY_OPTIONAL.has(action))
+			return fail(400, { error: 'a moderation category is required', sourceId, action, commandId })
 		try {
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 			const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/${action}`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({
-					commandId: String(form.get('commandId') ?? '') || crypto.randomUUID(),
+					commandId,
 					...(category ? { category } : {}),
 					...(note ? { note } : {}),
 					...(action === 'attribution-mode' ? { attributionMode: String(form.get('attributionMode') ?? '') } : {})
@@ -160,9 +172,12 @@ export const actions: Actions = {
 			})
 			// core's two 409s (`invalid transition` vs `idempotency conflict`) are
 			// different facts for an admin, so the body's message is surfaced as-is.
-			if (!res.ok) return fail(400, { error: await coreError(res, `${action} failed`) })
+			// sourceId/action/commandId are echoed so the re-rendered page can pin
+			// this exact form's hidden commandId to the one just submitted — a
+			// retry replays the original command instead of minting a new one.
+			if (!res.ok) return fail(400, { error: await coreError(res, `${action} failed`), sourceId, action, commandId })
 		} catch (err) {
-			return fail(400, { error: err instanceof Error ? err.message : `${action} failed` })
+			return fail(400, { error: err instanceof Error ? err.message : `${action} failed`, sourceId, action, commandId })
 		}
 		return { done: action }
 	},
@@ -172,17 +187,22 @@ export const actions: Actions = {
 		const attributionMode = String(form.get('attributionMode') ?? '').trim()
 		const category = String(form.get('category') ?? '').trim()
 		const note = String(form.get('note') ?? '').trim()
+		const commandId = String(form.get('commandId') ?? '').trim()
 		if (!url || !category) return fail(400, { error: 'a source URL and a category are required' })
+		// See the `source` action: a missing commandId is rejected, never minted.
+		if (!commandId) return fail(400, { error: 'commandId is required' })
 		try {
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 			const res = await f(`${base()}/admin/sources`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ url, attributionMode, category, ...(note ? { note } : {}), commandId: String(form.get('commandId') ?? '') || crypto.randomUUID() })
+				body: JSON.stringify({ url, attributionMode, category, ...(note ? { note } : {}), commandId })
 			})
-			if (!res.ok) return fail(400, { error: await coreError(res, `establish ${res.status}`) })
+			// commandId is echoed so a fail() re-render can reuse the submitted id
+			// on retry, rather than the freshly-minted one load() would otherwise hand back.
+			if (!res.ok) return fail(400, { error: await coreError(res, `establish ${res.status}`), commandId })
 		} catch (err) {
-			return fail(400, { error: err instanceof Error ? err.message : 'establish failed' })
+			return fail(400, { error: err instanceof Error ? err.message : 'establish failed', commandId })
 		}
 		return { established: true }
 	}

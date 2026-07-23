@@ -34,8 +34,8 @@ const summary = (
 })
 
 type Row = { id: string; url: string; governance: string; operation: string; federationStatus: string; actions: Array<{ action: string; commandId: string }> }
-type Group = { key: string; title: string; rows: Row[] }
-type LoadResult = { mode: string; feeds?: Array<{ handle: string }>; groups?: Group[]; nextCursor?: string | null; establishCommandId?: string }
+type Group = { key: string; title: string; blurb: string; rows: Row[] }
+type LoadResult = { mode: string; feeds?: Array<{ handle: string }>; groups?: Group[]; cursor?: string | null; nextCursor?: string | null; establishCommandId?: string }
 
 // The capability reading is memoized per module instance, so every load case
 // takes a FRESH +page.server.ts rather than adding a production reset hook.
@@ -105,7 +105,18 @@ test('with the capability on the admin load reads /admin/sources and groups the 
 		['blocked', ['bad']]
 	])
 	expect(result.nextCursor).toBe('c2')
+	expect(result.cursor).toBeNull() // no ?cursor= on this request — this is page one
 	expect(result.establishCommandId).toMatch(/^[0-9a-f]{8}-/)
+
+	// Design §10: the blocked group's blurb is the reachable half of the
+	// block/unblock consequence copy (the per-action confirm strings live
+	// only in +page.svelte, which has no component test harness here) —
+	// pinned so a rewrite to something like "Are you sure?" fails this test.
+	const blockedBlurb = result.groups?.find((g) => g.key === 'blocked')?.blurb ?? ''
+	expect(blockedBlurb).toContain('No acquisition, no eligible deliveries')
+	expect(blockedBlurb).toContain('still fully inspectable')
+	expect(blockedBlurb).toContain('Unblocking returns a source to quarantine')
+	expect(blockedBlurb).toContain('never straight to visibility')
 
 	const rows = result.groups?.flatMap((g) => g.rows) ?? []
 	// Only safe SourceSummary fields reach the page — no provenance, no
@@ -122,6 +133,19 @@ test('with the capability on the admin load reads /admin/sources and groups the 
 	expect(offered.quar).toEqual(['pause', 'allow', 'block', 'attribution-mode'])
 	expect(offered.user).toEqual(['resume', 'quarantine', 'block', 'attribution-mode'])
 	expect(offered.bad).toEqual(['pause', 'reject', 'unblock', 'attribution-mode'])
+})
+
+test('the v2 load echoes back the inbound cursor so a mutating form can carry pagination forward on retry', async () => {
+	const fetch = vi.fn(async (url: string | URL) =>
+		isCap(url)
+			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+			: new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
+	)
+	const result = await loadAdminWith(fetch, '?cursor=page2cursor')
+	// This is the current page's cursor (what put us on page 2), not nextCursor
+	// (the page after) — the no-JS pagination bug loses exactly this value.
+	expect(result.cursor).toBe('page2cursor')
+	expect(urlsOf(fetch).some((u) => u.includes('cursor=page2cursor'))).toBe(true)
 })
 
 test('the source action posts the stable id, category, note and command id to the hyphenated segment', async () => {
@@ -154,6 +178,37 @@ test('the source action refuses an unknown segment and a missing category withou
 	expect(fetch).not.toHaveBeenCalled()
 })
 
+test('the source action refuses a missing commandId without calling core, and never mints one in its place', async () => {
+	const fetch = vi.fn()
+	expect(await actions.source(formEvent('source', { sourceId: 's1', action: 'block', category: 'other' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(await actions.source(formEvent('source', { sourceId: 's1', action: 'block', category: 'other', commandId: '' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('a failed source action echoes back the exact submitted commandId/sourceId/action so a retry replays the original command', async () => {
+	// core's response is "lost" from the admin's point of view (409 or a thrown
+	// network error) — the fix under test is that the re-render never hands the
+	// retry a FRESH command id, which would make core see a different command.
+	const conflictFetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: 'invalid transition' }), { status: 409 }))
+	const conflictRes = await actions.source(formEvent('source', { sourceId: 's9', action: 'block', category: 'abuse', commandId: 'retry-me' }, conflictFetch) as never)
+	expect((conflictRes as { data: { error: string; sourceId: string; action: string; commandId: string } }).data).toEqual({
+		error: 'invalid transition',
+		sourceId: 's9',
+		action: 'block',
+		commandId: 'retry-me'
+	})
+
+	const throwingFetch = vi.fn(async () => {
+		throw new Error('response lost')
+	})
+	const throwRes = await actions.source(formEvent('source', { sourceId: 's9', action: 'block', category: 'abuse', commandId: 'retry-me-2' }, throwingFetch) as never)
+	expect((throwRes as { data: { sourceId: string; action: string; commandId: string } }).data).toMatchObject({
+		sourceId: 's9',
+		action: 'block',
+		commandId: 'retry-me-2'
+	})
+})
+
 test("core's two distinct conflicts reach the admin verbatim", async () => {
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: 'invalid transition' }), { status: 409 }))
 	const res = await actions.source(formEvent('source', { sourceId: 's1', action: 'allow', category: 'spam', commandId: 'cmd-4' }, fetch) as never)
@@ -177,6 +232,22 @@ test('establish federation posts the url, mode, category, note and command id', 
 		note: 'peer',
 		commandId: 'cmd-5'
 	})
+})
+
+test('establish refuses a missing commandId without calling core, and never mints one in its place', async () => {
+	const fetch = vi.fn()
+	expect(await actions.establish(formEvent('establish', { url: 'https://peer.test/feed.xml', attributionMode: 'aggregate', category: 'operator_policy' }, fetch) as never)).toMatchObject({
+		status: 400
+	})
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('a failed establish echoes back the exact submitted commandId so a retry replays the original command', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: 'idempotency conflict' }), { status: 409 }))
+	const res = await actions.establish(
+		formEvent('establish', { url: 'https://peer.test/feed.xml', attributionMode: 'aggregate', category: 'operator_policy', commandId: 'retry-establish' }, fetch) as never
+	)
+	expect((res as { data: { error: string; commandId: string } }).data).toEqual({ error: 'idempotency conflict', commandId: 'retry-establish' })
 })
 
 // --- capability failure: legacy, and NEVER a silently empty admin page --------

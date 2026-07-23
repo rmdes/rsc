@@ -5,6 +5,18 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
+	// SvelteKit's generated ActionData is a union across all four actions on
+	// this page; chaining `in` checks over it doesn't narrow cleanly once the
+	// shapes differ this much. The `source`/`establish` fail() branches always
+	// echo these fields as plain strings when present — read them through one
+	// loose shape instead of fighting the union.
+	// ponytail: `as`-cast past the generated union rather than fighting it with
+	// per-branch narrowing. Ceiling: a 5th action with a same-named, differently
+	// typed field could paper over a real mismatch here. Upgrade path: revisit
+	// if this page's action count grows past four.
+	type RetryFail = { sourceId?: string; action?: string; commandId?: string }
+	const retryFail = $derived(form as RetryFail | null)
+
 	const LABEL: Record<string, string> = {
 		pause: 'Pause acquisition',
 		resume: 'Resume acquisition',
@@ -62,20 +74,21 @@
 								</span>
 							</div>
 							<details class="panel">
-								<summary>Manage</summary>
+								<summary aria-label="Manage {row.url}">Manage</summary>
 								<div class="source-actions">
 									{#each row.actions as a (a.action)}
 										{@const consequence = CONSEQUENCE[a.action]}
+										{@const retryCommandId = retryFail?.sourceId === row.id && retryFail?.action === a.action ? retryFail.commandId : undefined}
 										<form
 											method="POST"
-											action="?/source"
+											action="?/source{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}"
 											class="source-action"
 											class:destructive={a.action === 'block'}
 											use:enhance={consequence ? confirmSubmit(`${consequence} Continue?`) : undefined}
 										>
 											<input type="hidden" name="sourceId" value={row.id} />
 											<input type="hidden" name="action" value={a.action} />
-											<input type="hidden" name="commandId" value={a.commandId} />
+											<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
 											<span class="action-name">{LABEL[a.action]}</span>
 											{#if consequence}<p class="consequence">{consequence}</p>{/if}
 											{#if a.action === 'attribution-mode'}
@@ -109,9 +122,10 @@
 		<a class="older" href="/admin/feeds?cursor={encodeURIComponent(data.nextCursor)}">More sources</a>
 	{/if}
 
+	{@const establishRetryCommandId = retryFail?.commandId && !retryFail.sourceId ? retryFail.commandId : undefined}
 	<details class="panel">
 		<summary>Establish federation with a source</summary>
-		<form method="POST" action="?/establish" class="add-remote" use:enhance>
+		<form method="POST" action="?/establish{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}" class="add-remote" use:enhance>
 			<label class="visually-hidden" for="fed-url">Source URL</label>
 			<input id="fed-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
 			<label class="visually-hidden" for="fed-mode">Attribution mode</label>
@@ -125,7 +139,7 @@
 			</select>
 			<label class="visually-hidden" for="fed-note">Note (optional)</label>
 			<input id="fed-note" name="note" placeholder="note (optional)" />
-			<input type="hidden" name="commandId" value={data.establishCommandId} />
+			<input type="hidden" name="commandId" value={establishRetryCommandId ?? data.establishCommandId} />
 			<button>Establish federation</button>
 		</form>
 	</details>
