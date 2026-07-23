@@ -12,6 +12,8 @@
 //    imports the logical vertical. See that module + the dated plan note.
 //  - the journal cursor codec + appendJournal live in ./journal.ts.
 
+import type { CommandEnvelope, RemoteSource } from '../domain/types.ts'
+
 // --- Ordinary-read DTOs (spec §3.4) --------------------------------------
 
 export type LogicalItemId = string
@@ -289,6 +291,61 @@ export interface ConditionalValidators {
   effectiveUrl: string
   etag: string | null
   lastModified: string | null
+}
+
+// --- Acquisition claim/commit/fail records (plan File map lines 189-200) ---
+// Fixed here before their first consumer (Task 4). These reference the V1
+// domain types CommandEnvelope/RemoteSource, so Task 2 (which only touched the
+// logical vertical) deferred them; Task 4 is the acquisition writer that adds
+// them. Shapes are transcribed verbatim from the plan — do not re-derive.
+
+export type AcquisitionReason =
+  | { kind: 'scheduled' }
+  | { kind: 'administrator'; command: CommandEnvelope }
+
+export interface ClaimAcquisitionInput {
+  sourceId: string
+  reason: AcquisitionReason
+  now: string
+}
+
+export type ClaimAcquisitionResult =
+  | { kind: 'claimed'; runId: string; source: RemoteSource; disposition: 'created' | 'joined' | 'replayed' }
+  | { kind: 'unavailable'; reason: 'unknown' | 'paused' | 'blocked' | 'unscheduled' }
+
+export interface CommitAcquisitionInput {
+  runId: string
+  sourceId: string
+  committedAt: string
+  effectiveUrl: string | null
+  validators: ConditionalValidators | null
+  redirects: RedirectObservation[]
+  // rev 5 (RC1): proven permanent-chain targets (spec §1.6) upserted into
+  // source_aliases_v2 inside the result transaction.
+  aliases: string[]
+  observations: NewObservationVersion[]
+  findings: AcquisitionFinding[]
+  counters: AdminAcquisitionCounters
+  outcome: AdminFetchProjection['outcome']
+  pushCapabilityJson: string | null
+}
+
+export interface FailAcquisitionInput {
+  runId: string
+  sourceId: string
+  now: string
+  outcome: 'operational_failure' | 'cancelled' | 'superseded' | 'policy_rejected'
+  category: AdminFetchProjection['failureCategory']
+  diagnostic: string | null
+}
+
+// Return of commitAcquisition/failAcquisition — the durable run's terminal
+// identity (plan File map: `commitAcquisition(input):AcquisitionRun`).
+export interface AcquisitionRun {
+  runId: string
+  sourceId: string
+  status: 'processing' | 'terminal'
+  outcome: AdminFetchProjection['outcome']
 }
 
 export interface RedirectObservation {

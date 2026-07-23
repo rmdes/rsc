@@ -243,7 +243,11 @@ export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: Us
   return { inserted, discovery: mergeDiscovery(res, parsed.discovery) }
 }
 
-function mergeDiscovery(res: Response, discovery: FeedDiscovery): FeedDiscovery {
+// Exported for the logical-v2 acquisition engine's inert push-capability
+// discovery (spec §1.2): it merges the response Link header with in-body hub/
+// self/cloud advertisements, then hands the result to choosePushTarget. Reused
+// rather than reimplemented so the Link-header + in-body merge stays one path.
+export function mergeDiscovery(res: Response, discovery: FeedDiscovery): FeedDiscovery {
   const header = parseLinkHeader(res.headers.get('link'))
   return {
     hubs: [...new Set([...header.hubs, ...discovery.hubs])],

@@ -1,8 +1,9 @@
 import type { DatabaseContext, ReadTx } from './database.ts'
-import type { LogicalReadTx, SourceModelV2Activation, LogicalItemDto } from './types.ts'
+import type { LogicalReadTx, SourceModelV2Activation, LogicalItemDto, ClaimAcquisitionInput, ClaimAcquisitionResult, CommitAcquisitionInput, FailAcquisitionInput, AcquisitionRun } from './types.ts'
 import type { User } from '../domain/types.ts'
 import { getJournalMetadata } from './journal.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
+import { claimAcquisition, commitAcquisition, failAcquisition } from './acquisition.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -51,6 +52,19 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     deleteLocalAccount(input: { accountId: string; actorId: string; now: string }): void {
       db.write((tx) => deleteLocalAccount({ tx, ...input }))
+    },
+    // Acquisition write seam (Task 4). The two-transaction protocol (spec §1.4)
+    // is driven by the acquisition engine: claim commits in its own db.write()
+    // before the acquisition-result db.write() (commit/fail). Each is one atomic
+    // transaction; the engine sequences them.
+    claimAcquisition(input: ClaimAcquisitionInput): ClaimAcquisitionResult {
+      return db.write((tx) => claimAcquisition(tx, input))
+    },
+    commitAcquisition(input: CommitAcquisitionInput): AcquisitionRun {
+      return db.write((tx) => commitAcquisition(tx, input))
+    },
+    failAcquisition(input: FailAcquisitionInput): AcquisitionRun {
+      return db.write((tx) => failAcquisition(tx, input))
     },
   }
 }

@@ -34,6 +34,23 @@ export function isPrivateIp(ip: string): boolean {
 
 const defaultLookup: LookupFn = (h) => lookup(h, { all: true })
 
+// Fetch-time hop guard (spec §1.5): the SSRF gate PLUS a credential check.
+// The logical-v2 acquisition fetcher applies this to the initial URL and to
+// EVERY redirect target — V1's establishFederation never fetches, so a stored
+// remote_sources_v2 row may carry an RFC1918 or credential-bearing URL that no
+// owner path could have produced. Layered on checkCallbackUrl so the SSRF logic
+// stays single-sourced; the LookupFn seam keeps it testable with no real DNS.
+export async function checkFetchHop(raw: string, lookupFn: LookupFn = defaultLookup): Promise<{ ok: true; host: string } | { ok: false; reason: string }> {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return { ok: false, reason: 'target is not a URL' }
+  }
+  if (url.username || url.password) return { ok: false, reason: 'target carries credentials' }
+  return checkCallbackUrl(raw, lookupFn)
+}
+
 // SSRF gate for subscriber callbacks (spec H2 rule 2). Resolution happens at
 // registration only; the rebinding residual is an accepted, ledgered decision.
 export async function checkCallbackUrl(raw: string, lookupFn: LookupFn = defaultLookup): Promise<{ ok: true; host: string } | { ok: false; reason: string }> {
