@@ -660,6 +660,53 @@ button:hover {
 	font-size: 0.7em;
 }
 
+/* Compact reply count (ReplyToggle): a speech bubble + the number, no pill.
+   The count is the signal — resting secondary, accent once the thread is
+   open. 44×44 minimum target comes from min-height/min-width + padding (the
+   .tabs idiom), not a ::after hit-area overlay, so focus ring and hover
+   surface match what the finger actually gets. */
+
+.reply-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--space-xs);
+	min-height: 44px;
+	min-width: 44px;
+	padding: 0 var(--space-sm);
+	margin-right: var(--space-sm);
+	border-radius: 8px;
+	color: var(--color-secondary);
+	font-size: 0.8125rem;
+	line-height: 1;
+	text-decoration: none;
+	cursor: pointer;
+	transition:
+		color 200ms,
+		background-color 200ms;
+}
+
+.reply-toggle svg {
+	width: 1rem;
+	height: 1rem;
+}
+
+.reply-toggle:hover {
+	background: var(--color-muted);
+	color: var(--color-foreground);
+}
+
+.reply-toggle[aria-expanded='true'] {
+	color: var(--color-accent);
+}
+
+/* Loading the thread: the anchor is inert until the fetch settles. The focus
+   ring is the global :focus-visible rule — nothing here overrides it. */
+.reply-toggle[aria-busy='true'] {
+	opacity: 0.6;
+	cursor: progress;
+}
+
 /* Nested replies unfold indented under their parent, level by level. */
 
 .replies {
