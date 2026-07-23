@@ -46,6 +46,15 @@ test('unknown attributes reach the anchor (aria-describedby makes the name row-u
   expect(body).toContain('aria-describedby="by-abc"')
 })
 
+// {...rest} is spread FIRST on the <a>, before the pinned attributes, so a
+// caller passing one of the five pinned names through rest cannot silently
+// override the computed value (e.g. blank out the accessible name).
+test('a caller-supplied aria-label in rest does not override the computed name', () => {
+  const { body } = render(ReplyToggle, { props: { ...props, 'aria-label': 'HACKED' } })
+  expect(body).toContain('aria-label="Show 2 replies"')
+  expect(body).not.toContain('HACKED')
+})
+
 // The 44x44 floor is a plan Global Constraint living in a 1100-line shared
 // stylesheet later tasks edit. Trimming it must fail CI, not a design review.
 test('the 44x44 touch target survives in app.css', () => {

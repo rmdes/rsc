@@ -50,13 +50,15 @@ detects the change on its next poll or push, updates its copy, and records its
 own revision — all over plain RSS, and without bumping the post to the top of
 the timeline.
 
-**Real conversations over plain RSS.** Replies are posts. They thread inline
-under a post (an outliner-style disclosure wedge) and on a dedicated
-conversation page. Threads are reconstructed from feeds using the RSS
-`source:` namespace (`source:inReplyTo`) plus RFC 4685 (`thr:in-reply-to`),
-with resolve-once matching, honest orphaning when a reference can't be
-resolved, and adoption that heals out-of-order arrival — a reply that shows
-up before its parent snaps into place when the parent lands.
+**Real conversations over plain RSS.** Replies are posts. Each conversation
+appears once in the river at its root. A compact reply count expands the
+sanitized thread inline, while the conversation permalink opens the complete
+tree. Replies whose parent is not available remain visible with their carried
+reply context instead of being silently discarded. Threads are reconstructed
+from feeds using the RSS `source:` namespace (`source:inReplyTo`) plus RFC
+4685 (`thr:in-reply-to`), with resolve-once matching, honest orphaning when a
+reference can't be resolved, and adoption that heals out-of-order arrival — a
+reply that shows up before its parent snaps into place when the parent lands.
 
 **Feeds in.** Subscribe to any RSS, Atom, or JSON Feed. Import an OPML
 blogroll. Feed discovery resolves an HTML page to its feed (`<link

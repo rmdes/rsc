@@ -8,7 +8,9 @@
 	// caller never increments it.
 	// `rest` exists so the caller can make the name row-unique with
 	// aria-describedby (the label alone repeats across rows); the five pinned
-	// props are the contract.
+	// props are the contract. `{...rest}` is spread FIRST on the <a> below so a
+	// caller-supplied class/aria-expanded/aria-busy/aria-label in rest can never
+	// clobber the computed value — the pinned attributes always win.
 	let {
 		count,
 		href,
@@ -26,12 +28,12 @@
 </script>
 
 <a
+	{...rest}
 	class="reply-toggle"
 	{href}
 	aria-expanded={expanded}
 	aria-busy={busy || undefined}
 	aria-label={replyToggleLabel(count, expanded, busy)}
-	{...rest}
 	onclick={(e) => replyToggleClick(e, busy, onactivate)}
 >
 	<svg

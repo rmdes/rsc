@@ -164,6 +164,58 @@ CSS custom properties, three-state: system default, explicit light, explicit dar
 }
 ```
 
+### Reply-Count Control (`ReplyToggle`)
+
+Compact affordance for a conversation's reply count — replaces the old
+oversized bordered wedge pill. A real `<a>` to the conversation permalink
+first (no-JS fallback); JS enhancement toggles the thread inline instead of
+navigating.
+
+```css
+.reply-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: 44px; /* touch target floor, not the visible glyph size */
+  min-width: 44px;
+  padding: 0 var(--space-sm);
+  border-radius: 8px;
+  color: var(--color-secondary); /* rest state */
+  font-size: 0.8125rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 200ms, background-color 200ms;
+}
+.reply-toggle svg {
+  width: 1rem; /* outline speech-bubble, currentColor, aria-hidden */
+  height: 1rem;
+}
+.reply-toggle:hover {
+  background: var(--color-muted);
+  color: var(--color-foreground);
+}
+.reply-toggle[aria-expanded='true'] {
+  color: var(--color-accent); /* expanded state — color only, no rotated glyph */
+}
+.reply-toggle[aria-busy='true'] {
+  opacity: 0.6;
+  cursor: progress; /* the global :focus-visible ring still applies */
+}
+```
+
+- Outline speech-bubble icon + numeric count — no persistent border, no
+  filled pill background at rest.
+- 44×44 CSS-pixel minimum hit target via padding on the compact glyph, not a
+  visually large pill and not `::after` hacks.
+- `aria-expanded` reflects open/closed; `aria-busy="true"` exactly while a
+  fetch is in flight; `aria-label` (`Show`/`Hide`/`Loading N replies`,
+  correct singular/plural) is the accessible name — the visible glyph+count
+  is `aria-hidden`.
+- Token colors only: secondary at rest, foreground on hover, accent when
+  expanded. No raw hex, no new color token.
+- Standard visible focus ring; no custom rotation/entrance animation.
+
 ### Modals
 
 ```css
@@ -210,6 +262,7 @@ CSS custom properties, three-state: system default, explicit light, explicit dar
 3. **Local vs remote must be legible:** this is the product thesis. Distinguish with the kind badge + a subtle border/marker on `.post.remote` — never color alone.
 4. **Theme toggle is an enhancement, not a requirement:** no-JS users get the correct theme from `prefers-color-scheme`; the toggle (JS island) only overrides it. Design and test every component in both themes — dark is not an inversion pass at the end.
 5. **Text first, enclosures second:** body text is the primary content. Media enclosures (podcast audio, images, video) render as an attachment block *below* the text, never as a hero. Use native `<audio controls>` / `<video controls>` / `<img loading="lazy">` — no player libraries. Images: `max-width: 100%`, declared aspect-ratio to avoid CLS.
+6. **Root-only rivers:** the Local/Federated/Personal/Public timeline tabs and the following-management timeline show each conversation once, at its root — a true root or an unresolved reply, never a resolved reply as its own card. Opening a root's `ReplyToggle` reveals the sanitized thread inline; the conversation permalink opens the complete tree. Author profiles and the conversation page are exempt — they remain activity/full-thread views and keep showing reply posts directly.
 
 ---
 
