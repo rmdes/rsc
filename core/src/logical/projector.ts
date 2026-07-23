@@ -583,7 +583,13 @@ export function resolvePublisher(tx: ReadTx, publisherId: string): PublicPublish
 
 // --- timeline (spec §3.3, §3.5) ---------------------------------------------
 
-const REMOTE_VISIBLE = `EXISTS (SELECT 1 FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key JOIN remote_sources_v2 s ON s.id = d.source_id WHERE ik.kind = 'delivery' AND ik.logical_item_id = li.id AND s.governance = 'allowed' AND EXISTS (SELECT 1 FROM presentation_entries_v2 pe WHERE pe.delivery_id = d.id))`
+// A delivery must be BOTH ordinary-eligible (governance allowed, some version's
+// job reconciled/conflicted — same criterion as eligibleDeliveries/
+// earliestEligibleVersion) AND have a presentation entry: gating on entry
+// existence alone (governance-blind to job status) can admit a delivery whose
+// job later regressed while its entry lingers, over-counting a row LIMIT
+// cannot then render (projectRemote drops it), shorting the page.
+const REMOTE_VISIBLE = `EXISTS (SELECT 1 FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key JOIN remote_sources_v2 s ON s.id = d.source_id WHERE ik.kind = 'delivery' AND ik.logical_item_id = li.id AND s.governance = 'allowed' AND EXISTS (SELECT 1 FROM presentation_entries_v2 pe WHERE pe.delivery_id = d.id) AND EXISTS (SELECT 1 FROM observation_versions_v2 v JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id AND j.kind = 'observation' WHERE v.delivery_id = d.id AND j.status IN ('reconciled', 'conflicted')))`
 const REMOTE_SUBSCRIBED = `EXISTS (SELECT 1 FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key JOIN remote_sources_v2 s ON s.id = d.source_id JOIN source_subscriptions_v2 sub ON sub.source_id = s.id WHERE ik.kind = 'delivery' AND ik.logical_item_id = li.id AND s.governance = 'allowed' AND sub.owner_id = ? AND sub.state = 'active')`
 const REMOTE_FEDERATED = `EXISTS (SELECT 1 FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key JOIN remote_sources_v2 s ON s.id = d.source_id JOIN federation_relationships_v2 f ON f.source_id = s.id WHERE ik.kind = 'delivery' AND ik.logical_item_id = li.id AND s.governance = 'allowed' AND f.status = 'approved')`
 
@@ -614,7 +620,7 @@ export function projectTimeline(tx: ReadTx, query: TimelineQuery): LogicalTimeli
   if (wantsRemote) {
     let w = `li.origin = 'remote' AND ${REMOTE_VISIBLE}`
     if (river) w += ` AND li.parent_state IN ('none','missing','ambiguous')`
-    if (lens.kind === 'personal') { w += ` AND ${REMOTE_SUBSCRIBED}`; params.push(viewer.localAccountId ?? lens.account.id) }
+    if (lens.kind === 'personal') { w += ` AND ${REMOTE_SUBSCRIBED}`; params.push(lens.account.id) }
     if (lens.kind === 'federated') { w += ` AND ${REMOTE_FEDERATED}` }
     if (lens.kind === 'publisher') { w += ` AND EXISTS (SELECT 1 FROM publisher_claims_v2 pc JOIN remote_sources_v2 s2 ON s2.id = pc.source_id WHERE pc.logical_item_id = li.id AND pc.publisher_id = ? AND s2.governance = 'allowed')`; params.push(lens.publisher.id) }
     parts.push(`SELECT li.id AS id, li.timeline_sort_at AS sort_at FROM logical_items_v2 li WHERE ${w}`)

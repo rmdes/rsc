@@ -77,6 +77,10 @@ function seedJob(raw: Raw, input: { sourceId: string; deliveryKey: { kind: strin
 }
 
 const oneRemoteId = (raw: Raw): string => (raw.prepare(`SELECT id FROM logical_items_v2 WHERE origin = 'remote' LIMIT 1`).get() as { id: string }).id
+const remoteIdForSource = (raw: Raw, sourceId: string): string =>
+  (raw.prepare(
+    `SELECT ik.logical_item_id AS id FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key WHERE ik.kind = 'delivery' AND d.source_id = ?`,
+  ).get(sourceId) as { id: string }).id
 
 // ---- DTO bounds + classification booleans (spec §3.4) -----------------------
 
@@ -221,6 +225,34 @@ test('Personal membership comes from current subscriptions; unsubscribing remove
   expect(off.timeline.some((d) => d.origin === 'remote')).toBe(false) // pending does not contribute
 })
 
+test('Personal remote membership binds to the SUBJECT, not the viewer (cross-account request)', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'ua', 'alice') // subject of followed_by=alice
+  seedUser(raw, 'ux', 'xavier') // local account the SUBJECT follows
+  seedUser(raw, 'ub', 'bob') // authenticated VIEWER, unrelated subscriptions
+  seedPost(raw, { id: 'px', author: 'ux' })
+  seedFollow(raw, 'ua', 'ux')
+
+  seedSource(raw, 's1', 'https://feed.test/subject-source')
+  seedSource(raw, 's2', 'https://feed.test/viewer-source')
+  await acquire(db, 's1', 'https://feed.test/subject-source', RSS(guidItem('g1')))
+  await acquire(db, 's2', 'https://feed.test/viewer-source', RSS(guidItem('g2')))
+  drain(store)
+  const subjectItemId = remoteIdForSource(raw, 's1')
+  const viewerItemId = remoteIdForSource(raw, 's2')
+
+  seedSubscription(raw, 'ua', 's1') // the SUBJECT subscribes to s1
+  seedSubscription(raw, 'ub', 's2') // the VIEWER subscribes to a DIFFERENT source
+
+  const account = { id: 'ua', handle: 'alice', displayName: 'alice' }
+  const viewer = { localAccountId: 'ub', activeSourceIds: [] }
+  const env = db.read((tx) => projectTimeline(tx, { lens: { kind: 'personal', account }, before: null, limit: 50, viewer }))
+  const ids = env.timeline.map((d) => d.id)
+  expect(ids).toContain('px') // subject's followed local account
+  expect(ids).toContain(subjectItemId) // subject's own subscribed remote source
+  expect(ids).not.toContain(viewerItemId) // viewer's own subscription must not leak into the subject's Personal lens
+})
+
 test('Federated requires an approved federation source', async () => {
   const { raw, db, store } = await fresh()
   seedSource(raw, 's1', 'https://feed.test/f')
@@ -275,6 +307,36 @@ test('an item whose only source is blocked has no ordinary-eligible delivery and
   expect(db.read((tx) => projectItem(tx, id, ANON))).toBeUndefined()
   const env = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 50, viewer: ANON }))
   expect(env.timeline.length).toBe(0)
+})
+
+// ---- remote-visibility gate cannot admit a row the projection cannot render -
+
+test('the timeline gate cannot admit a row projectRemote will drop, so a limited page is never shorted', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f') // will go stale: entry present, job no longer eligible
+  seedSource(raw, 's2', 'https://feed.test/g') // stays genuinely ordinary-visible
+  await acquire(db, 's1', 'https://feed.test/f', RSS(guidItem('g1')))
+  await acquire(db, 's2', 'https://feed.test/g', RSS(guidItem('g2')))
+  drain(store)
+  const staleId = remoteIdForSource(raw, 's1')
+  const realId = remoteIdForSource(raw, 's2')
+
+  // Force the stale item to sort strictly newest so it alone would consume a
+  // limit:1 page ahead of the real item.
+  raw.prepare(`UPDATE logical_items_v2 SET timeline_sort_at = '2026-07-23T00:00:10.000Z' WHERE id = ?`).run(staleId)
+
+  // Simulate job-status/presentation-entry drift: the presentation entry lingers
+  // but the delivery's job is no longer reconciled/conflicted (spec §3.1 — reads
+  // must re-derive eligibility, never trust a stale row).
+  raw.prepare(
+    `UPDATE reconciliation_jobs_v2 SET status = 'failed' WHERE observation_version_id IN
+     (SELECT v.id FROM observation_versions_v2 v JOIN deliveries_v2 d ON d.id = v.delivery_id WHERE d.source_id = 's1')`,
+  ).run()
+  expect(db.read((tx) => projectItem(tx, staleId, ANON))).toBeUndefined() // confirm it is genuinely unprojectable
+
+  const env = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 1, viewer: ANON }))
+  expect(env.timeline.length).toBe(1) // not shorted by the stale, gate-admitted-but-unprojectable row
+  expect(env.timeline[0].id).toBe(realId)
 })
 
 // ---- history envelope (spec §4.5) -------------------------------------------
