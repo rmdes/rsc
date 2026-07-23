@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private'
-import type { TimelineEntry } from './types.ts'
+import type { OwnerFollowingView, TimelineEntry } from './types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
@@ -255,4 +255,80 @@ export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser
 		body: JSON.stringify(body)
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, 'patchAdminSettings failed'))
+}
+
+// --- v2 source registry (RSC_SOURCE_MODEL_V2) --------------------------------
+
+// The capability probe. It NEVER rejects: a core that predates /capabilities —
+// or any blip during a rolling deploy — must degrade the caller to the LEGACY
+// path, which is exactly what the flag being off is. Only a successful (200)
+// reading is memoized for the process lifetime (the value is immutable on
+// core, so one read per pod suffices); a failure is never cached as sticky
+// state and is retried on the very next request.
+let capabilities: { sourceModelV2: boolean } | null = null
+export async function getCapabilities(f: typeof fetch): Promise<{ sourceModelV2: boolean }> {
+	if (capabilities) return capabilities
+	try {
+		const res = await f(`${base()}/capabilities`)
+		if (!res.ok) return { sourceModelV2: false }
+		const body = (await res.json()) as { sourceModelV2?: unknown }
+		return (capabilities = { sourceModelV2: body.sourceModelV2 === true })
+	} catch {
+		return { sourceModelV2: false }
+	}
+}
+
+export type SubscribeOutcome =
+	| { kind: 'source'; created: boolean }
+	| { kind: 'pending' }
+	| { kind: 'local'; handle: string; created: boolean }
+
+// v2 subscribe: no `type` (core derives it), a durable `commandId` instead.
+// Replaying an id returns the original result AND its original status, so
+// `created` comes from the status line, not the body.
+export async function subscribeToSource(f: typeof fetch, input: { url: string; commandId: string }): Promise<SubscribeOutcome> {
+	const res = await f(`${base()}/me/subscriptions`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(input)
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, `subscribe ${res.status}`))
+	const body = (await res.json()) as { subscription?: unknown; follow?: { handle: string } }
+	const created = res.status === 201
+	// The pending payload is two keys and nothing else — never the owner
+	// projection, so there is no governance to read even if we wanted to.
+	if (body.subscription === 'pending') return { kind: 'pending' }
+	if (body.follow) return { kind: 'local', handle: body.follow.handle, created }
+	return { kind: 'source', created }
+}
+
+// By stable source id, never by URL or handle.
+export async function unsubscribeSource(f: typeof fetch, sourceId: string, commandId: string): Promise<void> {
+	const res = await f(`${base()}/me/subscriptions/${encodeURIComponent(sourceId)}`, {
+		method: 'DELETE',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ commandId })
+	})
+	if (!res.ok) throw new Error(await errorMessage(res, `unsubscribe ${res.status}`))
+}
+
+export async function getOwnerFollowing(f: typeof fetch): Promise<OwnerFollowingView> {
+	const res = await f(`${base()}/me/following`)
+	if (!res.ok) throw new Error(await errorMessage(res, `following ${res.status}`))
+	return (await res.json()) as OwnerFollowingView
+}
+
+export interface OpmlImportV2 {
+	localFollowed: number
+	active: number
+	pending: number
+	unavailable: number
+	notSubscribable: number
+	capSkipped: number
+}
+// The command id travels as a header here — the body is XML, not JSON.
+export async function importOpmlV2(f: typeof fetch, opml: string, commandId: string): Promise<OpmlImportV2> {
+	const res = await f(`${base()}/me/follows/opml`, { method: 'POST', headers: { 'x-rsc-command-id': commandId }, body: opml })
+	if (!res.ok) throw new Error(await errorMessage(res, `importOpml ${res.status}`))
+	return (await res.json()) as OpmlImportV2
 }

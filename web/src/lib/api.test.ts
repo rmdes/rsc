@@ -18,7 +18,11 @@ import {
 	revokeSession,
 	subscribeToFeed,
 	getAdminSettings,
-	patchAdminSettings
+	patchAdminSettings,
+	subscribeToSource,
+	unsubscribeSource,
+	getOwnerFollowing,
+	importOpmlV2
 } from './api.ts'
 
 const entry = {
@@ -226,4 +230,85 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 	const [, patchInit] = f.mock.calls[1] as unknown as [string, RequestInit]
 	expect(patchInit.method).toBe('PATCH')
 	expect(JSON.parse(String(patchInit.body))).toEqual({ maxSubsPerUser: 250 })
+})
+
+// --- v2 source registry (RSC_SOURCE_MODEL_V2) -------------------------------
+// The capability reading is memoized for the module's lifetime, so every case
+// below takes a FRESH module instance instead of a production reset hook.
+
+test('getCapabilities reports the flag and memoizes a successful reading', async () => {
+	vi.resetModules()
+	const { getCapabilities } = await import('./api.ts')
+	const f = vi.fn(async () => new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 }))
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true })
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/capabilities')
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true })
+	expect(f).toHaveBeenCalledTimes(1) // process-immutable on core — one read per pod
+})
+
+test('getCapabilities degrades to legacy on a non-200 and never caches the failure', async () => {
+	vi.resetModules()
+	const { getCapabilities } = await import('./api.ts')
+	const f = vi.fn(async () => new Response('not found', { status: 404 })) // a core without /capabilities
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
+	expect(f).toHaveBeenCalledTimes(2) // retried on the very next request
+})
+
+test('getCapabilities degrades to legacy when the fetch throws, and stays retryable', async () => {
+	vi.resetModules()
+	const { getCapabilities } = await import('./api.ts')
+	const f = vi.fn(async () => {
+		throw new Error('fetch failed')
+	})
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
+	expect(f).toHaveBeenCalledTimes(2)
+})
+
+test('subscribeToSource posts url+commandId (no type) and reports source, pending and local outcomes', async () => {
+	const source = vi.fn(async () => new Response(JSON.stringify({ subscription: { sourceId: 's1', url: 'https://ex.com/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' } }), { status: 201 }))
+	await expect(subscribeToSource(source as unknown as typeof fetch, { url: 'https://ex.com/f.xml', commandId: 'c1' })).resolves.toEqual({ kind: 'source', created: true })
+	const [, init] = source.mock.calls[0] as unknown as [string, RequestInit]
+	expect(JSON.parse(String(init.body))).toEqual({ url: 'https://ex.com/f.xml', commandId: 'c1' })
+
+	const pending = vi.fn(async () => new Response(JSON.stringify({ subscription: 'pending', message: 'This source is awaiting review.' }), { status: 202 }))
+	await expect(subscribeToSource(pending as unknown as typeof fetch, { url: 'https://ex.com/f.xml', commandId: 'c2' })).resolves.toEqual({ kind: 'pending' })
+
+	const local = vi.fn(async () => new Response(JSON.stringify({ follow: { kind: 'local', id: 'u1', handle: 'bob', displayName: 'Bob' } }), { status: 200 }))
+	await expect(subscribeToSource(local as unknown as typeof fetch, { url: 'https://x/users/bob/feed.xml', commandId: 'c3' })).resolves.toEqual({ kind: 'local', handle: 'bob', created: false })
+})
+
+test('subscribeToSource surfaces the neutral unavailable error', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'source unavailable' }), { status: 409 }))
+	await expect(subscribeToSource(f as unknown as typeof fetch, { url: 'https://ex.com/f.xml', commandId: 'c1' })).rejects.toThrow('source unavailable')
+})
+
+test('unsubscribeSource DELETEs by stable source id and carries the command id', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ ok: true }), { status: 200 }))
+	await unsubscribeSource(f as unknown as typeof fetch, 'src 1', 'c9')
+	const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(url).toBe('http://localhost:8787/me/subscriptions/src%201')
+	expect(init.method).toBe('DELETE')
+	expect(JSON.parse(String(init.body))).toEqual({ commandId: 'c9' })
+})
+
+test('getOwnerFollowing GETs /me/following and returns both projections', async () => {
+	const view = {
+		localFollows: [{ kind: 'local', id: 'u1', handle: 'bob', displayName: 'Bob' }],
+		sourceSubscriptions: [{ sourceId: 's1', url: 'https://ex.com/f.xml', attributionMode: 'single_publisher', subscriptionState: 'pending', availability: 'awaiting_review' }]
+	}
+	const f = vi.fn(async () => new Response(JSON.stringify(view), { status: 200 }))
+	await expect(getOwnerFollowing(f as unknown as typeof fetch)).resolves.toEqual(view)
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/me/following')
+})
+
+test('importOpmlV2 sends the command id as a header (the body is XML) and returns the v2 counts', async () => {
+	const counts = { localFollowed: 1, active: 2, pending: 1, unavailable: 0, notSubscribable: 1, capSkipped: 0 }
+	const f = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify(counts), { status: 200 }))
+	await expect(importOpmlV2(f as unknown as typeof fetch, '<opml/>', 'c7')).resolves.toEqual(counts)
+	const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(url).toBe('http://localhost:8787/me/follows/opml')
+	expect(new Headers(init.headers).get('x-rsc-command-id')).toBe('c7')
+	expect(String(init.body)).toBe('<opml/>')
 })

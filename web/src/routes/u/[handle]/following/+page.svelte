@@ -13,6 +13,7 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 	const followSet = $derived(new Set(data.followIds))
+	const emptyNote = $derived(data.isOwner ? "You're not following anything yet — subscribe above." : `@${data.handle} isn't following anything yet.`)
 	let live = $state<TimelineEntry[]>([])
 	const posts = $derived([...live, ...data.timeline])
 
@@ -49,7 +50,13 @@
 	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 	{#if form?.ok && form.result}
-		<p class="notice confirm" role="status">Imported: {form.result.followed} followed, {form.result.created} created, {form.result.skipped} skipped (unfetchable, duplicate, or over your subscription cap).</p>
+		{#if 'followed' in form.result}
+			<p class="notice confirm" role="status">Imported: {form.result.followed} followed, {form.result.created} created, {form.result.skipped} skipped (unfetchable, duplicate, or over your subscription cap).</p>
+		{:else}
+			{@const r = form.result}
+			<!-- unavailable and not-subscribable are one indistinguishable outcome. -->
+			<p class="notice confirm" role="status">Imported: {r.localFollowed} followed, {r.active} subscribed, {r.pending} awaiting review, {r.unavailable + r.notSubscribable} unavailable, {r.capSkipped} over your subscription cap.</p>
+		{/if}
 	{/if}
 
 	{#if !data.isOwner}
@@ -62,11 +69,15 @@
 			<form method="POST" action="/?/subscribe" class="add-remote">
 				<label class="visually-hidden" for="sub-url">Feed URL</label>
 				<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-				<label class="visually-hidden" for="sub-type">Subscription type</label>
-				<select id="sub-type" name="type">
-					<option value="webfeed" selected>a site or publication</option>
-					<option value="person">an individual</option>
-				</select>
+				{#if data.sourceModelV2}
+					<input type="hidden" name="commandId" value={data.commandIds?.subscribe} />
+				{:else}
+					<label class="visually-hidden" for="sub-type">Subscription type</label>
+					<select id="sub-type" name="type">
+						<option value="webfeed" selected>a site or publication</option>
+						<option value="person">an individual</option>
+					</select>
+				{/if}
 				<button>Subscribe</button>
 			</form>
 		</details>
@@ -85,6 +96,9 @@
 				<form method="POST" action="?/import" enctype="multipart/form-data" class="import-form">
 					<label class="visually-hidden" for="import-opml">OPML file to import</label>
 					<input id="import-opml" type="file" name="opml" accept=".opml,.xml,text/xml" required />
+					{#if data.sourceModelV2}
+						<input type="hidden" name="commandId" value={data.commandIds?.import} />
+					{/if}
 					<button>Import OPML</button>
 				</form>
 			</details>
@@ -95,8 +109,37 @@
 
 	<section>
 		<h2>{data.isOwner ? 'Your subscriptions' : `@${data.handle} follows`}</h2>
-		{#if data.following.length === 0}
-			<p class="timeline-empty">{data.isOwner ? "You're not following anything yet — subscribe above." : `@${data.handle} isn't following anything yet.`}</p>
+		{#if data.sourceModelV2}
+			{#if (data.rows ?? []).length === 0}
+				<p class="timeline-empty">{emptyNote}</p>
+			{:else}
+				<ul class="following-list">
+					{#each data.rows ?? [] as row (row.kind === 'local' ? row.handle : row.sourceId)}
+						<li>
+							{#if row.kind === 'local'}
+								<span><a href="/u/{row.handle}">@{row.handle}</a> <span class="badge-kind">local</span></span>
+								<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'} class="unfollow-form" class:follow-row={!data.isOwner}>
+									<input type="hidden" name="target" value={row.handle} />
+									<button>{data.isOwner ? 'Unfollow' : 'Follow'}</button>
+								</form>
+							{:else}
+								<!-- Only the owner's own projection can carry pending, and it
+								     says nothing about why — no governance state reaches here. -->
+								<span><a href={row.url} rel="noreferrer">{row.label}</a>{#if row.pending}<span class="badge-kind">awaiting review</span>{/if}</span>
+								{#if data.isOwner}
+									<form method="POST" action="?/unsubscribe" class="unfollow-form">
+										<input type="hidden" name="sourceId" value={row.sourceId} />
+										<input type="hidden" name="commandId" value={row.commandId} />
+										<button>Unsubscribe</button>
+									</form>
+								{/if}
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
+		{:else if data.following.length === 0}
+			<p class="timeline-empty">{emptyNote}</p>
 		{:else}
 			<ul class="following-list">
 				{#each data.following as u (u.id)}

@@ -101,3 +101,59 @@ test('explicit ?tab=local filters by source; guest-on-personal keeps the public 
 	expect(guest.tab).toBe('public')
 	expect(fetch.mock.calls.map((c) => String(c[0])).some((s) => s.includes('followed_by'))).toBe(false)
 })
+
+// --- v2 source registry (RSC_SOURCE_MODEL_V2) -------------------------------
+// The capability reading is memoized per module instance, so each case below
+// imports a FRESH +page.server.ts rather than adding a production reset hook.
+
+const isCap = (u: unknown) => String(u).includes('/capabilities')
+
+test('with the capability on, home mints a subscribe command id and keeps only local follow ids', async () => {
+	vi.resetModules()
+	const { load } = await import('./+page.server.ts')
+	const fetch = vi.fn(async (url: string | URL) =>
+		isCap(url)
+			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+			: String(url).includes('/follows')
+				? new Response(
+						JSON.stringify({
+							following: [
+								{ kind: 'local', id: 'f1', handle: 'w', displayName: 'W' },
+								{ kind: 'source', sourceId: 's1', url: 'https://ex.com/f.xml', displayName: 'Ex' }
+							]
+						}),
+						{ status: 200 }
+					)
+				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
+	)
+	const result = (await load({ fetch, url: new URL('http://x/'), parent: async () => ({ me: meOf('alice') }) } as never)) as {
+		sourceModelV2?: boolean
+		subscribeCommandId?: string
+		followIds?: string[]
+		coreDown?: boolean
+	}
+	// The capability NEVER runs ahead of the legacy call it rides with.
+	expect(String(fetch.mock.calls[0][0])).toContain('/timeline')
+	expect(result.sourceModelV2).toBe(true)
+	expect(result.subscribeCommandId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+	expect(result.followIds).toEqual(['me1', 'f1']) // a v2 source carries no local user id
+	expect(result.coreDown).toBeUndefined()
+})
+
+test('a capability failure degrades home to legacy — never coreDown — and is retried next request', async () => {
+	vi.resetModules()
+	const { load } = await import('./+page.server.ts')
+	const fetch = vi.fn(async (url: string | URL) => {
+		if (isCap(url)) throw new Error('no /capabilities on this core')
+		return new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
+	})
+	const event = { fetch, url: new URL('http://x/'), parent: async () => ({ me: null }) }
+	const first = (await load(event as never)) as { coreDown?: boolean; sourceModelV2?: boolean; subscribeCommandId?: string }
+	expect(first.coreDown).toBeUndefined() // legacy is exactly what OFF is
+	expect(first.sourceModelV2).toBeUndefined()
+	expect(first.subscribeCommandId).toBeUndefined()
+	const capCalls = () => fetch.mock.calls.filter((c) => isCap(c[0])).length
+	expect(capCalls()).toBe(1)
+	await load(event as never)
+	expect(capCalls()).toBe(2) // a failure is never cached as sticky state
+})

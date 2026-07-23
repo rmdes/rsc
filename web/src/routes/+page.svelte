@@ -87,11 +87,17 @@
 				<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
 					<label class="visually-hidden" for="sub-url">Feed URL</label>
 					<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-					<label class="visually-hidden" for="sub-type">Subscription type</label>
-					<select id="sub-type" name="type">
-						<option value="webfeed" selected>a site or publication</option>
-						<option value="person">an individual</option>
-					</select>
+					{#if data.sourceModelV2}
+						<!-- v2 derives the kind from the feed itself; the id makes a no-JS
+						     resubmit replay the same command instead of subscribing twice. -->
+						<input type="hidden" name="commandId" value={data.subscribeCommandId} />
+					{:else}
+						<label class="visually-hidden" for="sub-type">Subscription type</label>
+						<select id="sub-type" name="type">
+							<option value="webfeed" selected>a site or publication</option>
+							<option value="person">an individual</option>
+						</select>
+					{/if}
 					<button>Subscribe</button>
 				</form>
 			</details>
@@ -115,6 +121,11 @@
 
 		{#if data.addedFeed}
 			<p class="notice confirm" role="status">Now following <strong>@{data.addedFeed}</strong>.</p>
+		{:else if data.subscribed === 'added'}
+			<p class="notice confirm" role="status">Subscribed — new items will appear in this river.</p>
+		{:else if data.subscribed === 'pending'}
+			<!-- Core's own neutral wording. The page never infers why. -->
+			<p class="notice" role="status">This source is awaiting review.</p>
 		{/if}
 
 		{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
