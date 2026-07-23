@@ -16,6 +16,20 @@ export type SubscribeResult =
   | { kind: 'local'; created: boolean; follow: PublicLocalFollow }
   | { kind: 'unavailable' | 'not_subscribable' | 'cap' | 'conflict' }
 
+// Owner-projected outcome of the batch OPML import command (Task 4) — the
+// counting analogue of SubscribeResult for a mixed local/remote import.
+// unavailable folds both pre-write SSRF/URL-parse rejects and any blocked
+// source found during the write into one generic bucket (design §4: blocked
+// and never-existed must look identical to the caller).
+export interface ImportSourcesResult {
+  localFollowed: number
+  active: number
+  pending: number
+  unavailable: number
+  notSubscribable: number
+  capSkipped: number
+}
+
 export interface SourceRepository {
   getSource(id: string): Promise<RemoteSource | undefined>
   listSourceSummaries(cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>>
@@ -25,6 +39,19 @@ export interface SourceRepository {
   // Each is a single ledger-backed BEGIN IMMEDIATE transaction (Task 3).
   followLocalAccount(input: { command: CommandEnvelope; ownerId: string; targetId: string; now: string }): Promise<SubscribeResult>
   resolveAndSubscribeSource(input: { command: CommandEnvelope; ownerId: string; canonicalUrl: string; cap: number; now: string }): Promise<SubscribeResult>
+  // One ledger-backed BEGIN IMMEDIATE transaction for the whole import (Task
+  // 4). Parsing, local-feed resolution, normalization, and SSRF checks all
+  // happen in source-service.ts BEFORE this is called — this method only
+  // writes: ledger check, local follows, resolve/create sources, cap, store.
+  importSourceSubscriptions(input: {
+    command: CommandEnvelope
+    ownerId: string
+    localTargetIds: string[]
+    canonicalUrls: string[]
+    unavailableCount: number
+    cap: number
+    now: string
+  }): Promise<ImportSourcesResult | { kind: 'conflict' }>
 }
 
 // Every mutation command's requestFingerprint is SHA-256 of [operation, ...parts]

@@ -30,7 +30,10 @@ import { importFollowingOpml } from '../src/domain/opml.ts'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
 import { HandleTakenError } from '../src/domain/types.ts'
+import { randomUUID } from 'node:crypto'
+import Database from 'better-sqlite3'
 
 async function importSetup(publicUrl: string | null) {
   const repo = await createSqliteRepository(':memory:')
@@ -177,4 +180,84 @@ test('import Case-3: a concurrent create winning the feed_url race is followed v
   const r = await importFollowingOpml(deps, follower, opml)
   expect(r).toEqual({ followed: 1, created: 0, skipped: 0 })
   expect((await repo.listFollowing(follower.id)).map((u) => u.id)).toEqual([winner.id])
+})
+
+// --- v2 SourceService.importOpml (RSC_SOURCE_MODEL_V2, dormant; Task 4) ---
+// The batch analogue of Task 3's subscribeByUrl. Nothing here touches the
+// legacy importFollowingOpml path above; both coexist untouched.
+
+type Raw = InstanceType<typeof Database>
+
+function countRows(raw: Raw, table: string): number {
+  const { n } = raw.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }
+  return n
+}
+
+function insertQuarantinedSource(raw: Raw, canonicalUrl: string): void {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', 'quarantined', 'user_subscription', NULL, 0, ?)`,
+  ).run(randomUUID(), canonicalUrl, '2026-01-01T00:00:00.000Z')
+}
+
+async function countSubscriptions(repo: Awaited<ReturnType<typeof createSqliteRepository>>, ownerId: string): Promise<number> {
+  const { n } = repo.raw.prepare(`SELECT count(*) AS n FROM source_subscriptions_v2 WHERE owner_id = ?`).get(ownerId) as { n: number }
+  return n
+}
+
+test('importOpml: mixed local/remote import is ledgered, idempotent, and conflicts on a changed retry', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const owner = await repo.createLocalUser({ handle: 'importer', displayName: 'Importer' })
+  await repo.createLocalUser({ handle: 'localfeed', displayName: 'LocalFeed' })
+  insertQuarantinedSource(raw, 'https://203.0.113.70/quarantined')
+  const service = createSourceService(repo, 'https://cast.example')
+
+  const mixedXml = `<opml version="2.0"><body>
+    <outline type="rss" text="Local" xmlUrl="https://cast.example/users/localfeed/feed.xml"/>
+    <outline type="rss" text="Public" xmlUrl="https://203.0.113.71/feed"/>
+    <outline type="rss" text="Private" xmlUrl="http://127.0.0.1/feed"/>
+    <outline type="rss" text="Public dup" xmlUrl="https://203.0.113.71/feed"/>
+    <outline type="rss" text="Quarantined" xmlUrl="https://203.0.113.70/quarantined"/>
+  </body></opml>`
+
+  const result = await service.importOpml(owner, mixedXml, 'import-1')
+  expect(result).toEqual({ localFollowed: 1, active: 1, pending: 1, unavailable: 1, notSubscribable: 0, capSkipped: 0 })
+  expect(countRows(raw, 'follows')).toBe(1)
+  expect(countRows(raw, 'source_subscriptions_v2')).toBe(2)
+  expect(countRows(raw, 'command_ledger_v2')).toBe(1)
+
+  // Same command id, same bounded xml -> byte-equivalent replay, no new rows.
+  const replay = await service.importOpml(owner, mixedXml, 'import-1')
+  expect(replay).toEqual(result)
+  expect(countRows(raw, 'follows')).toBe(1)
+  expect(countRows(raw, 'source_subscriptions_v2')).toBe(2)
+  expect(countRows(raw, 'command_ledger_v2')).toBe(1)
+
+  // Same command id, changed xml -> conflict, no new rows.
+  const changedXml = mixedXml.replace('Public dup', 'Public dup changed')
+  const conflict = await service.importOpml(owner, changedXml, 'import-1')
+  expect(conflict).toEqual({ kind: 'conflict' })
+  expect(countRows(raw, 'source_subscriptions_v2')).toBe(2)
+  expect(countRows(raw, 'command_ledger_v2')).toBe(1)
+
+  repo.close()
+})
+
+test('importOpml commits what fits when the cap is hit mid-import and reports capSkipped', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const owner = await repo.createLocalUser({ handle: 'capimporter', displayName: 'CapImporter' })
+  await repo.setSetting('max_subs_per_user', '1') // one remaining slot
+  const service = createSourceService(repo, 'https://cast.example')
+
+  const twoRemoteXml = `<opml><body>
+    <outline type="rss" text="One" xmlUrl="https://203.0.113.72/feed"/>
+    <outline type="rss" text="Two" xmlUrl="https://203.0.113.73/feed"/>
+  </body></opml>`
+
+  const result = await service.importOpml(owner, twoRemoteXml, 'import-2')
+  expect(result).toMatchObject({ active: 1, capSkipped: 1 })
+  expect(await countSubscriptions(repo, owner.id)).toBe(1)
+
+  repo.close()
 })

@@ -6,7 +6,7 @@ import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCu
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, CommandEnvelope } from '../domain/types.ts'
-import type { SourceRepository, Cursor, SubscribeResult } from '../domain/source-repository.ts'
+import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand } from '../domain/source-repository.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
@@ -771,6 +771,90 @@ export class SqliteRepository implements Repository, SourceRepository {
         availability: state === 'pending' ? 'awaiting_review' : 'available',
       }
       const result: SubscribeResult = { kind: 'source', created, subscription }
+      storeCommand(raw, input.command, result, input.now)
+      return result
+    }).immediate()
+  }
+
+  // Task 4: the mixed local/remote OPML import command. One transaction —
+  // ledger check, insert local follows, resolve/create sources, enforce the
+  // cap, store, commit — as explicit sequential substeps. All partitioning
+  // (parsing, local-feed resolution, normalization, SSRF checks) already
+  // happened in source-service.ts; this method never awaits or touches the
+  // network.
+  async importSourceSubscriptions(input: {
+    command: CommandEnvelope
+    ownerId: string
+    localTargetIds: string[]
+    canonicalUrls: string[]
+    unavailableCount: number
+    cap: number
+    now: string
+  }): Promise<ImportSourcesResult | { kind: 'conflict' }> {
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<ImportSourcesResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' } as ImportSourcesResult | { kind: 'conflict' }
+
+      // Substep: insert local follows (unlimited, mirrors legacy Case 2 — no cap applies).
+      let localFollowed = 0
+      for (const targetId of input.localTargetIds) {
+        const existing = raw.prepare(`SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?`).get(input.ownerId, targetId)
+        if (!existing) {
+          raw.prepare(`INSERT INTO follows (follower_id, followed_id, created_at) VALUES (?, ?, ?)`).run(input.ownerId, targetId, input.now)
+          localFollowed++
+        }
+      }
+
+      // Substep: resolve/create sources, enforce the cap. active+pending+
+      // pending_review all count toward it (same query as resolveAndSubscribeSource).
+      let active = 0, pending = 0, notSubscribable = 0, capSkipped = 0
+      let unavailable = input.unavailableCount
+      let subCount = (raw.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE owner_id = ?`).get(input.ownerId) as { n: number }).n
+
+      for (const canonicalUrl of input.canonicalUrls) {
+        let source = raw.prepare(`SELECT * FROM remote_sources_v2 WHERE canonical_url = ?`).get(canonicalUrl) as RemoteSourceV2Row | undefined
+
+        // Blocked reveals nothing beyond generic unavailable (design §4) —
+        // same bucket the pre-write SSRF/invalid-URL rejects landed in.
+        if (source && source.governance === 'blocked') { unavailable++; continue }
+
+        if (source) {
+          const federated = raw.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(source.id)
+          if (source.attribution_mode === 'aggregate' || federated) { notSubscribable++; continue }
+        }
+
+        const existingSub = source
+          ? (raw.prepare(`SELECT * FROM source_subscriptions_v2 WHERE owner_id = ? AND source_id = ?`).get(input.ownerId, source.id) as SourceSubscriptionV2Row | undefined)
+          : undefined
+
+        if (existingSub) {
+          if (existingSub.state === 'pending') pending++
+          else active++ // pending_review also projects into the active bucket (matches resolveAndSubscribeSource)
+          continue
+        }
+
+        if (subCount >= input.cap) { capSkipped++; continue }
+
+        if (!source) {
+          const id = randomUUID()
+          raw.prepare(
+            `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+             VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'opml', NULL, 0, ?)`,
+          ).run(id, canonicalUrl, input.now)
+          source = { id, canonical_url: canonicalUrl, attribution_mode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'opml', provenance_note: null, admin_retained: 0, created_at: input.now }
+        }
+        const state: 'active' | 'pending' = source.governance === 'quarantined' ? 'pending' : 'active'
+        raw.prepare(
+          `INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, ?, ?)`,
+        ).run(randomUUID(), input.ownerId, source.id, state, input.now)
+        subCount++
+        if (state === 'pending') pending++
+        else active++
+      }
+
+      const result: ImportSourcesResult = { localFollowed, active, pending, unavailable, notSubscribable, capSkipped }
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()
