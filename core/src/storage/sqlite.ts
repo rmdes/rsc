@@ -5,6 +5,9 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus } from '../domain/types.ts'
+import type { SourceRepository, Cursor } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit } from '../domain/source-repository.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -29,6 +32,53 @@ function rowToSubscription(r: SubscriptionsTable): Subscription {
 
 function rowToPushSubscription(r: PushSubscriptionsTable): PushSubscription {
   return { id: r.id, userId: r.user_id, mode: r.mode, endpoint: r.endpoint, topic: r.topic, callbackToken: r.callback_token, secret: r.secret, state: r.state, expiresAt: r.expires_at, createdAt: r.created_at }
+}
+
+// v2 source-control plane row shapes (RSC_SOURCE_MODEL_V2, dormant) — read-only
+// in this task. Rows carry the WIDER SQL CHECK vocabulary (rev 5, V4 §10 pin);
+// mapping to the narrower V1 DTO types below is deliberate, not a bug.
+interface RemoteSourceV2Row {
+  id: string; canonical_url: string
+  attribution_mode: 'single_publisher' | 'aggregate'
+  operation: 'enabled' | 'paused'
+  governance: 'allowed' | 'quarantined' | 'blocked'
+  provenance: 'user_subscription' | 'opml' | 'admin_federation' | 'origin_verification' | 'migration'
+  provenance_note: string | null
+  admin_retained: 0 | 1
+  created_at: string
+}
+interface FederationRelationshipV2Row { source_id: string; status: 'pending' | 'approved'; provenance_note: string | null; created_at: string; updated_at: string }
+interface SourceSubscriptionV2Row { id: string; owner_id: string; source_id: string; state: 'active' | 'pending' | 'pending_review'; created_at: string }
+interface SourceAuditV2Row {
+  id: string; source_id: string; command_id: string; actor_id: string | null
+  actor_kind: 'administrator' | 'operator_token' | 'system'
+  action: string
+  category: 'spam' | 'abuse' | 'illegal_content' | 'compromised_source' | 'migration_review' | 'operator_policy' | 'false_positive' | 'remediated' | 'other' | null
+  note: string | null; result_json: string; created_at: string
+}
+
+function rowToRemoteSourceV2(r: RemoteSourceV2Row): RemoteSource {
+  return {
+    id: r.id, canonicalUrl: r.canonical_url, attributionMode: r.attribution_mode,
+    operation: r.operation, governance: r.governance, provenance: r.provenance,
+    provenanceNote: r.provenance_note, adminRetained: r.admin_retained === 1, createdAt: r.created_at,
+  }
+}
+
+function rowToSourceSubscriptionV2(r: SourceSubscriptionV2Row): SourceSubscription {
+  return { id: r.id, ownerId: r.owner_id, sourceId: r.source_id, state: r.state, createdAt: r.created_at }
+}
+
+// actor_kind/category are cast to the V1-narrowed TS unions: nothing writes
+// the wider SQL-only values ('operator_token'; the three deferred categories)
+// yet, so the cast is a documented no-op today (rev 5, V4 §10 pin).
+function rowToSourceAuditV2(r: SourceAuditV2Row): SourceAuditEvent {
+  return {
+    id: r.id, sourceId: r.source_id, commandId: r.command_id, actorId: r.actor_id,
+    actorKind: r.actor_kind as SourceAuditEvent['actorKind'],
+    action: r.action, category: r.category as SourceAuditEvent['category'],
+    note: r.note, resultJson: r.result_json, createdAt: r.created_at,
+  }
 }
 
 type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string; u_auth_user_id: string | null; u_feed_type: FeedType | null }
@@ -72,7 +122,7 @@ function orderThread(entries: TimelineEntry[], rootId: string): TimelineEntry[] 
   return out
 }
 
-export class SqliteRepository implements Repository {
+export class SqliteRepository implements Repository, SourceRepository {
   private db: Kysely<DB>
   private sqlite: InstanceType<typeof Database>
 
@@ -523,6 +573,104 @@ export class SqliteRepository implements Repository {
        ORDER BY u.created_at DESC`,
     ).all() as Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; createdAt: string; feedUrl: string | null; emailVerified: number | null }>
     return rows.map((r) => ({ ...r, emailVerified: r.emailVerified === null ? null : r.emailVerified === 1 }))
+  }
+
+  // --- v2 source-control plane administrative reads (RSC_SOURCE_MODEL_V2,
+  // dormant) — no HTTP route calls these yet; nothing here touches legacy
+  // tables. Flag-off isolation is by construction: these methods only ever
+  // read the five v2 tables, which stay empty until a later vertical writes.
+
+  // Shared tail of every v2 cursor-paginated read: rows arrived limit+1 deep;
+  // split off the displayed page and, if the extra row is present, encode a
+  // nextCursor off the last displayed row's (created_at, id).
+  private splitPage<R extends { created_at: string; id: string }>(rows: R[], lim: number): { page: R[]; nextCursor: string | null } {
+    const page = rows.slice(0, lim)
+    const last = page[page.length - 1]
+    return { page, nextCursor: rows.length > lim && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null }
+  }
+
+  private federationStatusFor(sourceId: string): 'none' | FederationStatus {
+    const row = this.raw.prepare(`SELECT status FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId) as { status: FederationStatus } | undefined
+    return row ? row.status : 'none'
+  }
+
+  private subscriptionCountsFor(sourceId: string): { active: number; pending: number; pendingReview: number } {
+    const rows = this.raw.prepare(
+      `SELECT state, COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ? GROUP BY state`,
+    ).all(sourceId) as { state: 'active' | 'pending' | 'pending_review'; n: number }[]
+    const counts = { active: 0, pending: 0, pendingReview: 0 }
+    for (const r of rows) {
+      if (r.state === 'active') counts.active = r.n
+      else if (r.state === 'pending') counts.pending = r.n
+      else counts.pendingReview = r.n
+    }
+    return counts
+  }
+
+  async getSource(id: string): Promise<RemoteSource | undefined> {
+    const row = this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(id) as RemoteSourceV2Row | undefined
+    return row ? rowToRemoteSourceV2(row) : undefined
+  }
+
+  async listSourceSummaries(cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>> {
+    const lim = clampLimit(limit)
+    const rows = (cursor
+      ? this.raw.prepare(
+          `SELECT * FROM remote_sources_v2 WHERE (created_at < ?) OR (created_at = ? AND id < ?)
+           ORDER BY created_at DESC, id DESC LIMIT ?`,
+        ).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(`SELECT * FROM remote_sources_v2 ORDER BY created_at DESC, id DESC LIMIT ?`).all(lim + 1)
+    ) as RemoteSourceV2Row[]
+    const { page, nextCursor } = this.splitPage(rows, lim)
+    const items: SourceSummary[] = page.map((r) => {
+      const source = rowToRemoteSourceV2(r)
+      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id) }
+    })
+    return { items, nextCursor }
+  }
+
+  async getSourceDetail(id: string): Promise<SourceDetail | undefined> {
+    const row = this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(id) as RemoteSourceV2Row | undefined
+    if (!row) return undefined
+    const auditRow = this.raw.prepare(
+      `SELECT * FROM source_audit_v2 WHERE source_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+    ).get(id) as SourceAuditV2Row | undefined
+    return {
+      source: rowToRemoteSourceV2(row),
+      federationStatus: this.federationStatusFor(id),
+      subscriptionCounts: this.subscriptionCountsFor(id),
+      latestAudit: auditRow ? rowToSourceAuditV2(auditRow) : null,
+    }
+  }
+
+  async listSourceSubscriptions(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSubscription>> {
+    const lim = clampLimit(limit)
+    const rows = (cursor
+      ? this.raw.prepare(
+          `SELECT * FROM source_subscriptions_v2 WHERE source_id = ? AND ((created_at < ?) OR (created_at = ? AND id < ?))
+           ORDER BY created_at DESC, id DESC LIMIT ?`,
+        ).all(sourceId, cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(
+          `SELECT * FROM source_subscriptions_v2 WHERE source_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+        ).all(sourceId, lim + 1)
+    ) as SourceSubscriptionV2Row[]
+    const { page, nextCursor } = this.splitPage(rows, lim)
+    return { items: page.map(rowToSourceSubscriptionV2), nextCursor }
+  }
+
+  async listSourceAudit(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceAuditEvent>> {
+    const lim = clampLimit(limit)
+    const rows = (cursor
+      ? this.raw.prepare(
+          `SELECT * FROM source_audit_v2 WHERE source_id = ? AND ((created_at < ?) OR (created_at = ? AND id < ?))
+           ORDER BY created_at DESC, id DESC LIMIT ?`,
+        ).all(sourceId, cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(
+          `SELECT * FROM source_audit_v2 WHERE source_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+        ).all(sourceId, lim + 1)
+    ) as SourceAuditV2Row[]
+    const { page, nextCursor } = this.splitPage(rows, lim)
+    return { items: page.map(rowToSourceAuditV2), nextCursor }
   }
 
   close(): void {
