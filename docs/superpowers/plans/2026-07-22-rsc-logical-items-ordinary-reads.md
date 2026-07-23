@@ -731,3 +731,20 @@ before audit, journal, ledger, and commit. Every HTTP test uses Hono
 carve: a capability fetch failure degrades to the legacy path for that request
 and memoizes only success, while a model mismatch after a successful v2
 capability rejects and revalidates instead of falling back.
+
+---
+
+> **V1 execution handoff (2026-07-23, branch 3a66186..792fe88 READY):** three
+> facts from V1's implementation that this plan's executor inherits:
+> 1. **Ledger contract as shipped:** conflicts re-evaluate; every other
+>    outcome freezes — `exists`/`unknown` are ledgered and replay forever (a
+>    404'd transition consumes its commandId; documented at the route). V2's
+>    commands must keep this exact rule.
+> 2. **Index debt owned here:** `reapSourceIfOrphaned` counts subscribers by
+>    `source_id`, but the only index is `(owner_id, state, source_id)` — a
+>    covering scan per call. V1's schema is frozen; add the `source_id` index
+>    in THIS plan's migration entry.
+> 3. **No SSRF guard on admin-created sources:** `establishFederation` never
+>    fetches, so an admin can create a `remote_sources_v2` row with an
+>    RFC1918 URL no owner could. This plan's acquisition fetcher must apply
+>    its own guard at fetch time — never assume rows were guarded at creation.
