@@ -1174,7 +1174,13 @@ and audit. Assert ordinary bodies never contain admin-only field names.
 await expectLegacySurface(appOff, webOff)
 expect((await appOff.request('/admin/sources', adminRequest)).status).toBe(404)
 const flow = await runV2ControlPlaneFlow(appOn, webOn)
-expect(flow.auditActions).toEqual(['quarantine','allow','pause','resume','federation_establish'])
+expect(flow.auditActions).toEqual(['quarantine','allow','pause','resume','establish_federation'])
+
+> **Correction 2026-07-23 (Task 10 implementation):** this line previously read
+> `federation_establish`. The audit literal written by Task 6
+> (`core/src/storage/sqlite.ts`, `insertAudit(... action: 'establish_federation' ...)`)
+> is **`establish_federation`**, matching the verb-first form of every other
+> audit action. The plan's transposition was the typo; the code is correct.
 for (const body of flow.ordinaryBodies)
   for (const key of ['governance','operation','provenanceNote','adminRetained']) expect(body).not.toContain(key)
 ```
