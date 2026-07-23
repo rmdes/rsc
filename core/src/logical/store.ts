@@ -1,6 +1,8 @@
 import type { DatabaseContext, ReadTx } from './database.ts'
-import type { LogicalReadTx, SourceModelV2Activation } from './types.ts'
+import type { LogicalReadTx, SourceModelV2Activation, LogicalItemDto } from './types.ts'
+import type { User } from '../domain/types.ts'
 import { getJournalMetadata } from './journal.ts'
+import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -29,10 +31,28 @@ function makeReadTx(tx: ReadTx): ReadSeam {
   }
 }
 
+// The local-mutation write seam (Task 3): each command runs inside ONE db.write()
+// so local storage, logical metadata, and journal effects commit atomically (spec
+// §2.6). service.ts routes v2-on local mutations here; later tasks widen the store
+// with acquisition/reconciliation write methods.
 export function createLogicalStore(db: DatabaseContext) {
   return {
     snapshot<T>(fn: (tx: ReadSeam) => T): T {
       return db.read((tx) => fn(makeReadTx(tx)))
     },
+    createLocalPost(input: { author: User; content: string; replyToId: string | null; now: string }): LogicalItemDto {
+      return db.write((tx) => createLocalPost({ tx, ...input }))
+    },
+    editLocalPost(input: { postId: string; authorId: string; content: string; now: string }): LogicalItemDto {
+      return db.write((tx) => editLocalPost({ tx, ...input }))
+    },
+    deleteLocalPost(input: { postId: string; actorId: string; now: string }): void {
+      db.write((tx) => deleteLocalPost({ tx, ...input }))
+    },
+    deleteLocalAccount(input: { accountId: string; actorId: string; now: string }): void {
+      db.write((tx) => deleteLocalAccount({ tx, ...input }))
+    },
   }
 }
+
+export type LogicalStore = ReturnType<typeof createLogicalStore>

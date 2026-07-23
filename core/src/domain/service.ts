@@ -4,6 +4,7 @@ import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
 import type { NewRemoteUser, NewLocalUser, TimelineEntry, TimelineCursor, TimelineFilter, User, Post } from './types.ts'
 import { slugBase, mintRemoteUser } from './subscribe.ts'
+import type { LogicalStore } from '../logical/store.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 
@@ -21,7 +22,11 @@ async function followUnlessExcluded(repo: Repository, followerId: string, target
   return true
 }
 
-export function createService(repo: Repository, bus: EventBus, publicUrl?: string | null) {
+// `logical` is present ONLY when RSC_SOURCE_MODEL_V2 is on (wired by server.ts in
+// Task 10). Its presence flips local mutations onto the atomic logical-v2 commands
+// (spec §2.6); when absent — the case on all production instances — every path
+// below is the untouched v1 branch. The flag is startup-immutable.
+export function createService(repo: Repository, bus: EventBus, publicUrl?: string | null, logical?: LogicalStore) {
   async function ensureLocalUser(handle: string, displayName: string): Promise<User> {
     const normalized = normalizeHandle(handle)
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -46,6 +51,18 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     },
     async createLocalPostAs(handle: string, displayName: string, content: string, replyTo?: Post): Promise<TimelineEntry> {
       const author = await ensureLocalUser(handle, displayName)
+      if (logical) {
+        // v2-on: the command atomically commits the post + logical metadata +
+        // journal upsert in one write. Read the stored post back as a TimelineEntry
+        // (posts stays the content authority), then emit only the after-commit
+        // local-feed push hint. Logical threading owns adoption (Task 7), so the v1
+        // adoptOrphans sweep is not run here.
+        const dto = logical.createLocalPost({ author, content, replyToId: replyTo?.id ?? null, now: new Date().toISOString() })
+        const stored = await repo.getPost(dto.id)
+        const entry: TimelineEntry = { ...(stored as Post), author }
+        bus.emitNewPost(entry)
+        return entry
+      }
       const now = new Date().toISOString()
       const id = randomUUID()
       const post: Post = {
@@ -67,6 +84,12 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     },
     async editLocalPost(post: Post, content: string, author: User): Promise<TimelineEntry> {
       const now = new Date().toISOString()
+      if (logical) {
+        logical.editLocalPost({ postId: post.id, authorId: author.id, content, now })
+        const entry: TimelineEntry = { ...post, content, editedAt: now, author }
+        bus.emitNewPost(entry)
+        return entry
+      }
       await repo.recordEdit(post.id, { title: post.title, content, contentMarkdown: post.contentMarkdown ?? null, editedAt: now })
       const entry: TimelineEntry = { ...post, content, editedAt: now, author }
       bus.emitNewPost(entry) // existing channel → SSE swap + push.onLocalPost fires (edit propagates)
@@ -158,6 +181,14 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       const user = await repo.getUserByHandle(normalizeHandle(handle))
       if (!user) return { error: 'unknown' }
       if (user.kind !== 'local') return { error: 'remote' }
+      if (logical) {
+        // v2-on: terminal deletion of every post under ONE reset barrier, plus the
+        // account rows, in one atomic write (spec §2.6). Auth rows stay a separate
+        // step, same as v1.
+        logical.deleteLocalAccount({ accountId: user.id, actorId: user.id, now: new Date().toISOString() })
+        if (user.authUserId) repo.deleteAuthRows(user.authUserId)
+        return { ok: true }
+      }
       repo.deleteUserCascade(user.id)
       if (user.authUserId) repo.deleteAuthRows(user.authUserId)
       return { ok: true }
@@ -166,6 +197,10 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       const post = await repo.getPost(id)
       if (!post) return { error: 'unknown' }
       if (post.source !== 'local') return { error: 'remote' }
+      if (logical) {
+        logical.deleteLocalPost({ postId: id, actorId: post.authorId, now: new Date().toISOString() })
+        return { ok: true }
+      }
       await repo.deletePost(id)
       return { ok: true }
     },
