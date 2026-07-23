@@ -4,6 +4,8 @@ import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, adminOrToken } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
+import { mountLogicalRoutes } from './logical-routes.ts'
+import type { LogicalRouteDeps } from './logical-routes.ts'
 import { parseCursor, formatCursor } from './cursor.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
@@ -109,9 +111,18 @@ const MAX_FORM_BYTES = 64 * 1024
 // to spare; every other write route carries only small fields.
 const MAX_JSON_BYTES = 512 * 1024
 const rejectOversized = (c: Context) => c.text('payload too large', 413)
-const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOversized })
+// EXPORTED (rev 5 pin): logical-routes.ts (and V3+) composes the SAME authed-JSON
+// body guard by import instead of redefining it.
+export const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOversized })
 
-export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; sources?: { service: SourceService; repo: SourceRepository } }): Hono {
+// Frozen cross-vertical capability constants (spec §5.6). The journal cursor
+// version is 1 (Task 2's journal.ts encodes version 1); the stream protocol
+// version is 1 (Task 10 owns the SSE transport that consumes it). Exported so
+// Task 10/11 reuse these exact values rather than magic numbers.
+export const JOURNAL_CURSOR_VERSION = 1
+export const STREAM_PROTOCOL_VERSION = 1
+
+export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; sources?: { service: SourceService; repo: SourceRepository }; logical?: LogicalRouteDeps }): Hono {
   const { service, bus, token, sources } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const mailEnabled = deps.mailEnabled ?? true
@@ -131,9 +142,13 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   // The ONE v2 route served in both states: web discovers which source model
   // this instance runs before it picks an API path, so it must answer while the
-  // flag is off too. Boolean shape is a frozen cross-vertical contract — V2
-  // supersedes the enabled branch with a discriminated union; do not pre-widen.
-  app.get('/capabilities', (c) => c.json({ sourceModelV2: sources !== undefined }))
+  // flag is off too. V2 supersession (spec §5.6): when v2 is configured on this
+  // emits the discriminated enabled shape; off keeps exactly {sourceModelV2:false}.
+  app.get('/capabilities', (c) => c.json(
+    sources !== undefined
+      ? { sourceModelV2: true, model: 'logical-v2', journalCursorVersion: JOURNAL_CURSOR_VERSION, streamProtocolVersion: STREAM_PROTOCOL_VERSION }
+      : { sourceModelV2: false },
+  ))
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no
@@ -215,6 +230,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // routes (POST /users, DELETE /users/:handle) live under /users, not /admin,
   // and keep their own adminOrToken gate — this prefix does not touch them.
   app.use('/admin/*', authed, requireAdmin())
+
+  // --- v2 logical acquisition admin routes (RSC_SOURCE_MODEL_V2) ---
+  // Registered here — after the /admin/* gate (so they inherit authed +
+  // requireAdmin) and BEFORE the /admin/sources/:id/:action transition handler
+  // below, so `/admin/sources/:id/refresh` matches the refresh route, not the
+  // transition matrix. Present only when the flag is on (server.ts builds the
+  // logical bundle behind the flag), so while off not one of these registers.
+  if (deps.logical) mountLogicalRoutes(app, deps.logical)
 
   // --- v2 source-control plane routes (RSC_SOURCE_MODEL_V2) ---
   // `deps.sources` exists ONLY when the flag is on (server.ts builds it behind

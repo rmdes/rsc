@@ -185,7 +185,8 @@ async function runV2ControlPlaneFlow(app: Awaited<ReturnType<typeof makeApp>>['a
 
 test('with the flag on the v2 control plane runs end to end and leaks no administrative field', async () => {
   const { app, repo } = await makeApp(true)
-  expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: true })
+  // V2 supersession (spec §5.6): the enabled branch is the discriminated shape.
+  expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 
   const flow = await runV2ControlPlaneFlow(app, repo)
 
