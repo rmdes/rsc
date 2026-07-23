@@ -6,37 +6,71 @@ import { createSqliteRepository } from './storage/sqlite.ts'
 import { createEventBus } from './domain/bus.ts'
 import { createService } from './domain/service.ts'
 import { createApp } from './api/app.ts'
+import { mountLogicalStreamRoute } from './api/logical-routes.ts'
 import { createAuth } from './auth.ts'
 import { createMailer } from './mail.ts'
 import { hubLinkUrl } from './domain/feed.ts'
 import { createPush, handleWebSubRequest, handleRssCloudRequest } from './domain/push.ts'
 import { createPushIn, runPollCycle, pushInEffective } from './domain/push-in.ts'
 import { createShutdown } from './shutdown.ts'
+import type { LogicalRuntime } from './logical/runtime.ts'
+import type { LogicalStore } from './logical/store.ts'
 
 const config = loadConfig()
-
-// TEMPORARY fail-closed guard (Task 2, 2026-07-23). The logical-v2 runtime
-// (journal, projector, scheduler, reconciliation drain, orphan worker,
-// activation barrier) does not exist until Task 10. Until then, a configured-on
-// flag MUST NOT start — v2 fails closed before listening (spec §5.6/§7.1). This
-// throws during server composition, never inside createApp, so createApp-level
-// route tests are unaffected. Task 10 replaces this throw with the real runtime.
-// Safe: the flag is off on all three production instances.
-if (config.sourceModelV2) throw new Error('logical-v2 runtime unavailable')
 
 if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive: true })
 
 const repo = await createSqliteRepository(config.dbPath)
 const bus = createEventBus()
-const service = createService(repo, bus, config.publicUrl)
+
+// v2 runtime composition (spec §5.6/§7.1). REPLACES Task 2's fail-closed guard.
+// When the flag is on, build the logical store, acquisition engine, and the
+// runtime — whose ONE pre-listen activation transaction runs (and completes) via
+// `await runtime.ready` BEFORE this process serves any request; a failed
+// activation rejects that promise and fails startup (never serves v1). When off,
+// a previously-active instance is marked reconciliation_required (a never-activated
+// one is left byte-identically untouched). The v2 modules load only when needed.
+let runtime: LogicalRuntime | null = null
+let logicalStore: LogicalStore | undefined
+// Fail-closed + v1/v2 worker isolation (spec §5.6/§7.4): enabled installs NEITHER
+// legacy poll nor legacy inbound push; disabled runs today's legacy behavior.
+let workers: { legacyPoll: boolean; legacyPushIn: boolean }
+if (config.sourceModelV2) {
+  const { createDatabaseContext } = await import('./logical/database.ts')
+  const { createLogicalStore } = await import('./logical/store.ts')
+  const { createAcquisition } = await import('./logical/acquisition.ts')
+  const { createLogicalRuntime, compose } = await import('./logical/runtime.ts')
+  const db = createDatabaseContext(repo.raw)
+  logicalStore = createLogicalStore(db)
+  const acquisition = createAcquisition({ db })
+  runtime = createLogicalRuntime({
+    db,
+    store: logicalStore,
+    acquisition,
+    config: { pollSeconds: config.pollSeconds },
+    notify: (sequence) => bus.emitSequenceHint(sequence),
+  })
+  // The ONE pre-listen activation transaction completes BEFORE this process serves
+  // any request; a failed activation rejects and fails startup (never serves v1).
+  await runtime.ready
+  workers = compose({ sourceModelV2: true, runtime })
+} else {
+  // spec §7.1: a disabled process marks reconciliation_required when v2 was
+  // previously active — a no-op (and no write) on a never-activated instance, so
+  // flag-off keeps its byte-identical legacy behavior. Inline SQL keeps the v2
+  // runtime module from even loading while off.
+  const act = repo.raw.prepare(`SELECT state FROM logical_activation_v2 WHERE singleton = 1`).get() as { state: string } | undefined
+  if (act?.state === 'active') repo.raw.prepare(`UPDATE logical_activation_v2 SET state = 'reconciliation_required' WHERE singleton = 1`).run()
+  workers = { legacyPoll: true, legacyPushIn: true }
+}
+
+const service = createService(repo, bus, config.publicUrl, logicalStore)
 const mailer = createMailer(config.smtpUrl, config.mailFrom)
 const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecret, webOrigin: config.webOrigin, anonTtlDays: config.anonTtlDays, mailer, authOpenApi: config.authOpenApi })
 const push = createPush({ repo, config })
 const pushIn = createPushIn({ repo, config })
 if (config.pushIn && !config.publicUrl) console.log('push-in inactive: no public URL')
-// v2 source-control plane: built ONLY when RSC_SOURCE_MODEL_V2 is on, and
-// imported dynamically so the module does not even load while off. Its absence
-// is what keeps every v2 route unregistered (see createApp).
+// v2 source-control plane: built ONLY when RSC_SOURCE_MODEL_V2 is on.
 const sources = config.sourceModelV2
   ? { service: (await import('./domain/source-service.ts')).createSourceService(repo, config.publicUrl), repo }
   : undefined
@@ -52,6 +86,7 @@ const app = createApp({
   websub: config.websub.mode,
   pushIn: config.pushIn,
   sources,
+  logical: runtime && logicalStore ? { store: logicalStore, acquisition: runtime.acquisition } : undefined,
   pushApi:
     config.websub.mode === 'self' || config.rssCloud
       ? {
@@ -59,7 +94,8 @@ const app = createApp({
           ...(config.rssCloud ? { rsscloud: (form: Record<string, string>, ip: string | null) => handleRssCloudRequest({ repo, config }, form, ip) } : {}),
         }
       : undefined,
-  pushInApi: pushInEffective(config)
+  // Inbound push is NOT installed or routed when v2 is on (spec §7.4).
+  pushInApi: workers.legacyPushIn && pushInEffective(config)
     ? {
         websubVerify: (token: string, query: Record<string, string>) => pushIn.handleWebSubVerification(token, query),
         websubDeliver: (token: string, body: string, signature: string | null) => pushIn.handleFatPing(token, body, signature, { bus }),
@@ -69,11 +105,31 @@ const app = createApp({
     : undefined,
 })
 
+// The durable v2 SSE transport (spec §5.3). Mounted only when the runtime is live;
+// a v2-only path, so it never collides with the v1 /timeline/stream.
+if (runtime && logicalStore) {
+  const store = logicalStore
+  mountLogicalStreamRoute(app, {
+    source: runtime.streamSource,
+    bus,
+    resolveViewer: async (c) => {
+      const session = await auth.api.getSession({ headers: c.req.raw.headers })
+      const u = session ? await repo.getUserByAuthUserId(session.user.id) : null
+      return { localAccountId: u ? u.id : null, activeSourceIds: [] }
+    },
+  })
+  // v2 local mutations still emit an after-commit hint so the stream catches up
+  // before its heartbeat (spec §7.4); reads the coalesced high water once.
+  bus.onNewPost(() => { bus.emitSequenceHint(store.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })
+}
+
+// Outbound push for local feeds is retained in BOTH modes (spec §7.4): a local
+// post's after-commit notification still drives WebSub/rssCloud publishing.
 // H4 seam: onLocalPost never rejects; void is safe here by contract.
 bus.onNewPost((e) => { void push.onLocalPost(e) })
 
 let tick = 0
-let pollTimer: NodeJS.Timeout
+let pollTimer: NodeJS.Timeout | undefined
 async function loop() {
   tick++
   try {
@@ -83,7 +139,9 @@ async function loop() {
   }
   pollTimer = setTimeout(loop, config.pollSeconds * 1000)
 }
-pollTimer = setTimeout(loop, config.pollSeconds * 1000)
+// Legacy polling is not started when v2 is on (spec §7.4); the v2 scheduler
+// (started by runtime.ready) owns acquisition instead.
+if (workers.legacyPoll) pollTimer = setTimeout(loop, config.pollSeconds * 1000)
 
 let sweepTimer: NodeJS.Timeout
 async function sweepLoop() {
@@ -100,6 +158,6 @@ sweepTimer = setTimeout(sweepLoop, 3600_000)
 const server = serve({ fetch: app.fetch, port: config.port })
 console.log(`rsc core listening on :${config.port}`)
 
-const handler = createShutdown({ server, repo, stopLoops: () => { clearTimeout(pollTimer); clearTimeout(sweepTimer) } })
+const handler = createShutdown({ server, repo, stopLoops: () => { if (pollTimer) clearTimeout(pollTimer); clearTimeout(sweepTimer); void runtime?.stop() } })
 process.once('SIGTERM', () => handler('SIGTERM'))
 process.once('SIGINT', () => handler('SIGINT'))

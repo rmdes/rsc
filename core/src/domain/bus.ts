@@ -5,6 +5,15 @@ import { hideResolvedReplyContext } from './types.ts'
 export interface EventBus {
   emitNewPost(e: TimelineEntry): void
   onNewPost(fn: (e: TimelineEntry) => void): () => void
+  // Logical-v2 journal wake-up hints (spec §5.1/§5.4). A committed journal effect
+  // publishes its (coalesced) high-water sequence here so an open SSE /stream
+  // catches up sooner than its heartbeat. The bus is NEVER event-content
+  // authority — the hint carries only a sequence NUMBER; the stream re-reads the
+  // durable journal under current policy. Additive: v1 onNewPost/emitNewPost are
+  // untouched, so the legacy /timeline/stream, push, and push-in paths are
+  // byte-identical with v2 off.
+  emitSequenceHint(sequence: number): void
+  onSequenceHint(fn: (sequence: number) => void): () => void
 }
 
 export function createEventBus(): EventBus {
@@ -15,6 +24,11 @@ export function createEventBus(): EventBus {
     onNewPost(fn) {
       emitter.on('new-post', fn)
       return () => emitter.off('new-post', fn)
+    },
+    emitSequenceHint(sequence) { emitter.emit('seq-hint', sequence) },
+    onSequenceHint(fn) {
+      emitter.on('seq-hint', fn)
+      return () => emitter.off('seq-hint', fn)
     },
   }
 }

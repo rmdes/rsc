@@ -1,5 +1,8 @@
 import type { Hono, Context } from 'hono'
+import { streamSSE } from 'hono/streaming'
 import { jsonWrite } from './app.ts'
+import type { EventBus } from '../domain/bus.ts'
+import type { LogicalStreamSource } from '../logical/runtime.ts'
 import { fingerprintRequest } from '../domain/source-repository.ts'
 import { decodeCursor } from '../domain/cursor.ts'
 import type { LogicalStore } from '../logical/store.ts'
@@ -347,4 +350,93 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     xml = injectComments(xml, data.replies)
     return c.body(xml, 200, XML)
   })
+}
+
+// =============================================================================
+// v2 durable SSE transport (spec §5.3-5.5) — Task 10
+// =============================================================================
+// GET /stream. Mounted (by server.ts) only when the flag is on, on a v2-only path
+// with no v1 collision. The journal — never the in-memory bus — is the event
+// authority (spec §5.4): the bus supplies only coalesced wake-up sequence hints;
+// every frame is projected from the durable journal under CURRENT policy.
+
+export interface LogicalStreamDeps {
+  source: LogicalStreamSource
+  bus: EventBus
+  resolveViewer: (c: Context) => Promise<ProjectionViewer>
+  pollMs?: number
+  heartbeatMs?: number
+}
+
+const RESET_DATA = JSON.stringify({ model: 'logical-v2', kind: 'reset' })
+const STREAM_BATCH = 200
+
+export function mountLogicalStreamRoute(app: Hono, deps: LogicalStreamDeps): void {
+  const { source, bus, resolveViewer } = deps
+  const pollMs = deps.pollMs ?? 1000
+  const heartbeatMs = deps.heartbeatMs ?? 15000
+
+  app.get('/stream', (c) =>
+    streamSSE(c, async (stream) => {
+      const viewer = await resolveViewer(c)
+
+      // Register the wake-up listener BEFORE replay (spec §5.4): a live effect
+      // landing during replay must not be lost. The hint is coalesced (highest
+      // sequence wins) and is only a wake — the pump re-reads the durable journal.
+      let hintHigh = 0
+      const off = bus.onSequenceHint((s) => { hintHigh = Math.max(hintHigh, s) })
+      stream.onAbort(off)
+
+      // Core accepts the opaque cursor through the Last-Event-ID header (the
+      // browser sets it on auto-reconnect and it takes precedence); the initial
+      // `?last=` query seeds it. Missing/empty is invalid → reset (Core never
+      // silently starts at current high water).
+      const cursor = c.req.header('Last-Event-ID') ?? c.req.query('last') ?? null
+      const start = source.start(cursor && cursor.length > 0 ? cursor : null)
+      if (start.kind === 'reset') {
+        await stream.writeSSE({ event: 'reset', data: RESET_DATA }) // synthesized: no invented id
+        return // close
+      }
+
+      let after = start.afterSequence
+      const generation = start.generation
+
+      // Drain the journal from `after` under current policy. Returns true when a
+      // reset (stored, generation change, or unsafe reconstruction) closed the run.
+      const pump = async (): Promise<boolean> => {
+        for (;;) {
+          const b = source.batch({ afterSequence: after, generation, viewer, limit: STREAM_BATCH })
+          for (const f of b.frames) {
+            if (f.control === 'reset') {
+              await stream.writeSSE({ event: 'reset', data: RESET_DATA, ...(f.id ? { id: f.id } : {}) })
+              return true
+            }
+            await stream.writeSSE({ event: f.event.kind, id: f.id, data: JSON.stringify(f.event) })
+          }
+          if (b.done) return true
+          if (b.lastSequence <= after) break // caught up
+          after = b.lastSequence
+        }
+        return false
+      }
+
+      if (await pump()) return
+
+      let lastHb = Date.now()
+      while (!stream.aborted) {
+        await stream.sleep(pollMs)
+        if (stream.aborted) break
+        const nowMs = Date.now()
+        const heartbeatDue = nowMs - lastHb >= heartbeatMs
+        // Heartbeats are SSE comments AND trigger DB catch-up (spec §5.4).
+        if (heartbeatDue) { await stream.write(': hb\n\n'); lastHb = nowMs }
+        // A coalesced sequence hint (highest wins) wakes the pump between beats;
+        // the heartbeat is the safety catch-up (the bus is never authority — the
+        // pump always re-reads the durable journal under current policy).
+        if (heartbeatDue || hintHigh > after) {
+          if (await pump()) return
+        }
+      }
+    }),
+  )
 }
