@@ -8,9 +8,11 @@ import { createSourceService } from '../src/domain/source-service.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
+import { createScheduler } from '../src/logical/scheduler.ts'
 import { createApp } from '../src/api/app.ts'
 import { encodeCursor } from '../src/domain/cursor.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
+import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 
 type Raw = InstanceType<typeof Database>
@@ -152,6 +154,33 @@ test('a command arriving while a run is in flight joins it (no second fetch) and
 
   release()
   await bg
+  repo.close()
+})
+
+test('a manual refresh records durable health so the scheduler skips the source on its next tick', async () => {
+  const { app, repo, store } = await makeApp({ 'https://feed.test/a': () => ok(RSS(item('g1'))) })
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  seedSource(repo.raw, 's1', 'https://feed.test/a')
+  const owner = await repo.createLocalUser({ handle: 'owner-s1', displayName: 's1' })
+  repo.raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, 'active', ?)`)
+    .run('sub-s1', owner.id, 's1', NOW)
+
+  expect(store.getHealth('s1')).toBeUndefined()
+
+  const created = await (await app.request('/admin/sources/s1/refresh', refresh({ cookie }, 's1', 'c1'))).json()
+  expect(created.disposition).toBe('created')
+  // the manual poll updates the SAME durable health the scheduler reads (spec §1.3)
+  expect(store.getHealth('s1')?.lastPollAt).toBe(NOW)
+
+  // a scheduler tick immediately after must SKIP this source (skip-if-recent now
+  // counts the manual poll) — a throwing stub proves it: if health wasn't recorded,
+  // pollDue would call acquireSource and this test would fail with the thrown error.
+  const throwingEngine: AcquisitionEngine = {
+    acquireSource: async () => { throw new Error('scheduler should have skipped s1 — manual refresh health was not recorded') },
+    inFlight: () => false,
+  }
+  const sched = createScheduler({ store, acquisition: throwingEngine, config: { pollSeconds: 60 } })
+  expect(await sched.pollDue(NOW)).toBe(0)
   repo.close()
 })
 

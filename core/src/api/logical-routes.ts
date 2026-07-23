@@ -111,6 +111,14 @@ export function mountLogicalRoutes(app: Hono, deps: LogicalRouteDeps): void {
       return c.json(NEUTRAL_404, 404)
     }
     const disposition = joined ? ('joined' as const) : ('created' as const)
+    // A genuine new run (not one this command merely joined) just completed a
+    // fetch — record it into the same durable health the scheduler updates
+    // (spec §1.3), so skip-if-recent counts this manual poll. A joined run's
+    // health is recorded by whichever call owns it (the scheduler tick or the
+    // earlier refresh that started it) — recording here too would double-write.
+    if (disposition === 'created') {
+      store.recordHealth({ sourceId, outcome: run.outcome, now: now() })
+    }
     const { proj, terminal } = await waitForTerminal(run.runId)
     return c.json({ ...proj, disposition }, terminal ? 200 : 202)
   })
