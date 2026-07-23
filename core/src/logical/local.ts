@@ -70,6 +70,18 @@ function materializeLocalItem(
   tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('permalink', ?, ?)`).run(input.permalink, input.id)
 }
 
+// Materialize a local post's bridge row on demand (spec §2.6), reusing the same
+// race-safe INSERT OR IGNORE path as create/edit/delete. Reconciliation calls
+// this before recording a conflict against a local post whose bridge row is not
+// yet materialized, so the conflict's FK to logical_items_v2 holds. Idempotent:
+// a no-op when the post is already materialized or gone (a deleted marker).
+export function materializeLocalPost(tx: WriteTx, postId: string): void {
+  const cur = loadPost(tx, postId)
+  if (!cur) return
+  const permalink = cur.url ?? permalinkFor(postId)
+  materializeLocalItem(tx, { id: postId, permalink, timelineSortAt: cur.published_at, parentLogicalItemId: cur.in_reply_to_post_id })
+}
+
 function buildDto(
   post: { id: string; title: string | null; content: string; contentMarkdown: string | null; permalink: string | null; publishedAt: string; editedAt: string | null },
   author: Pick<User, 'id' | 'handle' | 'displayName'>,

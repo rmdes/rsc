@@ -3,6 +3,7 @@ import type { WriteTx } from './database.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput, NormalizedReplyReference } from './types.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent } from './threading.ts'
+import { materializeLocalPost } from './local.ts'
 import {
   compareFirstArrival, selectDisplayDelivery, selectAuthor,
   normalizePublisherName, presentationFingerprint, nextPresentationEntry, normalizeUtc,
@@ -211,6 +212,11 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
     if (permalinkKey) {
       const localId = localPermalinkOwner(tx, permalinkKey)
       if (localId) {
+        // The conflict FK references logical_items_v2(id); a local post's bridge
+        // row is unmaterialized by default (spec §2.6), so materialize it first
+        // (idempotent, reuses Task 3's INSERT OR IGNORE path). The remote echo
+        // merges nothing — no delivery key, no presentation, no second item.
+        materializeLocalPost(tx, localId)
         recordConflict(tx, localId, v.version_id, 'local_permalink_collision', { permalink: permalinkKey, sourceId: v.source_id }, now)
         tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'conflicted' WHERE id = ?`).run(claim.jobId)
         return { kind: 'conflicted', logicalItemId: localId }
@@ -246,19 +252,31 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   // ---- publisher name + mode-neutral claim (spec §2.4) --------------------
   const level = evidenceLevelFor(source.attribution_mode)
   const normalizedName = normalizePublisherName(asName(raw.sourceName) ?? asName(raw.title))
+  // A visible author change is a change in the publisher's observed name; a fresh
+  // claim row with an unchanged name is not (the name/claim are always inserted).
+  const prevName = tx.prepare(`SELECT normalized_name FROM publisher_names_v2 WHERE publisher_id = ? ORDER BY rowid DESC LIMIT 1`).get(publisherId) as { normalized_name: string | null } | undefined
+  const nameChanged = !prevName || prevName.normalized_name !== normalizedName
   tx.prepare(`INSERT INTO publisher_names_v2 (id, publisher_id, source_id, observation_version_id, evidence_level, normalized_name, first_seen_at, effective) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
     .run(randomUUID(), publisherId, v.source_id, v.version_id, level, normalizedName, now)
   tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(randomUUID(), targetId, publisherId, v.source_id, v.version_id, level, now)
 
   // ---- accepted presentation chain (spec §4.4) ----------------------------
-  applyPresentation(tx, v, material, normalized, arrival, now)
+  const presentationChanged = applyPresentation(tx, v, material, normalized, arrival, now)
 
   // ---- selection hints (spec §3.1-3.2): recomputed, never trusted ---------
-  applySelectionHints(tx, targetId, v.version_id)
+  const selection = applySelectionHints(tx, targetId, v.version_id)
 
   // ---- journal + job terminalisation --------------------------------------
-  appendJournal(tx, { kind: 'upsert', logicalItemId: targetId, changeMask: 'presentation' }, now)
+  // Emit an upsert ONLY when something visible changed (spec §5.1), with a mask
+  // reflecting what changed — otherwise a no-op re-reconcile churns the journal
+  // and misfires SSE. Presentation/display-delivery reads as 'presentation';
+  // an author-only change (selected publisher or its name) reads as 'author'.
+  if (presentationChanged || selection.deliveryChanged) {
+    appendJournal(tx, { kind: 'upsert', logicalItemId: targetId, changeMask: 'presentation' }, now)
+  } else if (selection.publisherChanged || nameChanged) {
+    appendJournal(tx, { kind: 'upsert', logicalItemId: targetId, changeMask: 'author' }, now)
+  }
   tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = ? WHERE id = ?`).run(outcome, claim.jobId)
   return { kind: outcome, logicalItemId: targetId }
 }
@@ -278,7 +296,8 @@ function createRemoteItem(tx: WriteTx, v: VersionRow, material: Material, normal
   return id
 }
 
-function applyPresentation(tx: WriteTx, v: VersionRow, material: Material, normalized: { permalink: string | null; enclosures: unknown[] }, arrival: string, now: string): void {
+// Returns whether a new presentation entry was written (a visible content change).
+function applyPresentation(tx: WriteTx, v: VersionRow, material: Material, normalized: { permalink: string | null; enclosures: unknown[] }, arrival: string, now: string): boolean {
   const top = tx.prepare(`SELECT sequence, material_fingerprint FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(v.delivery_id) as { sequence: number; material_fingerprint: string } | undefined
   const wm = tx.prepare(`SELECT MAX(effective_updated_at) AS w FROM presentation_entries_v2 WHERE delivery_id = ? AND provenance = 'explicit'`).get(v.delivery_id) as { w: string | null }
   const fingerprint = presentationFingerprint({
@@ -297,12 +316,13 @@ function applyPresentation(tx: WriteTx, v: VersionRow, material: Material, norma
       .run(v.delivery_id, decision.entry.sequence, v.version_id, decision.entry.effectiveUpdatedAt, decision.entry.provenance, fingerprint)
   }
   if (decision.conflict === 'rollback') recordConflict(tx, null, v.version_id, 'presentation_rollback', { explicit }, now)
+  return decision.entry != null
 }
 
 // Gather the item's candidate deliveries/claims and let the pure comparators pick
 // the effective pointers (spec §3.2). These are OPTIMIZATION hints; ordinary reads
-// re-derive from the same comparators (spec §3.1).
-function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: string): void {
+// re-derive from the same comparators (spec §3.1). Returns which pointers moved.
+function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: string): { deliveryChanged: boolean; publisherChanged: boolean } {
   const cur = tx.prepare(`SELECT selected_delivery_id, selected_publisher_id FROM logical_items_v2 WHERE id = ?`).get(itemId) as { selected_delivery_id: string | null; selected_publisher_id: string | null }
   const deliveryIds = (tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?`).all(itemId) as { key: string }[]).map((r) => r.key)
 
@@ -322,7 +342,7 @@ function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: stri
      FROM publisher_claims_v2 c
      JOIN observation_versions_v2 v ON v.id = c.observation_version_id
      JOIN acquisition_runs_v2 r ON r.id = v.run_id
-     JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id
+     JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id AND j.kind = 'observation'
      JOIN remote_sources_v2 s ON s.id = c.source_id
      WHERE c.logical_item_id = ?`,
   ).all(itemId) as { claim_id: string; publisher_id: string; evidence_level: EvidenceLevel; vid: string; committed_at: string; run_id: string; wire_ordinal: number; governance: string; status: string }[]
@@ -331,8 +351,10 @@ function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: stri
     .map((a) => ({ claimId: a.claim_id, publisherId: a.publisher_id, level: a.evidence_level, eligible: true, arrival: { acquisitionCommittedAt: a.committed_at, runId: a.run_id, wireOrdinal: a.wire_ordinal, observationVersionId: a.vid } }))
   const selectedAuthor = selectAuthor(authorCands, cur.selected_publisher_id)
 
+  const selectedPublisher = selectedAuthor ? selectedAuthor.publisherId : null
   tx.prepare(`UPDATE logical_items_v2 SET selected_delivery_id = ?, selected_publisher_id = ? WHERE id = ?`)
-    .run(selectedDelivery, selectedAuthor ? selectedAuthor.publisherId : null, itemId)
+    .run(selectedDelivery, selectedPublisher, itemId)
+  return { deliveryChanged: selectedDelivery !== cur.selected_delivery_id, publisherChanged: selectedPublisher !== cur.selected_publisher_id }
 }
 
 // The delivery's earliest ordinary-eligible version tuple: earliest by the durable
@@ -343,7 +365,7 @@ function earliestEligibleVersion(tx: WriteTx, deliveryId: string, currentVersion
     `SELECT r.acquisition_committed_at AS committed_at, v.run_id, v.wire_ordinal, v.id AS vid, j.status
      FROM observation_versions_v2 v
      JOIN acquisition_runs_v2 r ON r.id = v.run_id
-     JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id
+     JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id AND j.kind = 'observation'
      WHERE v.delivery_id = ?`,
   ).all(deliveryId) as { committed_at: string; run_id: string; wire_ordinal: number; vid: string; status: string }[]
   const eligible = rows

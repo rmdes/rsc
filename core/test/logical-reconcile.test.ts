@@ -168,6 +168,58 @@ test('a remote item colliding with a deleted_local marker records a conflict and
   expect(count(raw, 'logical_conflicts_v2')).toBe(1)
 })
 
+test('a remote permalink colliding with an UNMATERIALIZED local post records a conflict, materializes the bridge row, and merges nothing', async () => {
+  const { raw, store } = await fresh()
+  raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at) VALUES ('u1','person','alice','Alice',NULL,?)`).run(NOW)
+  // a canonical local post WITH NO logical bridge row materialized (the default state)
+  raw.prepare(`INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at) VALUES ('p1','u1','local',?,NULL,'hello','https://feed.test/p1',?,?)`).run(randomUUID(), NOW, NOW)
+  expect(count(raw, 'logical_items_v2')).toBe(0) // unmaterialized: no bridge row yet
+  seedSource(raw, 's1', 'https://feed.test/f')
+  seedJob(raw, { sourceId: 's1', deliveryKey: { kind: 'permalink', key: 'https://feed.test/p1' }, committedAt: NOW, material: { permalink: 'https://feed.test/p1' } })
+  const done = drain(store)
+  expect(done).toBe(1) // a SUCCESSFUL conflicted outcome, not an operational failure
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2`).get() as { status: string }).status).toBe('conflicted')
+  expect(count(raw, 'logical_conflicts_v2')).toBe(1)
+  // the local post's bridge row was materialized so the conflict FK holds; exactly ONE local item, NO remote item
+  expect(count(raw, 'logical_items_v2', "WHERE id = 'p1' AND origin = 'local'")).toBe(1)
+  expect(count(raw, 'logical_items_v2', "WHERE origin = 'remote'")).toBe(0)
+  expect(count(raw, 'logical_items_v2')).toBe(1)
+  // the remote delivery did NOT attach to the local item as ordinary content
+  expect(count(raw, 'logical_identity_keys_v2', "WHERE kind = 'delivery'")).toBe(0)
+  expect(count(raw, 'presentation_entries_v2')).toBe(0)
+})
+
+// ---- journal de-noise (spec §2.5, §5.1): upsert only on a visible change ------
+
+test('a genuine presentation change emits exactly one journal upsert carrying the presentation mask', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  await acquire(db, raw, 's1', 'https://feed.test/f', RSS(guidItem('g1')), NOW)
+  drain(store, NOW)
+  const afterFirst = count(raw, 'logical_journal_v2')
+  expect(afterFirst).toBe(1) // first reconcile: one upsert
+  await acquire(db, raw, 's1', 'https://feed.test/f', RSS(guidItem('g1', 'CHANGED')), LATER)
+  drain(store, LATER)
+  expect(count(raw, 'logical_journal_v2')).toBe(afterFirst + 1) // exactly one new upsert
+  const last = raw.prepare(`SELECT kind, change_mask FROM logical_journal_v2 ORDER BY sequence DESC LIMIT 1`).get() as { kind: string; change_mask: number }
+  expect(last.kind).toBe('upsert')
+  expect(last.change_mask).toBe(1) // presentation bit
+})
+
+test('reconciling a new observation version that changes nothing visible appends no new journal row', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  const first = seedJob(raw, { sourceId: 's1', deliveryKey: { kind: 'opaque', key: 'g1' }, committedAt: NOW, material: { content: 'body', published: '2026-01-01T00:00:00.000Z' } })
+  drain(store, NOW)
+  const afterFirst = count(raw, 'logical_journal_v2')
+  expect(afterFirst).toBe(1)
+  // a NEW observation version of the SAME delivery, differing only in published time
+  // (not part of the presentation fingerprint, not an explicit update) — nothing visible changes
+  seedJob(raw, { sourceId: 's1', deliveryKey: { kind: 'opaque', key: 'g1' }, committedAt: LATER, material: { content: 'body', published: '2026-02-01T00:00:00.000Z' }, deliveryId: first.deliveryId })
+  drain(store, LATER)
+  expect(count(raw, 'logical_journal_v2')).toBe(afterFirst) // no visible change -> no journal churn
+})
+
 // ---- cross-key disagreement (spec §2.5): isolated item, claims NEITHER key ---
 
 test('when permalink and publisher-opaque resolve to different items the delivery is isolated and claims neither disputed key', async () => {
