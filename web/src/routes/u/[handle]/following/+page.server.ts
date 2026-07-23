@@ -109,9 +109,11 @@ export const actions = {
 		const form = await event.request.formData()
 		const file = form.get('opml')
 		if (!(file instanceof File)) return fail(400, { error: 'choose an OPML file' })
-		// The rendered form's command id IS the capability answer here: the loader
-		// already resolved it, and probing again would put a second round trip in
-		// front of every upload. A legacy form carries none and stays legacy.
+		// ponytail: the rendered form's command id IS the capability answer here —
+		// the loader already resolved it, and probing again would put a second round
+		// trip in front of every upload. A legacy form carries none and stays legacy.
+		// Ceiling: a page cached across a flag flip posts the wrong shape once and
+		// gets core's 400; reload recovers. Probe here if the flag ever flips in prod.
 		const commandId = String(form.get('commandId') ?? '')
 		try {
 			// no mint: OPML import is registered-only; a sessionless POST gets core's 401/403
