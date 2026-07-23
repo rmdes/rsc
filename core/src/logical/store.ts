@@ -10,7 +10,10 @@ import { getJournalMetadata } from './journal.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure } from './reconcile.ts'
+import { scheduleOrphanWork, claimOrphanWork, adoptOrphans } from './threading.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput } from './types.ts'
+import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
+import type { WriteTx } from './database.ts'
 import { encodeCursor } from '../domain/cursor.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
@@ -203,6 +206,20 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     recordReconciliationFailure(input: RecordJobFailureInput): void {
       db.write((tx) => recordReconciliationFailure(tx, input))
+    },
+
+    // --- orphan-work write seam (Task 7) ----------------------------------
+    // scheduleOrphanWork takes the caller's WriteTx so it commits atomically
+    // with the alias mint that triggers it (spec §4.2); claim + adopt run the
+    // continuous worker (driven by Task 10's runtime), each its own transaction.
+    scheduleOrphanWork(tx: WriteTx, input: NewOrphanWork): void {
+      scheduleOrphanWork(tx, input)
+    },
+    claimOrphanWork(_now: string): OrphanClaim | null {
+      return db.write((tx) => claimOrphanWork(tx))
+    },
+    adoptOrphans(input: AdoptOrphansInput): AdoptOrphansResult {
+      return db.write((tx) => adoptOrphans(tx, input))
     },
 
     // --- admin acquisition reads (Task 5) ---------------------------------
