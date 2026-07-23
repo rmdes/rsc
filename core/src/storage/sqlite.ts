@@ -5,9 +5,9 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus } from '../domain/types.ts'
-import type { SourceRepository, Cursor } from '../domain/source-repository.ts'
-import { encodeCursor, clampLimit } from '../domain/source-repository.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, CommandEnvelope } from '../domain/types.ts'
+import type { SourceRepository, Cursor, SubscribeResult } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit, checkCommand, storeCommand } from '../domain/source-repository.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -47,7 +47,6 @@ interface RemoteSourceV2Row {
   admin_retained: 0 | 1
   created_at: string
 }
-interface FederationRelationshipV2Row { source_id: string; status: 'pending' | 'approved'; provenance_note: string | null; created_at: string; updated_at: string }
 interface SourceSubscriptionV2Row { id: string; owner_id: string; source_id: string; state: 'active' | 'pending' | 'pending_review'; created_at: string }
 interface SourceAuditV2Row {
   id: string; source_id: string; command_id: string; actor_id: string | null
@@ -671,6 +670,110 @@ export class SqliteRepository implements Repository, SourceRepository {
     ) as SourceAuditV2Row[]
     const { page, nextCursor } = this.splitPage(rows, lim)
     return { items: page.map(rowToSourceAuditV2), nextCursor }
+  }
+
+  // --- v2 source-control plane mutations (RSC_SOURCE_MODEL_V2, dormant) —
+  // Task 3. Each method is a single ledger-backed BEGIN IMMEDIATE
+  // transaction: checkCommand, resolve, cap-check where applicable, write,
+  // storeCommand, commit. No await inside the transaction() callback —
+  // better-sqlite3's transactions are synchronous only (Task 2 report).
+  // Every INSERT uses an explicit column list (frozen cross-vertical contract).
+
+  async followLocalAccount(input: { command: CommandEnvelope; ownerId: string; targetId: string; now: string }): Promise<SubscribeResult> {
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<SubscribeResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' } as SubscribeResult
+
+      const existing = raw.prepare(`SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?`).get(input.ownerId, input.targetId)
+      const created = !existing
+      if (created) {
+        raw.prepare(`INSERT INTO follows (follower_id, followed_id, created_at) VALUES (?, ?, ?)`).run(input.ownerId, input.targetId, input.now)
+      }
+      const target = raw.prepare(`SELECT id, handle, display_name FROM users WHERE id = ?`).get(input.targetId) as { id: string; handle: string; display_name: string }
+      const result: SubscribeResult = { kind: 'local', created, follow: { kind: 'local', id: target.id, handle: target.handle, displayName: target.display_name } }
+      storeCommand(raw, input.command, result, input.now)
+      return result
+    }).immediate()
+  }
+
+  async resolveAndSubscribeSource(input: { command: CommandEnvelope; ownerId: string; canonicalUrl: string; cap: number; now: string }): Promise<SubscribeResult> {
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<SubscribeResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' } as SubscribeResult
+
+      let source = raw.prepare(`SELECT * FROM remote_sources_v2 WHERE canonical_url = ?`).get(input.canonicalUrl) as RemoteSourceV2Row | undefined
+
+      // Blocked (and, once tombstones land, tombstoned) sources return the
+      // same generic result as a URL that never existed — design §4.
+      if (source && source.governance === 'blocked') {
+        const result: SubscribeResult = { kind: 'unavailable' }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+
+      // Only a single_publisher source with no federation relationship
+      // accepts a new user subscription — design §4 "User subscription boundary".
+      if (source) {
+        const federated = raw.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(source.id)
+        if (source.attribution_mode === 'aggregate' || federated) {
+          const result: SubscribeResult = { kind: 'not_subscribable' }
+          storeCommand(raw, input.command, result, input.now)
+          return result
+        }
+      }
+
+      const existingSub = source
+        ? (raw.prepare(`SELECT * FROM source_subscriptions_v2 WHERE owner_id = ? AND source_id = ?`).get(input.ownerId, source.id) as SourceSubscriptionV2Row | undefined)
+        : undefined
+
+      let state: 'active' | 'pending'
+      let created: boolean
+      if (existingSub) {
+        state = existingSub.state === 'pending' ? 'pending' : 'active'
+        created = false
+      } else {
+        // Cap gates every NEW subscription (and the source it may create) —
+        // one check, inside this transaction, serializes concurrent final-slot
+        // subscribers to exactly one success (design §4).
+        const { n } = raw.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE owner_id = ?`).get(input.ownerId) as { n: number }
+        if (n >= input.cap) {
+          const result: SubscribeResult = { kind: 'cap' }
+          storeCommand(raw, input.command, result, input.now)
+          return result
+        }
+        if (!source) {
+          const id = randomUUID()
+          raw.prepare(
+            `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+             VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, ?)`,
+          ).run(id, input.canonicalUrl, input.now)
+          source = { id, canonical_url: input.canonicalUrl, attribution_mode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'user_subscription', provenance_note: null, admin_retained: 0, created_at: input.now }
+        }
+        state = source.governance === 'quarantined' ? 'pending' : 'active'
+        raw.prepare(
+          `INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, ?, ?)`,
+        ).run(randomUUID(), input.ownerId, source.id, state, input.now)
+        created = true
+      }
+      // Invariant: reachable only with a resolved source (existingSub implies
+      // it via the ternary above; the !source branch above always sets one).
+      if (!source) throw new Error('source resolution invariant violated')
+
+      const subscription: OwnerSourceFollow = {
+        sourceId: source.id,
+        url: source.canonical_url,
+        attributionMode: source.attribution_mode,
+        subscriptionState: state,
+        availability: state === 'pending' ? 'awaiting_review' : 'available',
+      }
+      const result: SubscribeResult = { kind: 'source', created, subscription }
+      storeCommand(raw, input.command, result, input.now)
+      return result
+    }).immediate()
   }
 
   close(): void {

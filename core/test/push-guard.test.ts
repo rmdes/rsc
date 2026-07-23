@@ -8,7 +8,10 @@ test('isPrivateIp classifies the RFC ranges', () => {
   for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.1', '169.254.0.1', '0.0.0.0', '::1', 'fc00::1', 'fe80::1']) {
     expect(isPrivateIp(ip), ip).toBe(true)
   }
-  for (const ip of ['93.184.216.34', '8.8.8.8', '2606:2800:220:1:248:1893:25c8:1946', '172.32.0.1']) {
+  // 203.0.113.0/24 is TEST-NET-3 (RFC 5737, reserved for documentation) — the
+  // source-subscribe suite uses these literals as stand-ins for public remote
+  // sources without needing real DNS; must never be classified private.
+  for (const ip of ['93.184.216.34', '8.8.8.8', '2606:2800:220:1:248:1893:25c8:1946', '172.32.0.1', '203.0.113.9']) {
     expect(isPrivateIp(ip), ip).toBe(false)
   }
 })

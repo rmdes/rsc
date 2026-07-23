@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
-import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail } from './types.ts'
+import { createHash } from 'node:crypto'
+import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow } from './types.ts'
 
 // Plain assignment instead of a parameter property everywhere in this file:
 // Node's native type stripping can't erase parameter properties (core/CLAUDE.md).
@@ -7,12 +8,30 @@ type Db = InstanceType<typeof Database>
 
 export interface Cursor { createdAt: string; id: string }
 
+// Owner-projected outcome of a subscribe command — never carries governance
+// detail beyond 'available'/'awaiting_review'/'unavailable' (design §4:
+// quarantined/blocked reveal nothing about why).
+export type SubscribeResult =
+  | { kind: 'source'; created: boolean; subscription: OwnerSourceFollow }
+  | { kind: 'local'; created: boolean; follow: PublicLocalFollow }
+  | { kind: 'unavailable' | 'not_subscribable' | 'cap' | 'conflict' }
+
 export interface SourceRepository {
   getSource(id: string): Promise<RemoteSource | undefined>
   listSourceSummaries(cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>>
   getSourceDetail(id: string): Promise<SourceDetail | undefined>
   listSourceSubscriptions(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSubscription>>
   listSourceAudit(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceAuditEvent>>
+  // Each is a single ledger-backed BEGIN IMMEDIATE transaction (Task 3).
+  followLocalAccount(input: { command: CommandEnvelope; ownerId: string; targetId: string; now: string }): Promise<SubscribeResult>
+  resolveAndSubscribeSource(input: { command: CommandEnvelope; ownerId: string; canonicalUrl: string; cap: number; now: string }): Promise<SubscribeResult>
+}
+
+// Every mutation command's requestFingerprint is SHA-256 of [operation, ...parts]
+// — never secrets. Shared so later verticals (Task 4 OPML, Task 6 federation)
+// fingerprint identically instead of re-deriving the scheme.
+export function fingerprintRequest(parts: unknown[]): string {
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
 }
 
 // Cursor = base64url JSON of the displayed (created_at, id) pair — the exact
