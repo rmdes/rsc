@@ -109,6 +109,32 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       expect(page2[0].id).toBe('aaa')
     })
 
+    test('topLevel timeline keeps roots and honest orphans but excludes resolved descendants before pagination', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      const insert = (id: string, day: string, over: Partial<Post> = {}) => repo.insertPost({
+        id, authorId: a.id, source: 'local', guid: `g-${id}`, title: null,
+        content: id, url: null,
+        publishedAt: `2026-01-${day}T00:00:00.000Z`,
+        createdAt: `2026-01-${day}T00:00:00.000Z`,
+        ...over,
+      })
+      await insert('root-old', '01')
+      await insert('reply', '02', { inReplyTo: 'root-old', inReplyToPostId: 'root-old', threadRootId: 'root-old' })
+      await insert('nested', '03', { inReplyTo: 'reply', inReplyToPostId: 'reply', threadRootId: 'root-old' })
+      await insert('orphan', '04', { inReplyTo: 'https://missing.example/post', inReplyToPostId: null, threadRootId: null })
+      await insert('root-new', '05')
+
+      expect((await repo.getTimeline(10)).map((e) => e.id)).toEqual(['root-new', 'orphan', 'nested', 'reply', 'root-old'])
+      expect((await repo.getTimeline(10, undefined, { topLevel: true })).map((e) => e.id)).toEqual(['root-new', 'orphan', 'root-old'])
+
+      const page1 = await repo.getTimeline(2, undefined, { topLevel: true })
+      const last = page1.at(-1)!
+      const page2 = await repo.getTimeline(2, { publishedAt: last.publishedAt, id: last.id }, { topLevel: true })
+      expect(page1.map((e) => e.id)).toEqual(['root-new', 'orphan'])
+      expect(page2.map((e) => e.id)).toEqual(['root-old'])
+    })
+
     test('getTimelineAfter returns arrival order, inclusive of the anchor timestamp', async () => {
       const repo = await makeRepo()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
@@ -442,6 +468,19 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       expect(counts.get('r1')).toBeUndefined()
       expect(await repo.countRepliesByPostIds([])).toEqual(new Map())
       expect((await repo.listRepliesByPostId('root')).map((p) => p.id)).toEqual(['r1', 'r2'])
+    })
+
+    test('conversation counts include every descendant while direct counts stay direct', async () => {
+      const repo = await makeRepo()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      const base = { authorId: a.id, source: 'local' as const, title: null, url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' }
+      await repo.insertPost({ ...base, id: 'root', guid: 'root', content: 'root' })
+      await repo.insertPost({ ...base, id: 'r1', guid: 'r1', content: 'r1', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' })
+      await repo.insertPost({ ...base, id: 'r2', guid: 'r2', content: 'r2', inReplyTo: 'r1', inReplyToPostId: 'r1', threadRootId: 'root' })
+
+      expect(await repo.countRepliesByPostIds(['root', 'r1'])).toEqual(new Map([['root', 1], ['r1', 1]]))
+      expect(await repo.countThreadRepliesByRootIds(['root'])).toEqual(new Map([['root', 2]]))
+      expect(await repo.countThreadRepliesByRootIds([])).toEqual(new Map())
     })
 
     test('listTextcastingPeers: remote authors with source:markdown evidence only', async () => {

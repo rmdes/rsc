@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
-import type { NewRemoteUser, NewLocalUser, TimelineEntry, TimelineCursor, User, Post } from './types.ts'
+import type { NewRemoteUser, NewLocalUser, TimelineEntry, TimelineCursor, TimelineFilter, User, Post } from './types.ts'
 import { slugBase, mintRemoteUser } from './subscribe.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
@@ -72,7 +72,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       bus.emitNewPost(entry) // existing channel → SSE swap + push.onLocalPost fires (edit propagates)
       return entry
     },
-    getTimeline(limit = 100, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' }) {
+    getTimeline(limit = 100, before?: TimelineCursor, filter?: TimelineFilter) {
       return repo.getTimeline(limit, before, filter)
     },
     getPost(id: string) {
@@ -86,6 +86,9 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     },
     countRepliesByPostIds(ids: string[]) {
       return repo.countRepliesByPostIds(ids)
+    },
+    countThreadRepliesByRootIds(rootIds: string[]) {
+      return repo.countThreadRepliesByRootIds(rootIds)
     },
     listRepliesByPostId(id: string) {
       return repo.listRepliesByPostId(id)

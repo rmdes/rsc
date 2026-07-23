@@ -2,7 +2,7 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
@@ -312,7 +312,7 @@ export class SqliteRepository implements Repository, SourceRepository {
     const r = await this.db.selectFrom('posts').select('id').where('author_id', '=', authorId).executeTakeFirst()
     return r !== undefined
   }
-  async getTimeline(limit: number, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' }): Promise<TimelineEntry[]> {
+  async getTimeline(limit: number, before?: TimelineCursor, filter?: TimelineFilter): Promise<TimelineEntry[]> {
     let q = this.db
       .selectFrom('posts')
       .innerJoin('users', 'users.id', 'posts.author_id')
@@ -340,6 +340,7 @@ export class SqliteRepository implements Repository, SourceRepository {
     if (filter?.authorId) {
       q = q.where('posts.author_id', '=', filter.authorId)
     }
+    if (filter?.topLevel) q = q.where('posts.in_reply_to_post_id', 'is', null)
     const rows = await q.execute()
     return rows.map(joinedRowToEntry)
   }
@@ -501,6 +502,18 @@ export class SqliteRepository implements Repository, SourceRepository {
       .groupBy('in_reply_to_post_id')
       .execute()
     return new Map(rows.map((r) => [r.in_reply_to_post_id as string, Number(r.n)]))
+  }
+
+  async countThreadRepliesByRootIds(rootIds: string[]): Promise<Map<string, number>> {
+    if (rootIds.length === 0) return new Map()
+    const rows = await this.db
+      .selectFrom('posts')
+      .select('thread_root_id')
+      .select(({ fn }) => fn.countAll().as('n'))
+      .where('thread_root_id', 'in', rootIds)
+      .groupBy('thread_root_id')
+      .execute()
+    return new Map(rows.map((r) => [r.thread_root_id as string, Number(r.n)]))
   }
 
   async listRepliesByPostId(id: string): Promise<TimelineEntry[]> {

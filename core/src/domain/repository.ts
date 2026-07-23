@@ -1,4 +1,4 @@
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, PostRevision } from './types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushSubscription, PushProtocol, PostRevision } from './types.ts'
 
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
@@ -27,7 +27,7 @@ export interface Repository {
   listFollowing(followerId: string): Promise<User[]>
   insertPost(p: Post): Promise<boolean>
   hasPostsByAuthor(authorId: string): Promise<boolean>
-  getTimeline(limit: number, before?: TimelineCursor, filter?: { followedBy?: string; authorId?: string; source?: 'local'; feedType?: 'instance' }): Promise<TimelineEntry[]>
+  getTimeline(limit: number, before?: TimelineCursor, filter?: TimelineFilter): Promise<TimelineEntry[]>
   /** Arrival-order replay scan: created_at >= sinceCreatedAt, ASC. Inclusive by
    *  design (same-ms batches re-deliver in full); consumers dedup by id. */
   getTimelineAfter(sinceCreatedAt: string, limit: number): Promise<TimelineEntry[]>
@@ -41,6 +41,7 @@ export interface Repository {
   recordEdit(postId: string, next: { title: string | null; content: string; contentMarkdown: string | null; editedAt: string }): Promise<void>
   getRevisions(postId: string): Promise<PostRevision[]>
   countRepliesByPostIds(ids: string[]): Promise<Map<string, number>>
+  countThreadRepliesByRootIds(rootIds: string[]): Promise<Map<string, number>>
   listRepliesByPostId(id: string): Promise<TimelineEntry[]>
   getPostsByAuthor(authorId: string, limit: number): Promise<Post[]>
   getRecentLocalPosts(limit: number): Promise<TimelineEntry[]>

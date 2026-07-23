@@ -60,6 +60,14 @@ export interface NewRemoteUser { handle: string; displayName: string; feedUrl: s
 export type TimelineEntry = Post & { author: User }
 export interface TimelineCursor { publishedAt: string; id: string }
 
+export interface TimelineFilter {
+  followedBy?: string
+  authorId?: string
+  source?: 'local'
+  feedType?: 'instance'
+  topLevel?: true
+}
+
 export type PushProtocol = 'websub' | 'rsscloud'
 
 export interface Subscription {
