@@ -104,3 +104,48 @@ CROSS-TAB maintainer items.
 Fold as rev 1 (this loop). Foundation amendment notes ride the same commit.
 Push-deferral is the one veto-able scope call — flagged to the maintainer in
 the loop report. V4's draft waits for this rev (its charter inherits push).
+
+---
+
+# PLAN REVIEW (2026-07-23): V3 plan draft dual pass → V3 rev 2 + V2 rev 5 instructions
+
+Ponytail (TP1-5) + correctness (RC1-5), adjudicated. The five authoring risky
+calls: ALL UPHELD by both passes (the jobs-table lockstep is the lazy option;
+nine-wide CHECKs are the established pin; reconstructed tombstone DDL binding;
+flag-column representation; in-process cache). The defects are cross-plan:
+
+**RC1 (HIGH — V2 rev 5, third lockstep amendment):** source_aliases_v2 is
+missing from V2 rev 4 entirely (table + redirect-identity writer), though V1
+rev 5's fold-notes assign both to V2. Without it V3 purge copies zero alias
+rows and the §5.1 alias-blocking guarantee no-ops. V2 rev 5 adds the table
+(spec-derived DDL, pinned name source_aliases_v2) + the redirect-identity
+writer to the task that handles permanent-chain aliases (Task 3's area) +
+Appendix A/C updates. V3's plan then binds by the pinned name.
+**RC2 (HIGH — V3 fold):** Task 6's purge deletion inventory must enumerate
+EVERY RESTRICT child: add presentation_entries_v2, publisher_names_v2, and
+publisher_feed_aliases_v2 (and state the rule: the inventory is derived from
+the FK graph, with a test that walks PRAGMA foreign_key_list over all v2/v3
+tables so future children can't silently break purge).
+**RC3 (V2 rev 5):** amendment 1's DDL text gains the named-column caveat —
+V2's observation-job INSERT must use an explicit column list (never
+positional VALUES) so the widened 11-column table needs no V2 code change.
+**RC4 (V2 rev 5):** amendment 2 (interim cleanup) broadens from
+"retain when v2 items reference it" to the FK-graph rule: retain the source
+row whenever ANY RESTRICT child references it (health/validators/runs
+included); cleanup deletes what it can and reports retained.
+**RC5 (V3 fold):** AdminItemDetail.verification becomes per-check:
+`verification: {publisherFeedUrl, state, attempts, lastCheckedAt}[]`
+(bounded by the per-item URL cap); Task 9's UI lists them.
+**TP1-4 (V3 fold):** trim the no-amendment re-audit to one sentence; ONE
+parametrized §6 journal-effects table test (per-task suites keep only their
+own new surface); state the fan-out batching rationale (write-lock hold, not
+size); Task 10 asserts wiring once, defers per-surface enumeration.
+**TP5:** optional — keep the cheap sqlite_master no-rebuild assertion.
+Note also: the "jsonWrite exported" assumption is V2-inherited (module-local
+const in app.ts today) — V2's execution exports it or both plans compose it
+locally; one line in V2 rev 5 pins the choice (export it).
+
+Verified clean: every real-tree anchor exact; fingerprints verbatim per §7.1;
+AdminPage/cursor-codec reuse; §6 no-event rows covered; five purge steps map
+1:1; verified_origin prepend names the superseded V2 suite; §10 isolation
+covered; TESTING.md container idiom exact.
