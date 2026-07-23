@@ -5,8 +5,8 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, CommandEnvelope } from '../domain/types.ts'
-import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult } from '../domain/source-repository.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope } from '../domain/types.ts'
+import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand } from '../domain/source-repository.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
@@ -66,6 +66,17 @@ function rowToRemoteSourceV2(r: RemoteSourceV2Row): RemoteSource {
 
 function rowToSourceSubscriptionV2(r: SourceSubscriptionV2Row): SourceSubscription {
   return { id: r.id, ownerId: r.owner_id, sourceId: r.source_id, state: r.state, createdAt: r.created_at }
+}
+
+// PublicSourceFollow.displayName is deterministic presentation data, not
+// stored identity (Task 5 brief / design §4): the hostname of the canonical
+// URL, falling back to the complete URL if it doesn't parse.
+function sourceDisplayName(canonicalUrl: string): string {
+  try {
+    return new URL(canonicalUrl).hostname
+  } catch {
+    return canonicalUrl
+  }
 }
 
 // actor_kind/category are cast to the V1-narrowed TS unions: nothing writes
@@ -855,6 +866,99 @@ export class SqliteRepository implements Repository, SourceRepository {
       }
 
       const result: ImportSourcesResult = { localFollowed, active, pending, unavailable, notSubscribable, capSkipped }
+      storeCommand(raw, input.command, result, input.now)
+      return result
+    }).immediate()
+  }
+
+  // Shared by ownerFollowing and publicFollowing: local-account follows are
+  // never governance-gated, so both projections show the identical set.
+  private localFollowsFor(ownerId: string): PublicLocalFollow[] {
+    const rows = this.raw.prepare(
+      `SELECT u.id AS id, u.handle AS handle, u.display_name AS display_name
+       FROM follows f JOIN users u ON u.id = f.followed_id
+       WHERE f.follower_id = ? AND u.kind = 'local'
+       ORDER BY f.created_at ASC, u.handle ASC`,
+    ).all(ownerId) as { id: string; handle: string; display_name: string }[]
+    return rows.map((r) => ({ kind: 'local', id: r.id, handle: r.handle, displayName: r.display_name }))
+  }
+
+  // Task 5: ordinary projections — plain queries, not commands. Every SELECT
+  // lists its columns explicitly; never spread a row, since that is how
+  // administrative fields (governance/operation/provenance/adminRetained/
+  // audit/counts) would leak into an ordinary response (frozen contract).
+  async ownerFollowing(ownerId: string): Promise<OwnerFollowingView> {
+    const localFollows = this.localFollowsFor(ownerId)
+
+    const subRows = this.raw.prepare(
+      `SELECT s.source_id AS source_id, s.state AS state, r.canonical_url AS canonical_url, r.attribution_mode AS attribution_mode
+       FROM source_subscriptions_v2 s JOIN remote_sources_v2 r ON r.id = s.source_id
+       WHERE s.owner_id = ?
+       ORDER BY s.created_at ASC`,
+    ).all(ownerId) as { source_id: string; state: 'active' | 'pending' | 'pending_review'; canonical_url: string; attribution_mode: 'single_publisher' | 'aggregate' }[]
+    // active -> available; pending/pending_review -> awaiting_review, no matter
+    // the source's governance (pending only ever arises on a quarantined source
+    // today, and pending_review is pinned to awaiting_review regardless — rev 5).
+    const sourceSubscriptions: OwnerSourceFollow[] = subRows.map((r) => ({
+      sourceId: r.source_id,
+      url: r.canonical_url,
+      attributionMode: r.attribution_mode,
+      subscriptionState: r.state,
+      availability: r.state === 'active' ? 'available' : 'awaiting_review',
+    }))
+    return { localFollows, sourceSubscriptions }
+  }
+
+  async publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]> {
+    const localFollows: PublicFollowingEntry[] = this.localFollowsFor(ownerId)
+
+    // Public exposes active subscriptions on allowed sources ONLY (design §4) —
+    // pending/pending_review and any non-allowed governance are excluded here,
+    // not filtered later, so a quarantined/blocked source's id never reaches JSON.
+    const sourceRows = this.raw.prepare(
+      `SELECT s.source_id AS source_id, r.canonical_url AS canonical_url
+       FROM source_subscriptions_v2 s JOIN remote_sources_v2 r ON r.id = s.source_id
+       WHERE s.owner_id = ? AND s.state = 'active' AND r.governance = 'allowed'
+       ORDER BY s.created_at ASC`,
+    ).all(ownerId) as { source_id: string; canonical_url: string }[]
+    const sourceEntries: PublicFollowingEntry[] = sourceRows.map((r): PublicSourceFollow => ({
+      kind: 'source', sourceId: r.source_id, url: r.canonical_url, displayName: sourceDisplayName(r.canonical_url),
+    }))
+    return [...localFollows, ...sourceEntries]
+  }
+
+  // One ledger-backed BEGIN IMMEDIATE transaction (Task 5): ledger check,
+  // delete the subscription, evaluate last-subscription retention, store,
+  // commit. V1 retention evaluates ONLY the federation relationship and the
+  // admin_retained flag (the origin_verification evidence branch is
+  // Vertical 3 — rev 5 deferral; do not add it here).
+  async unsubscribe(input: { command: CommandEnvelope; ownerId: string; sourceId: string; now: string }): Promise<UnsubscribeResult> {
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<UnsubscribeResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' } as UnsubscribeResult
+
+      const sub = raw.prepare(`SELECT id FROM source_subscriptions_v2 WHERE owner_id = ? AND source_id = ?`).get(input.ownerId, input.sourceId) as { id: string } | undefined
+      if (!sub) {
+        const result: UnsubscribeResult = { kind: 'unknown' }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+      raw.prepare(`DELETE FROM source_subscriptions_v2 WHERE id = ?`).run(sub.id)
+
+      const { n } = raw.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(input.sourceId) as { n: number }
+      let sourceRemoved = false
+      if (n === 0) {
+        const source = raw.prepare(`SELECT governance, admin_retained FROM remote_sources_v2 WHERE id = ?`).get(input.sourceId) as { governance: 'allowed' | 'quarantined' | 'blocked'; admin_retained: 0 | 1 } | undefined
+        const federated = raw.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(input.sourceId)
+        if (source && source.governance === 'allowed' && !federated && source.admin_retained === 0) {
+          raw.prepare(`DELETE FROM remote_sources_v2 WHERE id = ?`).run(input.sourceId)
+          sourceRemoved = true
+        }
+      }
+
+      const result: UnsubscribeResult = { kind: 'removed', sourceRemoved }
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()

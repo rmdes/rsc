@@ -1,7 +1,7 @@
 import { parseOpml } from 'feedsmith'
-import type { User } from './types.ts'
+import type { User, OwnerFollowingView, PublicFollowingEntry } from './types.ts'
 import type { Repository } from './repository.ts'
-import type { SourceRepository, SubscribeResult, ImportSourcesResult } from './source-repository.ts'
+import type { SourceRepository, SubscribeResult, ImportSourcesResult, UnsubscribeResult } from './source-repository.ts'
 import { fingerprintRequest } from './source-repository.ts'
 import { localHandleForUrl } from './opml.ts'
 import { normalizeSourceUrl } from './source-url.ts'
@@ -10,6 +10,7 @@ import type { LookupFn } from './push-guard.ts'
 
 const OPERATION = 'subscribe'
 const IMPORT_OPERATION = 'import-opml'
+const UNSUBSCRIBE_OPERATION = 'unsubscribe'
 const MAX_IMPORT_OUTLINES = 1000 // mirrors opml.ts's MAX_OUTLINES (H5)
 // Mirrors the existing POST /me/follows/opml body-size limit (api/app.ts) —
 // this service is callable directly (not only via that HTTP route), so it
@@ -36,6 +37,9 @@ function boundXml(xml: string): string {
 export interface SourceService {
   subscribeByUrl(owner: User, url: string, commandId: string): Promise<SubscribeResult>
   importOpml(owner: User, xml: string, commandId: string): Promise<ImportSourcesResult | { kind: 'conflict' }>
+  ownerFollowing(ownerId: string): Promise<OwnerFollowingView>
+  publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]>
+  unsubscribe(ownerId: string, sourceId: string, commandId: string): Promise<UnsubscribeResult>
 }
 
 // SourceService.subscribeByUrl owns the raw-URL dispatch (Task 3, design §4
@@ -119,6 +123,23 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
         cap,
         now,
       })
+    },
+
+    // Plain reads (Task 5) — no command envelope, nothing to ledger.
+    ownerFollowing(ownerId: string): Promise<OwnerFollowingView> {
+      return repo.ownerFollowing(ownerId)
+    },
+    publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]> {
+      return repo.publicFollowing(ownerId)
+    },
+
+    // Stable-ID unsubscribe with last-subscription cleanup (Task 5). Fingerprint
+    // is exactly ["unsubscribe", sourceId, actorId] (rev 5, review Finding 4) —
+    // reusing a commandId against a different sourceId conflicts.
+    async unsubscribe(ownerId: string, sourceId: string, commandId: string): Promise<UnsubscribeResult> {
+      const now = new Date().toISOString()
+      const command = { actorScope: 'owner' as const, actorId: ownerId, commandId, requestFingerprint: fingerprintRequest([UNSUBSCRIBE_OPERATION, sourceId, ownerId]) }
+      return repo.unsubscribe({ command, ownerId, sourceId, now })
     },
   }
 }

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow } from './types.ts'
+import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow, OwnerFollowingView, PublicFollowingEntry } from './types.ts'
 
 // Plain assignment instead of a parameter property everywhere in this file:
 // Node's native type stripping can't erase parameter properties (core/CLAUDE.md).
@@ -30,6 +30,11 @@ export interface ImportSourcesResult {
   capSkipped: number
 }
 
+// Outcome of the unsubscribe command (Task 5). 'unknown' means no matching
+// subscription exists for (ownerId, sourceId) — still ledgered, same as every
+// other negative result in this file, so a retry replays instead of re-reading.
+export type UnsubscribeResult = { kind: 'removed'; sourceRemoved: boolean } | { kind: 'unknown' | 'conflict' }
+
 export interface SourceRepository {
   getSource(id: string): Promise<RemoteSource | undefined>
   listSourceSummaries(cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>>
@@ -52,6 +57,19 @@ export interface SourceRepository {
     cap: number
     now: string
   }): Promise<ImportSourcesResult | { kind: 'conflict' }>
+
+  // Ordinary reads (Task 5) — plain queries, not commands. Never project
+  // governance/operation/provenance/provenanceNote/adminRetained/audit/counts;
+  // see OwnerSourceFollow/PublicFollowingEntry in types.ts for the frozen shapes.
+  ownerFollowing(ownerId: string): Promise<OwnerFollowingView>
+  publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]>
+
+  // One ledger-backed BEGIN IMMEDIATE transaction (Task 5): ledger check,
+  // delete the subscription, evaluate last-subscription retention, store,
+  // commit. V1 retention checks ONLY the federation relationship and the
+  // admin_retained flag — the origin_verification evidence branch is
+  // Vertical 3 (rev 5 deferral).
+  unsubscribe(input: { command: CommandEnvelope; ownerId: string; sourceId: string; now: string }): Promise<UnsubscribeResult>
 }
 
 // Every mutation command's requestFingerprint is SHA-256 of [operation, ...parts]
