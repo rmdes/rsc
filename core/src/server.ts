@@ -14,6 +14,16 @@ import { createPushIn, runPollCycle, pushInEffective } from './domain/push-in.ts
 import { createShutdown } from './shutdown.ts'
 
 const config = loadConfig()
+
+// TEMPORARY fail-closed guard (Task 2, 2026-07-23). The logical-v2 runtime
+// (journal, projector, scheduler, reconciliation drain, orphan worker,
+// activation barrier) does not exist until Task 10. Until then, a configured-on
+// flag MUST NOT start — v2 fails closed before listening (spec §5.6/§7.1). This
+// throws during server composition, never inside createApp, so createApp-level
+// route tests are unaffected. Task 10 replaces this throw with the real runtime.
+// Safe: the flag is off on all three production instances.
+if (config.sourceModelV2) throw new Error('logical-v2 runtime unavailable')
+
 if (config.dbPath !== ':memory:') mkdirSync(dirname(config.dbPath), { recursive: true })
 
 const repo = await createSqliteRepository(config.dbPath)

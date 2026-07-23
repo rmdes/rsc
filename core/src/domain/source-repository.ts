@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
+import { encodeCursor as encodeTupleCursor, decodeCursor as decodeTupleCursor } from './cursor.ts'
 import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow, OwnerFollowingView, PublicFollowingEntry, AttributionMode, AuditCategory, FederationRelationship, FederationStatus, SourceGovernance, SourceOperation, SourceTransitionResult } from './types.ts'
 
 // Plain assignment instead of a parameter property everywhere in this file:
@@ -154,16 +155,22 @@ export function fingerprintRequest(parts: unknown[]): string {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex')
 }
 
-// Cursor = base64url JSON of the displayed (created_at, id) pair — the exact
-// tuple every v2 listing orders DESC by, so ties on created_at still resolve
-// deterministically off the stable id. Shared by every read method here and
-// by later verticals' listings (rev 5, V4 §10 pin).
+// Cursor = the displayed (created_at, id) pair — the exact tuple every v2
+// listing orders DESC by, so ties on created_at still resolve deterministically
+// off the stable id. These are thin adapters over the ONE shared tuple codec in
+// ./cursor.ts (Task 2 correction A, 2026-07-23): both verticals encode through
+// the neutral module, so this V1 source plane never imports the logical
+// vertical. decodeCursor preserves throw-on-bad-input so app.ts's 400 path is
+// unchanged. The opaque wire format changed with the unification — safe today
+// (opaque + ephemeral + nothing deployed), FROZEN after the first deploy.
 export function encodeCursor(c: Cursor): string {
-  return Buffer.from(JSON.stringify(c)).toString('base64url')
+  return encodeTupleCursor(1, [c.createdAt, c.id])
 }
 
 export function decodeCursor(s: string): Cursor {
-  return JSON.parse(Buffer.from(s, 'base64url').toString('utf8')) as Cursor
+  const decoded = decodeTupleCursor(s)
+  if (!decoded || decoded.tuple.length !== 2) throw new Error('cursor invalid')
+  return { createdAt: decoded.tuple[0], id: decoded.tuple[1] }
 }
 
 export function clampLimit(n: number): number {

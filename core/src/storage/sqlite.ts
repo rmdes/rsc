@@ -8,6 +8,7 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import { LOGICAL_V2_SCHEMA } from '../logical/schema.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -1332,6 +1333,11 @@ const MIGRATIONS: string[][] = [
     'CREATE INDEX source_subscriptions_v2_owner_state ON source_subscriptions_v2(owner_id,state,source_id)',
     'CREATE INDEX source_audit_v2_page ON source_audit_v2(source_id,created_at DESC,id DESC)',
   ],
+  // Logical-v2 additive schema (RSC_SOURCE_MODEL_V2, dormant). Appended at the
+  // TAIL — mid-array insertion corrupts user_version on live databases. Pure
+  // additive CREATE/ALTER/INSERT; creates only the inactive activation row.
+  // Defined in logical/schema.ts; see plan Appendix A.
+  LOGICAL_V2_SCHEMA,
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
