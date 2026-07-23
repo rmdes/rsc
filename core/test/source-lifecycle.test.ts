@@ -168,6 +168,27 @@ test('pause, resume, reject and revoke are permitted while blocked and leave gov
   repo.close()
 })
 
+test('a paused source stays paused across governance actions (mirrors the blocked-preserves-operation coverage)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const quarantined = insertSourceRow(raw, { canonicalUrl: 'https://paused.test/1', operation: 'paused' })
+  expect(await service.transition({ sourceId: quarantined, action: 'quarantine', category: 'operator_policy', note: null, commandId: 'pq1', actorId: admin.id, actorKind: 'administrator' })).toMatchObject({ kind: 'applied' })
+  expect(readAxes(raw, quarantined)).toEqual({ operation: 'paused', governance: 'quarantined', federation: 'none' })
+
+  const blocked = insertSourceRow(raw, { canonicalUrl: 'https://paused.test/2', operation: 'paused' })
+  expect(await service.transition({ sourceId: blocked, action: 'block', category: 'operator_policy', note: null, commandId: 'pb1', actorId: admin.id, actorKind: 'administrator' })).toMatchObject({ kind: 'applied' })
+  expect(readAxes(raw, blocked)).toEqual({ operation: 'paused', governance: 'blocked', federation: 'none' })
+
+  const approved = insertSourceRow(raw, { canonicalUrl: 'https://paused.test/3', operation: 'paused', federation: 'pending' })
+  expect(await service.transition({ sourceId: approved, action: 'approve', category: 'operator_policy', note: null, commandId: 'pa1', actorId: admin.id, actorKind: 'administrator' })).toMatchObject({ kind: 'applied' })
+  expect(readAxes(raw, approved)).toEqual({ operation: 'paused', governance: 'allowed', federation: 'approved' })
+
+  repo.close()
+})
+
 test('governance, federation and mode actions require an enum category; pause and resume allow null', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
@@ -225,6 +246,29 @@ test('set_attribution_mode requires an attributionMode and moves active and pend
   expect(subStates(raw, id)).toEqual(['pending_review', 'pending_review', 'pending_review'])
   expect(readAxes(raw, id)).toEqual({ operation: 'enabled', governance: 'allowed', federation: 'none' })
   expect(counts(raw, id)).toEqual({ audit: 1, ledger: 1 })
+
+  repo.close()
+})
+
+test('pause never applies a caller-supplied attributionMode (the set_attribution_mode action guard is load-bearing)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
+  const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
+  const b = await repo.createLocalUser({ handle: 'b', displayName: 'B' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const id = insertSourceRow(raw, { canonicalUrl: 'https://guard.test/feed' })
+  insertSubscription(raw, a.id, id, 'active')
+  insertSubscription(raw, b.id, id, 'pending')
+
+  const result = await service.transition({
+    sourceId: id, action: 'pause', attributionMode: 'aggregate', category: null, note: null,
+    commandId: 'guard1', actorId: admin.id, actorKind: 'administrator',
+  })
+  expect(result).toMatchObject({ kind: 'applied' })
+  expect((raw.prepare(`SELECT attribution_mode FROM remote_sources_v2 WHERE id = ?`).get(id) as { attribution_mode: string }).attribution_mode).toBe('single_publisher')
+  expect(subStates(raw, id)).toEqual(['active', 'pending'])
 
   repo.close()
 })
