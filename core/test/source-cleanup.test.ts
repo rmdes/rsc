@@ -116,6 +116,72 @@ test('an allowed source survives when other owners remain subscribed', async () 
   repo.close()
 })
 
+// --- Retention of moderation history (source_audit_v2.source_id is ON DELETE
+// CASCADE, so deleting the source destroys its audit trail) ---
+
+test('a source an administrator has audited survives its last unsubscribe, audit history intact', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const owner = await repo.createLocalUser({ handle: 'owner5', displayName: 'Owner5' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const audited = insertSourceRow(raw, { canonicalUrl: 'https://audited.test/feed' })
+  insertSubscription(raw, owner.id, audited, 'active')
+
+  // Quarantine then allow: governance is back to 'allowed' and nothing else
+  // retains the source — only the two audit rows do.
+  const admin = { actorId: 'admin-1', actorKind: 'administrator' as const, note: null }
+  const q = await service.transition({ ...admin, sourceId: audited, action: 'quarantine', category: 'spam', commandId: 'adm-q' })
+  expect(q.kind).toBe('applied')
+  const a = await service.transition({ ...admin, sourceId: audited, action: 'allow', category: 'other', commandId: 'adm-a' })
+  expect(a.kind).toBe('applied')
+  expect(countRows(raw, 'source_audit_v2')).toBe(2)
+
+  const result = await service.unsubscribe(owner.id, audited, 'unsub-audited')
+  expect(result).toEqual({ kind: 'removed', sourceRemoved: false })
+  expect(countRows(raw, 'remote_sources_v2')).toBe(1)
+  expect(countRows(raw, 'source_audit_v2')).toBe(2)
+  expect(countRows(raw, 'source_subscriptions_v2')).toBe(0)
+
+  repo.close()
+})
+
+// --- Account deletion is the other exit from "the last subscriber left" ---
+
+test('deleting an account removes the sources it orphans but keeps audited and federated ones', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const owner = await repo.createLocalUser({ handle: 'owner6', displayName: 'Owner6' })
+  const other = await repo.createLocalUser({ handle: 'other6', displayName: 'Other6' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const orphaned = insertSourceRow(raw, { canonicalUrl: 'https://orphaned.test/feed' })
+  insertSubscription(raw, owner.id, orphaned, 'active')
+
+  const audited = insertSourceRow(raw, { canonicalUrl: 'https://kept-audit.test/feed' })
+  insertSubscription(raw, owner.id, audited, 'active')
+  const t = await service.transition({ sourceId: audited, action: 'quarantine', category: 'spam', note: null, commandId: 'adm-q6', actorId: 'admin-1', actorKind: 'administrator' })
+  expect(t.kind).toBe('applied')
+  await service.transition({ sourceId: audited, action: 'allow', category: 'other', note: null, commandId: 'adm-a6', actorId: 'admin-1', actorKind: 'administrator' })
+
+  const federated = insertSourceRow(raw, { canonicalUrl: 'https://kept-fed.test/feed' })
+  insertFederationRow(raw, federated)
+  insertSubscription(raw, owner.id, federated, 'active')
+
+  const shared = insertSourceRow(raw, { canonicalUrl: 'https://kept-shared.test/feed' })
+  insertSubscription(raw, owner.id, shared, 'active')
+  insertSubscription(raw, other.id, shared, 'active')
+
+  repo.deleteUserCascade(owner.id)
+
+  expect(countRows(raw, 'source_subscriptions_v2')).toBe(1) // only other's
+  const surviving = (raw.prepare(`SELECT id FROM remote_sources_v2 ORDER BY canonical_url`).all() as { id: string }[]).map((r) => r.id)
+  expect(surviving.sort()).toEqual([audited, federated, shared].sort())
+  expect(countRows(raw, 'source_audit_v2')).toBe(2)
+
+  repo.close()
+})
+
 test('unsubscribing from a source never subscribed to returns unknown, ledgered idempotently', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw

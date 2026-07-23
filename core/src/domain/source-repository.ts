@@ -119,10 +119,8 @@ export interface SourceRepository {
   publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]>
 
   // One ledger-backed BEGIN IMMEDIATE transaction (Task 5): ledger check,
-  // delete the subscription, evaluate last-subscription retention, store,
-  // commit. V1 retention checks ONLY the federation relationship and the
-  // admin_retained flag — the origin_verification evidence branch is
-  // Vertical 3 (rev 5 deferral).
+  // delete the subscription, evaluate last-subscription retention
+  // (reapSourceIfOrphaned), store, commit.
   unsubscribe(input: { command: CommandEnvelope; ownerId: string; sourceId: string; now: string }): Promise<UnsubscribeResult>
 
   // Two more ledger-backed BEGIN IMMEDIATE transactions (Task 6). Each writes
@@ -190,6 +188,26 @@ export function checkCommand<T>(tx: Db, command: CommandEnvelope): LedgerCheck<T
   if (!row) return { kind: 'new' }
   if (row.request_fingerprint !== command.requestFingerprint) return { kind: 'conflict' }
   return { kind: 'replay', result: JSON.parse(row.result_json) as T }
+}
+
+// Last-subscription retention, shared by unsubscribe and account deletion so
+// the two exits from "a source lost its last subscriber" cannot drift. Runs
+// INSIDE the caller's own transaction; returns true iff the source row was
+// deleted. A source is kept when anything still depends on it: a remaining
+// subscriber, non-allowed governance, a federation relationship, the
+// administrative retention flag, or ANY audit history — source_audit_v2.source_id
+// is ON DELETE CASCADE, so keeping the source row is the only way to keep a
+// moderation record. (The origin_verification evidence branch is Vertical 3 —
+// rev 5 deferral; do not add it here.)
+export function reapSourceIfOrphaned(tx: Db, sourceId: string): boolean {
+  const { n } = tx.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(sourceId) as { n: number }
+  if (n > 0) return false
+  const source = tx.prepare(`SELECT governance, admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { governance: SourceGovernance; admin_retained: 0 | 1 } | undefined
+  if (!source || source.governance !== 'allowed' || source.admin_retained !== 0) return false
+  if (tx.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId)) return false
+  if (tx.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
+  tx.prepare(`DELETE FROM remote_sources_v2 WHERE id = ?`).run(sourceId)
+  return true
 }
 
 export function storeCommand<T>(tx: Db, command: CommandEnvelope, result: T, now: string): void {

@@ -7,7 +7,7 @@ import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
-import { encodeCursor, clampLimit, checkCommand, storeCommand, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
@@ -576,11 +576,18 @@ export class SqliteRepository implements Repository, SourceRepository {
   deleteUserCascade(id: string): void {
     const raw = this.raw
     raw.transaction(() => {
+      // v2 subscriptions go with the user via their own ON DELETE CASCADE, so
+      // read the source ids first and re-evaluate retention after — otherwise
+      // an account deletion leaves subscriber-less sources behind that no
+      // unsubscribe will ever reach. Empty (a no-op) while RSC_SOURCE_MODEL_V2
+      // is off, since nothing writes the v2 tables then.
+      const sourceIds = (raw.prepare(`SELECT source_id FROM source_subscriptions_v2 WHERE owner_id = ?`).all(id) as { source_id: string }[]).map((r) => r.source_id)
       raw.prepare(`DELETE FROM follows WHERE follower_id = ? OR followed_id = ?`).run(id, id)
       raw.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(id)
       raw.prepare(`DELETE FROM post_revisions WHERE post_id IN (SELECT id FROM posts WHERE author_id = ?)`).run(id)
       raw.prepare(`DELETE FROM posts WHERE author_id = ?`).run(id)
       raw.prepare(`DELETE FROM users WHERE id = ?`).run(id)
+      for (const sourceId of sourceIds) reapSourceIfOrphaned(raw, sourceId)
     })()
   }
 
@@ -962,10 +969,8 @@ export class SqliteRepository implements Repository, SourceRepository {
   }
 
   // One ledger-backed BEGIN IMMEDIATE transaction (Task 5): ledger check,
-  // delete the subscription, evaluate last-subscription retention, store,
-  // commit. V1 retention evaluates ONLY the federation relationship and the
-  // admin_retained flag (the origin_verification evidence branch is
-  // Vertical 3 — rev 5 deferral; do not add it here).
+  // delete the subscription, evaluate last-subscription retention
+  // (reapSourceIfOrphaned — shared with deleteUserCascade), store, commit.
   async unsubscribe(input: { command: CommandEnvelope; ownerId: string; sourceId: string; now: string }): Promise<UnsubscribeResult> {
     const raw = this.raw
     return raw.transaction(() => {
@@ -981,18 +986,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       }
       raw.prepare(`DELETE FROM source_subscriptions_v2 WHERE id = ?`).run(sub.id)
 
-      const { n } = raw.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(input.sourceId) as { n: number }
-      let sourceRemoved = false
-      if (n === 0) {
-        const source = raw.prepare(`SELECT governance, admin_retained FROM remote_sources_v2 WHERE id = ?`).get(input.sourceId) as { governance: 'allowed' | 'quarantined' | 'blocked'; admin_retained: 0 | 1 } | undefined
-        const federated = raw.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(input.sourceId)
-        if (source && source.governance === 'allowed' && !federated && source.admin_retained === 0) {
-          raw.prepare(`DELETE FROM remote_sources_v2 WHERE id = ?`).run(input.sourceId)
-          sourceRemoved = true
-        }
-      }
-
-      const result: UnsubscribeResult = { kind: 'removed', sourceRemoved }
+      const result: UnsubscribeResult = { kind: 'removed', sourceRemoved: reapSourceIfOrphaned(raw, input.sourceId) }
       storeCommand(raw, input.command, result, input.now)
       return result
     }).immediate()
