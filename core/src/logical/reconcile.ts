@@ -1,0 +1,386 @@
+import { randomUUID } from 'node:crypto'
+import type { WriteTx } from './database.ts'
+import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput, NormalizedReplyReference } from './types.ts'
+import { appendJournal } from './journal.ts'
+import { resolveInitialParent } from './threading.ts'
+import {
+  compareFirstArrival, selectDisplayDelivery, selectAuthor,
+  normalizePublisherName, presentationFingerprint, nextPresentationEntry, normalizeUtc,
+  type EvidenceLevel, type FirstArrival, type DeliveryCandidate, type AuthorCandidate,
+} from './projector.ts'
+
+// The in-process serial reconciliation drain (spec §2.3) plus the one bounded
+// per-job transaction that converges an observation version into logical identity,
+// publisher evidence, an accepted presentation chain, ancestry, selection hints,
+// and a journal effect (spec §2.4-2.6, §3.2-3.3, §4.4). ONE write transaction per
+// job; reads never depend on the stored hints (spec §3.1). Flag-off isolation is
+// absolute — nothing runs unless the runtime (Task 10) wires it in.
+//
+// ponytail: serial drain, no lease/fence — leases only if reconciliation ever
+// leaves the single Core process (spec §2.3, review rev 1 P6).
+
+export const MAX_OPERATIONAL_ATTEMPTS = 8
+
+// Operational retry backoff (spec §2.3): min(5s * 2^(attempt-1), 15 min). The
+// longest scheduled delay under the eight-failure limit is 320s (attempt 7).
+export function retryDelayMs(attempt: number): number {
+  return Math.min(5000 * 2 ** (attempt - 1), 900_000)
+}
+
+// A deterministic invariant/data failure — terminal immediately (spec §2.3),
+// distinct from an operational failure which retries with backoff.
+export class ReconcileDataError extends Error {}
+
+// Terminal statuses; a job "waits" behind an earlier sibling only while that
+// sibling is non-terminal.
+const NON_TERMINAL = ['pending', 'processing', 'retrying']
+
+// ---- claim: pick the next eligible job (spec §2.3) --------------------------
+
+interface CandidateRow {
+  job_id: string; run_id: string; version_id: string; delivery_id: string
+  committed_at: string; wire_ordinal: number; governance: string | null
+}
+
+// Take one job in (nextAttemptAt ASC, jobId ASC) order, skipping (a) jobs whose
+// source is blocked or gone — left, not failed (spec §2.3 supersession) — and
+// (b) any job that is not the earliest non-terminal version of its delivery
+// (first-arrival serialization, spec §2.3). Sets the chosen job 'processing'.
+export function claimReconciliation(tx: WriteTx, now: string): ReconciliationClaim | null {
+  const rows = tx.prepare(
+    `SELECT j.id AS job_id, j.run_id, j.observation_version_id AS version_id, v.delivery_id,
+            r.acquisition_committed_at AS committed_at, v.wire_ordinal, s.governance
+     FROM reconciliation_jobs_v2 j
+     JOIN observation_versions_v2 v ON v.id = j.observation_version_id
+     JOIN acquisition_runs_v2 r ON r.id = v.run_id
+     JOIN deliveries_v2 d ON d.id = v.delivery_id
+     LEFT JOIN remote_sources_v2 s ON s.id = d.source_id
+     WHERE j.status IN ('pending','retrying') AND j.next_attempt_at <= ?
+     ORDER BY j.next_attempt_at ASC, j.id ASC`,
+  ).all(now) as CandidateRow[]
+
+  const earlierSibling = tx.prepare(
+    `SELECT 1 FROM reconciliation_jobs_v2 j2
+       JOIN observation_versions_v2 v2 ON v2.id = j2.observation_version_id
+       JOIN acquisition_runs_v2 r2 ON r2.id = v2.run_id
+     WHERE v2.delivery_id = ? AND j2.status IN ('pending','processing','retrying')
+       AND ( r2.acquisition_committed_at < @c
+          OR (r2.acquisition_committed_at = @c AND v2.run_id < @r)
+          OR (r2.acquisition_committed_at = @c AND v2.run_id = @r AND v2.wire_ordinal < @w)
+          OR (r2.acquisition_committed_at = @c AND v2.run_id = @r AND v2.wire_ordinal = @w AND v2.id < @v) )
+     LIMIT 1`,
+  )
+
+  for (const row of rows) {
+    if (row.governance == null || row.governance === 'blocked') continue // left (spec §2.3)
+    const waits = earlierSibling.get(row.delivery_id, { c: row.committed_at, r: row.run_id, w: row.wire_ordinal, v: row.version_id })
+    if (waits) continue // an earlier version of this delivery is still non-terminal
+    tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'processing' WHERE id = ?`).run(row.job_id)
+    return { jobId: row.job_id, runId: row.run_id, observationVersionId: row.version_id }
+  }
+  return null
+}
+
+// ---- failure bookkeeping (spec §2.3): a separate small transaction -----------
+
+export function recordReconciliationFailure(tx: WriteTx, input: RecordJobFailureInput): void {
+  const row = tx.prepare(`SELECT attempts FROM reconciliation_jobs_v2 WHERE id = ?`).get(input.jobId) as { attempts: number } | undefined
+  if (!row) return
+  const next = row.attempts + 1
+  if (input.category === 'invariant_or_data_failure' || next >= MAX_OPERATIONAL_ATTEMPTS) {
+    tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'failed', attempts = ?, next_attempt_at = ?, failure_category = ?, diagnostic = ? WHERE id = ?`)
+      .run(next, input.now, input.category, input.diagnostic, input.jobId)
+    return
+  }
+  const at = input.retryAt ?? new Date(Date.parse(input.now) + retryDelayMs(next)).toISOString()
+  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'retrying', attempts = ?, next_attempt_at = ?, failure_category = NULL, diagnostic = ? WHERE id = ?`)
+    .run(next, at, input.diagnostic, input.jobId)
+}
+
+// ---- the one job transaction (spec §2.3-2.6, §3.2-3.3, §4.4) -----------------
+
+interface VersionRow {
+  version_id: string; delivery_id: string; source_id: string; key_kind: string; key: string
+  committed_at: string; wire_ordinal: number; run_id: string
+  canonical_material: Buffer; raw_evidence_json: string; normalized_json: string
+}
+interface Material { title: string | null; content: string | null; link: string | null; published: string | null; updated: string | null; inReplyTo: string | null; enclosures: unknown[] }
+
+function normalizePermalink(raw: string | null): string | null {
+  if (!raw) return null
+  try {
+    const u = new URL(raw)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    u.hash = ''
+    return u.toString()
+  } catch { return null }
+}
+
+function identityOwner(tx: WriteTx, kind: string, key: string): string | null {
+  const r = tx.prepare(`SELECT logical_item_id FROM logical_identity_keys_v2 WHERE kind = ? AND key = ?`).get(kind, key) as { logical_item_id: string } | undefined
+  return r ? r.logical_item_id : null
+}
+
+function claimIdentity(tx: WriteTx, kind: string, key: string, itemId: string): void {
+  tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES (?, ?, ?)`).run(kind, key, itemId)
+}
+
+function recordConflict(tx: WriteTx, itemId: string | null, versionId: string, kind: string, evidence: unknown, now: string): void {
+  tx.prepare(`INSERT INTO logical_conflicts_v2 (id, logical_item_id, observation_version_id, kind, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(randomUUID(), itemId, versionId, kind, JSON.stringify(evidence), now)
+}
+
+function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, now: string): string {
+  const r = tx.prepare(`SELECT id FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string } | undefined
+  if (r) return r.id
+  const id = randomUUID()
+  tx.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`).run(id, canonicalUrl, now)
+  return id
+}
+
+// A local item (canonical local post, materialized or not) or a deleted-local
+// marker owning this permalink — a remote echo may never create a second ordinary
+// item or resurrect a marker (spec §2.6).
+function localPermalinkOwner(tx: WriteTx, permalink: string): string | null {
+  const marker = tx.prepare(`SELECT logical_item_id FROM logical_deleted_local_v2 WHERE canonical_permalink = ?`).get(permalink) as { logical_item_id: string } | undefined
+  if (marker) return marker.logical_item_id
+  const owner = identityOwner(tx, 'permalink', permalink)
+  if (owner) {
+    const local = tx.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ? AND origin = 'local'`).get(owner)
+    if (local) return owner
+  }
+  // a local post whose bridge row is not yet materialized (spec §2.6)
+  const post = tx.prepare(`SELECT id FROM posts WHERE url = ? AND source = 'local'`).get(permalink) as { id: string } | undefined
+  return post ? post.id : null
+}
+
+function evidenceLevelFor(attributionMode: string): EvidenceLevel {
+  return attributionMode === 'aggregate' ? 'aggregate_assertion' : 'bound_single_publisher'
+}
+
+function replyReference(inReplyTo: string | null, publisherId: string): NormalizedReplyReference | null {
+  if (!inReplyTo) return null
+  const perma = normalizePermalink(inReplyTo)
+  if (perma) return { kind: 'permalink', key: perma, scope: null, raw: inReplyTo }
+  return { kind: 'opaque', key: inReplyTo, scope: { kind: 'publisher', id: publisherId }, raw: inReplyTo }
+}
+
+export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): ReconcileResult {
+  const { claim, now } = input
+  const v = tx.prepare(
+    `SELECT v.id AS version_id, v.delivery_id, d.source_id, d.key_kind, d.key,
+            r.acquisition_committed_at AS committed_at, v.wire_ordinal, v.run_id,
+            v.canonical_material, v.raw_evidence_json, v.normalized_json
+     FROM observation_versions_v2 v
+     JOIN deliveries_v2 d ON d.id = v.delivery_id
+     JOIN acquisition_runs_v2 r ON r.id = v.run_id
+     WHERE v.id = ?`,
+  ).get(claim.observationVersionId) as VersionRow | undefined
+  if (!v) throw new ReconcileDataError(`reconcile: observation version ${claim.observationVersionId} not found`)
+
+  const source = tx.prepare(`SELECT canonical_url, attribution_mode, governance FROM remote_sources_v2 WHERE id = ?`).get(v.source_id) as { canonical_url: string; attribution_mode: string; governance: string } | undefined
+  // Policy-generation supersession (spec §2.3): a blocked/gone source leaves the
+  // job requeued and consumes no attempt. ponytail: blocked/missing IS the V2
+  // supersession trigger (governance->blocked advances the generation, §3.7).
+  if (!source || source.governance === 'blocked') {
+    tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending' WHERE id = ?`).run(claim.jobId)
+    return { kind: 'superseded' }
+  }
+
+  const material = JSON.parse(v.canonical_material.toString('utf8')) as Material
+  const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; inReplyTo: string | null; enclosures: unknown[] }
+  // raw_evidence title/sourceName may be inert digest-evidence objects when the
+  // claim was over-limit (spec §1.5) — those are never presentable names.
+  const raw = JSON.parse(v.raw_evidence_json) as { title: unknown; sourceName: unknown }
+  const asName = (x: unknown): string | null => (typeof x === 'string' ? x : null)
+  const arrival = v.committed_at
+  const publisherId = getOrCreatePublisher(tx, source.canonical_url, now)
+
+  // ---- convergence (spec §2.5) --------------------------------------------
+  let targetId: string
+  let outcome: 'reconciled' | 'conflicted' = 'reconciled'
+  const home = identityOwner(tx, 'delivery', v.delivery_id)
+  if (home) {
+    targetId = home // a later version of an already-homed delivery
+  } else {
+    const permalinkKey = normalizePermalink(normalized.permalink)
+    const opaqueGuid = v.key_kind === 'opaque' ? v.key : null
+    const opaqueKind = `opaque:publisher:${publisherId}`
+
+    // local-first: a canonical local permalink or deleted marker wins absolutely.
+    if (permalinkKey) {
+      const localId = localPermalinkOwner(tx, permalinkKey)
+      if (localId) {
+        recordConflict(tx, localId, v.version_id, 'local_permalink_collision', { permalink: permalinkKey, sourceId: v.source_id }, now)
+        tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'conflicted' WHERE id = ?`).run(claim.jobId)
+        return { kind: 'conflicted', logicalItemId: localId }
+      }
+    }
+
+    const byPermalink = permalinkKey ? identityOwner(tx, 'permalink', permalinkKey) : null
+    const byOpaque = opaqueGuid ? identityOwner(tx, opaqueKind, opaqueGuid) : null
+
+    if (byPermalink && byOpaque && byPermalink !== byOpaque) {
+      // cross-key disagreement: isolated new item, claims NEITHER disputed key (§2.5)
+      targetId = createRemoteItem(tx, v, material, normalized, arrival, publisherId, now)
+      recordConflict(tx, targetId, v.version_id, 'cross_key_disagreement', { permalink: permalinkKey, opaque: opaqueGuid, byPermalink, byOpaque }, now)
+      claimIdentity(tx, 'delivery', v.delivery_id, targetId)
+      outcome = 'conflicted'
+    } else {
+      // A valid permalink governs: never fall through to publisher-opaque (§2.5).
+      const resolved = permalinkKey ? byPermalink : byOpaque
+      targetId = resolved ?? createRemoteItem(tx, v, material, normalized, arrival, publisherId, now)
+      claimIdentity(tx, 'delivery', v.delivery_id, targetId)
+      // claim every UNCONTESTED valid identity key atomically (§2.5)
+      if (permalinkKey) {
+        if (!byPermalink || byPermalink === targetId) claimIdentity(tx, 'permalink', permalinkKey, targetId)
+        else recordConflict(tx, targetId, v.version_id, 'contested_permalink', { permalink: permalinkKey, owner: byPermalink }, now)
+      }
+      if (opaqueGuid) {
+        if (!byOpaque || byOpaque === targetId) claimIdentity(tx, opaqueKind, opaqueGuid, targetId)
+        else recordConflict(tx, targetId, v.version_id, 'contested_opaque', { opaque: opaqueGuid, owner: byOpaque }, now)
+      }
+    }
+  }
+
+  // ---- publisher name + mode-neutral claim (spec §2.4) --------------------
+  const level = evidenceLevelFor(source.attribution_mode)
+  const normalizedName = normalizePublisherName(asName(raw.sourceName) ?? asName(raw.title))
+  tx.prepare(`INSERT INTO publisher_names_v2 (id, publisher_id, source_id, observation_version_id, evidence_level, normalized_name, first_seen_at, effective) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
+    .run(randomUUID(), publisherId, v.source_id, v.version_id, level, normalizedName, now)
+  tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(randomUUID(), targetId, publisherId, v.source_id, v.version_id, level, now)
+
+  // ---- accepted presentation chain (spec §4.4) ----------------------------
+  applyPresentation(tx, v, material, normalized, arrival, now)
+
+  // ---- selection hints (spec §3.1-3.2): recomputed, never trusted ---------
+  applySelectionHints(tx, targetId, v.version_id)
+
+  // ---- journal + job terminalisation --------------------------------------
+  appendJournal(tx, { kind: 'upsert', logicalItemId: targetId, changeMask: 'presentation' }, now)
+  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = ? WHERE id = ?`).run(outcome, claim.jobId)
+  return { kind: outcome, logicalItemId: targetId }
+}
+
+function createRemoteItem(tx: WriteTx, v: VersionRow, material: Material, normalized: { inReplyTo: string | null }, arrival: string, publisherId: string, now: string): string {
+  const id = randomUUID()
+  // immutable timelineSortAt (spec §3.3): pub time only when <= durable arrival.
+  const pub = normalizeUtc(material.published)
+  const timelineSortAt = pub && pub <= arrival ? pub : arrival
+  tx.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'none', NULL, NULL, NULL, ?)`)
+    .run(id, timelineSortAt, now)
+  // initial ancestry from the reply reference (spec §4.1)
+  const reference = replyReference(normalized.inReplyTo, publisherId)
+  const parent = resolveInitialParent(tx, { observationVersionId: v.version_id, reference, logicalItemId: id, now })
+  if (parent.state === 'resolved') tx.prepare(`UPDATE logical_items_v2 SET parent_state = 'resolved', parent_logical_item_id = ? WHERE id = ?`).run(parent.parentLogicalItemId, id)
+  else if (parent.state !== 'none') tx.prepare(`UPDATE logical_items_v2 SET parent_state = ? WHERE id = ?`).run(parent.state, id)
+  return id
+}
+
+function applyPresentation(tx: WriteTx, v: VersionRow, material: Material, normalized: { permalink: string | null; enclosures: unknown[] }, arrival: string, now: string): void {
+  const top = tx.prepare(`SELECT sequence, material_fingerprint FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(v.delivery_id) as { sequence: number; material_fingerprint: string } | undefined
+  const wm = tx.prepare(`SELECT MAX(effective_updated_at) AS w FROM presentation_entries_v2 WHERE delivery_id = ? AND provenance = 'explicit'`).get(v.delivery_id) as { w: string | null }
+  const fingerprint = presentationFingerprint({
+    title: material.title, content: material.content, contentMarkdown: null,
+    permalink: normalizePermalink(normalized.permalink), sourceLink: material.link,
+    enclosures: (normalized.enclosures ?? []) as never, inReplyTo: material.inReplyTo,
+  })
+  const explicit = normalizeUtc(material.updated)
+  const explicitUpdate = explicit && explicit <= arrival ? explicit : null
+  const decision = nextPresentationEntry(
+    { sequence: top ? top.sequence : -1, explicitWatermark: wm.w, topFingerprint: top ? top.material_fingerprint : null },
+    { materialFingerprint: fingerprint, explicitUpdate, arrivalAt: arrival },
+  )
+  if (decision.entry) {
+    tx.prepare(`INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(v.delivery_id, decision.entry.sequence, v.version_id, decision.entry.effectiveUpdatedAt, decision.entry.provenance, fingerprint)
+  }
+  if (decision.conflict === 'rollback') recordConflict(tx, null, v.version_id, 'presentation_rollback', { explicit }, now)
+}
+
+// Gather the item's candidate deliveries/claims and let the pure comparators pick
+// the effective pointers (spec §3.2). These are OPTIMIZATION hints; ordinary reads
+// re-derive from the same comparators (spec §3.1).
+function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: string): void {
+  const cur = tx.prepare(`SELECT selected_delivery_id, selected_publisher_id FROM logical_items_v2 WHERE id = ?`).get(itemId) as { selected_delivery_id: string | null; selected_publisher_id: string | null }
+  const deliveryIds = (tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?`).all(itemId) as { key: string }[]).map((r) => r.key)
+
+  const deliveryCands: DeliveryCandidate[] = []
+  for (const deliveryId of deliveryIds) {
+    const meta = tx.prepare(`SELECT d.source_id, s.attribution_mode, s.governance FROM deliveries_v2 d JOIN remote_sources_v2 s ON s.id = d.source_id WHERE d.id = ?`).get(deliveryId) as { source_id: string; attribution_mode: string; governance: string } | undefined
+    if (!meta || meta.governance !== 'allowed') continue // quarantined/blocked not ordinary-eligible (§3.2)
+    const earliest = earliestEligibleVersion(tx, deliveryId, currentVersionId)
+    if (!earliest) continue
+    deliveryCands.push({ deliveryId, level: evidenceLevelFor(meta.attribution_mode), eligible: true, arrival: earliest })
+  }
+  const selectedDelivery = selectDisplayDelivery(deliveryCands, cur.selected_delivery_id)
+
+  const authorRows = tx.prepare(
+    `SELECT c.id AS claim_id, c.publisher_id, c.evidence_level, c.observation_version_id AS vid,
+            r.acquisition_committed_at AS committed_at, v.run_id, v.wire_ordinal, s.governance, j.status
+     FROM publisher_claims_v2 c
+     JOIN observation_versions_v2 v ON v.id = c.observation_version_id
+     JOIN acquisition_runs_v2 r ON r.id = v.run_id
+     JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id
+     JOIN remote_sources_v2 s ON s.id = c.source_id
+     WHERE c.logical_item_id = ?`,
+  ).all(itemId) as { claim_id: string; publisher_id: string; evidence_level: EvidenceLevel; vid: string; committed_at: string; run_id: string; wire_ordinal: number; governance: string; status: string }[]
+  const authorCands: AuthorCandidate[] = authorRows
+    .filter((a) => a.governance === 'allowed' && (a.status === 'reconciled' || a.status === 'conflicted' || a.vid === currentVersionId))
+    .map((a) => ({ claimId: a.claim_id, publisherId: a.publisher_id, level: a.evidence_level, eligible: true, arrival: { acquisitionCommittedAt: a.committed_at, runId: a.run_id, wireOrdinal: a.wire_ordinal, observationVersionId: a.vid } }))
+  const selectedAuthor = selectAuthor(authorCands, cur.selected_publisher_id)
+
+  tx.prepare(`UPDATE logical_items_v2 SET selected_delivery_id = ?, selected_publisher_id = ? WHERE id = ?`)
+    .run(selectedDelivery, selectedAuthor ? selectedAuthor.publisherId : null, itemId)
+}
+
+// The delivery's earliest ordinary-eligible version tuple: earliest by the durable
+// first-arrival tuple among versions whose job is reconciled/conflicted (or the
+// version in the current transaction).
+function earliestEligibleVersion(tx: WriteTx, deliveryId: string, currentVersionId: string): FirstArrival | null {
+  const rows = tx.prepare(
+    `SELECT r.acquisition_committed_at AS committed_at, v.run_id, v.wire_ordinal, v.id AS vid, j.status
+     FROM observation_versions_v2 v
+     JOIN acquisition_runs_v2 r ON r.id = v.run_id
+     JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id
+     WHERE v.delivery_id = ?`,
+  ).all(deliveryId) as { committed_at: string; run_id: string; wire_ordinal: number; vid: string; status: string }[]
+  const eligible = rows
+    .filter((r) => r.status === 'reconciled' || r.status === 'conflicted' || r.vid === currentVersionId)
+    .map((r): FirstArrival => ({ acquisitionCommittedAt: r.committed_at, runId: r.run_id, wireOrdinal: r.wire_ordinal, observationVersionId: r.vid }))
+  if (eligible.length === 0) return null
+  return eligible.reduce((a, b) => (compareFirstArrival(a, b) <= 0 ? a : b))
+}
+
+// ---- the serial drain (spec §2.3) -------------------------------------------
+
+export interface Reconciler {
+  claimReconciliation(now: string): ReconciliationClaim | null
+  reconcileClaim(input: ReconcileClaimInput): ReconcileResult
+  recordReconciliationFailure(input: RecordJobFailureInput): void
+}
+
+// Drain the whole eligible queue serially, one job at a time. Runs after each
+// acquisition commit and once at startup (wired by the runtime, Task 10). Returns
+// the count of jobs that reached a reconciled/conflicted outcome. All work is
+// synchronous better-sqlite3, so the loop needs no timers.
+export function drainReconciliation(deps: { store: Reconciler; now: () => string }): number {
+  const { store, now } = deps
+  let done = 0
+  for (;;) {
+    const claim = store.claimReconciliation(now())
+    if (!claim) break
+    let result: ReconcileResult
+    try {
+      result = store.reconcileClaim({ claim, now: now() })
+    } catch (err) {
+      const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
+      const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
+      store.recordReconciliationFailure({ jobId: claim.jobId, now: now(), category, diagnostic, retryAt: null })
+      continue
+    }
+    if (result.kind !== 'superseded') done++
+  }
+  return done
+}

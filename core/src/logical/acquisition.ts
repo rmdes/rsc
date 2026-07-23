@@ -126,6 +126,12 @@ interface RawItem {
   inReplyTo: string | null
   sourceName: string | null
   enclosures: EnclosureDto[]
+  // Optional stable identity seed for the fallback delivery key. The feed adapters
+  // leave it undefined (their rawDate is already the RAW value — empty when absent —
+  // so the fallback key is stable across polls). The h-feed adapter sets it because
+  // its rawDate is arrival-substituted by discoverFeed and would otherwise churn the
+  // fallback key every poll (Task 4 re-review carry). See extractHfeed.
+  identitySeed?: string
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null)
@@ -133,8 +139,12 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 
 // h-feed adapter (spec §1.5): a non-feed HTML body that parses as an h-feed with
 // ≥1 h-entry yields candidates in document order. Reuses ingest's discoverFeed
 // (microformats-parser + mf2tojf2) rather than a second microformats path.
-// ponytail: a dateless h-entry uses arrival time as its raw date, so its
-// fingerprint churns across polls; add raw-date passthrough only if that bites.
+// Identity churn fix (Task 4 re-review carry, 2026-07-23): discoverFeed substitutes
+// arrival time into `publishedAt` for a dateless entry, so using it in the fallback
+// identity key churned to a NEW delivery every poll. `e.guid` is discoverFeed's
+// raw-date-disciplined stable id (empty date for the dateless case, the real date
+// otherwise), so it seeds a fallback key that is stable across polls exactly like a
+// dateless RSS item. Presentation still falls back to arrival per §3.3.
 function extractHfeed(html: string, pageUrl: string): RawItem[] {
   const { hentries } = discoverFeed(html, pageUrl)
   return hentries.map((e): RawItem => ({
@@ -147,6 +157,7 @@ function extractHfeed(html: string, pageUrl: string): RawItem[] {
     inReplyTo: e.inReplyTo,
     sourceName: e.sourceName,
     enclosures: [],
+    identitySeed: e.guid,
   }))
 }
 
@@ -264,7 +275,9 @@ export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'
       keyKind = 'opaque'; key = it.opaqueId
     } else {
       const norm = it.link ? normalizePermalink(it.link) : null
-      if (norm) { keyKind = 'permalink'; key = norm } else { keyKind = 'fallback'; key = fallbackKey(it.title, it.content, it.rawDate) }
+      if (norm) { keyKind = 'permalink'; key = norm }
+      else if (it.identitySeed != null) { keyKind = 'fallback'; key = 'fallback:' + createHash('sha256').update(it.identitySeed).digest('hex') }
+      else { keyKind = 'fallback'; key = fallbackKey(it.title, it.content, it.rawDate) }
     }
     // structural: an oversized required operational identifier skips the whole item.
     if (!opStringOk(key)) {

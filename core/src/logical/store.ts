@@ -9,6 +9,8 @@ import type { User, CommandEnvelope } from '../domain/types.ts'
 import { getJournalMetadata } from './journal.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
+import { claimReconciliation, reconcileClaim, recordReconciliationFailure } from './reconcile.ts'
+import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput } from './types.ts'
 import { encodeCursor } from '../domain/cursor.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
@@ -186,6 +188,21 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     failAcquisition(input: FailAcquisitionInput): AcquisitionRun {
       return db.write((tx) => failAcquisition(tx, input))
+    },
+
+    // --- reconciliation write seam (Task 6) -------------------------------
+    // The in-process serial drain (reconcile.ts) drives these. claim + reconcile
+    // are separate transactions per the two-transaction spirit (spec §2.3): claim
+    // commits 'processing' before the job transaction runs; a rolled-back job
+    // transaction records its failure in this SEPARATE small transaction.
+    claimReconciliation(now: string): ReconciliationClaim | null {
+      return db.write((tx) => claimReconciliation(tx, now))
+    },
+    reconcileClaim(input: ReconcileClaimInput): ReconcileResult {
+      return db.write((tx) => reconcileClaim(tx, input))
+    },
+    recordReconciliationFailure(input: RecordJobFailureInput): void {
+      db.write((tx) => recordReconciliationFailure(tx, input))
     },
 
     // --- admin acquisition reads (Task 5) ---------------------------------
