@@ -131,7 +131,7 @@ test('with the capability on, home mints a subscribe command id and keeps only l
 	const { load } = await import('./+page.server.ts')
 	const fetch = vi.fn(async (url: string | URL) =>
 		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+			? new Response(JSON.stringify({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }), { status: 200 })
 			: String(url).includes('/follows')
 				? new Response(
 						JSON.stringify({
@@ -142,7 +142,7 @@ test('with the capability on, home mints a subscribe command id and keeps only l
 						}),
 						{ status: 200 }
 					)
-				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
+				: new Response(JSON.stringify({ model: 'logical-v2', lens: { kind: 'personal', account: { id: 'me1', handle: 'alice', displayName: 'alice' } }, timeline: [], nextCursor: null, journalCursor: 'jc' }), { status: 200 })
 	)
 	const result = (await load({ fetch, url: new URL('http://x/'), parent: async () => ({ me: meOf('alice') }) } as never)) as {
 		sourceModelV2?: boolean
@@ -174,4 +174,77 @@ test('a capability failure degrades home to legacy — never coreDown — and is
 	expect(capCalls()).toBe(1)
 	await load(event as never)
 	expect(capCalls()).toBe(2) // a failure is never cached as sticky state
+})
+
+// A v2 core returns the logical envelope on the SAME /timeline path; the load
+// validates model + maps LogicalItemDto onto the render shape.
+test('with the capability on, home renders mapped logical items from the v2 envelope', async () => {
+	vi.resetModules()
+	const { load } = await import('./+page.server.ts')
+	const item = {
+		kind: 'logical_item',
+		id: 'i1',
+		origin: 'remote',
+		parentResolutionState: 'none',
+		parentLogicalItemId: null,
+		threadRootId: null,
+		selectedAuthor: { kind: 'remote_publisher', id: 'pub1', displayName: 'Pub One', canonicalFeedUrl: 'https://ex.com/f.xml', profileAvailable: true, attributionLevel: 'bound_single_publisher' },
+		title: null,
+		content: '<p>hi</p>',
+		contentMarkdown: null,
+		permalink: 'https://ex.com/i1',
+		sourceLink: 'https://ex.com/i1',
+		replyContext: null,
+		enclosures: [],
+		publishedAt: '2026-07-20T00:00:00.000Z',
+		updatedAt: null,
+		updatedAtProvenance: null,
+		directReplyCount: 0,
+		conversationReplyCount: 2,
+		classification: { personal: false, federated: true }
+	}
+	const fetch = vi.fn(async (url: string | URL) =>
+		isCap(url)
+			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+			: new Response(JSON.stringify({ model: 'logical-v2', lens: { kind: 'public' }, timeline: [item], nextCursor: 'c1', journalCursor: 'jc' }), { status: 200 })
+	)
+	const result = (await load({ fetch, url: new URL('http://x/'), parent: async () => ({ me: null }) } as never)) as {
+		timeline: Array<{ id: string; author: { displayName: string }; contentHtml?: string; publisherId?: string }>
+		nextCursor: string | null
+		sourceModelV2?: boolean
+		coreDown?: boolean
+	}
+	expect(result.coreDown).toBeUndefined()
+	expect(result.sourceModelV2).toBe(true)
+	expect(result.timeline[0].id).toBe('i1')
+	expect(result.timeline[0].author.displayName).toBe('Pub One')
+	expect(result.timeline[0].publisherId).toBe('pub1')
+	expect(result.timeline[0].contentHtml).toContain('<p>hi</p>') // enriched through the sanitize twin
+	expect(result.nextCursor).toBe('c1')
+})
+
+// Carve 2 (spec §5.6): a valid v2 capability THEN a malformed envelope FAILS
+// CLOSED — the river is DISCARDED to empty with no snapshot cursor, never cast
+// to a v1 timeline; the page still reports v2 (a broken core must not down the
+// compose/follows surfaces), and the live stream stays closed (no journalCursor).
+test('with the capability on, a malformed v2 timeline envelope fails closed (discard to empty, never v1)', async () => {
+	vi.resetModules()
+	const { load } = await import('./+page.server.ts')
+	const fetch = vi.fn(async (url: string | URL) =>
+		isCap(url)
+			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+			: new Response(JSON.stringify({ timeline: [{ id: 'x' }], nextCursor: 'c9' }), { status: 200 }) // no model discriminant
+	)
+	const result = (await load({ fetch, url: new URL('http://x/'), parent: async () => ({ me: null }) } as never)) as {
+		coreDown?: boolean
+		sourceModelV2?: boolean
+		journalCursor?: string | null
+		nextCursor: string | null
+		timeline: unknown[]
+	}
+	expect(result.coreDown).toBeUndefined()
+	expect(result.sourceModelV2).toBe(true)
+	expect(result.timeline).toEqual([]) // discarded, never a v1 cast
+	expect(result.nextCursor).toBeNull()
+	expect(result.journalCursor).toBeNull() // live stream stays closed
 })

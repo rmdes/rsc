@@ -70,7 +70,11 @@
 
 <svelte:head><title>Conversation — RSC</title></svelte:head>
 
-<LiveTimeline {onPost} />
+<!-- Expanded conversations are snapshot-only under v2 (spec §5.7): a live reply
+     appears on the next reload. The v1 firehose stays for v1 cores. -->
+{#if !data.sourceModelV2}
+	<LiveTimeline {onPost} />
+{/if}
 
 <div class="lens">
 	<header class="masthead">
@@ -96,7 +100,11 @@
 				<div class="byline">
 					<Avatar author={root.author} sourceName={root.sourceName} />
 					<strong>{root.sourceName ?? root.author.displayName}</strong>
-					<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
+					{#if root.publisherId}
+						<a class="handle" href="/p/{encodeURIComponent(root.publisherId)}">{root.author.displayName}</a>
+					{:else}
+						<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
+					{/if}
 					<span class="kind">{root.source}</span>
 					<a class="permalink" href="/post/{root.id}"><time datetime={root.publishedAt}>{root.publishedAt.slice(0, 10)}</time></a>
 					<EditedMarker post={root} />

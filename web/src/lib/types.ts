@@ -1,3 +1,11 @@
+// The widened capability contract (spec §5.6, review C5) — supersedes V1's
+// inline `{sourceModelV2: boolean}`. The v2 variant carries the model + the two
+// protocol versions Core advertises. getCapabilities (api.ts) reads this shape;
+// the memoize-success-only + degrade-on-failure semantics are unchanged.
+export type Capabilities =
+	| { sourceModelV2: false }
+	| { sourceModelV2: true; model: 'logical-v2'; journalCursorVersion: number; streamProtocolVersion: number }
+
 export interface TimelineEntry {
 	id: string
 	title: string | null
@@ -18,6 +26,9 @@ export interface TimelineEntry {
 	sourceFeedUrl?: string | null
 	editedAt?: string | null
 	rootReplyCount?: number
+	// v2 only: set for a navigable remote publisher so bylines link /p/:id instead
+	// of /u (which stays local-account only). Undefined on every v1 entry.
+	publisherId?: string
 }
 
 // v2 source-registry DTOs (RSC_SOURCE_MODEL_V2), mirroring core's

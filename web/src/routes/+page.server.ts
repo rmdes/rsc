@@ -1,10 +1,21 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getTimeline, getPeers, getFollowing, createPost, subscribeToFeed, deletePost, getCapabilities, subscribeToSource } from '$lib/api'
+import { getTimeline, getPeers, getFollowing, createPost, subscribeToFeed, deletePost, getCapabilities, peekCapabilities, subscribeToSource } from '$lib/api'
+import { getLogicalRiverOrEmpty, type V2Lens } from '$lib/logical-api'
 import type { PublicFollowingEntry } from '$lib/types'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
-import { TABS, resolveTab, tabFilter } from '$lib/tabs'
+import { TABS, resolveTab, tabFilter, type Tab } from '$lib/tabs'
+
+// The v2 lens for a home tab (spec §3.5) — distinct selectors from V1's
+// source=local / feed_type / top_level, so it can only be built once capability
+// is known to be v2.
+const tabLens = (tab: Tab, meHandle: string | undefined): V2Lens => {
+	if (tab === 'local') return { origin: 'local' }
+	if (tab === 'federated') return { federated: true }
+	if (tab === 'personal') return meHandle ? { followedBy: meHandle } : {}
+	return {}
+}
 
 export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 	const before = url.searchParams.get('before') ?? undefined
@@ -18,15 +29,31 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 	const { me } = await parent()
 	const tab = resolveTab(url.searchParams.get('tab'), me)
 	try {
-		// followIds feed the live lens only, and LiveTimeline mounts on the first page only.
-		const timelineP = getTimeline(fetch, { before, topLevel: true, ...tabFilter(tab, me?.user.handle) })
+		// The capability rides ALONGSIDE the legacy call, never ahead of it: on a
+		// cold pod (peek null) the v1 timeline fetch fires FIRST, so a capability
+		// FETCH FAILURE can never run ahead of — or down — the legacy path. On a
+		// warm v2 pod the v1 call is skipped (its legacy selectors would 400 core).
+		const known = peekCapabilities()
+		const v1P = known?.sourceModelV2 ? null : getTimeline(fetch, { before, topLevel: true, ...tabFilter(tab, me?.user.handle) })
+		// followIds feed the live lens only, and the live stream mounts on the first page only.
 		const followingP = tab === 'personal' && isFirstPage && me ? getFollowing(fetch, me.user.handle) : Promise.resolve(null)
-		// The capability rides ALONGSIDE the legacy calls, never ahead of them:
-		// getCapabilities never rejects, so a core without /capabilities simply
-		// leaves the already-in-flight legacy result standing — it can never
-		// turn a working page into coreDown.
-		const capP = getCapabilities(fetch)
-		const [{ timeline, nextCursor }, following, cap] = await Promise.all([timelineP, followingP, capP])
+		const cap = await getCapabilities(fetch)
+		let timeline, nextCursor
+		// The snapshot cursor the live stream reconnects from (v2 only); the client
+		// opens /stream?v2=1&last=<journalCursor> so Core serves from here instead
+		// of forcing a reset (an empty cursor would loop reset↔refetch).
+		let journalCursor: string | null | undefined
+		if (cap.sourceModelV2) {
+			// Discard the legacy result; validate + map the v2 envelope. A malformed
+			// envelope FAILS CLOSED (spec §5.6 carve 2): the river is discarded to
+			// empty with no snapshot cursor — never a v1 cast — while the page stays
+			// v2 (a broken core does not down follows/compose surfaces).
+			v1P?.catch(() => {})
+			;({ entries: timeline, nextCursor, journalCursor } = await getLogicalRiverOrEmpty(fetch, { before, ...tabLens(tab, me?.user.handle) }))
+		} else {
+			;({ timeline, nextCursor } = await v1P!)
+		}
+		const following = await followingP
 		// Widget data, never load-bearing: a peers failure must not down the page.
 		const peers = await getPeers(fetch).catch(() => [])
 		// Self first (the river includes its owner); vestigial instance follows never reach the lens.
@@ -51,6 +78,7 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 			tab,
 			followIds,
 			sourceModelV2: cap.sourceModelV2 || undefined,
+			journalCursor,
 			// One id per rendered form: resubmitting THIS form (no-JS retry) replays
 			// the same command server-side instead of mutating twice.
 			subscribeCommandId: cap.sourceModelV2 ? crypto.randomUUID() : undefined

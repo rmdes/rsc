@@ -242,13 +242,18 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 // The capability reading is memoized for the module's lifetime, so every case
 // below takes a FRESH module instance instead of a production reset hook.
 
+// C5 supersession fold (spec §5.6): the enabled reading is now the WIDENED
+// discriminated shape carrying model + protocol versions. Task 5 already
+// superseded the core-side exact-equality assertion; this is the same authorized
+// widening applied to the Web client's exact-equality assertion (the Task 5
+// precedent for staging a non-Appendix-C test file with a documented note).
 test('getCapabilities reports the flag and memoizes a successful reading', async () => {
 	vi.resetModules()
 	const { getCapabilities } = await import('./api.ts')
-	const f = vi.fn(async () => new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 }))
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true })
+	const f = vi.fn(async () => new Response(JSON.stringify({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }), { status: 200 }))
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/capabilities')
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 	expect(f).toHaveBeenCalledTimes(1) // process-immutable on core — one read per pod
 })
 

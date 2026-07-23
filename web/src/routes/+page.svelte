@@ -12,8 +12,10 @@
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
 	import { applyRiverEvent } from '$lib/live'
+	import { applyLiveEvent, type LiveEvent } from '$lib/logical-live'
 	import { fetchThread } from '$lib/wedge'
 	import { enhance } from '$app/forms'
+	import { invalidateAll } from '$app/navigation'
 	import { confirmSubmit } from '$lib/confirm'
 	import { keepEvent, type Lens } from '$lib/lens'
 	import { TABS } from '$lib/tabs'
@@ -22,8 +24,10 @@
 
 	let live = $state<TimelineEntry[]>([])
 	let edited = $state<Record<string, TimelineEntry>>({})
+	// v2 remove is durable; the set stays empty under v1, so `posts` is unchanged there.
+	let removed = $state<Set<string>>(new Set())
 	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
-	const posts = $derived([...live, ...data.timeline].map((p) => edited[p.id] ?? p))
+	const posts = $derived([...live, ...data.timeline].filter((p) => !removed.has(p.id)).map((p) => edited[p.id] ?? p))
 
 	// Public river is lensless; the stream is a firehose, so every other tab
 	// filters incoming SSE events client-side (same pattern as author/thread pages).
@@ -40,6 +44,50 @@
 		live = r.live
 		edited = r.edited
 	}
+
+	// The logical-v2 durable stream (spec §5.7). The proxy translates journal
+	// frames into upsert/remove/reset events carrying render-shape data; the
+	// reducer inserts at immutable order, excludes river replies, and applies the
+	// idempotent replyCounts overlay. Reset discards event-derived state and
+	// refetches SSR — which mints a fresh journalCursor, so the effect re-runs and
+	// reconnects from the new snapshot. Reads of posts/pageIds/lens happen inside
+	// the async handler, so they are NOT effect dependencies (no reconnect churn).
+	// ponytail: no hidden-tab visibility gate here (one connection per river page);
+	// add it back if many-hidden-tab connection starvation resurfaces under v2.
+	$effect(() => {
+		// Only with a valid snapshot cursor: a discarded (fail-closed) river yields
+		// none, so the stream stays closed until a reload gets a valid envelope —
+		// avoiding a reset↔refetch loop against a broken core.
+		if (!data.sourceModelV2 || !data.isFirstPage || !data.journalCursor) return
+		const es = new EventSource(`/stream?v2=1&last=${encodeURIComponent(data.journalCursor)}`)
+		const onFrame = (kind: 'upsert' | 'remove') => (e: Event) => {
+			const msg = e as MessageEvent
+			try {
+				const d = JSON.parse(msg.data)
+				const ev: LiveEvent =
+					kind === 'upsert'
+						? { kind: 'upsert', entry: d as TimelineEntry, rootReplyCount: d.rootReplyCount, threadRootId: d.threadRootId }
+						: { kind: 'remove', id: d.id as string, rootReplyCount: d.rootReplyCount, threadRootId: d.threadRootId }
+				const keep = ev.kind === 'upsert' ? !lens || keepEvent(ev.entry, lens) : true
+				const r = applyLiveEvent({ live, edited, removed }, ev, { posts, pageIds, keep })
+				live = r.live
+				edited = r.edited
+				removed = r.removed
+			} catch {
+				// ignore a malformed frame; a genuine contract break arrives as `reset`
+			}
+		}
+		es.addEventListener('upsert', onFrame('upsert'))
+		es.addEventListener('remove', onFrame('remove'))
+		es.addEventListener('reset', () => {
+			es.close()
+			live = []
+			edited = {}
+			removed = new Set()
+			invalidateAll()
+		})
+		return () => es.close()
+	})
 
 	// Group Textcasting peers by instance host: "which Textcasting authors is this instance hosting..."
 	const peerHosts = $derived.by(() => {
@@ -75,7 +123,9 @@
 
 <svelte:head><title>RSC</title></svelte:head>
 
-{#if data.isFirstPage}
+<!-- V1 uses the legacy `event: post` firehose; V2 wires its own upsert/remove/
+     reset stream in the effect above. Mount at most one. -->
+{#if data.isFirstPage && !data.sourceModelV2}
 	<LiveTimeline {onPost} />
 {/if}
 
@@ -153,7 +203,12 @@
 					<div class="byline">
 						<Avatar author={post.author} sourceName={post.sourceName} />
 						<strong>{post.sourceName ?? post.author.displayName}</strong>
-						<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						{#if post.publisherId}
+							<!-- v2 remote publisher: /p, not /u (which stays local-account only) -->
+							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
+						{:else}
+							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						{/if}
 						<span class="kind">{post.source}</span>
 						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<EditedMarker {post} />

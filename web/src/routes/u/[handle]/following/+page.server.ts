@@ -1,6 +1,7 @@
 import type { PageServerLoad, Actions } from './$types'
 import { fail } from '@sveltejs/kit'
-import { getTimeline, getFollowing, addFollow, removeFollow, importOpml, getCapabilities, getOwnerFollowing, unsubscribeSource, importOpmlV2 } from '$lib/api'
+import { getTimeline, getFollowing, addFollow, removeFollow, importOpml, getCapabilities, peekCapabilities, getOwnerFollowing, unsubscribeSource, importOpmlV2 } from '$lib/api'
+import { getLogicalRiverOrEmpty } from '$lib/logical-api'
 import type { FollowRow, OwnerFollowingView, PublicFollowingEntry } from '$lib/types'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
@@ -35,15 +36,22 @@ export const load: PageServerLoad = async ({ fetch, params, url, parent, cookies
 	const { me } = await parent()
 	const isOwner = me?.user.handle === handle
 	try {
-		// The capability rides ALONGSIDE the legacy calls, never ahead of them:
-		// getCapabilities never rejects, so a core without /capabilities leaves
-		// the already-in-flight legacy result standing (legacy is exactly what
-		// the flag off is) and can never turn into coreDown.
-		const [{ timeline, nextCursor }, following, cap] = await Promise.all([
-			getTimeline(fetch, { before, followedBy: handle, topLevel: true }),
-			getFollowing(fetch, handle),
-			getCapabilities(fetch)
-		])
+		// The v1 river call rides ALONGSIDE capability (cold pod: it fires first, so
+		// a capability fetch failure never runs ahead of the legacy path); the
+		// follows list is fetched in parallel. A v2 core answers the same /timeline
+		// with the `followed_by` lens.
+		const known = peekCapabilities()
+		const v1TP = known?.sourceModelV2 ? null : getTimeline(fetch, { before, followedBy: handle, topLevel: true })
+		const followingP = getFollowing(fetch, handle)
+		const cap = await getCapabilities(fetch)
+		let timeline, nextCursor
+		if (cap.sourceModelV2) {
+			v1TP?.catch(() => {})
+			;({ entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, followedBy: handle }))
+		} else {
+			;({ timeline, nextCursor } = await v1TP!)
+		}
+		const following = await followingP
 		const page = { handle, isOwner, timeline: enrichEntries(timeline), nextCursor, isFirstPage }
 		if (cap.sourceModelV2) {
 			// Under v2 core serves /users/:handle/follows with the public projection

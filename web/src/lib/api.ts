@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private'
-import type { OwnerFollowingView, TimelineEntry } from './types.ts'
+import type { OwnerFollowingView, TimelineEntry, Capabilities } from './types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
@@ -269,21 +269,42 @@ export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser
 
 // The capability probe. It NEVER rejects: a core that predates /capabilities —
 // or any blip during a rolling deploy — must degrade the caller to the LEGACY
-// path, which is exactly what the flag being off is. Only a successful (200)
-// reading is memoized for the process lifetime (the value is immutable on
-// core, so one read per pod suffices); a failure is never cached as sticky
-// state and is retried on the very next request.
-let capabilities: { sourceModelV2: boolean } | null = null
-export async function getCapabilities(f: typeof fetch): Promise<{ sourceModelV2: boolean }> {
+// path, which is exactly what the flag being off is (spec §5.6 carve 1). Only a
+// successful (200) reading is memoized for the process lifetime (the value is
+// immutable on core, so one read per pod suffices); a failure is never cached as
+// sticky state and is retried on the very next request — so a transient blip can
+// never pin a pod to the wrong branch.
+//
+// The reading is the WIDENED discriminated shape (spec §5.6, review C5): the v2
+// variant carries `model` + the two protocol versions Core advertises. It is
+// LENIENT — a body that reports `sourceModelV2: true` is treated as v2 and its
+// version hints defaulted when absent; strict `model` validation is the job of
+// each ENVELOPE (carve 2), not of the capability probe.
+let capabilities: Capabilities | null = null
+export async function getCapabilities(f: typeof fetch): Promise<Capabilities> {
 	if (capabilities) return capabilities
 	try {
 		const res = await f(`${base()}/capabilities`)
 		if (!res.ok) return { sourceModelV2: false }
-		const body = (await res.json()) as { sourceModelV2?: unknown }
-		return (capabilities = { sourceModelV2: body.sourceModelV2 === true })
+		const body = (await res.json()) as { sourceModelV2?: unknown; journalCursorVersion?: unknown; streamProtocolVersion?: unknown }
+		if (body.sourceModelV2 !== true) return (capabilities = { sourceModelV2: false })
+		return (capabilities = {
+			sourceModelV2: true,
+			model: 'logical-v2',
+			journalCursorVersion: typeof body.journalCursorVersion === 'number' ? body.journalCursorVersion : 1,
+			streamProtocolVersion: typeof body.streamProtocolVersion === 'number' ? body.streamProtocolVersion : 1
+		})
 	} catch {
 		return { sourceModelV2: false }
 	}
+}
+
+// The synchronously-memoized reading (or null before the first success). Loads
+// use it to skip a doomed v1-shaped call on a warm v2 pod without ever running
+// capability AHEAD of the first request's legacy call (a cold pod sees null and
+// rides alongside, preserving the never-ahead invariant).
+export function peekCapabilities(): Capabilities | null {
+	return capabilities
 }
 
 export type SubscribeOutcome =

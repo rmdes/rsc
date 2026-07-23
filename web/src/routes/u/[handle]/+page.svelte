@@ -76,7 +76,8 @@
 	<link rel="alternate" type="application/rss+xml" title="@{data.handle}" href="/u/{data.handle}/feed.xml" />
 </svelte:head>
 
-{#if data.isFirstPage && authorId}
+<!-- v1 firehose only; under v2 this author view is snapshot (reload to refresh). -->
+{#if data.isFirstPage && authorId && !data.sourceModelV2}
 	<LiveTimeline {onPost} />
 {/if}
 

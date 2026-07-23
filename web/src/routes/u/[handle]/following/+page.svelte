@@ -49,7 +49,8 @@
 
 <svelte:head><title>@{data.handle} following — RSC</title></svelte:head>
 
-{#if data.isFirstPage}
+<!-- v1 firehose only; under v2 this river is snapshot (reload to refresh). -->
+{#if data.isFirstPage && !data.sourceModelV2}
 	<LiveTimeline {onPost} />
 {/if}
 
@@ -187,7 +188,11 @@
 					<div class="byline">
 						<Avatar author={post.author} sourceName={post.sourceName} />
 						<strong>{post.sourceName ?? post.author.displayName}</strong>
-						<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						{#if post.publisherId}
+							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
+						{:else}
+							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						{/if}
 						<span class="kind">{post.source}</span>
 						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
