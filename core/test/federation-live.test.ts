@@ -5,6 +5,7 @@ import { createService } from '../src/domain/service.ts'
 import { createApp } from '../src/api/app.ts'
 import { createPush, handleWebSubRequest } from '../src/domain/push.ts'
 import { createPushIn, runPollCycle } from '../src/domain/push-in.ts'
+import { ingestRemoteUser } from '../src/domain/ingest.ts'
 import { loadConfig } from '../src/config.ts'
 import { makeAuth } from './auth-helper.ts'
 import type { Hono } from 'hono'
@@ -130,4 +131,38 @@ test('REAL-TIME LOOP (rssCloud): thin ping triggers immediate re-fetch', async (
   await vi.waitFor(async () => {
     expect((await B.repo.getTimeline(10)).map((e) => e.content)).toContain('<p>thin-pinged across 🌩</p>') // local post → rendered HTML on the wire (dual contract)
   })
+})
+
+// KNOWN BUG, end to end on the production topology (rsc/alice/bob): an instance
+// follows a peer BOTH by its all-users firehose AND by an individual author's
+// feed. Both carry the same post, ingest attributes each item to the POLLED row,
+// and it lands twice under two author ids. See the long note in
+// core/test/ingest.test.ts for why the per-author constraint can't catch it and
+// why the duplicate then breaks threading. Fixed by the source-governance
+// milestone; test.fails() flips this to a normal test when that lands.
+test.fails('KNOWN BUG: a peer followed by BOTH its firehose and its user feed lands the same post twice', async () => {
+  const A = await makeInstance({ RSC_TOKEN: 'a', RSC_PUBLIC_URL: 'https://a.example' })
+  const B = await makeInstance({ RSC_TOKEN: 'b', RSC_PUBLIC_URL: 'https://b.example' })
+  const routes: Record<string, Hono> = {}
+  const bridge = makeBridge(routes)
+  routes['https://a.example'] = createApp({
+    service: A.service, bus: A.bus, token: 'a', auth: makeAuth(A.repo), users: A.repo,
+    feeds: { publicUrl: 'https://a.example', hubUrl: null, rssCloud: false },
+  })
+
+  const post = await A.service.createLocalPostAs('alice', 'Alice', 'one post, two subscription paths')
+
+  await B.service.addRemoteUser({ handle: 'a-firehose', displayName: 'A', feedUrl: 'https://a.example/users/rss.xml' })
+  await B.service.addRemoteUser({ handle: 'alice-a', displayName: 'Alice (A)', feedUrl: 'https://a.example/users/alice/feed.xml' })
+
+  // Two cycles, so the outcome cannot depend on which path ingested first.
+  for (let i = 0; i < 2; i++) {
+    for (const u of await B.repo.listRemoteUsers()) {
+      await ingestRemoteUser(B.repo, B.bus, u, bridge, publicLookup)
+    }
+  }
+
+  const hits = (await B.repo.getTimeline(20)).filter((e) => e.content.includes('one post, two subscription paths'))
+  expect(hits).toHaveLength(1)
+  expect(await B.repo.findPostByRef(post.url ?? post.guid)).toBeDefined() // ambiguity resolves to undefined
 })
