@@ -782,6 +782,18 @@ logical-routes.ts + AdminSourceAcquisition-  V3 admin routes; conflictCount (Tas
 > attribution* (the deeper §2.4 provisional-publisher-from-`<source url>` gap is
 > flagged for the whole-branch review, not folded here).
 
+> **Correction 2026-07-24 (Task 8 implementation — conflictCount home):** the
+> Appendix B row and Step 2's last line say `AdminSourceAcquisitionSummary`
+> "gains `conflictCount`". That DTO/route **never shipped** (V2 Task 5 gap,
+> recorded in the V2 execution handoff at the tail of this plan: "do not consume
+> it"), so there is nothing to extend. Resolution applied in Task 8: the
+> source-level `conflictCount` — a TRUE count of `logical_conflicts_v2` rows
+> across ALL of the source's logical items, not just the current page — is
+> returned as a top-level field on the SHIPPED `GET /admin/sources/:sourceId/items`
+> envelope (`{model, items, nextCursor, conflictCount}`, computed in
+> `store.listSourceItems`). Task 9's admin source-detail page reads it from
+> there. No `AdminSourceAcquisitionSummary` type or route was invented.
+
 Fault-injection tests for every V3 command follow the V2 Appendix D pattern:
 throw immediately before audit, journal, ledger, and commit; assert all
 affected table families unchanged.
