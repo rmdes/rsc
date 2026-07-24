@@ -92,7 +92,7 @@ export interface AuthorCandidate {
   arrival: FirstArrival
 }
 
-export function selectAuthor(candidates: AuthorCandidate[], current: string | null): { publisherId: string; level: EvidenceLevel } | null {
+export function selectAuthor(candidates: AuthorCandidate[], current: string | null): { publisherId: string; level: EvidenceLevel; observationVersionId: string } | null {
   const eligible = candidates.filter((c) => c.eligible)
   const level = strongestEligibleLevel(eligible.map((c) => c.level))
   if (level === null) return null
@@ -103,7 +103,7 @@ export function selectAuthor(candidates: AuthorCandidate[], current: string | nu
     if (byArrival !== 0) return byArrival < 0 ? a : b
     return a.claimId <= b.claimId ? a : b
   })
-  return { publisherId: chosen.publisherId, level: chosen.level }
+  return { publisherId: chosen.publisherId, level: chosen.level, observationVersionId: chosen.arrival.observationVersionId }
 }
 
 // ---- publisher-name normalization + selection (spec §3.6) -------------------
@@ -499,11 +499,33 @@ function remoteAuthor(tx: ReadTx, item: ItemRow, display: EligibleDelivery): Sel
   return {
     kind: 'remote_publisher',
     id: claim.publisherId,
-    displayName: publisherName(tx, claim.publisherId) ?? hostnameOf(pub?.canonical_feed_url ?? null) ?? 'Remote publisher',
+    // The byline is the ITEM'S OWN assertion first (v1's <source> byline rule):
+    // on an aggregate every item claims the same shared publisher, so the
+    // publisher-level name is some OTHER item's author (or nothing). Only when
+    // this item's claims assert no name does the publisher-level name — and
+    // then the hostname — speak for it.
+    displayName: itemAssertedName(tx, item.id, claim.observationVersionId) ?? publisherName(tx, claim.publisherId) ?? hostnameOf(pub?.canonical_feed_url ?? null) ?? 'Remote publisher',
     canonicalFeedUrl: navigable ? url : null,
     profileAvailable: navigable,
     attributionLevel: claim.level,
   }
+}
+
+// The name evidence written by THIS item's claims: the selected claim's own
+// observation first, then the strongest-level assertion among the item's other
+// eligible claims (covers a nameless just-minted verified publisher whose item
+// still carries the aggregate's <source> assertion).
+function itemAssertedName(tx: ReadTx, itemId: string, selectedVersionId: string): string | null {
+  const rows = tx.prepare(
+    `SELECT n.normalized_name, n.evidence_level, c.observation_version_id FROM publisher_names_v2 n
+     JOIN publisher_claims_v2 c ON c.observation_version_id = n.observation_version_id AND c.publisher_id = n.publisher_id
+     JOIN remote_sources_v2 s ON s.id = n.source_id
+     WHERE c.logical_item_id = ? AND n.normalized_name IS NOT NULL AND s.governance = 'allowed'`,
+  ).all(itemId) as { normalized_name: string; evidence_level: EvidenceLevel; observation_version_id: string }[]
+  if (rows.length === 0) return null
+  const own = rows.find((r) => r.observation_version_id === selectedVersionId)
+  if (own) return own.normalized_name
+  return rows.reduce((a, b) => (LEVEL_RANK[a.evidence_level] <= LEVEL_RANK[b.evidence_level] ? a : b)).normalized_name
 }
 
 function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): LogicalItemDto {

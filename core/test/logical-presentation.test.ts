@@ -63,7 +63,7 @@ test('selectAuthor prefers a verified_origin claim over bound_single_publisher (
     { claimId: 'c_bound', publisherId: 'p_b', level: 'bound_single_publisher', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
     { claimId: 'c_ver', publisherId: 'p_v', level: 'verified_origin', eligible: true, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
   ]
-  expect(selectAuthor(cands, null)).toEqual({ publisherId: 'p_v', level: 'verified_origin' })
+  expect(selectAuthor(cands, null)).toMatchObject({ publisherId: 'p_v', level: 'verified_origin' })
 })
 
 test('a verified_origin candidate that is ineligible (quarantined) does not participate', () => {
@@ -71,7 +71,7 @@ test('a verified_origin candidate that is ineligible (quarantined) does not part
     { claimId: 'c_ver', publisherId: 'p_v', level: 'verified_origin', eligible: false, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
     { claimId: 'c_agg', publisherId: 'p_a', level: 'aggregate_assertion', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
   ]
-  expect(selectAuthor(cands, null)).toEqual({ publisherId: 'p_a', level: 'aggregate_assertion' })
+  expect(selectAuthor(cands, null)).toMatchObject({ publisherId: 'p_a', level: 'aggregate_assertion' })
 })
 
 test('selectDisplayDelivery retains the current delivery when it is still eligible at the strongest level', () => {
@@ -115,7 +115,7 @@ test('selectAuthor uses the same level/tuple ordering independently of delivery 
     { claimId: 'c_agg', publisherId: 'p1', level: 'aggregate_assertion', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
     { claimId: 'c_bound', publisherId: 'p2', level: 'bound_single_publisher', eligible: true, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
   ]
-  expect(selectAuthor(cands, null)).toEqual({ publisherId: 'p2', level: 'bound_single_publisher' })
+  expect(selectAuthor(cands, null)).toMatchObject({ publisherId: 'p2', level: 'bound_single_publisher' })
   expect(selectAuthor([], null)).toBeNull()
 })
 

@@ -379,3 +379,21 @@ test('projectLocalActivity returns local items (roots AND replies) newest-first,
   expect(items.map((d) => d.id)).toContain('rep1') // replies transported
   expect(items[0].id).toBe('root1') // newest first
 })
+
+// ---- the byline is the ITEM'S OWN assertion, never another item's (v1 rule) --
+
+test('each aggregate item with <source> attribution shows ITS OWN author as the byline', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 'agg', 'https://hub.test/firehose.xml', { mode: 'aggregate' })
+  const item = (guid: string, name: string) =>
+    `<item><guid isPermaLink="false">${guid}</guid><title>t</title><description>d</description><source url="https://hub.test/users/${name}/rss.xml">${name}</source></item>`
+  await acquire(db, 'agg', 'https://hub.test/firehose.xml', `<?xml version="1.0"?><rss version="2.0"><channel><title>Hub</title>${item('g1', 'Alice')}${item('g2', 'Bob')}</channel></rss>`)
+  drainReconciliation({ store, now: () => NOW })
+  const env = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 10, viewer: ANON }))
+  const byGuid = new Map(env.timeline.map((e) => [e.sourceLink ?? e.id, e]))
+  const names = env.timeline
+    .map((e) => (e.selectedAuthor.kind === 'remote_publisher' ? e.selectedAuthor.displayName : ''))
+    .sort()
+  expect(names).toEqual(['Alice', 'Bob'])
+  void byGuid
+})
