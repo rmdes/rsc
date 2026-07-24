@@ -193,6 +193,11 @@ function recordConflict(tx: WriteTx, itemId: string | null, versionId: string, k
     .run(randomUUID(), itemId, versionId, kind, JSON.stringify(evidence), now)
 }
 
+// ponytail: keys on canonical_feed_url and hardcodes feed_anchored, ignoring
+// attribution_mode (the accepted §2.4 debt). The V4 cutover now DEPENDS on this
+// uniformity — conversion mints the same way (spec §3.2 amendment 2026-07-24) —
+// so the eventual §2.4 fix must migrate publisher rows, not just change this
+// function.
 function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, now: string): string {
   const r = tx.prepare(`SELECT id FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string } | undefined
   if (r) return r.id
