@@ -1,6 +1,10 @@
 import { test, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { runConversion, type ConversionCounts } from '../src/migration/convert.ts'
 import type { Manifest, ManifestEntry } from '../src/migration/preflight.ts'
 
@@ -116,8 +120,10 @@ test('an unconfirmed instance is quarantined, aggregate, and federation pending'
   expect(raw.prepare(`SELECT * FROM federation_relationships_v2 WHERE source_id = 'u1'`).get()).toMatchObject({ status: 'pending', provenance_note: null })
   expect(counts.instance_quarantined).toBe(1)
   expect(counts.manifest_approved).toBe(0)
-  // the aggregate's publisher is the source-scoped fallback: no feed anchor
-  expect(raw.prepare(`SELECT * FROM remote_publishers_v2`).get()).toMatchObject({ canonical_feed_url: null, identity_level: 'source_scoped_fallback' })
+  // ADJUDICATED (2026-07-24): an aggregate's publisher is feed_anchored on the
+  // source's canonical URL too — §3.6 governs over §3.2, see the convergence
+  // test at the foot of this file.
+  expect(raw.prepare(`SELECT * FROM remote_publishers_v2`).get()).toMatchObject({ canonical_feed_url: 'https://a.test/feed.xml', identity_level: 'feed_anchored' })
 })
 
 test('NO manifest means EVERY instance takes the unconfirmed default', async () => {
@@ -283,6 +289,42 @@ test('a reservation survives deletion of its source (no FK by design)', async ()
   raw.prepare(`DELETE FROM remote_sources_v2 WHERE id = 'u1'`).run()
   expect(count(raw, 'remote_sources_v2')).toBe(0)
   expect(count(raw, 'handle_reservations_v2')).toBe(1)
+})
+
+// ── post-cutover convergence with the live reconcile ─────────────────────
+// The permanent pin for the 2026-07-24 adjudication. reconcile.ts's
+// getOrCreatePublisher finds-or-creates by `canonical_feed_url` alone and mints
+// 'feed_anchored'; conversion mints on exactly that key, so the FIRST
+// post-cutover reconcile of a converted source finds the converted row instead
+// of minting a second identity beside it (which would fork the items, orphan
+// handle_reservations_v2.publisher_id, and make §3.5's permanent /u/:handle
+// redirect point at a publisher projector.ts refuses to resolve).
+
+test('a converted AGGREGATE source reconciles onto its converted publisher — zero new mints', async () => {
+  const raw = await fresh()
+  seedRemote(raw, { feed_type: 'instance' }) // quarantined aggregate: the §3.2 fallback case
+  convert(raw)
+  const minted = raw.prepare(`SELECT id, canonical_feed_url, identity_level FROM remote_publishers_v2`).get() as { id: string; canonical_feed_url: string | null; identity_level: string }
+  expect(minted).toMatchObject({ canonical_feed_url: 'https://a.test/feed.xml', identity_level: 'feed_anchored' })
+
+  // ...now the live path, unchanged: acquire the source and drain the queue.
+  const db = createDatabaseContext(raw)
+  const feed = `<?xml version="1.0"?><rss version="2.0"><channel><title>T</title><item><guid isPermaLink="false">g1</guid><title>t</title><description>d</description></item></channel></rss>`
+  const eng = createAcquisition({
+    db,
+    fetchFn: (async () => new Response(feed, { status: 200 })) as unknown as typeof fetch,
+    lookupFn: async () => [{ address: '93.184.216.34' }],
+    now: () => NOW,
+  })
+  await eng.acquireSource('u1', { kind: 'scheduled' }, undefined)
+  expect(drainReconciliation({ store: createLogicalStore(db), now: () => NOW })).toBe(1)
+
+  // the same row, and only that row
+  expect(count(raw, 'remote_publishers_v2')).toBe(1)
+  expect((raw.prepare(`SELECT id FROM remote_publishers_v2`).get() as { id: string }).id).toBe(minted.id)
+  expect((raw.prepare(`SELECT publisher_id FROM publisher_claims_v2`).get() as { publisher_id: string }).publisher_id).toBe(minted.id)
+  // and the permanent reservation still points at the identity the reader serves
+  expect((raw.prepare(`SELECT publisher_id FROM handle_reservations_v2`).get() as { publisher_id: string }).publisher_id).toBe(minted.id)
 })
 
 // ── zero rows + atomicity ────────────────────────────────────────────────

@@ -110,15 +110,25 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     ).run(row.id, canonicalUrl, mode, governance, note, now)
 
     // A NEW publisher identity per source — never the recycled user id
-    // (foundation §12). A single_publisher source anchors its publisher on its
-    // own feed; an aggregate gets the source-scoped fallback, which by
-    // definition has no feed anchor. Deliberately NOT reconcile.ts's private
-    // getOrCreatePublisher: that one is find-or-create by feed URL and cannot
-    // express the anchorless fallback.
+    // (foundation §12) — minted EXACTLY as reconcile.ts's getOrCreatePublisher
+    // mints one: keyed on canonical_feed_url alone, identity_level
+    // 'feed_anchored', for aggregates too.
+    //
+    // ADJUDICATED 2026-07-24 (spec §3.2 dated note). §3.2 asks for
+    // 'source_scoped_fallback' on aggregates, but §3.6 gives a publisher page
+    // only to feed-anchored publishers, and projector.ts's resolvePublisher
+    // implements §3.6 faithfully — so a fallback row is one no reader will
+    // serve, and §3.5's PERMANENT /u/:handle -> /p/:publisherId redirect would
+    // point at a 404. §3.6 governs, because it is what every reader depends on.
+    // Keying identically also means the first post-cutover reconcile FINDS this
+    // row instead of minting a second identity beside it and forking the items.
+    // V4 preserves; it does not reform live publisher semantics — §2.4
+    // attribution stays recorded, accepted debt, and now inherits a single
+    // uniform population to migrate rather than two regimes to reconcile.
     const publisherId = randomUUID()
     tx.prepare(
-      `INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, ?, ?)`,
-    ).run(publisherId, mode === 'aggregate' ? null : canonicalUrl, mode === 'aggregate' ? 'source_scoped_fallback' : 'feed_anchored', now)
+      `INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`,
+    ).run(publisherId, canonicalUrl, now)
 
     if (federation) {
       tx.prepare(
