@@ -5,6 +5,7 @@ import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent } from './threading.ts'
 import { materializeLocalPost } from './local.ts'
+import { scheduleVerification } from './verification.ts'
 import {
   compareFirstArrival, selectDisplayDelivery, selectAuthor,
   normalizePublisherName, presentationFingerprint, nextPresentationEntry, normalizeUtc,
@@ -41,23 +42,28 @@ const NON_TERMINAL = ['pending', 'processing', 'retrying']
 
 interface CandidateRow {
   job_id: string; run_id: string; version_id: string; delivery_id: string
-  committed_at: string; wire_ordinal: number; governance: string | null
+  committed_at: string; wire_ordinal: number; governance: string | null; next_attempt_at: string
 }
 
-// Take one job in (nextAttemptAt ASC, jobId ASC) order, skipping (a) jobs whose
-// source is blocked or gone — left, not failed (spec §2.3 supersession) — and
-// (b) any job that is not the earliest non-terminal version of its delivery
-// (first-arrival serialization, spec §2.3). Sets the chosen job 'processing'.
+// Take one job in (nextAttemptAt ASC, jobId ASC) order across BOTH kinds
+// (observation and verification interleave by that order — no separate queue,
+// spec §7.1). Observation jobs skip (a) a blocked/gone source — left, not failed
+// (spec §2.3 supersession) — and (b) any job that is not the earliest
+// non-terminal version of its delivery (first-arrival serialization). Verification
+// jobs have no such gating (one active job per batch key is guaranteed at
+// scheduling). Sets the chosen job 'processing' and returns the matching claim
+// variant. The observation path is byte-identical to V2 when no verification job
+// exists (verification adds nothing to the observation ordering).
 export function claimReconciliation(tx: WriteTx, now: string): ReconciliationClaim | null {
   const rows = tx.prepare(
     `SELECT j.id AS job_id, j.run_id, j.observation_version_id AS version_id, v.delivery_id,
-            r.acquisition_committed_at AS committed_at, v.wire_ordinal, s.governance
+            r.acquisition_committed_at AS committed_at, v.wire_ordinal, s.governance, j.next_attempt_at
      FROM reconciliation_jobs_v2 j
      JOIN observation_versions_v2 v ON v.id = j.observation_version_id
      JOIN acquisition_runs_v2 r ON r.id = v.run_id
      JOIN deliveries_v2 d ON d.id = v.delivery_id
      LEFT JOIN remote_sources_v2 s ON s.id = d.source_id
-     WHERE j.status IN ('pending','retrying') AND j.next_attempt_at <= ?
+     WHERE j.kind = 'observation' AND j.status IN ('pending','retrying') AND j.next_attempt_at <= ?
      ORDER BY j.next_attempt_at ASC, j.id ASC`,
   ).all(now) as CandidateRow[]
 
@@ -65,7 +71,7 @@ export function claimReconciliation(tx: WriteTx, now: string): ReconciliationCla
     `SELECT 1 FROM reconciliation_jobs_v2 j2
        JOIN observation_versions_v2 v2 ON v2.id = j2.observation_version_id
        JOIN acquisition_runs_v2 r2 ON r2.id = v2.run_id
-     WHERE v2.delivery_id = ? AND j2.status IN ('pending','processing','retrying')
+     WHERE v2.delivery_id = ? AND j2.kind = 'observation' AND j2.status IN ('pending','processing','retrying')
        AND ( r2.acquisition_committed_at < @c
           OR (r2.acquisition_committed_at = @c AND v2.run_id < @r)
           OR (r2.acquisition_committed_at = @c AND v2.run_id = @r AND v2.wire_ordinal < @w)
@@ -73,14 +79,46 @@ export function claimReconciliation(tx: WriteTx, now: string): ReconciliationCla
      LIMIT 1`,
   )
 
+  // The earliest ELIGIBLE observation candidate (first row surviving the skips).
+  let obs: CandidateRow | null = null
   for (const row of rows) {
     if (row.governance == null || row.governance === 'blocked') continue // left (spec §2.3)
     const waits = earlierSibling.get(row.delivery_id, { c: row.committed_at, r: row.run_id, w: row.wire_ordinal, v: row.version_id })
     if (waits) continue // an earlier version of this delivery is still non-terminal
-    tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'processing' WHERE id = ?`).run(row.job_id)
-    return { jobId: row.job_id, runId: row.run_id, observationVersionId: row.version_id }
+    obs = row
+    break
+  }
+
+  // The earliest eligible verification job (one active per batch key by construction).
+  const ver = tx.prepare(
+    `SELECT id AS job_id, verification_batch_key AS batch_key, next_attempt_at
+     FROM reconciliation_jobs_v2
+     WHERE kind = 'verification' AND status IN ('pending','retrying') AND next_attempt_at <= ?
+     ORDER BY next_attempt_at ASC, id ASC LIMIT 1`,
+  ).get(now) as { job_id: string; batch_key: string; next_attempt_at: string } | undefined
+
+  // Interleave by (nextAttemptAt ASC, jobId ASC); the earlier one wins.
+  const verWins = ver && (!obs
+    || ver.next_attempt_at < obs.next_attempt_at
+    || (ver.next_attempt_at === obs.next_attempt_at && ver.job_id < obs.job_id))
+
+  if (verWins && ver) {
+    tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'processing' WHERE id = ?`).run(ver.job_id)
+    return { kind: 'verification', jobId: ver.job_id, batchKey: ver.batch_key }
+  }
+  if (obs) {
+    tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'processing' WHERE id = ?`).run(obs.job_id)
+    return { kind: 'observation', jobId: obs.job_id, runId: obs.run_id, observationVersionId: obs.version_id }
   }
   return null
+}
+
+// The synchronous drain cannot run the async verification fetch, so it un-claims
+// a verification job it happens to pick (setting it back to 'pending') and leaves
+// it for the async drain. ponytail: sync drain defers verification; the one async
+// drain (drainReconciliationAsync, runtime-wired) is the sole processor.
+export function deferVerification(tx: WriteTx, jobId: string): void {
+  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending' WHERE id = ? AND kind = 'verification' AND status = 'processing'`).run(jobId)
 }
 
 // ---- failure bookkeeping (spec §2.3): a separate small transaction -----------
@@ -169,6 +207,9 @@ function replyReference(inReplyTo: string | null, publisherId: string): Normaliz
 
 export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): ReconcileResult {
   const { claim, now } = input
+  // The drain dispatches on kind; only observation claims reach here. Verification
+  // claims run the async batched fetch (createVerificationRunner), never this path.
+  if (claim.kind !== 'observation') throw new ReconcileDataError('reconcileClaim: expected an observation claim')
   const v = tx.prepare(
     `SELECT v.id AS version_id, v.delivery_id, d.source_id, d.key_kind, d.key,
             r.acquisition_committed_at AS committed_at, v.wire_ordinal, v.run_id,
@@ -190,7 +231,7 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   }
 
   const material = JSON.parse(v.canonical_material.toString('utf8')) as Material
-  const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; inReplyTo: string | null; enclosures: unknown[] }
+  const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; inReplyTo: string | null; enclosures: unknown[]; originFeedUrl?: string | null }
   // raw_evidence title/sourceName may be inert digest-evidence objects when the
   // claim was over-limit (spec §1.5) — those are never presentable names.
   const raw = JSON.parse(v.raw_evidence_json) as { title: unknown; sourceName: unknown }
@@ -261,6 +302,15 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
     .run(randomUUID(), publisherId, v.source_id, v.version_id, level, normalizedName, now)
   tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(randomUUID(), targetId, publisherId, v.source_id, v.version_id, level, now)
+
+  // ---- origin verification scheduling (spec §7.1) -------------------------
+  // An aggregate claim naming a valid origin feed URL (RSS <source url>) schedules
+  // one containment check the first time this (item, URL) pair is seen; scheduling
+  // is idempotent, capped, and SSRF-gated inside scheduleVerification. Single-
+  // publisher claims and missing/invalid URLs schedule nothing.
+  if (source.attribution_mode === 'aggregate' && normalized.originFeedUrl) {
+    scheduleVerification(tx, { logicalItemId: targetId, sourceId: v.source_id, publisherFeedUrl: normalized.originFeedUrl, now })
+  }
 
   // ---- accepted presentation chain (spec §4.4) ----------------------------
   const presentationChanged = applyPresentation(tx, v, material, normalized, arrival, now)
@@ -382,37 +432,88 @@ export interface Reconciler {
   claimReconciliation(now: string): ReconciliationClaim | null
   reconcileClaim(input: ReconcileClaimInput): ReconcileResult
   recordReconciliationFailure(input: RecordJobFailureInput): void
-  // Policy fan-out shares this ONE drain (spec §4.1) — no second loop. Task 4
-  // widens the SAME dispatch with the verification job kind.
+  // Policy fan-out shares this ONE drain (spec §4.1) — no second loop.
   claimFanout(now: string): FanoutClaim | null
   processFanoutBatch(input: { claim: FanoutClaim; now: string }): FanoutBatchResult
+  // Verification (spec §7.1) rides the SAME claim ordering; the sync drain defers
+  // it (async fetch), the async drain processes it.
+  deferVerification(jobId: string): void
 }
 
-// Drain the whole eligible queue serially, one job at a time. Runs after each
-// acquisition commit and once at startup (wired by the runtime, Task 10). Returns
-// the count of jobs that reached a reconciled/conflicted outcome. All work is
-// synchronous better-sqlite3, so the loop needs no timers.
+// One observation job: reconcile it, or record its failure. Returns whether it
+// reached a reconciled/conflicted outcome (i.e. counts toward the drain total).
+// Shared by both drains so the observation path is byte-identical.
+function handleObservationClaim(store: Reconciler, claim: ReconciliationClaim, now: () => string): boolean {
+  try {
+    const result = store.reconcileClaim({ claim, now: now() })
+    return result.kind !== 'superseded'
+  } catch (err) {
+    const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
+    const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
+    store.recordReconciliationFailure({ jobId: claim.jobId, now: now(), category, diagnostic, retryAt: null })
+    return false
+  }
+}
+
+// Drain the whole eligible queue serially, one job at a time (spec §2.3). This
+// SYNCHRONOUS drain processes observation + fan-out; it CANNOT run the async
+// verification fetch, so it un-claims any verification job it picks and stops
+// once it cycles back to one it already deferred — leaving verification for the
+// async drain (drainReconciliationAsync, runtime-wired). The observation path is
+// byte-identical to V2 (no verification job exists in the V2 suites, so this
+// drain never defers there). Returns the count of reconciled/conflicted jobs.
 export function drainReconciliation(deps: { store: Reconciler; now: () => string }): number {
   const { store, now } = deps
   let done = 0
+  const deferred = new Set<string>()
   for (;;) {
     const claim = store.claimReconciliation(now())
     if (claim) {
-      let result: ReconcileResult
-      try {
-        result = store.reconcileClaim({ claim, now: now() })
-      } catch (err) {
-        const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
-        const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
-        store.recordReconciliationFailure({ jobId: claim.jobId, now: now(), category, diagnostic, retryAt: null })
+      if (claim.kind === 'verification') {
+        if (deferred.has(claim.jobId)) break // cycled back: no observation/fan-out work remains ahead of it
+        deferred.add(claim.jobId)
+        store.deferVerification(claim.jobId)
         continue
       }
-      if (result.kind !== 'superseded') done++
+      if (handleObservationClaim(store, claim, now)) done++
       continue
     }
     // No reconciliation job pending — process fan-out on the SAME drain (spec
     // §4.1). One bounded batch per turn; 'progress' leaves the row 'running' and
     // the next turn re-claims it from the durable cursor. Jobs take priority.
+    const fanout = store.claimFanout(now())
+    if (fanout) {
+      store.processFanoutBatch({ claim: fanout, now: now() })
+      continue
+    }
+    break
+  }
+  return done
+}
+
+// The async drain (spec §7.1): the ONE drain that dispatches on claim.kind —
+// observation reconciles synchronously (byte-identical), verification runs the
+// bounded batched fetch, fan-out converges hints. Runtime wiring is Task 10; this
+// is what the runtime should call so verification jobs are processed in the same
+// (nextAttemptAt ASC, jobId ASC) order as observation jobs. runVerificationBatch
+// is supplied by createVerificationRunner (it holds the response cache + fetch).
+export async function drainReconciliationAsync(deps: {
+  store: Reconciler
+  now: () => string
+  runVerificationBatch(input: { claim: { kind: 'verification'; jobId: string; batchKey: string }; now: string }): Promise<void>
+}): Promise<number> {
+  const { store, now } = deps
+  let done = 0
+  for (;;) {
+    const claim = store.claimReconciliation(now())
+    if (claim) {
+      if (claim.kind === 'verification') {
+        await deps.runVerificationBatch({ claim, now: now() })
+        continue
+      }
+      if (handleObservationClaim(store, claim, now)) done++
+      continue
+    }
     const fanout = store.claimFanout(now())
     if (fanout) {
       store.processFanoutBatch({ claim: fanout, now: now() })

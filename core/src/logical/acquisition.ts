@@ -125,6 +125,11 @@ interface RawItem {
   updatedAt: string | null
   inReplyTo: string | null
   sourceName: string | null
+  // RSS core <source url>name</source> — the origin feed a firehose/aggregator
+  // item claims (rss.chat). Only the RSS adapter carries it; others leave it
+  // undefined. Its URL is what V3 origin-verification fetches (spec §7). The
+  // legacy ingest path captures the same field (ingest.ts sourceFeedUrl).
+  sourceFeedUrl?: string | null
   enclosures: EnclosureDto[]
   // Optional stable identity seed for the fallback delivery key. The feed adapters
   // leave it undefined (their rawDate is already the RAW value — empty when absent —
@@ -234,6 +239,7 @@ function extractRawItems(doc: string, pageUrl: string): { adapter: ParseResult['
     updatedAt: str(it.atom?.updated ?? null),
     inReplyTo: it.sourceNs?.inReplyTo?.value ?? it.thr?.inReplyTos?.[0]?.ref ?? null,
     sourceName: str(it.source?.title ?? null),
+    sourceFeedUrl: str(it.source?.url ?? null),
     enclosures: (it.enclosures ?? []).filter((e) => typeof e.url === 'string').slice(0, BOUNDS.maxEnclosures).map((e) => ({ url: e.url as string, mimeType: str(e.type ?? null), title: null, sizeBytes: typeof e.length === 'number' ? e.length : null, durationSeconds: null })),
   }))
   return { adapter: 'rss', items }
@@ -293,7 +299,10 @@ export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'
     const fingerprint = createHash('sha256').update(canonicalMaterial).digest('hex')
     // Optional over-limit publisher/name claims become inert digest evidence.
     const rawEvidence = { title: boundRaw('title', it.title), sourceName: boundRaw('sourceName', it.sourceName), link: it.link, published: it.rawDate, updated: it.updatedAt, enclosureCount: it.enclosures.length }
-    const normalized = { keyKind, key, permalink: it.link ? normalizePermalink(it.link) : null, inReplyTo: it.inReplyTo, enclosures: it.enclosures }
+    // originFeedUrl (spec §7): the item's claimed origin feed (RSS <source url>),
+    // http(s) only — reconcile schedules verification from it on aggregate claims.
+    const originFeedUrl = it.sourceFeedUrl && /^https?:\/\//i.test(it.sourceFeedUrl) ? it.sourceFeedUrl : null
+    const normalized = { keyKind, key, permalink: it.link ? normalizePermalink(it.link) : null, inReplyTo: it.inReplyTo, enclosures: it.enclosures, originFeedUrl }
     candidates.push({ wireOrdinal: ordinal, keyKind, key, fingerprint, canonicalMaterial, rawEvidenceJson: JSON.stringify(rawEvidence), normalizedJson: JSON.stringify(normalized), enclosures: it.enclosures })
   }
   return { adapter, candidates, findings, candidateCount, examined, omitted, itemsTruncated: omitted > 0 }
@@ -301,7 +310,7 @@ export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'
 
 // ---- bounded fetch with SSRF-per-hop + redirect proof (spec §1.5-1.6) --------
 
-type FetchResult =
+export type FetchResult =
   | { kind: 'response'; res: Response; effectiveUrl: string; redirects: RedirectObservation[]; provenAliases: string[] }
   | { kind: 'not_modified'; effectiveUrl: string; redirects: RedirectObservation[] }
   | { kind: 'ownership_collision'; redirects: RedirectObservation[]; collidedUrl: string }
@@ -310,7 +319,7 @@ type FetchResult =
 
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308])
 
-interface FetchCtx {
+export interface FetchCtx {
   fetchFn: typeof fetch
   lookupFn?: LookupFn
   signal: AbortSignal
@@ -320,7 +329,7 @@ interface FetchCtx {
   aliasOwner: (url: string) => string | null
 }
 
-async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<FetchResult> {
+export async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<FetchResult> {
   const redirects: RedirectObservation[] = []
   const provenAliases: string[] = []
   const seen = new Set<string>()
@@ -379,7 +388,7 @@ async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<FetchResul
 // Read the streamed body under the 5 MiB decoded cap (spec §1.5). The cap is
 // enforced WHILE streaming — chunks are counted and the stream is cancelled the
 // moment the total crosses the cap, so an oversized body is never fully buffered.
-async function readCappedBody(res: Response): Promise<{ body: string | null; exceeded: boolean }> {
+export async function readCappedBody(res: Response): Promise<{ body: string | null; exceeded: boolean }> {
   const declared = Number(res.headers.get('content-length') ?? '0')
   if (Number.isFinite(declared) && declared > BOUNDS.maxBodyBytes) return { body: null, exceeded: true }
   if (!res.body) {
@@ -401,12 +410,12 @@ async function readCappedBody(res: Response): Promise<{ body: string | null; exc
   return { body: Buffer.concat(chunks).toString('utf8'), exceeded: false }
 }
 
-function raceDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+export function raceDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
   const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new DeadlineError()), ms) })
   return Promise.race([p, deadline]).finally(() => clearTimeout(timer)) as Promise<T>
 }
-class DeadlineError extends Error { constructor() { super('acquisition deadline exceeded') } }
+export class DeadlineError extends Error { constructor() { super('acquisition deadline exceeded') } }
 
 // ---- store-side transaction functions (spec §1.4, §2.1) ---------------------
 // Pure WriteTx functions; store.ts wraps each in db.write(). The engine drives

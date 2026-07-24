@@ -11,7 +11,9 @@ import { getJournalMetadata, snapshotJournalCursor, appendJournal } from './jour
 import { HandleTakenError } from '../domain/types.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
-import { claimReconciliation, reconcileClaim, recordReconciliationFailure } from './reconcile.ts'
+import { claimReconciliation, reconcileClaim, recordReconciliationFailure, deferVerification } from './reconcile.ts'
+import { scheduleVerification } from './verification.ts'
+import type { ResolveVerificationInput } from './types.ts'
 import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
 import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher } from './projector.ts'
 import type { ProjectionViewer, TimelineQuery, LogicalTimelineEnvelope, LogicalHistoryEnvelope, LogicalThreadEnvelope, PublicLocalAccount, PublicPublisher } from './types.ts'
@@ -284,6 +286,24 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     recordReconciliationFailure(input: RecordJobFailureInput): void {
       db.write((tx) => recordReconciliationFailure(tx, input))
+    },
+
+    // --- bounded origin verification (Task 4, spec §7.1) ------------------
+    // scheduleVerification takes the caller's WriteTx so the check + batch job
+    // commit atomically inside V2 reconciliation's aggregate-claim transaction
+    // (the enqueue is called directly from reconcile.ts). deferVerification lets
+    // the SYNC drain un-claim a verification job (async fetch belongs to the async
+    // drain). resolveVerificationBatch is the Task-5 outcome-handling stub — Task 4
+    // performs the fetch and hands the parsed response here; today a no-op.
+    scheduleVerification(tx: WriteTx, input: { logicalItemId: string; sourceId: string; publisherFeedUrl: string; now: string }): void {
+      scheduleVerification(tx, input)
+    },
+    deferVerification(jobId: string): void {
+      db.write((tx) => deferVerification(tx, jobId))
+    },
+    resolveVerificationBatch(_input: ResolveVerificationInput): void {
+      // ponytail: Task-5 stub. Outcome handling (containment match, verified rung,
+      // publisher aliases, job terminalisation) is out of Task 4's scope.
     },
 
     // --- orphan-work write seam (Task 7) ----------------------------------

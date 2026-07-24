@@ -433,14 +433,40 @@ export interface AdoptOrphansResult {
   remaining: boolean
 }
 
-export interface ReconciliationClaim {
-  jobId: string
-  runId: string
-  observationVersionId: string
-}
+// Widened to a discriminated union (V3 Task 4) — an intentional supersession of
+// V2's single shape. The ONE drain claims either variant in the same
+// (nextAttemptAt ASC, jobId ASC) order and dispatches on `kind`; verification
+// jobs do NOT get their own queue. The observation variant is byte-identical to
+// V2's shape plus the `kind` tag, so the observation drain path is unchanged.
+export type ReconciliationClaim =
+  | { kind: 'observation'; jobId: string; runId: string; observationVersionId: string }
+  | { kind: 'verification'; jobId: string; batchKey: string }
 
 export interface ReconcileClaimInput {
   claim: ReconciliationClaim
+  now: string
+}
+
+// --- Bounded origin verification (V3 Task 4, spec §7) ---------------------
+// scheduleVerification writes the check rows + one batch job; the ONE drain
+// runs the bounded batched fetch and hands the parsed response to
+// resolveVerificationBatch (Task 5 fills the outcome handling — it is a stub
+// here). Attempt counts and next-attempt times live ONLY on the job rows.
+
+export interface VerificationFeedItem {
+  normalizedPermalink: string | null
+  opaqueId: string | null
+  evidence: NewObservationVersion
+}
+export interface PermanentRedirectProof {
+  fromUrl: string
+  toUrl: string
+}
+export interface ResolveVerificationInput {
+  claim: { kind: 'verification'; jobId: string; batchKey: string }
+  outcome:
+    | { kind: 'fetched'; parsedItems: VerificationFeedItem[]; publisherRedirect: PermanentRedirectProof | null }
+    | { kind: 'operational_failure'; category: string; diagnostic: string | null }
   now: string
 }
 
