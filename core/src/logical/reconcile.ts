@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { WriteTx } from './database.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput, NormalizedReplyReference } from './types.ts'
+import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent } from './threading.ts'
 import { materializeLocalPost } from './local.ts'
@@ -322,7 +323,7 @@ function applyPresentation(tx: WriteTx, v: VersionRow, material: Material, norma
 // Gather the item's candidate deliveries/claims and let the pure comparators pick
 // the effective pointers (spec §3.2). These are OPTIMIZATION hints; ordinary reads
 // re-derive from the same comparators (spec §3.1). Returns which pointers moved.
-function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: string): { deliveryChanged: boolean; publisherChanged: boolean } {
+export function applySelectionHints(tx: WriteTx, itemId: string, currentVersionId: string): { deliveryChanged: boolean; publisherChanged: boolean } {
   const cur = tx.prepare(`SELECT selected_delivery_id, selected_publisher_id FROM logical_items_v2 WHERE id = ?`).get(itemId) as { selected_delivery_id: string | null; selected_publisher_id: string | null }
   const deliveryIds = (tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?`).all(itemId) as { key: string }[]).map((r) => r.key)
 
@@ -381,6 +382,10 @@ export interface Reconciler {
   claimReconciliation(now: string): ReconciliationClaim | null
   reconcileClaim(input: ReconcileClaimInput): ReconcileResult
   recordReconciliationFailure(input: RecordJobFailureInput): void
+  // Policy fan-out shares this ONE drain (spec §4.1) — no second loop. Task 4
+  // widens the SAME dispatch with the verification job kind.
+  claimFanout(now: string): FanoutClaim | null
+  processFanoutBatch(input: { claim: FanoutClaim; now: string }): FanoutBatchResult
 }
 
 // Drain the whole eligible queue serially, one job at a time. Runs after each
@@ -392,17 +397,28 @@ export function drainReconciliation(deps: { store: Reconciler; now: () => string
   let done = 0
   for (;;) {
     const claim = store.claimReconciliation(now())
-    if (!claim) break
-    let result: ReconcileResult
-    try {
-      result = store.reconcileClaim({ claim, now: now() })
-    } catch (err) {
-      const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
-      const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
-      store.recordReconciliationFailure({ jobId: claim.jobId, now: now(), category, diagnostic, retryAt: null })
+    if (claim) {
+      let result: ReconcileResult
+      try {
+        result = store.reconcileClaim({ claim, now: now() })
+      } catch (err) {
+        const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
+        const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
+        store.recordReconciliationFailure({ jobId: claim.jobId, now: now(), category, diagnostic, retryAt: null })
+        continue
+      }
+      if (result.kind !== 'superseded') done++
       continue
     }
-    if (result.kind !== 'superseded') done++
+    // No reconciliation job pending — process fan-out on the SAME drain (spec
+    // §4.1). One bounded batch per turn; 'progress' leaves the row 'running' and
+    // the next turn re-claims it from the durable cursor. Jobs take priority.
+    const fanout = store.claimFanout(now())
+    if (fanout) {
+      store.processFanoutBatch({ claim: fanout, now: now() })
+      continue
+    }
+    break
   }
   return done
 }

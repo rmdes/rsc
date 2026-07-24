@@ -6,6 +6,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
+import { scheduleFanout } from '../src/logical/fanout.ts'
 import type { CommandEnvelope, AuditCategory } from '../src/domain/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
@@ -111,6 +112,21 @@ const ROWS: Row[] = [
       const id = await remoteItem(db, raw, store, 's1', 'quarantined')
       hide(store, id, 'c1')
       return { id, mutate: () => restore(store, id, 'c2') }
+    },
+  },
+  {
+    // Fan-out converges materialized hints only; it appends NO journal record,
+    // even when it MOVES a hint (here: quarantine drops the selected delivery).
+    // The transition's own reset was the client barrier (spec §2, §4.1).
+    name: 'fan-out batch converging an item hint → no record',
+    expected: [],
+    run: async ({ db, raw, store }) => {
+      const id = await remoteItem(db, raw, store, 's1')
+      // Advance the source's policy generation, quarantine it, and enqueue fan-out
+      // — exactly the co-transaction a governance transition performs.
+      raw.prepare(`UPDATE remote_sources_v2 SET governance = 'quarantined', policy_generation = policy_generation + 1 WHERE id = ?`).run('s1')
+      db.write((tx) => scheduleFanout(tx, { sourceId: 's1', generation: 1, now: NOW }))
+      return { id, mutate: () => drain(store) } // the drain processes the fan-out row
     },
   },
 ]

@@ -10,6 +10,7 @@ import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, Un
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
+import { scheduleFanout } from '../logical/fanout.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
 // These source-command methods run only when the source-control plane is wired
@@ -21,12 +22,20 @@ import { appendJournal } from '../logical/journal.ts'
 // for a per-source policy change. Active subscription create/remove and local
 // follow append a Personal-membership reset WITHOUT advancing generation. Exactly
 // ONE reset per command; NO source-wide item fan-out (reads recompute from current
-// policy — V3 adds durable fan-out). Replay/no-op/conflict append nothing.
+// policy). V3 adds a durable fan-out (policy_fanout_v2) that converges the
+// materialized hints: advancePolicyGeneration + scheduleFanout co-commit here so a
+// fault before commit rolls the fan-out row back with the transition (spec §4.1).
+// Replay/no-op/conflict append nothing.
 function journalPolicyReset(raw: Database.Database, now: string): void {
   appendJournal(raw, { kind: 'reset', changeMask: 'barrier' }, now)
 }
-function advancePolicyGeneration(raw: Database.Database, sourceId: string): void {
-  raw.prepare(`UPDATE remote_sources_v2 SET policy_generation = policy_generation + 1 WHERE id = ?`).run(sourceId)
+// Advances the source's policy generation and enqueues its fan-out row in the SAME
+// transaction. Returns the new generation. Every generation-advancing transition
+// MUST route through here so the fan-out row always tracks the current generation.
+function advancePolicyGeneration(raw: Database.Database, sourceId: string, now: string): number {
+  const r = raw.prepare(`UPDATE remote_sources_v2 SET policy_generation = policy_generation + 1 WHERE id = ? RETURNING policy_generation`).get(sourceId) as { policy_generation: number }
+  scheduleFanout(raw, { sourceId, generation: r.policy_generation, now })
+  return r.policy_generation
 }
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
@@ -1090,7 +1099,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       const source = rowToRemoteSourceV2(row)
       const federation: FederationRelationship = { sourceId: row.id, status: 'approved', provenanceNote: input.note, createdAt: input.now, updatedAt: input.now }
       const result: EstablishFederationResult = { kind: 'established', source, federation }
-      advancePolicyGeneration(raw, row.id) // federation is a source-policy change
+      advancePolicyGeneration(raw, row.id, input.now) // federation is a source-policy change
       journalPolicyReset(raw, input.now)
       insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: input.actorKind, action: 'establish_federation', category: input.category, note: input.note, result, now: input.now })
       storeCommand(raw, input.command, result, input.now)
@@ -1147,7 +1156,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       // no reset, generation retained (spec §3.7). patch.federation is set only by
       // approve/reject/revoke, the genuine federation transitions.
       if (governance !== row.governance || patch.federation !== undefined || attributionMode !== row.attribution_mode) {
-        advancePolicyGeneration(raw, row.id)
+        advancePolicyGeneration(raw, row.id, input.now)
         journalPolicyReset(raw, input.now)
       }
 

@@ -23,6 +23,8 @@ import { clampLimit } from '../domain/source-repository.ts'
 import { rowToItemAuditEvent, hideItem, restoreItem } from './moderation.ts'
 import type { ItemAuditRow } from './moderation.ts'
 import type { ModerationCommandInput, ItemModerationResult } from './types.ts'
+import { scheduleFanout, claimFanout, processFanoutBatch } from './fanout.ts'
+import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -342,6 +344,22 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     restoreItem(input: ModerationCommandInput): ItemModerationResult {
       return db.write((tx) => restoreItem(tx, input))
+    },
+
+    // --- policy fan-out (Task 3, spec §4.1) -------------------------------
+    // scheduleFanout takes the caller's WriteTx so the enqueue commits atomically
+    // with the transition's reset + generation advance (the real enqueue is in
+    // sqlite.ts, next to advancePolicyGeneration, calling the free fn directly).
+    // claim + processBatch drive the ONE V2 drain (reconcile.ts); each is its own
+    // transaction, and a batch bounds the writer-lock hold of a full recompute.
+    scheduleFanout(tx: WriteTx, input: { sourceId: string; generation: number; now: string }): void {
+      scheduleFanout(tx, input)
+    },
+    claimFanout(now: string): FanoutClaim | null {
+      return db.write((tx) => claimFanout(tx, now))
+    },
+    processFanoutBatch(input: { claim: FanoutClaim; now: string }): FanoutBatchResult {
+      return db.write((tx) => processFanoutBatch(tx, input))
     },
 
     // --- item audit reads (Task 1, spec §1.2) -----------------------------
