@@ -298,8 +298,8 @@ export function createLogicalStore(db: DatabaseContext) {
     scheduleVerification(tx: WriteTx, input: { logicalItemId: string; sourceId: string; publisherFeedUrl: string; now: string }): void {
       scheduleVerification(tx, input)
     },
-    deferVerification(jobId: string): void {
-      db.write((tx) => deferVerification(tx, jobId))
+    deferVerification(jobId: string, now: string): void {
+      db.write((tx) => deferVerification(tx, jobId, now))
     },
     resolveVerificationBatch(_input: ResolveVerificationInput): void {
       // ponytail: Task-5 stub. Outcome handling (containment match, verified rung,

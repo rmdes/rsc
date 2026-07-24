@@ -192,3 +192,46 @@ test('a running batch whose captured generation no longer matches supersedes and
   expect(store.processFanoutBatch({ claim: good, now: NOW }).kind).toBe('done')
   expect(itemIds.every((id) => selectedDelivery(raw, id) === null)).toBe(true)
 })
+
+// --- coexistence: a pending verification job must not starve the sync drain ---
+// (V3 Task 4 regression). A verification job the sync drain cannot process sat at
+// the head of the (nextAttemptAt ASC, jobId ASC) order; the old `break` on the
+// cycled-back deferral stopped the WHOLE drain — starving fan-out (spec §4.1) AND
+// any observation job sorting after the verification job.
+
+test('the sync drain reaches fan-out and a later observation job while a verification job stays pending', async () => {
+  const { repo, raw, db, store } = await fresh()
+  const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
+
+  // S1: reconciled items, then quarantined ⇒ a pending fan-out row with stale hints.
+  const { sourceId: s1, itemIds } = await seedItems(db, raw, store, 3)
+  expect(itemIds.every((id) => selectedDelivery(raw, id) !== null)).toBe(true)
+  await repo.transition({ command: adminCmd(admin.id, 'q1'), sourceId: s1, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  expect(fanoutRow(raw, s1)!.state).toBe('pending')
+
+  // S2: one freshly acquired observation job, left PENDING (not yet drained).
+  const s2url = 'https://feed.test/s2'
+  const s2 = seedSource(raw, { url: s2url })
+  await acquire(db, s2, s2url, RSS(guidItem('g-s2')))
+  expect(count(raw, 'reconciliation_jobs_v2', "WHERE kind = 'observation' AND status = 'pending'")).toBe(1)
+
+  // A pending verification job whose next_attempt_at sorts BEFORE S2's obs job
+  // (obs jobs are at NOW): under the old `break` it re-claims forever and halts the
+  // drain before fan-out AND before the S2 observation.
+  const EARLIER = '2026-07-23T00:00:00.000Z'
+  const verJobId = randomUUID()
+  raw.prepare(
+    `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
+     VALUES (?, 'verification', NULL, NULL, ?, 'pending', 0, ?, NULL, NULL, ?)`,
+  ).run(verJobId, 'https://origin.test/feed.xml', EARLIER, NOW)
+
+  drain(store)
+
+  // (1) fan-out ran: S1's stale hints converged (quarantined ⇒ null) and the row is done.
+  expect(itemIds.every((id) => selectedDelivery(raw, id) === null)).toBe(true)
+  expect(fanoutRow(raw, s1)!.state).toBe('done')
+  // (2) the coexisting later observation job still reconciled.
+  expect(count(raw, 'reconciliation_jobs_v2', "WHERE kind = 'observation' AND status = 'pending'")).toBe(0)
+  // (3) the verification job is preserved for the async drain — still pending, not spun to terminal.
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE id = ?`).get(verJobId) as { status: string }).status).toBe('pending')
+})

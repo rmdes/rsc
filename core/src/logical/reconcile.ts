@@ -115,10 +115,16 @@ export function claimReconciliation(tx: WriteTx, now: string): ReconciliationCla
 
 // The synchronous drain cannot run the async verification fetch, so it un-claims
 // a verification job it happens to pick (setting it back to 'pending') and leaves
-// it for the async drain. ponytail: sync drain defers verification; the one async
-// drain (drainReconciliationAsync, runtime-wired) is the sole processor.
-export function deferVerification(tx: WriteTx, jobId: string): void {
-  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending' WHERE id = ? AND kind = 'verification' AND status = 'processing'`).run(jobId)
+// it for the async drain. It ALSO nudges next_attempt_at one ms past `now`: a
+// deferred verification job otherwise stays at the head of the (nextAttemptAt ASC,
+// jobId ASC) order and claimReconciliation keeps returning IT, starving any
+// observation job that sorts after it. Bumping it strictly past `now` drops it out
+// of this sync pass's claimable set (WHERE next_attempt_at <= now), so observation
+// and fan-out work is reached; the async drain (drainReconciliationAsync,
+// runtime-wired in Task 10) re-claims it on a later `now`. Status stays 'pending'.
+export function deferVerification(tx: WriteTx, jobId: string, now: string): void {
+  const bumped = new Date(Date.parse(now) + 1).toISOString()
+  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending', next_attempt_at = ? WHERE id = ? AND kind = 'verification' AND status = 'processing'`).run(bumped, jobId)
 }
 
 // ---- failure bookkeeping (spec §2.3): a separate small transaction -----------
@@ -437,7 +443,7 @@ export interface Reconciler {
   processFanoutBatch(input: { claim: FanoutClaim; now: string }): FanoutBatchResult
   // Verification (spec §7.1) rides the SAME claim ordering; the sync drain defers
   // it (async fetch), the async drain processes it.
-  deferVerification(jobId: string): void
+  deferVerification(jobId: string, now: string): void
 }
 
 // One observation job: reconcile it, or record its failure. Returns whether it
@@ -457,28 +463,33 @@ function handleObservationClaim(store: Reconciler, claim: ReconciliationClaim, n
 
 // Drain the whole eligible queue serially, one job at a time (spec §2.3). This
 // SYNCHRONOUS drain processes observation + fan-out; it CANNOT run the async
-// verification fetch, so it un-claims any verification job it picks and stops
-// once it cycles back to one it already deferred — leaving verification for the
-// async drain (drainReconciliationAsync, runtime-wired). The observation path is
-// byte-identical to V2 (no verification job exists in the V2 suites, so this
+// verification fetch, so it un-claims any verification job it picks (deferring it
+// past `now`, see deferVerification) and leaves it for the async drain
+// (drainReconciliationAsync, runtime-wired in Task 10). Once the only reconciliation
+// claims left are verification jobs it already deferred, it FALLS THROUGH to
+// fan-out/observation work instead of stopping — a deferred verification job must
+// never starve fan-out (spec §4.1) or a later observation job. The observation path
+// is byte-identical to V2 (no verification job exists in the V2 suites, so this
 // drain never defers there). Returns the count of reconciled/conflicted jobs.
 export function drainReconciliation(deps: { store: Reconciler; now: () => string }): number {
   const { store, now } = deps
   let done = 0
   const deferred = new Set<string>()
   for (;;) {
-    const claim = store.claimReconciliation(now())
-    if (claim) {
-      if (claim.kind === 'verification') {
-        if (deferred.has(claim.jobId)) break // cycled back: no observation/fan-out work remains ahead of it
+    let claim = store.claimReconciliation(now())
+    if (claim && claim.kind === 'verification') {
+      if (!deferred.has(claim.jobId)) {
         deferred.add(claim.jobId)
-        store.deferVerification(claim.jobId)
+        store.deferVerification(claim.jobId, now())
         continue
       }
+      claim = null // cycled back: only already-deferred verification jobs remain — reach fan-out below
+    }
+    if (claim) {
       if (handleObservationClaim(store, claim, now)) done++
       continue
     }
-    // No reconciliation job pending — process fan-out on the SAME drain (spec
+    // No processable reconciliation job — process fan-out on the SAME drain (spec
     // §4.1). One bounded batch per turn; 'progress' leaves the row 'running' and
     // the next turn re-claims it from the durable cursor. Jobs take priority.
     const fanout = store.claimFanout(now())
