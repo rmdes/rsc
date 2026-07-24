@@ -311,6 +311,22 @@ provisional publisher; missing/invalid attribution uses the source-scoped
 unattributed publisher. Quarantined deliveries convert as retained
 administrator evidence, ordinarily ineligible from the first read.
 
+> **Amendment 2026-07-24 (adjudicated during Task 5 execution):** converted
+> publishers are minted **`feed_anchored`**, keyed on `canonical_feed_url`
+> exactly as the live `getOrCreatePublisher` (reconcile.ts) keys them — NOT
+> `source_scoped_fallback` as the paragraph above implies for aggregates.
+> The fallback level collides with §3.6's own constraint (a publisher page
+> exists only for a feed-anchored publisher; `resolvePublisher` rejects
+> everything else), so honoring it would fork publisher identity at cutover
+> and point §3.5's permanent handle redirect at a 404. The live stack's
+> reading governs. This deliberately entrenches the accepted §2.4
+> attribution debt (V3 ledger): **the cutover now depends on feed-anchored
+> uniformity — the eventual §2.4 fix must migrate publisher rows, not merely
+> change reconcile's behavior.** Convergence is pinned by the
+> zero-new-mints test in `core/test/migration-convert.test.ts` (5b1e6d3);
+> the `/u/:handle → /p/:publisherId` 200 end-to-end proof is a carried pin
+> for the task that ships the §3.5 redirect route.
+
 Historical posts are never merged automatically; a permalink or
 publisher+GUID collision between converted items becomes a non-aborting
 conversion finding (3.6).
