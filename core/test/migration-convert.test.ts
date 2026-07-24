@@ -616,6 +616,29 @@ test('a legacy reply to a LOCAL parent materializes the local bridge row and res
   expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p2'`)).toMatchObject({ parent_state: 'resolved', parent_logical_item_id: 'lp1' })
 })
 
+// A remote reply whose local parent is ITSELF a reply to a local root: the
+// ancestry backfill must materialize the WHOLE chain (lp1 root, then lp2), not
+// just the direct parent — materializeLocalPost alone would try to insert lp2's
+// bridge row with parent_logical_item_id = 'lp1' while lp1 has no logical row
+// yet, which FOREIGN KEY constraint failed's (schema.ts's self-FK on
+// logical_items_v2, foreign_keys=ON) during this pre-listen transaction. This is
+// the load-bearing half of the cutover fix (convert.ts's ancestry pass routing
+// through the shared materializeLocalChain instead).
+test('a remote reply to a local reply, whose OWN parent is a local root, materializes the whole chain and resolves', async () => {
+  const raw = await fresh()
+  seedLocal(raw)
+  seedRemote(raw)
+  seedLocalPost(raw) // lp1: local root
+  seedLocalPost(raw, { id: 'lp2', guid: 'lg2', url: '/post/lp2', in_reply_to: '/post/lp1', in_reply_to_post_id: 'lp1', thread_root_id: 'lp1' }) // lp2: local reply to lp1
+  seedPost(raw, { id: 'p2', guid: 'g2', url: 'https://a.test/post/2', in_reply_to: '/post/lp2', in_reply_to_post_id: 'lp2' }) // remote reply to lp2
+  convert(raw)
+
+  expect(one(raw, `SELECT * FROM logical_local_origins_v2 WHERE post_id = 'lp1'`)).toEqual({ logical_item_id: 'lp1', post_id: 'lp1' })
+  expect(one(raw, `SELECT * FROM logical_local_origins_v2 WHERE post_id = 'lp2'`)).toEqual({ logical_item_id: 'lp2', post_id: 'lp2' })
+  expect(one(raw, `SELECT parent_state, parent_logical_item_id FROM logical_items_v2 WHERE id = 'lp2'`)).toEqual({ parent_state: 'resolved', parent_logical_item_id: 'lp1' })
+  expect(one(raw, `SELECT parent_state, parent_logical_item_id FROM logical_items_v2 WHERE id = 'p2'`)).toEqual({ parent_state: 'resolved', parent_logical_item_id: 'lp2' })
+})
+
 test('a reply whose parent post is GONE converts to missing and counts unresolved_reference', async () => {
   const raw = await fresh()
   seedRemote(raw)

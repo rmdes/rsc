@@ -582,6 +582,15 @@ async function expectReplySurvives(app: Awaited<ReturnType<typeof makeApp>>['app
   const parent = await (await app.request('/post/p1/thread')).json() as { nodes: never[] }
   expect(threadIds(parent).sort()).toEqual(['lr1', 'p1'])
   expect(await (await app.request('/post/p1')).json()).toMatchObject({ item: { directReplyCount: 1 } })
+  // (e) … and the remote parent's comments.xml carries the converted reply too,
+  // its item count agreeing with the directReplyCount above — before the fix this
+  // route served an empty body for a remote parent whose only reply was an
+  // unmaterialized local one (logical-routes.ts's comments.xml walks the SAME
+  // thread projection projectThread does, so an unmaterialized reply was absent
+  // from both).
+  const commentsXml = await (await app.request('/post/p1/comments.xml')).text()
+  expect(commentsXml).toContain('my reply')
+  expect((commentsXml.match(/<guid/g) ?? []).length).toBe(1)
   // the durable edge behind all of it
   expect(raw.prepare(`SELECT origin, parent_state, parent_logical_item_id FROM logical_items_v2 WHERE id = 'lr1'`).get())
     .toEqual({ origin: 'local', parent_state: 'resolved', parent_logical_item_id: 'p1' })

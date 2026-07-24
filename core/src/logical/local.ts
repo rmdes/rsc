@@ -99,12 +99,21 @@ export function materializeLocalPost(tx: WriteTx, postId: string): void {
 // which is what makes it order-independent: an id that already HAS a logical row is
 // satisfied as-is, whether this walk put it there, an earlier one did, or — the
 // cutover case — conversion minted the remote parent before the pass ran.
-export function materializeLocalChain(tx: WriteTx, postId: string): boolean {
+//
+// Bounded at 1000 hops — the same bound as this codebase's other three parent
+// walks (deriveRoot here and in runtime.ts, adminDeriveRoot in store.ts). Ordinary
+// commands can never produce a self-edge or cycle (createLocalPost's wouldCycle
+// guard), so this is hand-corruption only; but this walk runs inside the
+// pre-listen activation transaction, so an unhandled RangeError there is a
+// hard startup crash, not an ordinary-path bug — a depth bound, not cycle
+// detection, is what its siblings use and what this needed too.
+export function materializeLocalChain(tx: WriteTx, postId: string, depth = 0): boolean {
+  if (depth >= 1000) return false
   if (tx.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ?`).get(postId)) return true
   const row = tx.prepare(`SELECT in_reply_to_post_id AS parent FROM posts WHERE id = ? AND source = 'local'`).get(postId) as
     { parent: string | null } | undefined
   if (!row) return false
-  if (row.parent && !materializeLocalChain(tx, row.parent)) return false
+  if (row.parent && !materializeLocalChain(tx, row.parent, depth + 1)) return false
   materializeLocalPost(tx, postId)
   return true
 }

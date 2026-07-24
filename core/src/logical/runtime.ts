@@ -206,10 +206,19 @@ function readActivation(tx: ReadTx): ActivationRow {
 // the has-a-row early exit), which is what lets it run on EVERY startup path — a
 // database converted by an earlier build, which skipped these replies, repairs
 // itself on its next start.
+//
+// The anti-join pre-filters to UNMATERIALIZED local posts only: better-sqlite3
+// does not cache prepares, so this runs on every boot inside the pre-listen
+// IMMEDIATE write transaction, and without it materializeLocalChain's per-post
+// check would run once per local post on every restart, forever, even in the
+// ordinary steady state where nothing needs repairing. Repair semantics are
+// unchanged — a straggler this query finds still walks its ancestry via
+// materializeLocalChain exactly as before.
 function materializePreexistingLocalPosts(tx: WriteTx): void {
-  for (const r of tx.prepare(`SELECT id FROM posts WHERE source = 'local'`).all() as { id: string }[]) {
-    materializeLocalChain(tx, r.id)
-  }
+  const rows = tx.prepare(
+    `SELECT id FROM posts WHERE source = 'local' AND id NOT IN (SELECT id FROM logical_items_v2)`,
+  ).all() as { id: string }[]
+  for (const r of rows) materializeLocalChain(tx, r.id)
 }
 
 function writeActivation(tx: WriteTx, state: SourceModelV2Activation['state'], lastActivatedAt: string | null, lastReconciledAt: string | null): void {

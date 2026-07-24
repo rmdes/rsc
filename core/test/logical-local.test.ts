@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
-import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, synthesizeLocalItem } from '../src/logical/local.ts'
+import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, synthesizeLocalItem, materializeLocalChain } from '../src/logical/local.ts'
 import { getJournalMetadata, readJournalBatch } from '../src/logical/journal.ts'
 import type { User } from '../src/domain/types.ts'
 
@@ -194,4 +194,27 @@ test('materialization is race-safe: a second create-time materialize of the same
   db.write((tx) => editLocalPost({ tx, postId: created.id, authorId: author.id, content: 'twice', now: LATER }))
   expect(count(raw, 'logical_items_v2')).toBe(1)
   expect(count(raw, 'logical_local_origins_v2')).toBe(1)
+})
+
+// materializeLocalChain walks ancestry via recursion with no cycle guard of its
+// own (unlike deriveRoot/adminDeriveRoot's iterative 1000-hop bound). Ordinary
+// commands can never produce a self-edge or a cycle (createLocalPost's wouldCycle
+// guard), so this is hand-corruption only — but the walk is reachable from the
+// pre-listen activation transaction (runtime.ts's materializePreexistingLocalPosts
+// and convert.ts's ancestry backfill both call it), so an unbounded recursion
+// there is a startup crash (RangeError: Maximum call stack size exceeded), not an
+// ordinary-path bug. The bound must fail closed (false, nothing materialized)
+// rather than crash the process.
+test('materializeLocalChain is bounded: a hand-corrupted self-edge does not recurse forever', async () => {
+  const { raw, db } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  raw.prepare(
+    `INSERT INTO posts (id, author_id, source, guid, content, url, published_at, created_at, in_reply_to_post_id)
+     VALUES ('c1', 'u1', 'local', 'g1', 'corrupt', '/post/c1', ?, ?, 'c1')`,
+  ).run(NOW, NOW)
+
+  const ok = db.write((tx) => materializeLocalChain(tx, 'c1'))
+
+  expect(ok).toBe(false)
+  expect(count(raw, 'logical_items_v2')).toBe(0)
 })

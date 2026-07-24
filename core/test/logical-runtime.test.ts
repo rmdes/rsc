@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
@@ -151,6 +151,43 @@ test('a legacy local post read-synthesized before v2 gets its bridge row at acti
   const thread = deps.store.snapshot((tx) => tx.projectThread('p1', { localAccountId: null, activeSourceIds: [] }))
   expect(thread).toBeTruthy()
   expect(thread!.nodes.some((node) => node.kind === 'item' && node.item.id === 'p1')).toBe(true)
+})
+
+// better-sqlite3 does not cache prepares, so the per-post `SELECT 1 FROM
+// logical_items_v2 …` inside materializeLocalChain used to run on EVERY local
+// post, on EVERY restart, inside the pre-listen IMMEDIATE write transaction —
+// even the continuous-v2 steady state where nothing needs repairing.
+// materializePreexistingLocalPosts now pre-filters with an anti-join, so a
+// restart with N already-materialized local posts issues that ONE statement
+// and calls materializeLocalChain (and its per-post check) zero times.
+test('steady-state restart materializes local posts via ONE anti-join statement, not one per local post', async () => {
+  const deps = await setup()
+  const repo = deps.repo
+  repo.raw.prepare(`INSERT INTO users (id, kind, handle, display_name, created_at) VALUES ('u1','local','alice','Alice',?)`).run(NOW)
+  let parent: string | null = null
+  for (let i = 0; i < 5; i++) {
+    const id = `p${i}`
+    repo.raw.prepare(
+      `INSERT INTO posts (id, author_id, source, guid, content, url, published_at, created_at, in_reply_to_post_id, thread_root_id)
+       VALUES (?, 'u1', 'local', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, `g${i}`, `post ${i}`, `/post/${id}`, NOW, NOW, parent, parent ? 'p0' : null)
+    parent = id
+  }
+  activateLogicalV2(deps.db, NOW) // first activation: real work, materializes all 5
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM logical_items_v2`).get()).toMatchObject({ n: 5 })
+
+  const spy = vi.spyOn(repo.raw, 'prepare')
+  activateLogicalV2(deps.db, NOW) // continuous-v2 restart — the steady-state path
+  const perPostChecks = spy.mock.calls.filter((c) => c[0] === `SELECT 1 FROM logical_items_v2 WHERE id = ?`)
+  expect(perPostChecks).toHaveLength(0) // the anti-join already excluded every materialized post
+  spy.mockRestore()
+
+  // repair semantics unchanged: an unmaterialized straggler is still picked up
+  repo.raw.prepare(`DELETE FROM logical_identity_keys_v2 WHERE logical_item_id = 'p4'`).run()
+  repo.raw.prepare(`DELETE FROM logical_local_origins_v2 WHERE post_id = 'p4'`).run()
+  repo.raw.prepare(`DELETE FROM logical_items_v2 WHERE id = 'p4'`).run()
+  activateLogicalV2(deps.db, NOW)
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM logical_items_v2`).get()).toMatchObject({ n: 5 })
 })
 
 // ---- startup drain picks up work a crash may have left (spec §7.2) ----------
