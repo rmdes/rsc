@@ -346,6 +346,37 @@ the sole authority for local content, and deleting them buys nothing while
 the backup is the only undo (`ponytail: inert legacy remote rows retained;
 a cleanup batch can delete them after the retirement release has soaked`).
 
+> **Amendment 2026-07-24 (maintainer adjudication):** converted aggregate and
+> instance sources mint their publisher as `identity_level = 'feed_anchored'`
+> keyed on `canonical_feed_url` — the source's normalized canonical URL — not
+> as a `source_scoped_fallback`. The "source-scoped unattributed publisher"
+> sentence above is superseded for the CONVERSION path.
+>
+> Grounds. This section and V3 §3.6 contradict each other, and the live stack
+> already resolved it: §3.6 gives a publisher page only to a feed-anchored
+> publisher and returns an ordinary `404` for a source-scoped fallback, which
+> `resolvePublisher` (`core/src/logical/projector.ts`) implements faithfully.
+> A fallback row is therefore a row no reader will serve, and §3.5's
+> **permanent** `/u/:handle` → `/p/:publisherId` redirect for every converted
+> instance handle would be a permanent redirect to a 404. §3.6 governs,
+> because it is what every reader depends on. Keying identically to
+> `getOrCreatePublisher` (`core/src/logical/reconcile.ts`) — which finds-or-
+> creates by `canonical_feed_url` alone and mints `'feed_anchored'` — also
+> means the first post-cutover reconcile of a converted source FINDS the
+> converted row instead of minting a second publisher beside it, forking the
+> items across two identities and orphaning
+> `handle_reservations_v2.publisher_id`.
+>
+> Scope. V4's charter is preservation, not reform: changing live-path
+> publisher semantics inside the migration vertical is out of scope, and the
+> §2.4 attribution gap stays recorded, accepted debt (V4 plan, V3 execution
+> handoff item 7). One rule now mints every publisher row pre- and
+> post-cutover, so the eventual §2.4 fix migrates one uniform population once
+> rather than reconciling two populations minted under different regimes —
+> that fix must therefore MIGRATE EXISTING ROWS, not merely change
+> `reconcile.ts`'s behaviour (`docs/superpowers/ideas.md`). Pinned by the
+> convergence test in `core/test/migration-convert.test.ts`.
+
 ### 3.3 Follows and subscriptions
 
 Legacy `follows` (`sqlite.ts:623-628`) split by target kind:

@@ -900,3 +900,27 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   the displayName backfill shipped have `display_name ≠ feed_url` forever
   (spec S6). A one-time heal query could rename them from current feed
   titles. Status: backlog, YAGNI until it annoys someone.
+
+## V4 migration follow-ups (Task 5 adjudication, 2026-07-24)
+
+- **§2.4 attribution fix must MIGRATE existing publisher rows** — cutover now
+  depends on **feed-anchored uniformity**: every publisher row, minted by
+  conversion (`core/src/migration/convert.ts`) or by the live reconcile
+  (`getOrCreatePublisher`, `core/src/logical/reconcile.ts:196`), is
+  `identity_level = 'feed_anchored'` keyed on `canonical_feed_url`, aggregates
+  included. **Mechanism:** V3 §3.6 grants a publisher page only to
+  feed-anchored publishers, so the fallback rows V4 spec §3.2 originally asked
+  for would be unservable — and §3.5's permanent `/u/:handle` →
+  `/p/:publisherId` redirect would 404 (adjudicated 2026-07-24; dated notes on
+  the V4 spec §3.2 and plan). **Consequence:** whoever fixes the §2.4
+  display-axis attribution debt cannot fix it by changing `reconcile.ts`'s
+  minting behaviour alone — the converted population is already feed-anchored
+  on disk, so the fix must include a DATA MIGRATION over existing
+  `remote_publishers_v2` rows (and everything keyed off them:
+  `handle_reservations_v2.publisher_id`, `publisher_claims_v2`,
+  `logical_items_v2.selected_publisher_id`). **Tradeoff:** one uniform
+  population to migrate once, instead of two populations minted under
+  different regimes to reconcile — the reason the adjudication chose
+  uniformity. Guard: the convergence test in
+  `core/test/migration-convert.test.ts`. Status: backlog, blocked on the §2.4
+  fix being specced.

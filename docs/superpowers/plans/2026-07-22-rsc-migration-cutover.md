@@ -923,3 +923,51 @@ from V3's history.
    `verified_origin` is exercised comparator-only (the integration wiring
    cannot yet produce it — named in b4144e2); the two v1 `test.fails()`
    orphaning markers stay fenced until THIS plan's cutover flips them.
+
+## Plan correction (2026-07-24, Task 5 maintainer adjudication)
+
+Task 5's step for `core/src/migration/convert.ts` said an aggregate source's
+publisher gets the source-scoped fallback (spec §3.2). **It does not.** Every
+converted source — single_publisher, manifest-approved aggregate, and
+quarantined instance alike — mints its publisher as
+`identity_level = 'feed_anchored'` with `canonical_feed_url` set to the
+source's normalized canonical URL, keyed EXACTLY as `getOrCreatePublisher`
+(`core/src/logical/reconcile.ts:196`) keys it.
+
+Why the plan's original wording was wrong:
+
+1. **The spec contradicts itself and the live stack already resolved it.**
+   §3.2 asks for the fallback on aggregates; V3 §3.6 grants a publisher page
+   only to a feed-anchored publisher and returns an ordinary `404` for a
+   source-scoped fallback. `projector.ts`'s `resolvePublisher` is §3.6
+   implemented faithfully, so honouring §3.2 literally produces rows the whole
+   read stack refuses to serve — and §3.5's **permanent** `/u/:handle` →
+   `/p/:publisherId` redirect for every converted instance handle becomes a
+   permanent redirect to a 404. That is not one function's bug; it is two spec
+   sections colliding. **§3.6 governs, because it is what every reader
+   depends on.**
+2. **V4's charter is preservation, not reform.** Changing live-path publisher
+   semantics inside the migration vertical is out of scope; §2.4 attribution
+   stays recorded, accepted debt (V3 execution handoff item 7 above).
+3. **Homogeneity.** One rule mints every publisher row pre- and post-cutover,
+   so the eventual §2.4 fix migrates one uniform population once rather than
+   reconciling two populations minted under different regimes.
+
+Consequences for later tasks:
+
+- `handle_reservations_v2.publisher_id` now points at the same publisher the
+  live reconcile resolves, so **Task 8's** `/u/:handle` → `/p/:publisherId`
+  redirect resolves to a real publisher page. Task 8 carries a binding
+  requirement for an end-to-end `200` proof of that redirect; it is not
+  stubbed here.
+- No count changed: publisher identity level was never a counted finding, and
+  `zeroCounts()` is untouched.
+- Pinned permanently by the convergence test in
+  `core/test/migration-convert.test.ts` ("a converted AGGREGATE source
+  reconciles onto its converted publisher — zero new mints"), which converts
+  an aggregate, runs the real acquire + `drainReconciliation` over it, and
+  asserts `COUNT(*) FROM remote_publishers_v2 = 1`. It fails against the
+  pre-adjudication code with `expected 2 to be 1`.
+- Recorded on the spec as a dated amendment beneath §3.2, and in
+  `docs/superpowers/ideas.md` as the migrate-existing-rows obligation the
+  §2.4 fix inherits.
