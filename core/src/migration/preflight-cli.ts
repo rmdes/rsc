@@ -6,9 +6,9 @@ import { loadManifest, runPreflight } from './preflight.ts'
 // live instance). Read-only by construction — the database is opened
 // {readonly:true}, so even a bug cannot write. Exits non-zero on any finding or
 // manifest diagnostic; nothing here holds logic (that is preflight.ts).
-const config = loadConfig()
 let findings
 try {
+  const config = loadConfig()
   findings = runPreflight(new Database(config.dbPath, { readonly: true }), loadManifest(config.migrationManifestPath))
 } catch (err) {
   console.error(`preflight aborted: ${err instanceof Error ? err.message : String(err)}`)

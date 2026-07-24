@@ -40,6 +40,12 @@ function seedReservation(raw: Raw, handle: string): void {
     `INSERT INTO handle_reservations_v2 (handle, source_id, publisher_id, created_at) VALUES (?, 's-old', 'p-old', ?)`,
   ).run(handle, NOW)
 }
+function seedExistingSource(raw: Raw, canonicalUrl: string): void {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES ('s-old', ?, 'single_publisher', 'enabled', 'allowed', 'migration', NULL, 0, ?)`,
+  ).run(canonicalUrl, NOW)
+}
 const manifest = (entries: Partial<ManifestEntry>[]): Manifest => ({
   schemaVersion: 1,
   entries: entries.map((e) => ({ sourceId: 'u1', feedUrl: 'https://a.test/feed.xml', attributionMode: 'aggregate', note: 'approved by ops', ...e })),
@@ -110,8 +116,12 @@ test('no manifest path configured loads null — every instance row takes the un
 })
 
 test('a missing file at a configured path throws a named diagnostic', () => {
+  // Pinned to the exact wording loadManifest emits — not just /manifest/i,
+  // which the raw Node ENOENT message would also match (it embeds the path,
+  // and the path contains "manifest.json"). This must fail if the try/catch
+  // at preflight.ts:31-35 is removed and the raw ENOENT propagates instead.
   withTempFile('manifest.json', null, (path) => {
-    expect(() => loadManifest(path)).toThrow(/manifest/i)
+    expect(() => loadManifest(path)).toThrow(`migration manifest not readable at ${path}`)
   })
 })
 
@@ -202,6 +212,30 @@ test('reservations for other handles, and local handles, do not collide', async 
   expect(runPreflight(raw, null)).toEqual([])
 })
 
+// --- existing-source abort class --------------------------------------------
+// A stale remote_sources_v2 row left by a hand-repaired or partially-restored
+// database (spec §4.1 step 2) — the source-side analogue of the reservation
+// check above (handle_reservations_v2 is written by conversion in the same
+// transaction as remote_sources_v2, so under the ordinary flip flow the two
+// are never inconsistent; both checks guard the same anomaly class).
+
+test('a legacy remote feed URL that normalizes to an existing remote_sources_v2.canonical_url is an aborting existing_source_collision', async () => {
+  const raw = await fresh()
+  seedRemote(raw, { id: 'u1', handle: 'alice', feed_url: 'https://A.test/feed.xml#top' })
+  seedExistingSource(raw, 'https://a.test/feed.xml')
+  const findings = runPreflight(raw, null)
+  expect(findings.map((f) => f.kind)).toEqual(['existing_source_collision'])
+  expect(findings[0]?.detail).toContain('u1')
+  expect(findings[0]?.detail).toContain('https://a.test/feed.xml')
+})
+
+test('an existing remote_sources_v2 row at an unrelated canonical URL does not collide', async () => {
+  const raw = await fresh()
+  seedRemote(raw, { id: 'u1', handle: 'alice', feed_url: 'https://a.test/feed.xml' })
+  seedExistingSource(raw, 'https://other.test/feed.xml')
+  expect(runPreflight(raw, null)).toEqual([])
+})
+
 // --- READ-ONLY --------------------------------------------------------------
 
 test('runPreflight issues SELECTs only — no exec, no non-SELECT statement (write counter)', async () => {
@@ -226,7 +260,11 @@ test('runPreflight issues SELECTs only — no exec, no non-SELECT statement (wri
       return Reflect.get(target, prop, receiver)
     },
   })
-  const findings = runPreflight(counting, null)
+  // A non-null manifest so the write-counter also covers the `if (manifest)`
+  // branch (preflight.ts:97-119) — a write added inside it must trip this
+  // proof too, not just the URL/reservation checks below it.
+  const findings = runPreflight(counting, manifest([{}]))
+  expect(findings.some((f) => f.kind.startsWith('manifest_'))).toBe(true) // the manifest branch really ran
   expect(findings.length).toBeGreaterThan(0) // the checks really ran
   expect(statements.length).toBeGreaterThan(0)
   expect(writes).toBe(0)

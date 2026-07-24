@@ -58,6 +58,7 @@ export function loadManifest(path: string | null): Manifest | null {
 export interface PreflightFinding {
   kind: 'invalid_url' | 'url_collision' | 'manifest_invalid' | 'manifest_unknown_entry'
     | 'manifest_mismatch' | 'manifest_duplicate' | 'handle_reservation_collision'
+    | 'existing_source_collision'
   detail: string
 }
 
@@ -120,12 +121,30 @@ export function runPreflight(raw: BetterSqlite3.Database, manifest: Manifest | n
 
   // Every legacy remote handle must still be reservable: a leftover reservation
   // (partial restore, rerun) would otherwise plan a double reservation.
+  // handle_reservations_v2 is written only by conversion, inside the same
+  // atomic transaction as remote_sources_v2 (spec §4.1 step 3) — under the
+  // ordinary flip flow the two tables are never inconsistent with each
+  // other. Both checks below exist for the same anomaly class: a
+  // hand-repaired or partially-restored database (spec §4.1 step 2 names
+  // this explicitly) can leave stale rows in one v2 table without the
+  // conversion marker that would normally gate preflight from running at
+  // all. remote_sources_v2.canonical_url is the source-side analogue —
+  // same writer, same transaction, same risk — so it gets the same check.
   const reserved = new Set(
     (raw.prepare(`SELECT handle FROM handle_reservations_v2`).all() as { handle: string }[]).map((r) => r.handle),
   )
   for (const row of rows) {
     if (reserved.has(row.handle)) {
       findings.push({ kind: 'handle_reservation_collision', detail: `legacy remote handle @${row.handle} (${row.id}) is already reserved in handle_reservations_v2` })
+    }
+  }
+
+  const existingUrls = new Set(
+    (raw.prepare(`SELECT canonical_url FROM remote_sources_v2`).all() as { canonical_url: string }[]).map((r) => r.canonical_url),
+  )
+  for (const [normalized, row] of byNormalized) {
+    if (existingUrls.has(normalized)) {
+      findings.push({ kind: 'existing_source_collision', detail: `legacy remote user ${row.id} (@${row.handle}) normalizes to ${normalized}, which already exists as a converted remote_sources_v2 row` })
     }
   }
 
