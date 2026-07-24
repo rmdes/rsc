@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
-import { sessionAuth, registeredOnly, requireAdmin, adminOrToken } from './auth.ts'
+import { sessionAuth, registeredOnly, requireAdmin, adminOrToken, bearerAuth } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
 import { mountLogicalRoutes, mountLogicalReadRoutes } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
@@ -374,7 +375,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       return c.json(await v2repo.listSourceAudit(c.req.param('id') ?? '', args.cursor, args.limit))
     })
 
-    app.post('/admin/sources', jsonWrite, async (c) => {
+    // ONE federation handler for both callers (V4 §6: "no second code path") —
+    // same validator, same establishFederation call, same dispositions. Only the
+    // actor differs, so the ops route cannot drift from the admin route.
+    async function establishFederation(c: Context, actorId: string, actorKind: 'administrator' | 'operator_token'): Promise<Response> {
       const body = await readJsonBody(c)
       if (!body) return c.json({ error: 'body invalid' }, 400)
       const { url, attributionMode, category, note, commandId } = body
@@ -382,12 +386,13 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
       if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
       if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+      // The command id travels in the JSON body ONLY — never a header.
       if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
       let result
       try {
         result = await v2.establishFederation({
           url, attributionMode, category, note: typeof note === 'string' ? note : null,
-          commandId, actorId: c.get('coreUser').id, actorKind: 'administrator',
+          commandId, actorId, actorKind,
         })
       } catch (err) {
         if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
@@ -397,7 +402,21 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
       if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
       return c.json(NEUTRAL_UNAVAILABLE, 409)
-    })
+    }
+
+    app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator'))
+
+    // The ops-token compatibility route (V4 spec §6) — the ONE route RSC_TOKEN
+    // reaches. Bearer-only: an admin session carries no bearer header and gets
+    // 401 here, and on every /admin/* route a bearer-only request has no
+    // better-auth session, so sessionAuth answers 401 before requireAdmin's 403
+    // is reachable (V1 review Finding 3). Registered inside the v2 branch, so
+    // with RSC_SOURCE_MODEL_V2 off the path is an ordinary 404. NOT part of the
+    // public Caddy exposure set — operators call core internally, exactly as
+    // they call POST /users today. The actor id is a stable NON-SECRET
+    // fingerprint of the token; the raw token is never stored or returned.
+    const opsActorId = `ops:${createHash('sha256').update(token).digest('hex').slice(0, 16)}`
+    app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token'))
 
     app.post('/admin/sources/:id/:action', jsonWrite, async (c) => {
       // Route segments are hyphenated; only this one differs from its domain

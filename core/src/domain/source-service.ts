@@ -50,7 +50,10 @@ export interface SourceService {
     note: string | null
     commandId: string
     actorId: string
-    actorKind: 'administrator'
+    // Widened with the audit vocabulary (V4 §6): the ops-token federation route
+    // ledgers as 'operator_token' under scope 'ops'. Same method, same
+    // transition — no second code path.
+    actorKind: 'administrator' | 'operator_token'
   }): Promise<EstablishFederationResult>
   transition(input: {
     sourceId: string
@@ -193,15 +196,17 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
     // same way subscribeByUrl does — an unparseable URL throws here rather than
     // reaching the repository. No SSRF guard: V1 never fetches through a source,
     // and the guard belongs with the first fetching path (Vertical 2).
+    // V4 §6: the ops-token route calls this same method with actorKind
+    // 'operator_token', which ledgers under scope 'ops' — the ONE difference.
     async establishFederation(input: {
       url: string; attributionMode: AttributionMode; category: AuditCategory
-      note: string | null; commandId: string; actorId: string; actorKind: 'administrator'
+      note: string | null; commandId: string; actorId: string; actorKind: 'administrator' | 'operator_token'
     }): Promise<EstablishFederationResult> {
       const now = new Date().toISOString()
       const canonicalUrl = normalizeSourceUrl(input.url)
       if (isTombstoned?.(canonicalUrl)) return { kind: 'unavailable' } // tombstoned: unblock or re-establish anew
       const command = {
-        actorScope: 'administrator' as const,
+        actorScope: input.actorKind === 'operator_token' ? ('ops' as const) : ('administrator' as const),
         actorId: input.actorId,
         commandId: input.commandId,
         requestFingerprint: fingerprintRequest([FEDERATION_OPERATION, canonicalUrl, input.attributionMode]),
