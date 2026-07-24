@@ -186,7 +186,7 @@ test('OFF: the ops route and every V4 admin field are absent', async () => {
   })
   expect(ops.status).toBe(404)
 
-  // The capability web reads per request still says legacy.
+  // The capability web reads once and memoizes still says legacy.
   expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: false })
   repo.close()
 })

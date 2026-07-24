@@ -542,6 +542,21 @@ This reintroduces the `operator_token` audit actor kind and the `ops` ledger
 scope. Section 10 records the SQL CHECK consequence for the cross-vertical
 review.
 
+> **Correction 2026-07-24 (whole-vertical review, applies to the bullet above
+> and to §10's item 8) — "the token reaches only this route" is false, and was
+> false when written.** It is true of `/admin/*`, which is all the V1 review's
+> Finding 3 ever examined: a bearer-only request there has no better-auth
+> session and 401s. It is **not** true of the whole route table. `adminOrToken`
+> (`core/src/api/auth.ts:96-97`) hands any request carrying an `authorization`
+> header to `bearerAuth`, and it gates two unconditionally-registered non-admin
+> routes: `POST /users` (`core/src/api/app.ts:179`) and `DELETE /users/:handle`
+> (`core/src/api/app.ts:498`) — the latter **destructive**, removing a legacy
+> remote feed and its posts. That reach is pre-existing and deliberate, not
+> something V4 introduced, and V4 changes none of it. Read the two bullets as
+> scoped to `/admin/*`. The operator-facing truth lives in the `RSC_TOKEN` row
+> of `docs/superpowers/documentation/RUNNING.md`; size the token's distribution
+> to that reach, not to "one route only".
+
 ## 7. Legacy retirement
 
 Retirement is a **separate release after cutover has soaked on all
@@ -677,8 +692,11 @@ review's checklist is:
 7. **Capability contract (V2 C5) — no change.** V4 adds no field; cutover is
    a value flip on the shape V2 froze, and the flip is core-only (4.2).
 8. **Ops-token authorization matrix (V1 review Finding 3) — adopted:** admin
-   routes 401 bearer-only requests; the token's whole surface is the one
-   compatibility route (6).
+   routes 401 bearer-only requests; the token's whole surface *under
+   `/admin/*`* is the one compatibility route (6). **Corrected 2026-07-24** —
+   "whole surface" was over-stated: `adminOrToken` also admits the bearer to
+   `POST /users` and `DELETE /users/:handle`. See the correction note at the
+   end of §6.
 
 ## 11. Acceptance
 

@@ -970,3 +970,52 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   per-user-feeds SP1-3 already scope follows per user; the projector's
   displayName is a single seam. Tradeoff: one more per-viewer divergence in
   ordinary reads (cache/test surface). Status: backlog.
+
+## V4 cutover follow-ups (whole-vertical review, 2026-07-24)
+
+- **`pending_review` has no exit — spec §3.3's "explicit reviewed activation"
+  was never implemented.** Conversion sets **every** legacy instance follow to
+  `pending_review` (`core/src/migration/convert.ts:288`, correct per spec §3.3),
+  but `activatePendingSubscriptions` (`core/src/storage/sqlite.ts:163-166`)
+  promotes only `state = 'pending'`, and its own comment says so:
+  *"pending_review is terminal in V1; V2 owns its exit."* V2 never shipped one —
+  there is no writer of `state = 'active'` over a `pending_review` row anywhere
+  in `core/src`. **Consequence:** after cutover the owner's following list reads
+  `awaiting_review` forever for every converted peer instance, which an operator
+  reads as a failed migration. **Impact is bounded**, which is why this is
+  backlog and not a blocker: the v2 river is gated on source *governance*, not
+  on subscription state, so converted content still renders (pinned by
+  `core/test/logical-v4-vertical.test.ts:351`); what is stuck is the label and
+  the Personal-tab exposure. Documented as an expected post-cutover state in
+  `docs/superpowers/documentation/RUNNING.md` ("Known cutover artifacts", item
+  4). **Mechanism (if picked up):** an admin review affordance that promotes
+  `pending_review → active` per (owner, source), with an audit entry — a
+  feature that goes through brainstorm→spec, not a one-line `UPDATE`, because
+  the review is per-subscriber and the governance/subscription split is the
+  whole point of the state. Status: backlog.
+
+- **Silent local-ancestry residual at conversion — unmaterialized, uncounted,
+  unlogged.** `materializeLocalChain` (`core/src/logical/local.ts:110-119`)
+  returns false all the way up if any ancestor id has no `posts` row (a ghost
+  id), so a local post whose ancestry ends at one is never materialized into
+  `logical_items_v2`. On the remote side that shows up as a counted
+  `unresolved_reference` (`core/src/migration/convert.ts:562-566`), but the
+  local-side skip has no counter and no log line — the post simply has no
+  logical item, so `/post/:id/thread` 404s after cutover with nothing in the
+  conversion report explaining why. **Fix:** count and log the local skip in the
+  same shape as `unresolved_reference` (a new finding kind, or reuse it with the
+  local id) so the marker's counts stay a truthful report. Cheap; the value is
+  diagnosability, not correctness. Status: backlog.
+
+- **`offFlagApp` is a hand-copy of `server.ts`'s flag-off branch, so the
+  off-flag gate cannot fail on a `server.ts` change.**
+  `core/test/logical-v4-vertical.test.ts:88-121` reassembles the disabled
+  composition by hand — tripwire, activation demotion, `compose`, v1 push-in
+  wiring — and omits the `pushInEffective` guard that `core/src/server.ts:118`
+  actually applies (`pushInApi: !pushInEffective(config) ? undefined : …`).
+  **Consequence:** the test asserts a *replica* of the off-flag posture, not the
+  posture itself, so a future edit to `server.ts`'s disabled branch can diverge
+  without turning the gate red — the exact failure the gate exists to catch.
+  **Fix:** export the flag-off composition from `server.ts` (or a small module
+  it calls) and have the test drive that one function, instead of mirroring it.
+  Status: backlog.

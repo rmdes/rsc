@@ -556,7 +556,11 @@ until an operator flips it. Core refuses to boot on any value other than `on` or
   remote-user row it writes is never converted — conversion runs once — and no
   v2 reader serves it. Operator scripts that seeded peers with
   `Authorization: Bearer $RSC_TOKEN` move to `POST /ops/sources/federation`
-  (curl cheat sheet below), which is the only route that token reaches.
+  (curl cheat sheet below). That is the token's job under v2 — it is **not**
+  the token's whole reach: `adminOrToken` also admits any bearer-bearing
+  request to `POST /users` and the destructive `DELETE /users/:handle`. See
+  the `RSC_TOKEN` row in the environment table above and size the token's
+  distribution to that reach.
 
 ### The per-instance cutover runbook
 
@@ -581,18 +585,59 @@ last**, and finish one instance before starting the next.
    `/capabilities` reports `{"sourceModelV2": false}`, and legacy behaviour is
    unchanged (spot-check the timeline and one feed).
 3. **Preflight.** `cloudron exec` into the instance and run the read-only
-   check against the live database:
+   check against the live database.
+
+   **`cloudron exec` inherits none of the app's runtime environment.** It is a
+   fresh shell in the running container, and `RSC_TOKEN`, `RSC_AUTH_SECRET`
+   and `RSC_DB` are exported *inside* `cloudron/start.sh`, not baked into the
+   image. A bare `npm run preflight -w core` therefore dies with
+   `RSC_TOKEN is required` (`core/src/config.ts`), and even past that would
+   open the wrong file — `dbPath` falls back to `./data/rsc.db`, never the
+   real `/app/data/textcaster.db`. Supply the environment inline and give npm
+   the workspace root:
 
    ```bash
-   cloudron exec --app <instance> -- npm run preflight -w core
+   cloudron exec --app <instance> -- sh -c '
+     cd /app/code &&
+     RSC_TOKEN=preflight RSC_AUTH_SECRET=preflight \
+     RSC_DB=/app/data/textcaster.db \
+     npm run preflight -w core'
    ```
+
+   `RSC_TOKEN` / `RSC_AUTH_SECRET` are placeholders on purpose: `loadConfig`
+   only *requires* them, preflight itself never reads them, and passing the
+   real ops token on a command line would leak it into shell history. `RSC_DB`
+   is the one value that must be exact — it is the path `start.sh` gives core.
+   Preflight opens that database `{readonly: true}`
+   (`core/src/migration/preflight-cli.ts`), so the command cannot write
+   whatever user `cloudron exec` lands as.
+
+   Equivalent form that depends on no npm workspace behaviour, if the first
+   misbehaves:
+
+   ```bash
+   cloudron exec --app <instance> -- env RSC_TOKEN=preflight \
+     RSC_AUTH_SECRET=preflight RSC_DB=/app/data/textcaster.db \
+     node /app/code/core/src/migration/preflight-cli.ts
+   ```
+
+   > **Verify both forms on the FIRST instance before relying on them.** The
+   > paths, the required variables and the read-only open are read straight off
+   > the repo (`cloudron/Dockerfile` installs the workspace at `/app/code`;
+   > `start.sh` sets `RSC_DB=/app/data/textcaster.db`), but `cloudron exec`'s
+   > own default working directory and inherited `PATH` were **not** verified
+   > against a live instance. If the first form fails, use the second; if
+   > `node` is not found, spell it out — `/usr/local/node-<version>/bin/node`,
+   > the `NODE_VERSION` arg in `cloudron/Dockerfile`.
 
    It exits non-zero and prints one line per finding (unnormalizable or
    colliding feed URLs, manifest problems, handle-reservation collisions).
    Correct the identified legacy rows and rerun until it prints
    `preflight: clean`. If any legacy `feed_type = 'instance'` row should be
-   pre-approved rather than quarantined, stage the manifest file now (below)
-   and rerun preflight with `RSC_MIGRATION_MANIFEST` set.
+   pre-approved rather than quarantined, stage the manifest file now (below) —
+   somewhere the container can read it, i.e. under `/app/data` — and rerun
+   preflight with `RSC_MIGRATION_MANIFEST=/app/data/<file>.json` added to the
+   same inline environment as the variables above.
 4. **Backup — do not skip this, and do not flip without it.** Take the Cloudron
    app backup now:
 
@@ -632,8 +677,10 @@ last**, and finish one instance before starting the next.
 
 ### Known cutover artifacts — expected, not failures
 
-Three things will look wrong on the first post-cutover poll and are not. Do not
-roll back a healthy migration over them.
+Four things will look wrong after a cutover and are not failures. Do not roll
+back a healthy migration over them. Items 1–3 self-correct (or are dev-only);
+item **4 is a standing post-cutover state** with no exit today — know it before
+you flip, so you do not read it as a failed migration.
 
 1. **Enclosure drift: every podcast/audio item still in the feed window reads
    as "updated at cutover".** The legacy `posts` table stores no enclosures, so
@@ -662,6 +709,24 @@ roll back a healthy migration over them.
    data** and start clean — not to debug the tripwire, and not to hand-edit
    `logical_activation_v2`. It cannot occur on a live instance that was never
    flipped.
+4. **Every converted follow of a legacy peer instance reads `awaiting_review`
+   — and stays there.** Unlike 1 and 2, this one does not resolve on its own.
+
+   Conversion sets **every** legacy instance follow to `pending_review`
+   (`core/src/migration/convert.ts`, spec §3.3): it counts toward the
+   subscription cap and stays removable, but exposes no Personal content until
+   explicitly reviewed. The reviewed-activation path that was meant to promote
+   it was never built — `activatePendingSubscriptions`
+   (`core/src/storage/sqlite.ts`) promotes `pending` only, and nothing anywhere
+   writes `state = 'active'` over a `pending_review` row.
+
+   **This is not a failed migration**, however it reads. The impact is bounded:
+   the v2 timeline is gated on source *governance*, not on subscription state,
+   so content from an allowed converted source renders normally (pinned by
+   `core/test/logical-v4-vertical.test.ts`). What is stuck is the label in the
+   owner's following list, and the Personal-tab exposure for peer instances. Do
+   not hand-edit `source_subscriptions_v2` to work around it; the missing
+   activation path is on the backlog in `docs/superpowers/ideas.md`.
 
 ### Rollback posture — the honest version
 
