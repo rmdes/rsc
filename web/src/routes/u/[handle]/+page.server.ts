@@ -28,10 +28,12 @@ export const load: PageServerLoad = async ({ fetch, params, url }) => {
 		// local-account activity view; /u stays local-only, /p is the publisher).
 		const known = peekCapabilities()
 		const v1P = known?.sourceModelV2 ? null : getTimeline(fetch, { before, author: params.handle })
+		// Synchronous discard handler — a cold-pod 400 during the await below is
+		// otherwise an unhandledRejection crash loop (see the home load).
+		v1P?.catch(() => {})
 		const cap = await getCapabilities(fetch)
 		let timeline, nextCursor
 		if (cap.sourceModelV2) {
-			v1P?.catch(() => {})
 			// The reservation lookup exists only under v2 (it is a converted-instance
 			// fact); asking before the river avoids rendering a page we are about to
 			// leave. 308 keeps the method and marks the move permanent.

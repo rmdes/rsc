@@ -42,11 +42,13 @@ export const load: PageServerLoad = async ({ fetch, params, url, parent, cookies
 		// with the `followed_by` lens.
 		const known = peekCapabilities()
 		const v1TP = known?.sourceModelV2 ? null : getTimeline(fetch, { before, followedBy: handle, topLevel: true })
+		// Synchronous discard handler — a cold-pod 400 during the await below is
+		// otherwise an unhandledRejection crash loop (see the home load).
+		v1TP?.catch(() => {})
 		const followingP = getFollowing(fetch, handle)
 		const cap = await getCapabilities(fetch)
 		let timeline, nextCursor
 		if (cap.sourceModelV2) {
-			v1TP?.catch(() => {})
 			;({ entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, followedBy: handle }))
 		} else {
 			;({ timeline, nextCursor } = await v1TP!)

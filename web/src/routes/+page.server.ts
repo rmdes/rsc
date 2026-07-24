@@ -35,6 +35,12 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 		// warm v2 pod the v1 call is skipped (its legacy selectors would 400 core).
 		const known = peekCapabilities()
 		const v1P = known?.sourceModelV2 ? null : getTimeline(fetch, { before, topLevel: true, ...tabFilter(tab, me?.user.handle) })
+		// The discard handler attaches SYNCHRONOUSLY: on a cold pod against a v2
+		// core the legacy selectors 400 DURING the getCapabilities await below, and
+		// a rejection with no handler yet is fatal (unhandledRejection) — the pod
+		// dies before the capability memo can warm, restarting cold, forever.
+		// Awaiting v1P on the legacy branch still surfaces the real error there.
+		v1P?.catch(() => {})
 		// followIds feed the live lens only, and the live stream mounts on the first page only.
 		const followingP = tab === 'personal' && isFirstPage && me ? getFollowing(fetch, me.user.handle) : Promise.resolve(null)
 		const cap = await getCapabilities(fetch)
@@ -50,7 +56,6 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 			// coreDown — the same "can't load this page" notice a core outage shows. It
 			// is NEVER rendered as an empty v2 river (that would present a validation
 			// failure as "no posts") and NEVER cast to v1.
-			v1P?.catch(() => {})
 			;({ entries: timeline, nextCursor, journalCursor } = await getLogicalTimeline(fetch, { before, ...tabLens(tab, me?.user.handle) }))
 		} else {
 			;({ timeline, nextCursor } = await v1P!)
