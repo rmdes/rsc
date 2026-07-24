@@ -525,3 +525,120 @@ test('a pre-cutover /post/:id permalink resolves to the same-ID logical item', a
   expect(await res.json()).toMatchObject({ model: 'logical-v2', item: { id: 'p1', origin: 'remote' } })
   repo.close()
 })
+
+// =============================================================================
+// Step 5 — a user's own reply to a REMOTE post survives the cutover
+// =============================================================================
+// V2's materialization pass walked `posts WHERE source = 'local'` alone and
+// SKIPPED any local post whose parent was not itself a local post: local.ts
+// writes the parent edge unconditionally, so materializing such a reply before
+// conversion would FK-violate on a parent that does not exist yet. Conversion now
+// runs FIRST, minting every legacy remote post as a same-ID logical_items_v2 row,
+// so the edge holds and the reply is materialized like any other.
+//
+// The user-visible loss it repairs is the CONVERSATION: an unmaterialized reply
+// keeps its permalink and its author-timeline card (both project straight from
+// `posts`), but /post/<reply>/thread 404s and the parent's thread does not contain
+// it — while the parent's card still advertises the reply. Same content, one day
+// later, no longer reachable in the conversation it belongs to.
+
+const REPLY_AT = '2026-02-02T00:00:00.000Z'
+
+// The local reply whose parent is the REMOTE post seedLegacy converts.
+function seedLocalReplyToRemote(raw: Raw): void {
+  seedPost(raw, {
+    id: 'lr1', author_id: 'l1', source: 'local', guid: 'lg1', title: null,
+    content: '<p>my reply</p>', url: '/post/lr1', published_at: REPLY_AT, created_at: REPLY_AT,
+    in_reply_to: 'https://a.test/post/1', in_reply_to_post_id: 'p1', thread_root_id: 'p1',
+  })
+}
+
+async function legacyWithLocalReply() {
+  const ctx = await makeApp({ v2: true })
+  seedLegacy(ctx.raw)
+  seedLocalReplyToRemote(ctx.raw)
+  return ctx
+}
+
+const threadIds = (env: { nodes: ({ kind: 'item'; item: { id: string } } | { kind: 'placeholder'; logicalItemId: string })[] }): string[] =>
+  env.nodes.map((n) => (n.kind === 'item' ? n.item.id : n.logicalItemId))
+
+// The user-visible statement, asserted end to end through the routes web calls.
+async function expectReplySurvives(app: Awaited<ReturnType<typeof makeApp>>['app'], raw: Raw): Promise<void> {
+  // (a) the permalink resolves …
+  const perma = await app.request('/post/lr1')
+  expect(perma.status).toBe(200)
+  expect(await perma.json()).toMatchObject({ item: { id: 'lr1', origin: 'local', parentResolutionState: 'resolved', parentLogicalItemId: 'p1' } })
+  // (b) … it is in the author's timeline …
+  const author = await (await app.request('/timeline?author=localuser')).json() as { timeline: { id: string }[] }
+  expect(author.timeline.map((i) => i.id)).toEqual(['lr1'])
+  // (c) … its own conversation resolves, rooted on the remote parent …
+  const own = await app.request('/post/lr1/thread')
+  expect(own.status).toBe(200)
+  const ownEnv = await own.json() as { rootId: string; nodes: never[] }
+  expect(ownEnv.rootId).toBe('p1')
+  expect(threadIds(ownEnv).sort()).toEqual(['lr1', 'p1'])
+  // (d) … and the parent's conversation contains it, matching the count its card shows
+  const parent = await (await app.request('/post/p1/thread')).json() as { nodes: never[] }
+  expect(threadIds(parent).sort()).toEqual(['lr1', 'p1'])
+  expect(await (await app.request('/post/p1')).json()).toMatchObject({ item: { directReplyCount: 1 } })
+  // the durable edge behind all of it
+  expect(raw.prepare(`SELECT origin, parent_state, parent_logical_item_id FROM logical_items_v2 WHERE id = 'lr1'`).get())
+    .toEqual({ origin: 'local', parent_state: 'resolved', parent_logical_item_id: 'p1' })
+}
+
+test("a user's own reply to a remote post survives the cutover: permalink, timeline, and the conversation it belongs to", async () => {
+  const { app, repo, raw, db } = await legacyWithLocalReply()
+  activate(db)
+  await expectReplySurvives(app, raw)
+  repo.close()
+})
+
+test('a database converted by an EARLIER build repairs its unmaterialized local reply on the next start', async () => {
+  const { app, repo, raw, db } = await legacyWithLocalReply()
+  activate(db)
+  // Reproduce exactly what the earlier build committed: marker present, state
+  // active, and NO bridge row for the local reply. Such a database reaches only
+  // the continuous-restart path forever, so materialization has to run there too
+  // or the reply stays lost for good.
+  raw.prepare(`DELETE FROM logical_identity_keys_v2 WHERE logical_item_id = 'lr1'`).run()
+  raw.prepare(`DELETE FROM logical_local_origins_v2 WHERE logical_item_id = 'lr1'`).run()
+  raw.prepare(`DELETE FROM logical_items_v2 WHERE id = 'lr1'`).run()
+  expect((await app.request('/post/lr1/thread')).status).toBe(404) // the broken state
+  const before = activationRow(raw)
+
+  activate(db) // continuous-v2 restart: marker present, state active
+
+  await expectReplySurvives(app, raw)
+  // …and the repair changed nothing else: no second conversion, no reset, no
+  // generation bump, timestamps preserved.
+  expect(activationRow(raw)).toEqual(before)
+  expect(count(raw, 'remote_sources_v2')).toBe(1)
+  expect(generation(raw)).toBe(1)
+  expect(journal(raw)).toEqual([{ sequence: 1, kind: 'reset' }])
+  repo.close()
+})
+
+test('a fault BETWEEN conversion and materialization leaves a retryable legacy-intact database', async () => {
+  const { app, repo, raw, db } = await legacyWithLocalReply()
+  const before = legacySnapshot(raw)
+  // The `conversion` phase fires between the two steps, so this IS the crash
+  // Pin 2 names. The ONE transaction is what protects it: the marker cannot
+  // commit ahead of materialization, so there is no half-cutover to repair.
+  expect(() => activate(db, { step: (p) => { if (p === 'conversion') throw new Error('injected fault after conversion') } }))
+    .toThrow('injected fault after conversion')
+  expectNothingCommitted(raw, before)
+
+  activate(db) // the next start simply retries, and the reply converts with it
+  await expectReplySurvives(app, raw)
+  repo.close()
+})
+
+test('a fresh install with no legacy data activates: conversion and materialization are both no-ops', async () => {
+  const { repo, raw, db } = await fresh()
+  activate(db)
+  expect(activationRow(raw)).toMatchObject({ state: 'active', converted_at: NOW })
+  for (const t of V2_TABLES) expect(count(raw, t), t).toBe(t === 'logical_journal_v2' ? 1 : 0)
+  expect(generation(raw)).toBe(1)
+  repo.close()
+})

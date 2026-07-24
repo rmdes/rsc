@@ -89,6 +89,26 @@ export function materializeLocalPost(tx: WriteTx, postId: string): void {
   materializeLocalItem(tx, { id: postId, permalink, timelineSortAt: cur.published_at, parentLogicalItemId: cur.in_reply_to_post_id })
 }
 
+// Materialize a local post AND every local ancestor above it, parent-before-child,
+// so the unconditional parent edge materializeLocalItem writes always has a row to
+// point at. Returns false when the chain leaves the local `posts` table at an id
+// that has NO logical row — a legacy reference to a post that is gone, or a remote
+// post that was not converted: nothing to reference, so the caller's child is left
+// unmaterialized rather than FK-violating. This is the ONE backfill path for a
+// legacy local post (the cutover pass and conversion's ancestry pass both use it),
+// which is what makes it order-independent: an id that already HAS a logical row is
+// satisfied as-is, whether this walk put it there, an earlier one did, or — the
+// cutover case — conversion minted the remote parent before the pass ran.
+export function materializeLocalChain(tx: WriteTx, postId: string): boolean {
+  if (tx.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ?`).get(postId)) return true
+  const row = tx.prepare(`SELECT in_reply_to_post_id AS parent FROM posts WHERE id = ? AND source = 'local'`).get(postId) as
+    { parent: string | null } | undefined
+  if (!row) return false
+  if (row.parent && !materializeLocalChain(tx, row.parent)) return false
+  materializeLocalPost(tx, postId)
+  return true
+}
+
 function buildDto(
   post: { id: string; title: string | null; content: string; contentMarkdown: string | null; permalink: string | null; publishedAt: string; editedAt: string | null },
   author: Pick<User, 'id' | 'handle' | 'displayName'>,

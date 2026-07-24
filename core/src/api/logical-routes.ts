@@ -511,7 +511,7 @@ export function mountLogicalHandleRoute(app: Hono, deps: { raw: ReadTx }): void 
     // ponytail: one indexed primary-key lookup — no snapshot needed for a single
     // statement, and the reservation is immutable once written.
     const row = deps.raw.prepare(`SELECT publisher_id FROM handle_reservations_v2 WHERE handle = ?`).get(handle) as { publisher_id: string } | undefined
-    if (!row) return c.json({ error: 'not found' }, 404)
+    if (!row) return c.json(NEUTRAL_404, 404)
     return c.json({ model: MODEL, handle, reserved: true, publisherId: row.publisher_id })
   })
 }

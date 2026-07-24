@@ -5,7 +5,7 @@ import { isPrivateIp } from '../domain/push-guard.ts'
 import { insertAudit } from '../storage/sqlite.ts'
 import { normalizePermalink } from '../logical/reconcile.ts'
 import { normalizeUtc, presentationFingerprint } from '../logical/projector.ts'
-import { materializeLocalPost } from '../logical/local.ts'
+import { materializeLocalChain } from '../logical/local.ts'
 import { EMPTY_COUNTERS } from '../logical/verification.ts'
 import type { WriteTx } from '../logical/database.ts'
 import type { AttributionMode } from '../domain/types.ts'
@@ -539,9 +539,10 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
   // asserted external reply context) and is COUNTED.
   //
   // Known carry (V2): a `missing` converted reply is not enqueued for orphan
-  // adoption — historical local replies to a remote parent converge going
-  // forward only, exactly as V2 already behaves.
-  const postSource = tx.prepare(`SELECT source FROM posts WHERE id = ?`)
+  // adoption — a reference legacy ingest never resolved converges going forward
+  // only, exactly as V2 already behaves. A legacy edge v1 DID resolve converts
+  // here in both directions, local parent and local child alike (the cutover's
+  // materialization pass, which runs after this, carries the local-child half).
   for (const post of legacyPosts) {
     if (!convertedItems.has(post.id)) continue
     if (!post.in_reply_to && !post.in_reply_to_post_id) continue
@@ -549,13 +550,12 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     let parent: string | null = null
     const pid = post.in_reply_to_post_id
     if (pid && pid !== post.id) {
-      if (convertedItems.has(pid)) parent = pid
-      else if ((postSource.get(pid) as { source: string } | undefined)?.source === 'local') {
-        // V2 §2.6's explicit-backfill site: the local bridge row must exist for
-        // the edge endpoint to be referenceable.
-        materializeLocalPost(tx, pid)
-        parent = pid
-      }
+      // V2 §2.6's explicit-backfill site: the local bridge row must exist for the
+      // edge endpoint to be referenceable. materializeLocalChain backfills the
+      // parent AND its own local ancestors, so a local parent that is itself a
+      // reply is referenceable too, and a chain that cannot be materialized says
+      // so instead of FK-violating.
+      if (convertedItems.has(pid) || materializeLocalChain(tx, pid)) parent = pid
     }
     if (parent) {
       tx.prepare(`UPDATE logical_items_v2 SET parent_state = 'resolved', parent_logical_item_id = ? WHERE id = ?`).run(parent, post.id)

@@ -15,7 +15,7 @@ import type { LookupFn } from '../domain/push-guard.ts'
 import { drainReconciliation, drainReconciliationAsync } from './reconcile.ts'
 import { createVerificationRunner } from './verification.ts'
 import { projectItem } from './projector.ts'
-import { materializeLocalPost } from './local.ts'
+import { materializeLocalChain } from './local.ts'
 import { loadManifest, runPreflight } from '../migration/preflight.ts'
 import type { Manifest } from '../migration/preflight.ts'
 import { runConversion } from '../migration/convert.ts'
@@ -197,27 +197,19 @@ function readActivation(tx: ReadTx): ActivationRow {
 
 // Materialize every pre-existing local post's bridge row so no UNMATERIALIZED
 // local item survives activation (resolves the Task 3/8 carry: projectThread 404s
-// on an unmaterialized legacy local post). Parent-before-child so each reply's
-// parent FK holds; a post whose ancestry leaves the local `posts` table (e.g. a
-// local reply to a remote/absent parent) is skipped — materializing it would
-// FK-violate on the unconditional parent edge in local.ts (NOT a staged path).
+// on an unmaterialized legacy local post). materializeLocalChain walks each post's
+// ancestry parent-before-child; because conversion runs BEFORE this pass, a local
+// reply whose parent is a REMOTE post is materialized too — its parent is already a
+// same-ID logical_items_v2 row, so the unconditional parent edge in local.ts holds.
+// Only a chain that ends at an id with no logical row at all (a reference to a post
+// that is gone) is still skipped. Idempotent by construction (INSERT OR IGNORE plus
+// the has-a-row early exit), which is what lets it run on EVERY startup path — a
+// database converted by an earlier build, which skipped these replies, repairs
+// itself on its next start.
 function materializePreexistingLocalPosts(tx: WriteTx): void {
-  const rows = tx.prepare(`SELECT id, in_reply_to_post_id FROM posts WHERE source = 'local'`).all() as
-    { id: string; in_reply_to_post_id: string | null }[]
-  const byId = new Map(rows.map((r) => [r.id, r]))
-  const done = new Set<string>()
-  const skip = new Set<string>()
-  const ensure = (id: string): boolean => {
-    if (done.has(id)) return true
-    if (skip.has(id)) return false
-    const post = byId.get(id)
-    if (!post) { skip.add(id); return false } // parent is not a local post → not materializable here
-    if (post.in_reply_to_post_id && !ensure(post.in_reply_to_post_id)) { skip.add(id); return false }
-    materializeLocalPost(tx, id)
-    done.add(id)
-    return true
+  for (const r of tx.prepare(`SELECT id FROM posts WHERE source = 'local'`).all() as { id: string }[]) {
+    materializeLocalChain(tx, r.id)
   }
-  for (const r of rows) ensure(r.id)
 }
 
 function writeActivation(tx: WriteTx, state: SourceModelV2Activation['state'], lastActivatedAt: string | null, lastReconciledAt: string | null): void {
@@ -235,7 +227,7 @@ function writeActivation(tx: WriteTx, state: SourceModelV2Activation['state'], l
 export const CONVERTED_REQUIRES_V2 =
   'converted database requires RSC_SOURCE_MODEL_V2=on — the legacy branch cannot run beside converted v2 state; to run it again, restore the pre-flip backup'
 export const ACTIVE_WITHOUT_MARKER =
-  'activation active without conversion marker — this database was activated without the legacy conversion (hand-repaired or partially restored); restore the pre-flip backup and restart the migration'
+  'v2 activation present without conversion marker — this database was activated without the legacy conversion (hand-repaired or partially restored); restore the pre-flip backup and restart the migration'
 export const PREFLIGHT_FAILED = 'migration preflight failed'
 
 // The v1-branch tripwire (spec §4.3): after the conversion marker is committed,
@@ -286,10 +278,13 @@ function convertLegacy(tx: WriteTx, now: string, cutover: CutoverInput): Convers
 }
 
 // The ONE pre-listen activation transaction (spec V2 §7.1, extended by V4 §4.1 —
-// never a second barrier). Local-state read, materialization, legacy conversion,
-// journal initialization, one reset, the conversion marker, timestamps, and the
-// transition to `active` all commit together — no application mutation
-// intervenes, and a throw anywhere before commit converts nothing.
+// never a second barrier). Local-state read, legacy conversion, local
+// materialization, journal initialization, one reset, the conversion marker,
+// timestamps, and the transition to `active` all commit together — no application
+// mutation intervenes, and a throw anywhere before commit converts nothing. In
+// particular the marker is written AFTER materialization, in the same transaction,
+// so no crash can leave a database marked converted with its local replies still
+// unmaterialized.
 //
 // NOTHING here does network I/O: preflight and conversion are pure SQL by
 // contract, so the pre-listen barrier server.ts awaits stays free of awaited
@@ -303,14 +298,21 @@ export function activateLogicalV2(db: DatabaseContext, now: string, cutover: Cut
     // unmarked active database there), and letting it through would silently skip
     // conversion — the dual-model state WC3 forbids. Both fail loud.
     if (act.state !== 'never_activated' && !act.convertedAt) throw new Error(ACTIVE_WITHOUT_MARKER)
-    if (act.state === 'active') return // continuous-v2 restart: preserve generation + timestamps, append no reset
+
+    // Conversion FIRST, ahead of materialization: it mints every legacy remote post
+    // as a same-ID logical_items_v2 row, which is exactly what a local reply to a
+    // REMOTE parent needs before its bridge row can carry that parent edge. It still
+    // runs AT MOST ONCE — only from `never_activated`, and only with no marker (a
+    // marker here means conversion committed and the activation was cleared by hand).
+    const counts = act.state === 'never_activated' && !act.convertedAt ? convertLegacy(tx, now, cutover) : null
+    cutover.step?.('conversion')
+    // Materialization runs on EVERY startup path, the continuous-v2 restart below
+    // included: it is idempotent, and a database converted by an earlier build (one
+    // that skipped local replies to remote parents) reaches only that path.
     materializePreexistingLocalPosts(tx)
+
+    if (act.state === 'active') return // continuous-v2 restart: preserve generation + timestamps, append no reset
     if (act.state === 'never_activated') {
-      // The clean pre-conversion state: preflight, then convert. A marker here
-      // (conversion committed, activation cleared by hand) skips conversion —
-      // it runs AT MOST ONCE, guarded by the marker alone.
-      const counts = act.convertedAt ? null : convertLegacy(tx, now, cutover)
-      cutover.step?.('conversion')
       // First activation creates the reset generation + the cutover reset atomically.
       reconstructJournal(tx, now)
       cutover.step?.('journal')
