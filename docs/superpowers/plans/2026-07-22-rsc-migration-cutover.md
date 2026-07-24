@@ -1208,3 +1208,56 @@ carries `'operator_token'` — so `user_version` stays 15 with no migration; and
 only `SourceService` (its interface declaration and the implementation
 signature) to widen, plus the one line that maps `actorKind ===
 'operator_token'` to ledger scope `'ops'`.
+
+## Plan correction (2026-07-24, live-path keying wave — post-verdict V2 touch)
+
+The whole-vertical review returned **READY WITH FOLLOW-UPS**, but this fix wave
+**touches V2 live-path code** (`core/src/logical/acquisition.ts`,
+`core/src/domain/discovery.ts`) **after** that verdict. It is recorded here as
+cause requires. The trigger was a reviewer-run measured matrix
+(`.superpowers/sdd/v4-hfeed-matrix-investigation.md`): every delivery-key shape
+was driven end to end (real v1 parser → real `runConversion` → real
+`acquireSource` → real `drainReconciliation`) and two rare h-feed shapes were
+found to fork a **permanent duplicate logical item** (uid-only and neither),
+plus a uid-bearing entry to fork on a url-changing edit — genuine V2 bugs the
+migration probe exposed. v2 is flag-off and undeployed, so a key-derivation
+change is free now and would require a data migration if deferred; the
+maintainer approved the V2 touch on that basis.
+
+**The corrected principle (supersedes the earlier "never write fallback" rule).**
+The earlier rule came from the implementer's BLOCKED escalation — a
+stop-and-report that was **correct**: the matrix falsified "never fallback →
+opaque". Conversion writes the identity-key KIND the first poll re-derives.
+Where that kind is `fallback` (a **link-less** item — the poll itself derives
+`fallback`, and an `opaque`/`permalink` delivery does NOT converge onto a poll's
+`fallback` delivery), conversion must reproduce the **exact** fallback key.
+Convergence there requires the poll's derivation to be deterministic from stored
+data — true for RSS (one hash of the material = the stored guid), and made true
+for h-feed by F1. The principle now lives in `convert.ts`'s keying-table comment.
+
+**What changed.**
+- **Conversion (`convert.ts`):** `guid == url` keys **`opaque`**, not
+  `permalink` (reverting the `143a6a5` regression). The poll's opaque matches the
+  rss.chat interop shape (`<guid>`==url, no `<link>`) exactly; on a
+  link-synthesized-guid item the poll adds one benign second permalink delivery
+  that converges onto the same item via the permalink identity key conversion
+  claims (one item, never a duplicate). The link-less 64-hex fallback cell keeps
+  `fallback:<guid>`.
+- **F1 (`acquisition.ts`):** the h-feed fallback path prefixed
+  `sha256(identitySeed)` — a hash of `e.guid`, itself already the single-hash
+  `fallbackGuid`. The double hash is removed (`'fallback:' + identitySeed`), so a
+  link-less h-entry keys `fallback:<guid>`, matching conversion and RSS.
+- **F2 (`acquisition.ts` + `discovery.ts` + `ingest.ts`):** the adapter now keys
+  a `u-uid` as `opaque:<uid>`. The raw uid is surfaced as an **additive** field
+  on `ParsedItem`, set only by `discoverFeed` and read only by the v2 h-feed
+  adapter; v1 ingest's stored `guid` (the folded `uid ?? url ?? fallbackGuid`) is
+  **byte-unchanged**, so the flag-off path and existing `posts` rows are
+  unaffected.
+
+**Affected suites re-run green.** `migration-convert` (incl. the permanent
+9-shape convergence matrix and the F2 edit-stability test), `migration-cutover`,
+`logical-v4-vertical`, `logical-reconcile`, `ingest`, and the `logical-lockstep`
+canary all pass; the canary is unaffected because F1 touches the
+`fallbackKey`/seed path, not either `normalizePermalink` copy it watches. Full
+core suite 1063 pass + 2 expected-fail, `user_version` stays 15 (no migration),
+no new dependency.
