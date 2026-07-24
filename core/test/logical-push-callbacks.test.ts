@@ -239,34 +239,81 @@ test('a fat ping resolves a relative permalink against the SAME post-redirect ba
   // remote_sources_v2.canonical_url is NEVER updated on a permanent redirect —
   // only source_aliases_v2 gains a row. A push carries no fetch, so it cannot
   // re-walk the redirect chain the way a poll does; it must instead reuse the
-  // post-redirect location the poll already recorded (source_validators_v2),
-  // or a relative link in the pushed document resolves against the stale,
-  // pre-redirect host.
+  // proven permanent-redirect target the poll already recorded
+  // (source_aliases_v2), or a relative link in the pushed document resolves
+  // against the stale, pre-redirect host.
   const OLD = 'https://old.blog.test/feed'
   const NEW = 'https://new.blog.test/feed'
   const hEntry = (href: string): string => `<article class="h-entry"><a class="u-url" href="${href}">l</a><h1 class="p-name">T</h1><div class="e-content">c</div><time class="dt-published">2026-01-01</time></article>`
   const hfeedHtml = (href: string): string => `<html><body><div class="h-feed">${hEntry(href)}</div></body></html>`
 
-  const { fn: fetchFn } = routedFetch({
+  const { fn: fetchFn, calls } = routedFetch({
     [OLD]: () => new Response(null, { status: 301, headers: { location: NEW } }),
     [NEW]: () => new Response(hfeedHtml('/from-poll'), { status: 200, headers: { 'last-modified': 'Wed, 24 Jul 2026 00:00:00 GMT' } }),
   })
   const { repo, raw, acquisition } = await fresh({ fetchFn })
   seedSource(raw, 's1', OLD)
 
-  // A normal poll follows the permanent redirect and records source_validators_v2
-  // keyed at NEW — the same state readContext already trusts for conditional GETs.
+  // A normal poll follows the permanent redirect and records the proven target
+  // as a source alias — the direct, header-independent record that it moved.
   await acquisition.acquireSource('s1', { kind: 'scheduled' })
-  const validatorRow = raw.prepare(`SELECT effective_url FROM source_validators_v2 WHERE source_id = ?`).get('s1') as { effective_url: string } | undefined
-  expect(validatorRow?.effective_url).toBe(NEW)
+  const aliasRow = raw.prepare(`SELECT url FROM source_aliases_v2 WHERE source_id = ?`).get('s1') as { url: string } | undefined
+  expect(aliasRow?.url).toBe(NEW)
 
   // A fat ping delivers an h-feed document with a RELATIVE permalink — the
   // engine never fetches for a push, so the base must come from the recorded
   // post-redirect location, not canonical_url (still OLD; never updated).
+  const before = calls.length
   await acquisition.acquireSource('s1', { kind: 'push', document: hfeedHtml('/from-push') })
+  expect(calls.length).toBe(before) // the push fetched nothing, base or otherwise
 
   const pushDelivery = raw.prepare(`SELECT key FROM deliveries_v2 WHERE source_id = ? AND key LIKE '%from-push%'`).get('s1') as { key: string } | undefined
   expect(pushDelivery?.key).toBe(`${NEW.replace('/feed', '')}/from-push`)
+  repo.close()
+})
+
+test('a source that polled at its canonical URL BEFORE it moved still pushes against the post-redirect base', async () => {
+  // The commonest real case: you subscribe, the feed polls fine at its canonical
+  // URL and answers with `last-modified` (so a validator row exists keyed AT the
+  // canonical URL), and only LATER does the publisher 301 elsewhere. A push base
+  // read from source_validators_v2 picks the canonical row forever after — the
+  // fix must key off the permanent-redirect record instead. Asserted by
+  // OBSERVATION: the push key is compared to the key the poll itself resolved,
+  // never to a hand-written literal (which would pass if both were wrong).
+  const OLD = 'https://old.blog.test/feed'
+  const NEW = 'https://new.blog.test/feed'
+  const hEntry = (href: string): string => `<article class="h-entry"><a class="u-url" href="${href}">l</a><h1 class="p-name">T</h1><div class="e-content">c</div><time class="dt-published">2026-01-01</time></article>`
+  const hfeedHtml = (href: string): string => `<html><body><div class="h-feed">${hEntry(href)}</div></body></html>`
+  const lastModified = { 'last-modified': 'Wed, 24 Jul 2026 00:00:00 GMT' }
+
+  let moved = false
+  const { fn: fetchFn, calls } = routedFetch({
+    [OLD]: () => (moved
+      ? new Response(null, { status: 301, headers: { location: NEW } })
+      : new Response(hfeedHtml('/before-the-move'), { status: 200, headers: lastModified })),
+    [NEW]: () => new Response(hfeedHtml('/from-poll'), { status: 200, headers: lastModified }),
+  })
+  const { repo, raw, acquisition } = await fresh({ fetchFn })
+  seedSource(raw, 's1', OLD)
+
+  // 1. a successful poll AT the canonical URL, answering with last-modified
+  await acquisition.acquireSource('s1', { kind: 'scheduled' })
+  const canonicalValidator = raw.prepare(`SELECT effective_url FROM source_validators_v2 WHERE source_id = ? AND effective_url = ?`).get('s1', OLD) as { effective_url: string } | undefined
+  expect(canonicalValidator?.effective_url).toBe(OLD) // the stale row that used to win
+
+  // 2. the publisher moves; the next poll observes the 301 and lands at NEW
+  moved = true
+  await acquisition.acquireSource('s1', { kind: 'scheduled' })
+  const pollKey = (raw.prepare(`SELECT key FROM deliveries_v2 WHERE source_id = ? AND key LIKE '%from-poll%'`).get('s1') as { key: string } | undefined)?.key
+  expect(pollKey).toBeDefined()
+
+  // 3. a fat ping with a RELATIVE link must resolve against that same base
+  const before = calls.length
+  await acquisition.acquireSource('s1', { kind: 'push', document: hfeedHtml('/from-push') })
+  expect(calls.length).toBe(before) // the push fetched nothing, base or otherwise
+
+  const pushKey = (raw.prepare(`SELECT key FROM deliveries_v2 WHERE source_id = ? AND key LIKE '%from-push%'`).get('s1') as { key: string } | undefined)?.key
+  expect(pushKey).toBe(pollKey!.replace('from-poll', 'from-push'))
   repo.close()
 })
 

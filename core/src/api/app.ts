@@ -104,13 +104,13 @@ export interface PushInApi {
   rsscloudPing?: (url: string) => Promise<number>
 }
 
-// EXPORTED (V4 Task 3 review pin): a pushed document must never be accepted at
-// a larger size than a polled one ever could be — an untrusted push body
-// bounded more loosely than `logical/acquisition.ts`'s BOUNDS.maxBodyBytes
-// would let unauthenticated-until-HMAC-verified input outrun the trusted fetch
-// path. Not derived by import (this route also serves the flag-off v1 push-in
-// path, which never loads the V2-only logical/acquisition module); instead
-// `logical-bounds.test.ts` asserts the two constants stay equal.
+// EXPORTED (V4 Task 3 review pin): this must stay EQUAL to
+// `logical/acquisition.ts`'s BOUNDS.maxBodyBytes — a pushed document is accepted
+// at exactly the size a polled one is, so unauthenticated-until-HMAC-verified
+// input can never outrun the trusted fetch path. Not derived by import (this
+// route also serves the flag-off v1 push-in path, which never loads the V2-only
+// logical/acquisition module); instead `logical-bounds.test.ts` asserts the
+// equality directly.
 export const MAX_FAT_PING_BYTES = 5 * 1024 * 1024
 const MAX_FORM_BYTES = 64 * 1024
 // Authed JSON writes: cap the body before it is buffered. 512 KB clears the

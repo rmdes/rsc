@@ -627,20 +627,32 @@ export interface AcquisitionEngine {
 
 // Read the per-source acquisition context the engine needs before fetching:
 // conditional validators, the source's own aliases, and a URL→owner resolver.
-function readContext(tx: ReadTx, sourceId: string, canonicalUrl: string): { validators: ConditionalValidators | null; ownedAliases: Set<string>; aliasOwner: (url: string) => string | null; isTombstoned: (url: string) => boolean } {
+function readContext(tx: ReadTx, sourceId: string, canonicalUrl: string): { validators: ConditionalValidators | null; effectiveBaseUrl: string; ownedAliases: Set<string>; aliasOwner: (url: string) => string | null; isTombstoned: (url: string) => boolean } {
   const vRows = tx.prepare(`SELECT effective_url, etag, last_modified FROM source_validators_v2 WHERE source_id = ?`).all(sourceId) as { effective_url: string; etag: string | null; last_modified: string | null }[]
-  // Prefer the canonical URL's validators; else the most recent effective URL's.
+  // Prefer the canonical URL's validators; else any other recorded URL's. This
+  // table is a conditional-GET cache keyed by (source_id, effective_url) — it
+  // carries NO timestamp, so the fallback is arbitrary, not "most recent", and
+  // it must never be read as a statement about where the source lives today.
   const pick = vRows.find((v) => v.effective_url === canonicalUrl) ?? vRows[0]
   const validators = pick ? { effectiveUrl: pick.effective_url, etag: pick.etag, lastModified: pick.last_modified } : null
   const aRows = tx.prepare(`SELECT url FROM source_aliases_v2 WHERE source_id = ?`).all(sourceId) as { url: string }[]
   const ownedAliases = new Set(aRows.map((a) => a.url))
+  // Where the source lives today. source_aliases_v2 stores redirect TARGETS,
+  // written only for a PROVEN permanent hop (see fetchBounded's provenAliases at
+  // §1.6), so its newest row IS the current post-redirect location — and unlike
+  // the validator cache it is header-independent. Ordering is explicit and
+  // recency-correct: created_at DESC, then rowid DESC to break the tie between
+  // several hops of one chain, which all commit at the same instant (rowid is
+  // insertion order, so the chain's last target wins). Never index order.
+  const newest = tx.prepare(`SELECT url FROM source_aliases_v2 WHERE source_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(sourceId) as { url: string } | undefined
+  const effectiveBaseUrl = newest?.url ?? canonicalUrl
   const aliasOwner = (url: string): string | null => {
     const c = tx.prepare(`SELECT id FROM remote_sources_v2 WHERE canonical_url = ?`).get(url) as { id: string } | undefined
     if (c) return c.id
     const a = tx.prepare(`SELECT source_id FROM source_aliases_v2 WHERE url = ?`).get(url) as { source_id: string } | undefined
     return a ? a.source_id : null
   }
-  return { validators, ownedAliases, aliasOwner, isTombstoned: (url) => isTombstoned(tx, url) }
+  return { validators, effectiveBaseUrl, ownedAliases, aliasOwner, isTombstoned: (url) => isTombstoned(tx, url) }
 }
 
 export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
@@ -722,13 +734,12 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
         // is NEVER updated on a permanent redirect (only source_aliases_v2 gains a
         // row — grep confirms no UPDATE ... SET canonical_url anywhere). A push
         // carries no fetch, so unlike the poll path it cannot re-walk the redirect
-        // chain to learn today's effective URL. Reuse the same post-redirect
-        // location the poll path already trusts for conditional GETs
-        // (source_validators_v2.effective_url, the last URL a poll actually landed
-        // on) instead of the possibly-stale canonicalUrl; canonicalUrl only when no
-        // poll has ever recorded one.
-        const pushBaseUrl = ctxData.validators?.effectiveUrl ?? claim.source.canonicalUrl
-        return await commitFromBody({ runId, sourceId, body: reason.document, effectiveUrl: pushBaseUrl, res: null, redirects: [], aliases: [], committedAt: now() })
+        // chain to learn today's effective URL; it uses readContext's
+        // effectiveBaseUrl — the newest proven permanent-redirect target, i.e. the
+        // direct record that the source moved — falling back to canonicalUrl when
+        // it never has. Getting this wrong yields a second identity key for an item
+        // the poll cadence keeps re-seeing under the first.
+        return await commitFromBody({ runId, sourceId, body: reason.document, effectiveUrl: ctxData.effectiveBaseUrl, res: null, redirects: [], aliases: [], committedAt: now() })
       }
       const fetchSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]) : AbortSignal.timeout(deadlineMs)
       const ctx: FetchCtx = { fetchFn, lookupFn: deps.lookupFn, signal: fetchSignal, sourceId, ownedAliases: ctxData.ownedAliases, validators: ctxData.validators, aliasOwner: ctxData.aliasOwner, isTombstoned: ctxData.isTombstoned }
