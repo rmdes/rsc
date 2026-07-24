@@ -45,6 +45,16 @@ const sourceDetail = (governance = 'quarantined') => ({
 	latestAudit: null
 })
 
+// GET /admin/sources/:id/items — conflictCount is a TOP-LEVEL source-wide count on
+// THIS envelope (AdminSourceAcquisitionSummary was never shipped). The rows give the
+// /admin/items/:id navigation targets.
+const itemsEnvelope = (conflictCount = 0, items: unknown[] = [{ logicalItemId: 'li1', state: 'hidden', timelineSortAt: '2026-07-20T00:00:00Z', hiddenAt: '2026-07-20T00:00:00Z' }], nextCursor: string | null = null) => ({
+	model: 'logical-v2',
+	items,
+	nextCursor,
+	conflictCount
+})
+
 type LoadResult = Record<string, unknown>
 
 async function loadDetail(fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search = ''): Promise<LoadResult> {
@@ -81,6 +91,7 @@ test('with the capability off the runs load is also 404', async () => {
 test('the v2 source-detail load reads governance + the latest run and mints a stable refresh command id', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
 		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope()), { status: 200 })
 		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [runProjection('r2', 'processing'), runProjection('r1', 'terminal')], nextCursor: null }), { status: 200 })
 		return new Response(JSON.stringify(sourceDetail('quarantined')), { status: 200 })
 	})
@@ -104,6 +115,76 @@ test('a 404 source-detail (unknown source) is hidden as 404', async () => {
 		return new Response(JSON.stringify({ error: 'unknown source' }), { status: 404 })
 	})
 	await expect(loadDetail(fetch)).rejects.toMatchObject({ status: 404 })
+})
+
+// --- V3: conflictCount + items navigation + the purge form (blocked only) -----
+
+test('the v2 source-detail load reads conflictCount + the item navigation rows and mints a stable purge command id', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope(4, [{ logicalItemId: 'li9', state: 'hidden', timelineSortAt: '2026-07-20T00:00:00Z', hiddenAt: '2026-07-20T00:00:00Z' }], 'iNext')), { status: 200 })
+		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [runProjection('r1', 'terminal')], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify(sourceDetail('quarantined')), { status: 200 })
+	})
+	const result = await loadDetail(fetch)
+	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources/s1/items'))).toBe(true)
+	expect(result.conflictCount).toBe(4)
+	expect((result.items as { logicalItemId: string }[]).map((i) => i.logicalItemId)).toEqual(['li9'])
+	expect(result.itemsNextCursor).toBe('iNext')
+	expect(result.purgeCommandId).toMatch(/^[0-9a-f]{8}-/)
+	// a quarantined (non-blocked) source is NOT purge-eligible
+	expect(result.purgeEligible).toBe(false)
+	// no raw evidence collections leak — only bounded state rows + a count reach the page
+	expect(JSON.stringify(result.items)).not.toMatch(/deliver|rawEvidence|finding|preview/i)
+})
+
+test('a blocked source is purge-eligible and the loader carries purge’s DISTINCT consequence copy', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope(0)), { status: 200 })
+		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify(sourceDetail('blocked')), { status: 200 })
+	})
+	const result = await loadDetail(fetch)
+	expect(result.purgeEligible).toBe(true)
+	// purge's consequence is DISTINCT from unblock's: evidence is permanently
+	// deleted, but the URL STAYS blocked by the tombstone. Pinned so a rewrite to a
+	// generic "Are you sure?" (or copy that implies the block is lifted) fails here.
+	const copy = String(result.purgeConsequence)
+	expect(copy).toContain('permanently')
+	expect(copy).toMatch(/stays blocked|remains blocked/i)
+})
+
+async function purgeAction(fetch: ReturnType<typeof vi.fn>, fields: Record<string, string>) {
+	vi.resetModules()
+	const { actions } = await import('./+page.server.ts')
+	return actions.purge(refreshEvent(fields, fetch) as never)
+}
+
+test('the purge action posts {commandId, category, note} to /admin/sources/:id/purge', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ model: 'logical-v2', kind: 'purged' }), { status: 200 }))
+	const res = (await purgeAction(fetch, { sourceId: 's1', category: 'illegal_content', note: 'court order', commandId: 'cmd-p' })) as { purged: boolean; commandId: string }
+	expect(res.purged).toBe(true)
+	expect(res.commandId).toBe('cmd-p')
+	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
+	expect(url).toContain('/admin/sources/s1/purge')
+	expect(init.method).toBe('POST')
+	expect(JSON.parse(String(init.body))).toEqual({ commandId: 'cmd-p', category: 'illegal_content', note: 'court order' })
+})
+
+test('the purge action refuses a missing commandId or category without calling core', async () => {
+	const fetch = vi.fn()
+	expect(await purgeAction(fetch, { sourceId: 's1', category: 'spam' })).toMatchObject({ status: 400 })
+	expect(await purgeAction(fetch, { sourceId: 's1', category: '', commandId: 'c' })).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test("a purge that core answers 409 'source not blocked' reaches the admin, with the commandId echoed", async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ model: 'logical-v2', error: 'source not blocked' }), { status: 409 }))
+	const res = (await purgeAction(fetch, { sourceId: 's1', category: 'spam', commandId: 'dup' })) as { status: number; data: { error: string; commandId: string } }
+	expect(res.status).toBe(409)
+	expect(res.data.error).toBe('source not blocked')
+	expect(res.data.commandId).toBe('dup')
 })
 
 // --- refresh action: 200 terminal / 202 polling / 404 neutral / 409 conflict ---

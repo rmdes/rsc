@@ -2,7 +2,16 @@ import { fail } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { authedFetch, cookieHeader } from '$lib/server/session'
 import { listAdminFeeds, addRemoteUser, removeRemoteFeed, getCapabilities } from '$lib/api'
+import { listTombstones, unblockTombstone } from '$lib/logical-api'
+import { AUDIT_CATEGORIES } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
+
+// Tombstone-unblock's consequence is DISTINCT from source-governance unblock (which
+// returns a blocked source to quarantine): unblocking a TOMBSTONE only lifts the URL
+// reservation so the URL is CREATABLE again — it restores NOTHING (no items, no
+// evidence, no subscriptions come back). Kept here (testable) beside the load.
+const TOMBSTONE_CONSEQUENCE =
+	'Unblocking this tombstone lifts the URL reservation so the URL can be created again as a fresh source. Nothing is restored — no items, evidence, or subscriptions come back; a new source starts empty.'
 
 // ponytail: the two v2 admin calls live here, not in $lib/api.ts, because this
 // task's scope is this page and nothing else consumes them yet — which costs a
@@ -100,9 +109,15 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	const cursor = url.searchParams.get('cursor')
 	const page = await listSources(f, cursor)
 	const rows = page.items.map(toRow)
+	// V3: the reserved blocked/tombstoned URLs (unpaginated). One command id per
+	// rendered unblock form — a resubmit replays the identical id (design §11).
+	const tombstones = (await listTombstones(f)).map((t) => ({ ...t, commandId: crypto.randomUUID() }))
 	return {
 		mode: 'v2' as const,
 		groups: GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => r.group === g.key) })),
+		tombstones,
+		tombstoneConsequence: TOMBSTONE_CONSEQUENCE,
+		categories: AUDIT_CATEGORIES,
 		// The cursor that produced THIS page — echoed back so every mutating
 		// form's action can carry it forward (design: no-JS pagination must
 		// survive a mutation). `nextCursor` below is a different value: the
@@ -205,5 +220,30 @@ export const actions: Actions = {
 			return fail(400, { error: err instanceof Error ? err.message : 'establish failed', commandId })
 		}
 		return { established: true }
+	},
+	// v2-only: the unblock-tombstone markup exists only while the flag is on and
+	// always carries its own command id — no capability probe (same carve as source).
+	tombstone: async (event) => {
+		const form = await event.request.formData()
+		const tombstoneId = String(form.get('tombstoneId') ?? '').trim()
+		const commandId = String(form.get('commandId') ?? '').trim()
+		const category = String(form.get('category') ?? '').trim()
+		const note = String(form.get('note') ?? '').trim()
+		if (!tombstoneId) return fail(400, { error: 'tombstoneId is required' })
+		// A missing commandId is rejected, never minted (see `source`): a retry must
+		// replay the original command, not mint a fresh one (design §11).
+		if (!commandId) return fail(400, { error: 'commandId is required' })
+		if (!category) return fail(400, { error: 'a moderation category is required', tombstoneId, commandId })
+		let outcome
+		try {
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			outcome = await unblockTombstone(f, tombstoneId, { commandId, category, ...(note ? { note } : {}) })
+		} catch (err) {
+			return fail(502, { error: err instanceof Error ? err.message : 'unblock failed', tombstoneId, commandId })
+		}
+		// tombstoneId/commandId echoed so the re-rendered form pins THIS exact id.
+		if (outcome.kind === 'unavailable') return fail(404, { error: 'This tombstone is unavailable.', tombstoneId, commandId }) // neutral
+		if (outcome.kind === 'conflict') return fail(409, { error: outcome.error, tombstoneId, commandId }) // e.g. 'source not blocked', verbatim
+		return { unblocked: true, commandId }
 	}
 }

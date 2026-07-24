@@ -91,6 +91,46 @@ export type LogicalV2StreamEvent =
 	| { model: 'logical-v2'; kind: 'remove'; logicalItemId: string; replyCounts?: ReplyCountOverlay }
 	| { model: 'logical-v2'; kind: 'reset' }
 
+// --- V3 admin review DTOs (verbatim from core/src/logical/types.ts) ----------
+// The bounded evidence-review surface behind GET /admin/items/:id and the
+// source→items / tombstone reads. Admin-only, same-origin envelopes: the client
+// (logical-api.ts) CASTS these — NOT fail-closed-validated like the ordinary read
+// envelopes above — because raw evidence is rendered as ESCAPED TEXT (Svelte
+// default `{expr}`), never {@html}, never routed through the sanitizer. These
+// live here (pure, browser-safe) so the item-review component can `import type`
+// them without pulling $env into the browser bundle.
+
+export type AttributionLevel = 'verified_origin' | 'bound_single_publisher' | 'aggregate_assertion' | 'source_scoped_fallback'
+
+// V3's AuditCategory (core/src/domain/types.ts) — the eight moderation values that
+// back the required category <select> on the hide/restore/purge/unblock forms.
+export type AuditCategory = 'spam' | 'abuse' | 'illegal_content' | 'compromised_source' | 'operator_policy' | 'false_positive' | 'remediated' | 'other'
+export const AUDIT_CATEGORIES: AuditCategory[] = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
+
+export type AdminVersionRow = { observationVersionId: string; arrivalAt: string; wireOrdinal: number; fingerprint: string; rawEvidence: string }
+export type AdminDeliveryRow = { deliveryId: string; sourceId: string; eligible: boolean; keyKind: string; key: string; firstSeenAt: string; versions: AdminVersionRow[] }
+export type AdminClaimRow = { claimId: string; evidenceLevel: AttributionLevel; publisherId: string; firstSeenAt: string; observationVersionId: string; conflictIds: string[] }
+export type AdminConflictRow = { conflictId: string; kind: string; disputed: string; logicalItemId: string | null; observationVersionId: string | null; createdAt: string }
+export type AdminItemVerification = { publisherFeedUrl: string; state: 'pending' | 'verified' | 'unverified'; attempts: number; lastCheckedAt: string | null }
+export type AdminItemDetail = {
+	model: 'logical-v2'
+	logicalItemId: string
+	origin: 'local' | 'remote'
+	state: 'ordinary' | 'hidden' | 'unsupported' | 'structural_tombstone' | 'deleted_local'
+	hiddenAt: string | null
+	selected: { deliveryId: string | null; publisherId: string | null; attributionLevel: AttributionLevel | null }
+	parentLogicalItemId: string | null
+	threadRootId: string | null
+	counts: { deliveries: number; versions: number; claims: number; conflicts: number; audit: number }
+	deliveries: AdminDeliveryRow[]
+	claims: AdminClaimRow[]
+	conflicts: AdminConflictRow[]
+	verification: AdminItemVerification[]
+}
+export type AdminSourceItemRow = { logicalItemId: string; state: AdminItemDetail['state']; timelineSortAt: string; hiddenAt: string | null }
+export type ItemAuditEvent = { id: string; logicalItemId: string; commandId: string; actorId: string | null; actorKind: 'administrator' | 'system'; action: string; category: AuditCategory | null; note: string | null; resultJson: string; createdAt: string }
+export type TombstoneView = { id: string; canonicalUrl: string; action: 'block' | 'purge'; category: AuditCategory; note: string | null; createdAt: string; aliases: string[] }
+
 // --- Fail-closed validation --------------------------------------------------
 
 // A v2 payload arrived that Core said would be logical-v2 but does not match the

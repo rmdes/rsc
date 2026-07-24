@@ -250,6 +250,77 @@ test('a failed establish echoes back the exact submitted commandId so a retry re
 	expect((res as { data: { error: string; commandId: string } }).data).toEqual({ error: 'idempotency conflict', commandId: 'retry-establish' })
 })
 
+// --- V3: the reserved blocked/tombstoned group + tombstone unblock ------------
+
+const tombstone = (id: string, action = 'purge') => ({
+	id,
+	canonicalUrl: `https://gone.test/${id}.xml`,
+	action,
+	category: 'illegal_content',
+	note: 'court order',
+	createdAt: '2026-07-20T00:00:00Z',
+	aliases: [`https://gone.test/${id}-alias.xml`]
+})
+
+test('the v2 load lists tombstones (canonical URL + terminal facts) with a per-row unblock command id and the DISTINCT unblock consequence copy', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/admin/tombstones')) return new Response(JSON.stringify({ model: 'logical-v2', tombstones: [tombstone('t1'), tombstone('t2', 'block')] }), { status: 200 })
+		return new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
+	})
+	const result = (await loadAdminWith(fetch)) as LoadResult & { tombstones?: Array<{ id: string; canonicalUrl: string; action: string; commandId: string }>; tombstoneConsequence?: string }
+	expect(urlsOf(fetch).some((u) => u.includes('/admin/tombstones'))).toBe(true)
+	expect(result.tombstones?.map((t) => t.id)).toEqual(['t1', 't2'])
+	expect(result.tombstones?.map((t) => t.canonicalUrl)).toEqual(['https://gone.test/t1.xml', 'https://gone.test/t2.xml'])
+	// one command id per rendered unblock form: distinct, stable per render
+	const ids = result.tombstones?.map((t) => t.commandId) ?? []
+	expect(new Set(ids).size).toBe(ids.length)
+	expect(ids.every((id) => /^[0-9a-f]{8}-/.test(id))).toBe(true)
+	// tombstone-unblock's consequence is DISTINCT from source-governance unblock: the
+	// URL becomes creatable again, and NOTHING is restored. Pinned so a rewrite that
+	// implies items come back (or a generic "Are you sure?") fails this test.
+	const copy = String(result.tombstoneConsequence)
+	expect(copy).toMatch(/creatable again|can be created again/i)
+	expect(copy).toMatch(/nothing is restored|restores nothing/i)
+})
+
+test('with tombstones absent the section is simply empty (no crash on the unpaginated read)', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/admin/tombstones')) return new Response(JSON.stringify({ model: 'logical-v2', tombstones: [] }), { status: 200 })
+		return new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
+	})
+	const result = (await loadAdminWith(fetch)) as LoadResult & { tombstones?: unknown[] }
+	expect(result.tombstones).toEqual([])
+})
+
+test('the tombstone action posts {commandId, category, note} to /admin/tombstones/:id/unblock', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ model: 'logical-v2', kind: 'unblocked' }), { status: 200 }))
+	const res = (await actions.tombstone(formEvent('tombstone', { tombstoneId: 't1', category: 'remediated', note: 'appeal upheld', commandId: 'cmd-t' }, fetch) as never)) as { unblocked: boolean; commandId: string }
+	expect(res.unblocked).toBe(true)
+	expect(res.commandId).toBe('cmd-t')
+	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
+	expect(url).toContain('/admin/tombstones/t1/unblock')
+	expect(init.method).toBe('POST')
+	expect(JSON.parse(String(init.body))).toEqual({ commandId: 'cmd-t', category: 'remediated', note: 'appeal upheld' })
+})
+
+test('the tombstone action refuses a missing commandId or category without calling core', async () => {
+	const fetch = vi.fn()
+	expect(await actions.tombstone(formEvent('tombstone', { tombstoneId: 't1', category: 'remediated' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(await actions.tombstone(formEvent('tombstone', { tombstoneId: 't1', category: '', commandId: 'c' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(await actions.tombstone(formEvent('tombstone', { tombstoneId: '', category: 'remediated', commandId: 'c' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test("a tombstone unblock that core answers 409 'not blocked' reaches the admin with the commandId echoed", async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ model: 'logical-v2', error: 'source not blocked' }), { status: 409 }))
+	const res = (await actions.tombstone(formEvent('tombstone', { tombstoneId: 't1', category: 'remediated', commandId: 'dup' }, fetch) as never)) as { status: number; data: { error: string; commandId: string } }
+	expect(res.status).toBe(409)
+	expect(res.data.error).toBe('source not blocked')
+	expect(res.data.commandId).toBe('dup')
+})
+
 // --- capability failure: legacy, and NEVER a silently empty admin page --------
 
 test('a capability failure degrades the admin load to legacy and is retried next request', async () => {

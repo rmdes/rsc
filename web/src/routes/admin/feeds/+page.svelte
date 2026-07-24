@@ -14,7 +14,7 @@
 	// per-branch narrowing. Ceiling: a 5th action with a same-named, differently
 	// typed field could paper over a real mismatch here. Upgrade path: revisit
 	// if this page's action count grows past four.
-	type RetryFail = { sourceId?: string; action?: string; commandId?: string }
+	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string }
 	const retryFail = $derived(form as RetryFail | null)
 
 	const LABEL: Record<string, string> = {
@@ -52,6 +52,7 @@
 {#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 {#if form && 'done' in form && form.done}<p class="notice confirm" role="status">{LABEL[form.done] ?? form.done} applied.</p>{/if}
 {#if form && 'established' in form && form.established}<p class="notice confirm" role="status">Federation established — the source is now approved.</p>{/if}
+{#if form && 'unblocked' in form && form.unblocked}<p class="notice confirm" role="status">Tombstone unblocked — the URL can be created again. Nothing was restored.</p>{/if}
 
 {#if data.mode === 'v2'}
 	{#each data.groups as group (group.key)}
@@ -143,6 +144,47 @@
 			<button>Establish federation</button>
 		</form>
 	</details>
+
+	<section>
+		<h3>Blocked and tombstoned URLs</h3>
+		<p class="subnav">
+			Reserved URLs: a block or purge leaves a tombstone so the URL can't be re-created. Unblocking a tombstone lifts the reservation so the
+			URL becomes creatable again — it restores nothing.
+		</p>
+		{#if data.tombstones.length === 0}
+			<p class="subnav">None.</p>
+		{:else}
+			<ul class="following-list source-list">
+				{#each data.tombstones as t (t.id)}
+					{@const retryCommandId = retryFail?.tombstoneId === t.id ? retryFail.commandId : undefined}
+					<li>
+						<div class="feed-info">
+							<strong class="feed-url">{t.canonicalUrl}</strong>
+							<span>
+								<span class="badge-kind">{t.action}</span>
+								<span class="badge-kind">{t.category.replace(/_/g, ' ')}</span>
+								<span class="subnav">{t.createdAt}</span>
+							</span>
+							{#if t.aliases.length}<span class="subnav feed-url">aliases: {t.aliases.join(', ')}</span>{/if}
+							{#if t.note}<span class="subnav">{t.note}</span>{/if}
+						</div>
+						<form method="POST" action="?/tombstone{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}" class="source-action" use:enhance={confirmSubmit(`${data.tombstoneConsequence} Continue?`)}>
+							<input type="hidden" name="tombstoneId" value={t.id} />
+							<input type="hidden" name="commandId" value={retryCommandId ?? t.commandId} />
+							<p class="consequence">{data.tombstoneConsequence}</p>
+							<label class="visually-hidden" for="tomb-cat-{t.id}">Moderation category</label>
+							<select id="tomb-cat-{t.id}" name="category" required>
+								{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+							</select>
+							<label class="visually-hidden" for="tomb-note-{t.id}">Note (optional)</label>
+							<input id="tomb-note-{t.id}" name="note" placeholder="note (optional)" />
+							<button aria-label="Unblock {t.canonicalUrl}">Unblock URL</button>
+						</form>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</section>
 {:else}
 	<section>
 		<h3>Remote feeds</h3>

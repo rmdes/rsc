@@ -1,20 +1,23 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import { enhance } from '$app/forms'
+	import { confirmSubmit } from '$lib/confirm'
 	import type { AdminRefreshResult, AdminRunProjection } from '$lib/logical-api'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
-	// The refresh action returns one of three success shapes or a fail() — read them
-	// through one loose shape (the generated ActionData union doesn't narrow cleanly
-	// across fail vs. success). Every branch carries commandId so a retry replays.
-	type RefreshForm = { commandId?: string; refused?: boolean; polling?: boolean; run?: AdminRefreshResult; error?: string }
-	const f = $derived(form as RefreshForm | null)
+	// The refresh + purge actions return one of several success shapes or a fail() —
+	// read them through one loose shape (the generated ActionData union doesn't narrow
+	// cleanly across fail vs. success). Every branch carries commandId so a retry
+	// replays; `purge`/`purged` tag the purge branches so the right form is pinned.
+	type SourceForm = { commandId?: string; refused?: boolean; polling?: boolean; run?: AdminRefreshResult; error?: string; purge?: boolean; purged?: boolean }
+	const f = $derived(form as SourceForm | null)
 
 	// Command-id retention (spec §6.2): a re-render after a still-processing (202),
 	// refused, or errored submit reuses the SUBMITTED id, so a resubmit replays the
-	// original run instead of minting a fresh command.
-	const commandId = $derived(f?.commandId ?? data.refreshCommandId)
+	// original run instead of minting a fresh command. The purge form pins its own id.
+	const commandId = $derived((f?.purge || f?.purged) ? data.refreshCommandId : (f?.commandId ?? data.refreshCommandId))
+	const purgeCommandId = $derived((f?.purge || f?.purged) && f.commandId ? f.commandId : data.purgeCommandId)
 
 	const OUTCOME_LABEL: Record<string, string> = {
 		pending: 'pending',
@@ -62,6 +65,9 @@
 	     (replays, returning the run's current status) plus a link to full history. -->
 	<p class="notice" role="status">Still processing — check again in a moment.</p>
 {/if}
+{#if f?.purged}
+	<p class="notice confirm" role="status">Evidence purged — permanently deleted. The URL stays blocked by its tombstone.</p>
+{/if}
 
 <section class="panel-block">
 	<h3>Refresh</h3>
@@ -97,6 +103,46 @@
 	{/if}
 	<a class="older" href="/admin/sources/{encodeURIComponent(data.sourceId)}/runs">Run history</a>
 </section>
+
+<section class="panel-block">
+	<h3>Items <span class="subnav">{data.conflictCount} conflict(s) across this source</span></h3>
+	{#if data.items.length === 0}
+		<p class="subnav">No items acquired from this source yet.</p>
+	{:else}
+		<ul class="item-list">
+			{#each data.items as item (item.logicalItemId)}
+				<li>
+					<a class="mono" href="/admin/items/{encodeURIComponent(item.logicalItemId)}">{item.logicalItemId}</a>
+					<span class="badge-kind" class:on={item.state === 'hidden'}>{item.state.replace(/_/g, ' ')}</span>
+					<span class="subnav">{item.timelineSortAt}</span>
+				</li>
+			{/each}
+		</ul>
+		{#if data.itemsNextCursor}
+			<a class="older" href="/admin/sources/{encodeURIComponent(data.sourceId)}?before={encodeURIComponent(data.itemsNextCursor)}">Older items</a>
+		{/if}
+	{/if}
+</section>
+
+{#if data.purgeEligible}
+	<!-- Purge appears for a BLOCKED source ALONE. Its consequence is DISTINCT from
+	     unblock: evidence is permanently deleted, but the URL STAYS blocked. -->
+	<section class="panel-block">
+		<h3>Purge evidence</h3>
+		<form method="POST" action="?/purge" class="source-action destructive" use:enhance={confirmSubmit(`${data.purgeConsequence} Continue?`)}>
+			<input type="hidden" name="sourceId" value={data.sourceId} />
+			<input type="hidden" name="commandId" value={purgeCommandId} />
+			<p class="consequence">{data.purgeConsequence}</p>
+			<label class="visually-hidden" for="purge-cat">Moderation category</label>
+			<select id="purge-cat" name="category" required>
+				{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+			</select>
+			<label class="visually-hidden" for="purge-note">Note (optional)</label>
+			<input id="purge-note" name="note" placeholder="note (optional)" />
+			<button aria-label="Purge evidence for {data.source.canonicalUrl}">Purge evidence</button>
+		</form>
+	</section>
+{/if}
 
 <style>
 	.feed-info {
@@ -141,6 +187,42 @@
 	}
 	.mono {
 		font-family: var(--font-mono, monospace);
+		font-size: 0.8125rem;
+		overflow-wrap: anywhere;
+	}
+	.item-list {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 var(--space-sm);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-sm);
+	}
+	.item-list li {
+		display: flex;
+		gap: var(--space-sm);
+		flex-wrap: wrap;
+		align-items: baseline;
+	}
+	/* Outline, not the accent fill — matches the moderation forms elsewhere; purge
+	   reads destructive on top of that. */
+	.source-action {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--space-sm);
+	}
+	.source-action button {
+		background: transparent;
+		color: var(--color-foreground);
+		border: 1px solid var(--color-border);
+	}
+	.source-action.destructive button {
+		color: var(--color-destructive);
+	}
+	.consequence {
+		margin: 0;
+		color: var(--color-secondary);
 		font-size: 0.8125rem;
 	}
 </style>

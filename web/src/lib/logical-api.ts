@@ -4,7 +4,7 @@
 // on any mismatch — it never falls back to or casts a v1 shape (spec §5.6 carve 2).
 
 import { env } from '$env/dynamic/private'
-import { asLogicalTimeline, asLogicalSingleItem, asLogicalThread, asLogicalHistory, logicalToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope } from './logical-types.ts'
+import { asLogicalTimeline, asLogicalSingleItem, asLogicalThread, asLogicalHistory, logicalToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
@@ -191,3 +191,79 @@ export async function listRunJobs(f: typeof fetch, runId: string, before?: strin
 	if (!res.ok) throw new Error(`jobs ${res.status}`)
 	return (await res.json()) as AdminPage<AdminJobSummary>
 }
+
+// --- V3 moderation review APIs (Task 8 contract) ------------------------------
+// The four bounded reads + four mutations behind the item-review / source-detail /
+// tombstone surfaces. Like the acquisition reads above, admin-only same-origin
+// envelopes are CAST (not fail-closed-validated) — raw evidence rides through as
+// bounded escaped text, never rendered HTML. A neutral 404 body is NEVER read.
+
+export async function getAdminItemDetail(f: typeof fetch, id: string): Promise<AdminItemDetail | null> {
+	const res = await f(`${base()}/admin/items/${encodeURIComponent(id)}`)
+	if (res.status === 404) return null // neutral not-found — never read the body
+	if (!res.ok) throw new Error(`item ${res.status}`)
+	return (await res.json()) as AdminItemDetail
+}
+
+export async function listItemAudit(f: typeof fetch, id: string, before?: string | null): Promise<AdminPage<ItemAuditEvent>> {
+	const q = before ? `?before=${encodeURIComponent(before)}` : ''
+	const res = await f(`${base()}/admin/items/${encodeURIComponent(id)}/audit${q}`)
+	if (!res.ok) throw new Error(`item-audit ${res.status}`)
+	return (await res.json()) as AdminPage<ItemAuditEvent>
+}
+
+// conflictCount is a TOP-LEVEL, source-wide count on THIS envelope (a true count
+// across all of the source's logical items, not just this page — Task 8 report).
+export interface SourceItemsPage {
+	model: 'logical-v2'
+	items: AdminSourceItemRow[]
+	nextCursor: string | null
+	conflictCount: number
+}
+export async function listSourceItems(f: typeof fetch, sourceId: string, before?: string | null): Promise<SourceItemsPage> {
+	const q = before ? `?before=${encodeURIComponent(before)}` : ''
+	const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/items${q}`)
+	if (!res.ok) throw new Error(`source-items ${res.status}`)
+	return (await res.json()) as SourceItemsPage
+}
+
+// Unpaginated; read `.tombstones`, never a bare array (every envelope carries model).
+export async function listTombstones(f: typeof fetch): Promise<TombstoneView[]> {
+	const res = await f(`${base()}/admin/tombstones`)
+	if (!res.ok) throw new Error(`tombstones ${res.status}`)
+	const body = (await res.json()) as { tombstones?: TombstoneView[] }
+	return body.tombstones ?? []
+}
+
+export interface ModBody {
+	commandId: string
+	category: string
+	note?: string
+}
+// The disposition table (Task 8): 200 applied/purged/unblocked; 404 → neutral
+// 'unavailable' (uniform, never surfaced); 409 → a distinct state-conflict body
+// (local origin / not applicable / source not blocked / idempotency conflict) that
+// IS a legitimate fact for an admin, so its message is surfaced verbatim.
+export type ModOutcome = { kind: 'applied' } | { kind: 'unavailable' } | { kind: 'conflict'; error: string }
+
+async function postModeration(f: typeof fetch, url: string, body: ModBody): Promise<ModOutcome> {
+	const res = await f(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+	if (res.ok) return { kind: 'applied' }
+	if (res.status === 404) return { kind: 'unavailable' } // neutral — the body is never read
+	if (res.status === 409) {
+		let error = 'conflict'
+		try {
+			const parsed = (await res.json()) as { error?: unknown }
+			if (typeof parsed.error === 'string') error = parsed.error
+		} catch {
+			// non-JSON — keep the generic label
+		}
+		return { kind: 'conflict', error }
+	}
+	throw new Error(`moderation ${res.status}`)
+}
+
+export const hideItem = (f: typeof fetch, id: string, body: ModBody) => postModeration(f, `${base()}/admin/items/${encodeURIComponent(id)}/hide`, body)
+export const restoreItem = (f: typeof fetch, id: string, body: ModBody) => postModeration(f, `${base()}/admin/items/${encodeURIComponent(id)}/restore`, body)
+export const purgeSource = (f: typeof fetch, id: string, body: ModBody) => postModeration(f, `${base()}/admin/sources/${encodeURIComponent(id)}/purge`, body)
+export const unblockTombstone = (f: typeof fetch, id: string, body: ModBody) => postModeration(f, `${base()}/admin/tombstones/${encodeURIComponent(id)}/unblock`, body)
