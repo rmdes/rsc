@@ -11,7 +11,8 @@ Appendix A and Task 1 Step 4 say the migration entry "calls
 `string[][]` (`core/src/storage/sqlite.ts`), and V2/V3 both ship as exported
 statement arrays (`LOGICAL_V2_SCHEMA`, `LOGICAL_V3_SCHEMA`) referenced by name
 at the tail. Task 1 followed that existing pattern: `LOGICAL_V4_SCHEMA` is a
-`string[]` appended at the tail (migration index 15, `user_version = 15`). The
+`string[]` appended at the tail (array index 14 — the 15th entry — so
+`user_version = 15`). The
 DDL is byte-for-byte Appendix A. Tasks 2–10 should read "install the V4 schema"
 as "the `LOGICAL_V4_SCHEMA` array".
 
