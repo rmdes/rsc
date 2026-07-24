@@ -202,7 +202,10 @@ export function asStreamEvent(x: unknown): LogicalV2StreamEvent {
 // is set only for a navigable remote publisher, so a byline can link /p/:id
 // instead of /u.
 
-export type RenderEntry = TimelineEntry
+// v2 entries carry the bounded enclosure list (audio/video/image attachments,
+// MASTER.md "text first, enclosures second"); v1 entries never had it, so the
+// field is optional and the attachment block simply doesn't render for them.
+export type RenderEntry = TimelineEntry & { enclosures?: EnclosureDto[] }
 
 export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 	const a = dto.selectedAuthor
@@ -231,6 +234,7 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 		sourceName: null,
 		sourceFeedUrl: a.kind === 'remote_publisher' ? a.canonicalFeedUrl : null,
 		editedAt: dto.updatedAt,
-		publisherId: a.kind === 'remote_publisher' && a.profileAvailable ? a.id : undefined
+		publisherId: a.kind === 'remote_publisher' && a.profileAvailable ? a.id : undefined,
+		enclosures: dto.enclosures
 	}
 }
