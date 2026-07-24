@@ -298,7 +298,7 @@ const ITEM_COLUMNS = `id, origin, timeline_sort_at, parent_state, parent_logical
 interface PostRow {
   id: string; author_id: string; title: string | null; content: string; content_markdown: string | null
   url: string | null; published_at: string; edited_at: string | null
-  in_reply_to_post_id: string | null; thread_root_id: string | null
+  in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null
 }
 
 // The delivery's earliest ordinary-eligible version tuple (reconciled/conflicted
@@ -549,6 +549,7 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
     content: post.content,
     contentMarkdown: post.content_markdown,
     permalink: safeUrl(post.url),
+    inReplyToRef: post.in_reply_to, // the stored absolute wire ref, re-emitted as <source:inReplyTo>
     sourceLink: null,
     replyContext: null,
     enclosures: [],
@@ -587,6 +588,7 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     content: mat.material.content,
     contentMarkdown: null,
     permalink: safeUrl(mat.normalized.permalink ?? mat.material.link),
+    inReplyToRef: null, // remote items keep the current firehose/comments behavior (no source:inReplyTo re-emit)
     sourceLink: safeUrl(mat.material.link),
     replyContext,
     enclosures: projectEnclosures(mat.normalized.enclosures),
@@ -613,7 +615,7 @@ export function isStructuralTombstone(tx: ReadTx, id: string): boolean {
 // projects directly (no logical row needed); a deleted/absent local post ⇒ undefined.
 export function projectItem(tx: ReadTx, id: string, viewer: ProjectionViewer): LogicalItemDto | undefined {
   const post = tx.prepare(
-    `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to_post_id, thread_root_id
+    `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to, in_reply_to_post_id, thread_root_id
      FROM posts WHERE id = ? AND source = 'local'`,
   ).get(id) as PostRow | undefined
   if (post) return projectLocal(tx, post, viewer)
@@ -722,7 +724,7 @@ export function projectLocalActivity(tx: ReadTx, opts: { authorId: string | null
 export function projectHistory(tx: ReadTx, id: string, viewer: ProjectionViewer): LogicalHistoryEnvelope | undefined {
   if (!projectItem(tx, id, viewer)) return undefined
   const post = tx.prepare(
-    `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to_post_id, thread_root_id FROM posts WHERE id = ? AND source = 'local'`,
+    `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to, in_reply_to_post_id, thread_root_id FROM posts WHERE id = ? AND source = 'local'`,
   ).get(id) as PostRow | undefined
   if (post) {
     const revs = tx.prepare(`SELECT title, content, content_markdown FROM post_revisions WHERE post_id = ? ORDER BY seen_at ASC`).all(id) as { title: string | null; content: string; content_markdown: string | null }[]

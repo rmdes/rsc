@@ -355,7 +355,7 @@ export function createLogicalStore(db: DatabaseContext) {
     snapshot<T>(fn: (tx: ReadSeam) => T): T {
       return db.read((tx) => fn(makeReadTx(tx)))
     },
-    createLocalPost(input: { author: User; content: string; replyToId: string | null; now: string }): LogicalItemDto {
+    createLocalPost(input: { author: User; content: string; replyToId: string | null; now: string; publicUrl?: string | null }): LogicalItemDto {
       return db.write((tx) => createLocalPost({ tx, ...input }))
     },
     // The reply-target gate: true iff the id is a local post or an

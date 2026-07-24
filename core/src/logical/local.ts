@@ -30,14 +30,30 @@ const permalinkFor = (id: string): string => `/post/${id}`
 type PostRow = {
   id: string; title: string | null; content: string; content_markdown: string | null
   url: string | null; published_at: string; edited_at: string | null
-  in_reply_to_post_id: string | null; thread_root_id: string | null
+  in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null
 }
 
 function loadPost(tx: WriteTx, id: string): PostRow | undefined {
   return tx.prepare(
-    `SELECT id, title, content, content_markdown, url, published_at, edited_at, in_reply_to_post_id, thread_root_id
+    `SELECT id, title, content, content_markdown, url, published_at, edited_at, in_reply_to, in_reply_to_post_id, thread_root_id
      FROM posts WHERE id = ?`,
   ).get(id) as PostRow | undefined
+}
+
+// The parent's on-the-wire reply reference (v1 parity, service.ts): the string the
+// outbound feed emits as <source:inReplyTo>, which a peer instance string-matches to
+// the parent's own <guid>. It MUST equal what the parent's feed advertises as its
+// guid: a LOCAL parent's guid is its absolute permalink (`url`) or, url-less, its own
+// id (logicalToFeedEntry emits guid = dto.id === post.id in the null-url fallback —
+// NOT the opaque posts.guid column); a REMOTE parent (logical-only, not in `posts`)
+// advertises its canonical permalink identity key.
+function parentReplyRef(tx: WriteTx, parentId: string): string | null {
+  const local = tx.prepare(`SELECT url FROM posts WHERE id = ? AND source = 'local'`).get(parentId) as { url: string | null } | undefined
+  if (local) return local.url ?? parentId
+  // ponytail: opaque-only remote parents have no permalink key ⇒ null (no cross-
+  // instance permalink ref); local ancestry still holds via parent_logical_item_id.
+  const k = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'permalink' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
+  return k ? k.key : null
 }
 
 // The derived root of the chain that ends at `parentId` (inclusive) — the topmost
@@ -123,7 +139,7 @@ export function materializeLocalChain(tx: WriteTx, postId: string, depth = 0): b
 }
 
 function buildDto(
-  post: { id: string; title: string | null; content: string; contentMarkdown: string | null; permalink: string | null; publishedAt: string; editedAt: string | null },
+  post: { id: string; title: string | null; content: string; contentMarkdown: string | null; permalink: string | null; inReplyToRef: string | null; publishedAt: string; editedAt: string | null },
   author: Pick<User, 'id' | 'handle' | 'displayName'>,
   edge: { state: LogicalItemDto['parentResolutionState']; parentLogicalItemId: string | null; threadRootId: string | null },
 ): LogicalItemDto {
@@ -139,6 +155,7 @@ function buildDto(
     content: post.content,
     contentMarkdown: post.contentMarkdown,
     permalink: post.permalink,
+    inReplyToRef: post.inReplyToRef,
     sourceLink: null,
     replyContext: null,
     enclosures: [],
@@ -151,10 +168,15 @@ function buildDto(
   }
 }
 
-export function createLocalPost(input: { tx: WriteTx; author: User; content: string; replyToId: string | null; now: string }): LogicalItemDto {
+export function createLocalPost(input: { tx: WriteTx; author: User; content: string; replyToId: string | null; now: string; publicUrl?: string | null }): LogicalItemDto {
   const { tx, author, content, replyToId, now } = input
   const id = randomUUID()
-  const permalink = permalinkFor(id)
+  // v1-parity storage (service.ts): the stored url is the ABSOLUTE permalink under a
+  // public URL (or null without one); that same value is the item's rss.chat guid.
+  // The identity/marker key needs a non-null local-unique string, so it falls back
+  // to the relative path form (matching materializeLocalPost's `cur.url ?? …`).
+  const url = input.publicUrl ? `${input.publicUrl}/post/${id}` : null
+  const permalink = url ?? permalinkFor(id)
 
   // Local replies resolve their parent by construction (spec §4.2). Guard the
   // degenerate cycle; a brand-new item cannot deepen an existing chain past the
@@ -162,17 +184,20 @@ export function createLocalPost(input: { tx: WriteTx; author: User; content: str
   // that is threading's concern (Task 7), not the local create.
   const parentLogicalItemId = replyToId && !wouldCycle(tx, replyToId, id) ? replyToId : null
   const threadRootId = parentLogicalItemId ? deriveRoot(tx, parentLogicalItemId) : null
+  // Store the parent's absolute wire reference (v1 parity) so the outbound feed
+  // emits <source:inReplyTo> and cross-instance conversations reassemble.
+  const inReplyToRef = parentLogicalItemId ? parentReplyRef(tx, parentLogicalItemId) : null
 
   tx.prepare(
     `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at, in_reply_to, in_reply_to_post_id, thread_root_id, source_name, source_feed_url, content_markdown, edited_at, reply_context_author, reply_context_snippet)
-     VALUES (?, ?, 'local', ?, NULL, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)`,
-  ).run(id, author.id, randomUUID(), content, permalink, now, now, parentLogicalItemId, threadRootId)
+     VALUES (?, ?, 'local', ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)`,
+  ).run(id, author.id, randomUUID(), content, url, now, now, inReplyToRef, parentLogicalItemId, threadRootId)
 
   materializeLocalItem(tx, { id, permalink, timelineSortAt: now, parentLogicalItemId })
   appendJournal(tx, { kind: 'upsert', logicalItemId: id, changeMask: 'presentation' }, now)
 
   return buildDto(
-    { id, title: null, content, contentMarkdown: null, permalink, publishedAt: now, editedAt: null },
+    { id, title: null, content, contentMarkdown: null, permalink: url, inReplyToRef, publishedAt: now, editedAt: null },
     author,
     { state: parentLogicalItemId ? 'resolved' : 'none', parentLogicalItemId, threadRootId },
   )
@@ -197,7 +222,7 @@ export function editLocalPost(input: { tx: WriteTx; postId: string; authorId: st
   appendJournal(tx, { kind: 'upsert', logicalItemId: postId, changeMask: 'presentation' }, now)
 
   return buildDto(
-    { id: postId, title: cur.title, content, contentMarkdown: cur.content_markdown, permalink, publishedAt: cur.published_at, editedAt: now },
+    { id: postId, title: cur.title, content, contentMarkdown: cur.content_markdown, permalink, inReplyToRef: cur.in_reply_to, publishedAt: cur.published_at, editedAt: now },
     { id: authorId, handle: '', displayName: '' },
     { state: cur.in_reply_to_post_id ? 'resolved' : 'none', parentLogicalItemId: cur.in_reply_to_post_id, threadRootId: cur.thread_root_id },
   )
@@ -256,12 +281,12 @@ export function deleteLocalAccount(input: { tx: WriteTx; accountId: string; acto
 // WITHOUT touching the database. The ordinary read path uses this so an untouched
 // local post never forces a logical-row insert.
 export function synthesizeLocalItem(
-  post: { id: string; title: string | null; content: string; contentMarkdown?: string | null; url: string | null; publishedAt: string; editedAt?: string | null; inReplyToPostId?: string | null; threadRootId?: string | null },
+  post: { id: string; title: string | null; content: string; contentMarkdown?: string | null; url: string | null; publishedAt: string; editedAt?: string | null; inReplyTo?: string | null; inReplyToPostId?: string | null; threadRootId?: string | null },
   author: Pick<User, 'id' | 'handle' | 'displayName'>,
 ): LogicalItemDto {
   const parentLogicalItemId = post.inReplyToPostId ?? null
   return buildDto(
-    { id: post.id, title: post.title, content: post.content, contentMarkdown: post.contentMarkdown ?? null, permalink: post.url, publishedAt: post.publishedAt, editedAt: post.editedAt ?? null },
+    { id: post.id, title: post.title, content: post.content, contentMarkdown: post.contentMarkdown ?? null, permalink: post.url, inReplyToRef: post.inReplyTo ?? null, publishedAt: post.publishedAt, editedAt: post.editedAt ?? null },
     author,
     { state: parentLogicalItemId ? 'resolved' : 'none', parentLogicalItemId, threadRootId: post.threadRootId ?? null },
   )

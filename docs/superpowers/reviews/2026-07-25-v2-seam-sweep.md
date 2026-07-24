@@ -126,3 +126,26 @@ One SDD fix-wave off this document, severity order: O1-O3 as a single task
 D14, D11, W-set, D-set. The Minor tier can batch or ride Task 11's
 retirement release. This session (reviewer) holds review duty per task, as
 during the verticals.
+
+## 2026-07-25 — T1 correction note (scope growth + mechanism)
+
+T1 (O1-O3) grew during execution from **outbound threading** to **outbound
+threading + local feed identity** (one defect). The sweep listed the identity
+breakage implicitly and severity-separately, but at the v2 read/emit boundary
+a v2-created local post stored its permalink RELATIVE (`/post/<id>`), which
+`projectLocal`'s `safeUrl` nulled — so the post emitted a bare UUID `<guid>`
+with no `<link>` AND no `<source:inReplyTo>`. Threading and identity are the
+same defect: a `source:inReplyTo` can only match a peer item that advertises an
+absolute permalink guid.
+
+**Mechanism (maintainer decision):** NOT emission-time absolutization. Instead,
+**v1-parity create-time storage** — the v2 logical create now receives
+`publicUrl` (threaded `service → store → local.createLocalPost`) and stores the
+ABSOLUTE permalink in `posts.url` and the parent's absolute wire ref in
+`posts.in_reply_to`, exactly as v1's `service.ts` create did. The existing
+(v1) feed emission (`localGuid`, `itemContentFields`) then handles both paths
+byte-identically with zero new emission code and no join helper. v2's earlier
+relative-permalink storage choice is reversed to match v1 (which also heals the
+D6 card permalink as a welcome consequence of matching v1, not a separate
+change). No migration (reuses `url` / `in_reply_to`). This supersedes the
+earlier in-plan "emission-time absolutization" framing.

@@ -7,8 +7,16 @@ import { renderLocalHtml } from './markdown.ts'
 // Adapt a logical-v2 ordinary DTO to the TimelineEntry shape the existing feed
 // renderers consume (spec §4.6: all public feeds use the central projector). Local
 // content is the markdown source (itemContentFields renders it); remote content is
-// the stored feed HTML. A local reply carries in_reply_to = NULL in v1 too, so no
-// source:inReplyTo is emitted here either — parity with the v1 firehose.
+// the stored feed HTML.
+//
+// 2026-07-25 (V2 seam T1 — outbound threading + local feed identity): the reply ref
+// (dto.inReplyToRef) and the permalink (dto.permalink) are ALREADY ABSOLUTE — the
+// v2 local create now stores them exactly as v1 did (absolute url at create;
+// posts.in_reply_to = parent's absolute permalink/guid), so this adapter only
+// carries them through with NO join. localGuid/itemContentFields then emit guid +
+// <link> + <source:inReplyTo> identically to the v1 feed path, byte-for-byte across
+// the flip. (Supersedes the earlier framing that assumed an emission-time
+// publicUrl-join here; the join lives at create-time storage instead — v1 parity.)
 export function logicalToFeedEntry(dto: LogicalItemDto): TimelineEntry {
   const a = dto.selectedAuthor
   const author: User = a.kind === 'local'
@@ -24,7 +32,7 @@ export function logicalToFeedEntry(dto: LogicalItemDto): TimelineEntry {
     url: dto.permalink,
     publishedAt: dto.publishedAt,
     createdAt: dto.publishedAt,
-    inReplyTo: null,
+    inReplyTo: dto.inReplyToRef,
     inReplyToPostId: dto.parentLogicalItemId,
     threadRootId: dto.threadRootId,
     contentMarkdown: dto.contentMarkdown,

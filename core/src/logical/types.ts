@@ -62,6 +62,12 @@ export type LogicalItemDto = {
   content: string | null
   contentMarkdown: string | null
   permalink: string | null
+  // The stored reply-parent wire reference (posts.in_reply_to for a local item):
+  // an absolute permalink/guid the outbound feed re-emits as <source:inReplyTo>.
+  // Null for a top-level item and (for now) for remote items. Distinct from
+  // parentLogicalItemId (the internal ancestry edge) and replyContext (a remote
+  // unresolved-reply hint) — this is the on-the-wire ref v1 stored at create.
+  inReplyToRef: string | null
   sourceLink: string | null
   replyContext: ReplyContextDto | null
   enclosures: EnclosureDto[]

@@ -57,7 +57,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
         // (posts stays the content authority), then emit only the after-commit
         // local-feed push hint. Logical threading owns adoption (Task 7), so the v1
         // adoptOrphans sweep is not run here.
-        const dto = logical.createLocalPost({ author, content, replyToId: replyTo?.id ?? null, now: new Date().toISOString() })
+        const dto = logical.createLocalPost({ author, content, replyToId: replyTo?.id ?? null, now: new Date().toISOString(), publicUrl: publicUrl ?? null })
         const stored = await repo.getPost(dto.id)
         const entry: TimelineEntry = { ...(stored as Post), author }
         bus.emitNewPost(entry)
