@@ -465,10 +465,12 @@ export function claimAcquisition(tx: WriteTx, input: { sourceId: string; reason:
 
   const runId = randomUUID()
   const runReason = reason.kind === 'administrator' ? 'administrator_refresh' : 'scheduled'
+  // V4 §1.4 / FC1: a push-driven run keeps V2's `reason` vocabulary and records the
+  // mechanism in the additive nullable column instead of a third reason value.
   tx.prepare(
-    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
-     VALUES (?, ?, ?, 'processing', ?, NULL, NULL, 'pending', ?, NULL, NULL, NULL)`,
-  ).run(runId, sourceId, runReason, now, JSON.stringify(ZERO_COUNTERS))
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json, delivery_mechanism)
+     VALUES (?, ?, ?, 'processing', ?, NULL, NULL, 'pending', ?, NULL, NULL, NULL, ?)`,
+  ).run(runId, sourceId, runReason, now, JSON.stringify(ZERO_COUNTERS), reason.kind === 'push' ? 'push' : null)
   if (reason.kind === 'administrator') {
     tx.prepare(
       `INSERT INTO acquisition_commands_v2 (actor_id, command_id, request_fingerprint, run_id, refusal_json, created_at)
@@ -646,6 +648,40 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
   // ponytail: in-process Map; distributed claims only if core ever multi-process.
   const inFlightMap = new Map<string, string>()
 
+  // The post-body half of an acquisition, shared by a FETCHED poll and a
+  // PUSH-DELIVERED document (V4 §1.4): parse under the §1.5 bounds profile, map
+  // candidates to observation versions, record the inert push-capability evidence,
+  // and commit through the same result transaction (jobs + commit-time policy
+  // recheck included). `res` is null for a delivered body — it has no headers, so
+  // no Link-header discovery and no conditional validators.
+  async function commitFromBody(input: { runId: string; sourceId: string; body: string; effectiveUrl: string; res: Response | null; redirects: RedirectObservation[]; aliases: string[]; committedAt: string }): Promise<AcquisitionRun> {
+    const { runId, sourceId, body, effectiveUrl, res, redirects, aliases, committedAt } = input
+    // An unparseable body (not a feed, not an h-feed) must terminalize the run —
+    // never reject and leave it stuck in 'processing'. Redirect evidence is
+    // retained; nothing else is committed.
+    let parsed: ParseResult
+    try {
+      parsed = parseCandidates(body, effectiveUrl)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'unparseable body'
+      return db.write((tx) => failAcquisition(tx, { runId, sourceId, now: committedAt, outcome: 'operational_failure', category: 'feed_parse', diagnostic: message, redirects, findings: [{ kind: 'parser_item_error', evidenceJson: JSON.stringify({ message }) }] }))
+    }
+    const observations: NewObservationVersion[] = parsed.candidates.map((c) => ({ id: randomUUID(), deliveryId: randomUUID(), wireOrdinal: c.wireOrdinal, arrivalAt: committedAt, fingerprintVersion: BOUNDS.fingerprintVersion, fingerprint: c.fingerprint, canonicalMaterial: c.canonicalMaterial, rawEvidenceJson: c.rawEvidenceJson, normalizedJson: c.normalizedJson }))
+
+    // Inert push-capability evidence (spec §1.2): parse-time discovery only —
+    // NEVER contact the hub/cloud. Reuses ingest's discovery + push-in's target.
+    const pushCapabilityJson = await pushCapabilityFrom(body, res ?? new Response(null), effectiveUrl)
+
+    const etag = res?.headers.get('etag') ?? null
+    const lastModified = res?.headers.get('last-modified') ?? null
+    const validators: ConditionalValidators | null = etag || lastModified ? { effectiveUrl, etag, lastModified } : null
+
+    const counters: AdminAcquisitionCounters = { ...ZERO_COUNTERS, candidates: parsed.candidateCount, omitted: parsed.omitted, itemsTruncated: parsed.itemsTruncated }
+    const outcome: AdminFetchProjection['outcome'] = parsed.itemsTruncated ? 'completed_truncated' : 'parsed'
+
+    return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl, validators, redirects, aliases, observations, findings: parsed.findings, counters, outcome, pushCapabilityJson }))
+  }
+
   async function acquireSource(sourceId: string, reason: AcquisitionReason, signal?: AbortSignal): Promise<AcquisitionRun | { kind: 'unavailable'; reason: string }> {
     // Join an active run instead of a second fetch (spec §1.4).
     const active = inFlightMap.get(sourceId)
@@ -669,6 +705,13 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
     const runId = claim.runId
     inFlightMap.set(sourceId, runId)
     try {
+      // A fat ping delivered the document (V4 §1.4): the fetch is SKIPPED and the
+      // delivered body IS the document. Everything after it — bounds profile,
+      // observation writer, reconciliation jobs, commit-time policy recheck — is
+      // the poll's own path, unchanged.
+      if (reason.kind === 'push' && reason.document !== null) {
+        return await commitFromBody({ runId, sourceId, body: reason.document, effectiveUrl: claim.source.canonicalUrl, res: null, redirects: [], aliases: [], committedAt: now() })
+      }
       const ctxData = db.read((tx) => readContext(tx, sourceId, claim.source.canonicalUrl))
       const fetchSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]) : AbortSignal.timeout(deadlineMs)
       const ctx: FetchCtx = { fetchFn, lookupFn: deps.lookupFn, signal: fetchSignal, sourceId, ownedAliases: ctxData.ownedAliases, validators: ctxData.validators, aliasOwner: ctxData.aliasOwner, isTombstoned: ctxData.isTombstoned }
@@ -703,30 +746,7 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
         return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl: result.effectiveUrl, validators: null, redirects: result.redirects, aliases: [], observations: [], findings: [], counters: { ...ZERO_COUNTERS, bodyLimitExceeded: true }, outcome: 'operational_failure', pushCapabilityJson: null }))
       }
 
-      // An unparseable body (not a feed, not an h-feed) must terminalize the run —
-      // never reject and leave it stuck in 'processing'. Redirect evidence is
-      // retained; nothing else is committed.
-      let parsed: ParseResult
-      try {
-        parsed = parseCandidates(body, result.effectiveUrl)
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'unparseable body'
-        return db.write((tx) => failAcquisition(tx, { runId, sourceId, now: committedAt, outcome: 'operational_failure', category: 'feed_parse', diagnostic: message, redirects: result.redirects, findings: [{ kind: 'parser_item_error', evidenceJson: JSON.stringify({ message }) }] }))
-      }
-      const observations: NewObservationVersion[] = parsed.candidates.map((c) => ({ id: randomUUID(), deliveryId: randomUUID(), wireOrdinal: c.wireOrdinal, arrivalAt: committedAt, fingerprintVersion: BOUNDS.fingerprintVersion, fingerprint: c.fingerprint, canonicalMaterial: c.canonicalMaterial, rawEvidenceJson: c.rawEvidenceJson, normalizedJson: c.normalizedJson }))
-
-      // Inert push-capability evidence (spec §1.2): parse-time discovery only —
-      // NEVER contact the hub/cloud. Reuses ingest's discovery + push-in's target.
-      const pushCapabilityJson = await pushCapabilityFrom(body, result.res, result.effectiveUrl)
-
-      const etag = result.res.headers.get('etag')
-      const lastModified = result.res.headers.get('last-modified')
-      const validators: ConditionalValidators | null = etag || lastModified ? { effectiveUrl: result.effectiveUrl, etag, lastModified } : null
-
-      const counters: AdminAcquisitionCounters = { ...ZERO_COUNTERS, candidates: parsed.candidateCount, omitted: parsed.omitted, itemsTruncated: parsed.itemsTruncated }
-      const outcome: AdminFetchProjection['outcome'] = parsed.itemsTruncated ? 'completed_truncated' : 'parsed'
-
-      return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl: result.effectiveUrl, validators, redirects: result.redirects, aliases: result.provenAliases, observations, findings: parsed.findings, counters, outcome, pushCapabilityJson }))
+      return await commitFromBody({ runId, sourceId, body, effectiveUrl: result.effectiveUrl, res: result.res, redirects: result.redirects, aliases: result.provenAliases, committedAt })
     } finally {
       inFlightMap.delete(sourceId)
     }

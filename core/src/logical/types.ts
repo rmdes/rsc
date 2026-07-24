@@ -414,6 +414,12 @@ export interface ConditionalValidators {
 export type AcquisitionReason =
   | { kind: 'scheduled' }
   | { kind: 'administrator'; command: CommandEnvelope }
+  // A push callback drove this acquisition (V4 §1.4). `document` is the fat ping's
+  // delivered body — the fetch is SKIPPED and that body IS the document; a thin
+  // ping carries none and fetches ordinarily. This selects the DELIVERY MECHANISM,
+  // not a stored reason: the run row keeps V2's two-value `reason` vocabulary
+  // ('scheduled') and records `delivery_mechanism = 'push'` (V4 adjudication FC1).
+  | { kind: 'push'; document: string | null }
 
 export interface ClaimAcquisitionInput {
   sourceId: string

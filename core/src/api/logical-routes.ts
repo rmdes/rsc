@@ -47,9 +47,11 @@ const LOCAL_ORIGIN = { model: MODEL, error: 'local origin' }
 const NOT_APPLICABLE = { model: MODEL, error: 'not applicable' }
 const NOT_BLOCKED = { model: MODEL, error: 'source not blocked' }
 
-// The full eight-value TS AuditCategory (V3 re-added false_positive/remediated —
-// the moderation categories). Typed as AuditCategory[] so dropping a union member
-// fails typecheck here too. Distinct from app.ts's narrower six-value list.
+// The eight administrator-selectable values of the NINE-value TS AuditCategory (V3
+// re-added false_positive/remediated — the moderation categories; V4 added
+// 'migration_review', which conversion writes and no route accepts). Typed as
+// AuditCategory[] so a narrowed member fails typecheck here too. Distinct from
+// app.ts's narrower six-value list.
 const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
 function isAuditCategory(v: unknown): v is AuditCategory {
   return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)

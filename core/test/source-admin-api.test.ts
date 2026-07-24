@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
@@ -44,6 +44,18 @@ function insertSourceRow(repo: { raw: Raw }, opts: { canonicalUrl: string; attri
 }
 
 const post = (headers: Record<string, string>, body: unknown) => ({ method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
+
+const PUSH_ENDPOINT = 'https://hub.example/hub'
+const PUSH_EXPIRES = '2027-01-01T00:00:00.000Z'
+
+// A v2 push lease for a source (V4 Task 3): the admin projection reads it, and the
+// standing redaction loop runs over it — callback_token and secret must reach no body.
+function insertPushRowV2(repo: { raw: Raw }, sourceId: string, opts: { mode?: string; state?: string; endpoint?: string } = {}): void {
+  repo.raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES (?, ?, ?, ?, 'https://topic.example/f.xml', ?, ?, ?, ?, '2026-01-01T00:00:00.000Z')`,
+  ).run(randomUUID(), sourceId, opts.mode ?? 'websub', opts.endpoint ?? PUSH_ENDPOINT, `${CALLBACK_TOKEN}-${opts.mode ?? 'websub'}`, PUSH_SECRET, opts.state ?? 'active', PUSH_EXPIRES)
+}
 
 // --- Step 2: the administrative authorization matrix ---
 
@@ -93,6 +105,10 @@ test('no admin body — success or error — carries a secret, callback token, a
   const sourceId = (await created.clone().json()).source.id
   repo.raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, 'active', ?)`)
     .run(randomUUID(), owner.id, sourceId, '2026-01-01T00:00:00.000Z')
+  // …and the v2 lease the admin projection now joins: its token and secret must
+  // survive nowhere in a list, detail, error or audit body either (spec §1.5).
+  insertPushRowV2(repo, sourceId)
+  insertPushRowV2(repo, sourceId, { mode: 'rsscloud', state: 'pending', endpoint: 'http://cloud.example:5337/p' })
 
   const textOf = async (res: Response | Promise<Response>) => (await res).text()
   const bodies = await Promise.all([
@@ -189,6 +205,55 @@ test('the admin reads paginate and project summary/detail/subresources', async (
   expect(audit).toEqual({ items: [], nextCursor: null })
 
   expect((await app.request('/admin/sources?cursor=@@bogus@@', { headers: { cookie } })).status).toBe(400)
+  repo.close()
+})
+
+// --- V4 Task 3: the administrative push surface (spec §1.5) ---
+
+test('summary.push carries {mode,state,endpointFingerprint} and detail adds pushExpiresAt', async () => {
+  const { app, repo, cookie } = await adminApp()
+  const leased = insertSourceRow(repo, { canonicalUrl: 'https://203.0.113.40/f.xml' })
+  const bare = insertSourceRow(repo, { canonicalUrl: 'https://203.0.113.41/f.xml' })
+  insertPushRowV2(repo, leased)
+
+  const fingerprint = createHash('sha256').update(PUSH_ENDPOINT).digest('hex').slice(0, 16)
+  const list = await (await app.request('/admin/sources?limit=10', { headers: { cookie } })).json()
+  const byId = Object.fromEntries(list.items.map((i: { source: { id: string }; push: unknown }) => [i.source.id, i.push]))
+  expect(byId[leased]).toEqual({ mode: 'websub', state: 'active', endpointFingerprint: fingerprint })
+  // a source with no lease keeps the all-null placeholder — the field is never absent
+  expect(byId[bare]).toEqual({ mode: null, state: null, endpointFingerprint: null })
+
+  const detail = await (await app.request(`/admin/sources/${leased}`, { headers: { cookie } })).json()
+  expect(detail.push).toEqual({ mode: 'websub', state: 'active', endpointFingerprint: fingerprint })
+  expect(detail.pushExpiresAt).toBe(PUSH_EXPIRES)
+  const bareDetail = await (await app.request(`/admin/sources/${bare}`, { headers: { cookie } })).json()
+  expect(bareDetail.push).toEqual({ mode: null, state: null, endpointFingerprint: null })
+  expect(bareDetail.pushExpiresAt).toBeNull()
+  repo.close()
+})
+
+test('the endpoint fingerprint is a stable digest, never the endpoint itself', async () => {
+  const { app, repo, cookie } = await adminApp()
+  const id = insertSourceRow(repo, { canonicalUrl: 'https://203.0.113.42/f.xml' })
+  insertPushRowV2(repo, id)
+
+  const first = await (await app.request(`/admin/sources/${id}`, { headers: { cookie } })).text()
+  const second = await (await app.request(`/admin/sources/${id}`, { headers: { cookie } })).text()
+  expect(first).toBe(second)                       // stable across reads
+  expect(first).not.toContain(PUSH_ENDPOINT)       // the endpoint itself never ships
+  expect(first).not.toContain('hub.example')
+  expect(JSON.parse(first).push.endpointFingerprint).toMatch(/^[0-9a-f]{16}$/)
+  repo.close()
+})
+
+test('an active lease wins over a pending one in the single-lease projection', async () => {
+  const { app, repo, cookie } = await adminApp()
+  const id = insertSourceRow(repo, { canonicalUrl: 'https://203.0.113.43/f.xml' })
+  insertPushRowV2(repo, id, { mode: 'rsscloud', state: 'pending', endpoint: 'http://cloud.example:5337/p' })
+  insertPushRowV2(repo, id, { mode: 'websub', state: 'active' })
+
+  const detail = await (await app.request(`/admin/sources/${id}`, { headers: { cookie } })).json()
+  expect(detail.push).toMatchObject({ mode: 'websub', state: 'active' })
   repo.close()
 })
 

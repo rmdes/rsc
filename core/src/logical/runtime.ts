@@ -8,6 +8,10 @@ import {
 } from './journal.ts'
 import { createScheduler } from './scheduler.ts'
 import type { LogicalScheduler } from './scheduler.ts'
+import { createLogicalPush } from './push.ts'
+import type { LogicalPush } from './push.ts'
+import type { Config } from '../config.ts'
+import type { LookupFn } from '../domain/push-guard.ts'
 import { drainReconciliation, drainReconciliationAsync } from './reconcile.ts'
 import { createVerificationRunner } from './verification.ts'
 import { projectItem } from './projector.ts'
@@ -60,6 +64,10 @@ export interface LogicalRuntime {
   scheduler: LogicalScheduler
   acquisition: AcquisitionEngine // wrapped: drains + hints after every committed acquisition
   streamSource: LogicalStreamSource
+  // The v2 inbound push lifecycle + its four callbacks (V4 §1.2-1.4). Exposed so
+  // server.ts routes the existing public callback paths at it; the scheduler drives
+  // the lifecycle half on its poll pass.
+  push: LogicalPush
   ready: Promise<void>
   order: string[]
   // The background drain — the ONLY path that runs verification's network I/O.
@@ -257,10 +265,16 @@ export function createLogicalRuntime(input: {
   db: DatabaseContext
   store: LogicalStore
   acquisition: AcquisitionEngine
-  config: { pollSeconds: number }
+  // The whole Config, not just the poll cadence: the push lifecycle built below
+  // reads RSC_PUSH_IN + RSC_PUBLIC_URL through pushInEffective.
+  config: Config
   now?: () => string
   notify?: (sequence: number) => void
   trace?: (phase: string) => void
+  // Push's outbound registration/renewal I/O. Production passes neither — default
+  // global fetch and real DNS, the same posture acquisition takes in server.ts.
+  fetchFn?: typeof fetch
+  lookupFn?: LookupFn
 }): LogicalRuntime {
   const { db, store, acquisition, config } = input
   const now = input.now ?? (() => new Date().toISOString())
@@ -322,7 +336,15 @@ export function createLogicalRuntime(input: {
     },
   }
 
-  const scheduler = createScheduler({ store, acquisition: wrapped, config, now, drainVerification })
+  // The v2 inbound push lifecycle (V4 §1.2-1.4), built HERE — the one composition
+  // root — over the WRAPPED engine, so a push-delivered acquisition drains
+  // reconciliation and hints the stream exactly as a poll does. Handing it to the
+  // scheduler is what makes registration, renewal and the purge run at all;
+  // test/logical-push-callbacks.test.ts drives a real runtime through a poll pass
+  // and asserts a lease row is written, so dropping this argument goes red.
+  const push = createLogicalPush({ db, store, config, acquisition: wrapped, fetchFn: input.fetchFn, lookupFn: input.lookupFn })
+
+  const scheduler = createScheduler({ store, acquisition: wrapped, config, now, drainVerification, push })
   trace('scheduler')
   trace('reconcile')
   trace('orphan')
@@ -342,6 +364,7 @@ export function createLogicalRuntime(input: {
     scheduler,
     acquisition: wrapped,
     streamSource,
+    push,
     ready,
     order,
     drainVerification,

@@ -6,6 +6,7 @@ import { createLogicalStore } from '../src/logical/store.ts'
 import { createLogicalPush, parsePushCapability } from '../src/logical/push.ts'
 import type { PushClaim, PushRowV2 } from '../src/logical/push.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
+import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import { loadConfig } from '../src/config.ts'
 import {
   PENDING_TTL_MS, RSSCLOUD_TTL_MS, WEBSUB_LEASE_SECONDS,
@@ -35,8 +36,11 @@ async function fresh(opts: { env?: Record<string, string>; lookupFn?: LookupFn; 
     calls.push({ url: String(url), body: new URLSearchParams(String(init?.body)), redirect: init?.redirect as string | undefined })
     return new Response('', { status: opts.status ?? 202 })
   })
+  // Task 2's suite covers the LIFECYCLE only; the callbacks (Task 3) are what use
+  // the engine, so an inert stub is the right dependency here.
+  const acquisition: AcquisitionEngine = { acquireSource: async () => ({ kind: 'unavailable', reason: 'unscheduled' }), inFlight: () => false }
   const push = createLogicalPush({
-    db, store, config: loadConfig(opts.env ?? ENV),
+    db, store, config: loadConfig(opts.env ?? ENV), acquisition,
     fetchFn: fetchFn as unknown as typeof fetch, lookupFn: opts.lookupFn ?? publicLookup,
   })
   return { raw, repo, db, store, push, calls, fetchFn }

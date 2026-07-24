@@ -13,6 +13,13 @@ import { createLogicalRuntime, compose, activateLogicalV2, markReconciliationReq
 import type { LogicalRuntime } from '../src/logical/runtime.ts'
 import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
+import { loadConfig } from '../src/config.ts'
+
+// createLogicalRuntime takes the WHOLE Config (V4 Task 3): it builds the v2 push
+// lifecycle, which reads RSC_PUSH_IN + RSC_PUBLIC_URL. No public URL here, so
+// pushInEffective is false and the lifecycle is inert in these suites.
+const TEST_CONFIG = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_POLL_SECONDS: '9999' })
+
 
 // The WHOLE-VERTICAL integration proof for logical v2 (spec §7.3-7.5). It exercises
 // the complete default-off boundary AND the enabled-v2 end-to-end flow across the
@@ -87,7 +94,7 @@ function seedJob(raw: Raw, input: { sourceId: string; deliveryKey: { kind: strin
 const ANON = { localAccountId: null, activeSourceIds: [] as string[] }
 const stubEngine: AcquisitionEngine = { acquireSource: async () => ({ kind: 'unavailable', reason: 'unscheduled' }), inFlight: () => false }
 const mkRuntime = (deps: Awaited<ReturnType<typeof fresh>>, acquisition: AcquisitionEngine = stubEngine, order?: string[]): LogicalRuntime =>
-  createLogicalRuntime({ db: deps.db, store: deps.store, acquisition, config: { pollSeconds: 9999 }, now: () => NOW, ...(order ? { trace: (p: string) => order.push(p) } : {}) })
+  createLogicalRuntime({ db: deps.db, store: deps.store, acquisition, config: TEST_CONFIG, now: () => NOW, ...(order ? { trace: (p: string) => order.push(p) } : {}) })
 
 // ============================================================================
 // Cross-model isolation — v2 DISABLED (§7.4): v2 tables inert, legacy byte-identical
@@ -188,7 +195,7 @@ test('a scheduled poll acquires an observation, reconciliation converges it, the
     inFlight: (id) => engine.inFlight(id),
     async acquireSource(id, reason, sig) { const r = await engine.acquireSource(id, reason, sig); if (!('kind' in r)) drainReconciliation({ store: deps.store, now: () => NOW }); return r },
   }
-  const sched = createScheduler({ store: deps.store, acquisition: wrapped, config: { pollSeconds: 60 }, now: () => NOW, drainVerification: undefined })
+  const sched = createScheduler({ store: deps.store, acquisition: wrapped, config: { pollSeconds: 60 }, now: () => NOW, drainVerification: undefined, push: undefined })
   const upsertsBefore = count(deps.raw, 'logical_journal_v2', "WHERE kind = 'upsert'")
 
   expect(await sched.pollDue(NOW)).toBe(1)

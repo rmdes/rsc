@@ -5,13 +5,19 @@ import type { Config } from '../config.ts'
 import type { PushProtocol } from '../domain/types.ts'
 import type { PushTarget } from '../domain/push-in.ts'
 import type { LookupFn } from '../domain/push-guard.ts'
+import type { AcquisitionEngine } from './acquisition.ts'
 import { checkCallbackUrl } from '../domain/push-guard.ts'
 import { FETCH_TIMEOUT_MS } from '../domain/ingest.ts'
 import { urlPort } from '../domain/feed.ts'
 import {
-  pushInEffective, PENDING_TTL_MS, WEBSUB_LEASE_SECONDS, WEBSUB_RENEW_HORIZON_MS,
+  pushInEffective, verifySignature, PENDING_TTL_MS, WEBSUB_LEASE_SECONDS, WEBSUB_RENEW_HORIZON_MS,
   RSSCLOUD_TTL_MS, RSSCLOUD_RENEW_HORIZON_MS, RENEW_RETRY_FLOOR_MS,
 } from '../domain/push-in.ts'
+
+// v1's H5 thin-ping floor (push-in.ts:75). The ONE value this module restates
+// instead of importing: it is module-private there, and push-in.ts stays
+// byte-identical until Task 11 relocates these helpers.
+const THIN_PING_FLOOR_MS = 30_000
 
 // The v2 inbound push lifecycle (V4 spec §1.1-1.3): v1's shape rebuilt over
 // sources instead of users. Two states only (pending | active), registration
@@ -37,14 +43,25 @@ export interface PushRowV2 {
   createdAt: string
 }
 
-// What the poll pass needs (scheduler.ts's dep). Task 3 widens the factory's
-// return with the four callback handlers; the scheduler never sees those.
+// What the poll pass needs (scheduler.ts's dep). The scheduler never sees the
+// callbacks below.
 export interface PushLifecycle {
   hasActivePush(sourceId: string, now: string): boolean
   latestClaim(sourceId: string): PushClaim | null
   maybeRegister(sourceId: string, claim: PushClaim | null): Promise<void>
   renewDue(): Promise<void>
   purgeExpired(now: string): void
+}
+
+// The lifecycle PLUS the four public callbacks (spec §1.4). The callback shapes are
+// v1's PushIn shapes verbatim, so api/app.ts's four routes need NO change — under
+// v2 the server composition simply supplies these instead of createPushIn's
+// (V2 §7.4: the v1 handlers are not routed).
+export interface LogicalPush extends PushLifecycle {
+  websubVerify(token: string, query: Record<string, string>): Promise<{ status: number; body: string }>
+  websubDeliver(token: string, body: string, signatureHeader: string | null): Promise<number>
+  rsscloudChallenge(url: string, challenge: string): Promise<{ status: number; body: string }>
+  rsscloudPing(url: string): Promise<number>
 }
 
 // Stored capability JSON is attacker-influenced (it came from a remote feed), so
@@ -67,11 +84,18 @@ export function createLogicalPush(deps: {
   db: DatabaseContext
   store: LogicalStore
   config: Config
+  // REQUIRED: a callback that cannot acquire is a callback that silently drops
+  // every delivery. The callbacks drive this engine — through the runtime's
+  // drain-wrapping composition — so a ping takes exactly the poll's path.
+  acquisition: AcquisitionEngine
   fetchFn?: typeof fetch
   lookupFn?: LookupFn
-}): PushLifecycle {
-  const { db, store, config } = deps
+}): LogicalPush {
+  const { db, store, config, acquisition } = deps
   const fetchFn = deps.fetchFn ?? fetch
+  // H5: in-memory per-topic floor — a ping storm costs the attacker requests and us
+  // nothing. ponytail: resets on restart, never pruned; a rate floor, not state.
+  const lastThinFetch = new Map<string, number>()
   // The hourly per-row renewal floor, in-memory exactly like v1 (push-in.ts:174-177):
   // a due row against a dead hub would otherwise re-POST every poll pass.
   // ponytail: resets on restart and is never pruned — bounded by row count, it is
@@ -217,6 +241,83 @@ export function createLogicalPush(deps: {
 
     purgeExpired(now: string): void {
       db.write((tx) => { store.purgeExpiredPushRows(tx, now) })
+    },
+
+    // --- the four public callbacks (spec §1.4) ----------------------------
+    // v1's handlers (push-in.ts:196-254) rebuilt over sources. Every hardening
+    // rule v1 earned is kept: silent 202 on a bad HMAC, a neutral 200 no-op for
+    // an unknown topic, the per-topic floor, and `denied` DELETES the row.
+
+    async websubVerify(token: string, query: Record<string, string>): Promise<{ status: number; body: string }> {
+      // State-agnostic: renewal re-verifications arrive while the row is active.
+      const row = store.findPushRow({ token, mode: 'websub' })
+      if (!row || query['hub.topic'] !== row.topic) return { status: 404, body: 'unknown subscription' }
+      if (query['hub.mode'] === 'denied') {
+        db.write((tx) => { store.deletePushRow(tx, row.id) })
+        return { status: 200, body: 'ok' }
+      }
+      if (query['hub.mode'] !== 'subscribe' || !query['hub.challenge']) return { status: 404, body: 'unknown subscription' }
+      const granted = Number(query['hub.lease_seconds'])
+      const leaseSeconds = Number.isInteger(granted) && granted > 0 ? granted : WEBSUB_LEASE_SECONDS
+      // A valid in-flight challenge completes even for a paused or blocked source —
+      // answering avoids hub retries and leaks no state. It acquires nothing, and
+      // renewDue's own eligibility filter still refuses to renew the lease.
+      write({ ...row, state: 'active', expiresAt: new Date(Date.now() + leaseSeconds * 1000).toISOString() })
+      // Upgrade complete: websub is live, so the rsscloud fallback row retires.
+      const cloudRow = store.findPushRow({ sourceId: row.sourceId, mode: 'rsscloud' })
+      if (cloudRow) db.write((tx) => { store.deletePushRow(tx, cloudRow.id) })
+      return { status: 200, body: query['hub.challenge'] }
+    },
+
+    async websubDeliver(token: string, body: string, signatureHeader: string | null): Promise<number> {
+      const row = store.findPushRow({ token, mode: 'websub' })
+      if (!row) return 404
+      try {
+        // H2: verification failures are silent — 202, discard, log. Never 4xx.
+        if (!row.secret || !verifySignature(body, row.secret, signatureHeader)) {
+          console.error(`push: fat ping discarded for ${row.topic}: bad or missing signature`)
+          return 202
+        }
+        // Paused or blocked (and unsubscribed-to-zero): authenticated, neutral 202,
+        // the body neither parsed nor stored.
+        if (!eligible(row.sourceId)) return 202
+        // An in-flight acquisition owns this source; the delivery is discarded and
+        // the next poll catches up (spec §1.4).
+        if (acquisition.inFlight(row.sourceId)) {
+          console.error(`push: fat ping discarded for ${row.topic}: an acquisition is already in flight`)
+          return 202
+        }
+        await acquisition.acquireSource(row.sourceId, { kind: 'push', document: body })
+      } catch (err) {
+        console.error(`push: fat ping ingest failed for ${row.topic}:`, err instanceof Error ? err.message : err)
+      }
+      return 202
+    },
+
+    async rsscloudChallenge(url: string, challenge: string): Promise<{ status: number; body: string }> {
+      const row = store.findPushRow({ mode: 'rsscloud', topic: url })
+      if (!row) return { status: 404, body: 'unknown' }
+      return { status: 200, body: `confirming ${challenge}` }
+    },
+
+    async rsscloudPing(url: string): Promise<number> {
+      try {
+        const row = store.findPushRow({ mode: 'rsscloud', topic: url }, { unexpiredAt: new Date().toISOString() })
+        if (!row) return 200 // unknown topic: 200 no-op — no subscription-list oracle
+        const last = lastThinFetch.get(url) ?? 0
+        if (Date.now() - last < THIN_PING_FLOOR_MS) return 200 // H5 floor
+        lastThinFetch.set(url, Date.now())
+        if (!eligible(row.sourceId)) return 200 // paused or blocked: 200 without fetching
+        if (acquisition.inFlight(row.sourceId)) return 200
+        // Fire-and-forget: response latency must not distinguish subscribed topics
+        // from unknown ones (the timing side of the no-oracle rule).
+        void acquisition.acquireSource(row.sourceId, { kind: 'push', document: null }).catch((err: unknown) => {
+          console.error(`push: thin ping ingest failed for ${url}:`, err instanceof Error ? err.message : err)
+        })
+      } catch (err) {
+        console.error(`push: thin ping ingest failed for ${url}:`, err instanceof Error ? err.message : err)
+      }
+      return 200
     },
   }
 }

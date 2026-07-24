@@ -51,7 +51,7 @@ if (config.sourceModelV2) {
     db,
     store: logicalStore,
     acquisition,
-    config: { pollSeconds: config.pollSeconds },
+    config,
     notify: (sequence) => bus.emitSequenceHint(sequence),
   })
   // The ONE pre-listen activation transaction completes BEFORE this process serves
@@ -103,15 +103,27 @@ const app = createApp({
           ...(config.rssCloud ? { rsscloud: (form: Record<string, string>, ip: string | null) => handleRssCloudRequest({ repo, config }, form, ip) } : {}),
         }
       : undefined,
-  // Inbound push is NOT installed or routed when v2 is on (spec §7.4).
-  pushInApi: workers.legacyPushIn && pushInEffective(config)
-    ? {
-        websubVerify: (token: string, query: Record<string, string>) => pushIn.handleWebSubVerification(token, query),
-        websubDeliver: (token: string, body: string, signature: string | null) => pushIn.handleFatPing(token, body, signature, { bus }),
-        rsscloudChallenge: (url: string, challenge: string) => pushIn.handleRssCloudChallenge(url, challenge),
-        rsscloudPing: (url: string) => pushIn.handleThinPing(url, { bus }),
-      }
-    : undefined,
+  // The four public callback ROUTES are the same paths in both models (V4 §1.4,
+  // Caddyfile exposure unchanged); only what they dispatch to changes. Under v2 the
+  // composition supplies the logical push lifecycle and the v1 handlers are NOT
+  // routed (spec §7.4); with the flag off this is byte-identically today's wiring.
+  pushInApi: !pushInEffective(config)
+    ? undefined
+    : runtime
+      ? {
+          websubVerify: (token: string, query: Record<string, string>) => runtime.push.websubVerify(token, query),
+          websubDeliver: (token: string, body: string, signature: string | null) => runtime.push.websubDeliver(token, body, signature),
+          rsscloudChallenge: (url: string, challenge: string) => runtime.push.rsscloudChallenge(url, challenge),
+          rsscloudPing: (url: string) => runtime.push.rsscloudPing(url),
+        }
+      : workers.legacyPushIn
+        ? {
+            websubVerify: (token: string, query: Record<string, string>) => pushIn.handleWebSubVerification(token, query),
+            websubDeliver: (token: string, body: string, signature: string | null) => pushIn.handleFatPing(token, body, signature, { bus }),
+            rsscloudChallenge: (url: string, challenge: string) => pushIn.handleRssCloudChallenge(url, challenge),
+            rsscloudPing: (url: string) => pushIn.handleThinPing(url, { bus }),
+          }
+        : undefined,
 })
 
 // The durable v2 SSE transport (spec §5.3). Mounted only when the runtime is live;

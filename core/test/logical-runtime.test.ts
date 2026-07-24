@@ -9,6 +9,13 @@ import {
 } from '../src/logical/runtime.ts'
 import type { LogicalRuntime } from '../src/logical/runtime.ts'
 import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
+import { loadConfig } from '../src/config.ts'
+
+// createLogicalRuntime takes the WHOLE Config (V4 Task 3): it builds the v2 push
+// lifecycle, which reads RSC_PUSH_IN + RSC_PUBLIC_URL. No public URL here, so
+// pushInEffective is false and the lifecycle is inert in these suites.
+const TEST_CONFIG = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_POLL_SECONDS: '9999' })
+
 
 const NOW = '2026-07-24T00:00:00.000Z'
 
@@ -32,7 +39,7 @@ const resetRows = (repo: { raw: import('better-sqlite3').Database }) =>
 function mkRuntime(deps: Awaited<ReturnType<typeof setup>>, order?: string[]): LogicalRuntime {
   return createLogicalRuntime({
     db: deps.db, store: deps.store, acquisition: deps.acquisition,
-    config: { pollSeconds: 9999 }, now: () => NOW,
+    config: TEST_CONFIG, now: () => NOW,
     ...(order ? { trace: (p: string) => order.push(p) } : {}),
   })
 }

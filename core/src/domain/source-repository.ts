@@ -135,7 +135,10 @@ export interface SourceRepository {
     attributionMode: AttributionMode
     category: AuditCategory
     note: string | null
-    actorKind: 'administrator'
+    // Widened with the audit vocabulary (V4 §6): the ops-token federation route
+    // (Task 9) ledgers as 'operator_token'. The SqliteRepository impl already
+    // accepts it — this declaration is what Task 9's route is typed against.
+    actorKind: 'administrator' | 'operator_token'
     now: string
   }): Promise<EstablishFederationResult>
   transition(input: {

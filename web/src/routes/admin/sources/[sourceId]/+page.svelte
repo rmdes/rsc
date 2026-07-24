@@ -101,6 +101,22 @@
 	{:else}
 		<p class="subnav">No acquisition runs yet.</p>
 	{/if}
+	{#if data.push}
+		<!-- Inbound push (V4 §1.5), beside the acquisition health above: delivery
+		     mechanism, lease health, expiry. No block at all without a lease — an
+		     absent lease is the ordinary case, not a row of em dashes. The callback
+		     token, secret and endpoint never leave core. -->
+		<dl class="status">
+			<div><dt>Push delivery</dt><dd>{data.push.mode === 'websub' ? 'WebSub' : 'rssCloud'}</dd></div>
+			<div>
+				<dt>Push lease</dt>
+				<dd><span class="badge-kind" class:on={data.push.state === 'active'}>{data.push.state}</span></dd>
+			</div>
+			{#if data.push.expiresAt}
+				<div><dt>Lease expires</dt><dd><time datetime={data.push.expiresAt}>{data.push.expiresAt}</time></dd></div>
+			{/if}
+		</dl>
+	{/if}
 	<a class="older" href="/admin/sources/{encodeURIComponent(data.sourceId)}/runs">Run history</a>
 </section>
 

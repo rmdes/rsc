@@ -36,23 +36,39 @@ interface SourceGovernance {
 	governance: 'allowed' | 'quarantined' | 'blocked'
 }
 
+// The inbound-push lease as the panel shows it (V4 spec §1.5): delivery mechanism,
+// lease health, expiry. Core's endpointFingerprint is deliberately NOT carried —
+// it is an admin-side correlation handle, not something the page renders.
+interface SourcePush {
+	mode: 'websub' | 'rsscloud'
+	state: 'pending' | 'active'
+	expiresAt: string | null
+}
+
 // Only the governance fields the status panel renders reach the page. Everything
 // else the V1 detail carries (provenance, retention, subscription/audit) is dropped.
-async function sourceGovernance(f: typeof fetch, id: string): Promise<SourceGovernance | null> {
+async function sourceGovernance(f: typeof fetch, id: string): Promise<{ source: SourceGovernance; push: SourcePush | null } | null> {
 	const res = await f(`${base()}/admin/sources/${encodeURIComponent(id)}`)
 	if (res.status === 404) return null
 	if (!res.ok) throw new Error(`source ${res.status}`)
-	const body = (await res.json()) as { source: SourceGovernance }
+	const body = (await res.json()) as { source: SourceGovernance; push?: Partial<SourcePush>; pushExpiresAt?: string | null }
 	const s = body.source
-	return { id: s.id, canonicalUrl: s.canonicalUrl, attributionMode: s.attributionMode, operation: s.operation, governance: s.governance }
+	// No lease ⇒ null, so the page's push block is one `{#if data.push}` away from
+	// not rendering at all (rather than a block full of em dashes).
+	const p = body.push
+	return {
+		source: { id: s.id, canonicalUrl: s.canonicalUrl, attributionMode: s.attributionMode, operation: s.operation, governance: s.governance },
+		push: p && p.mode && p.state ? { mode: p.mode, state: p.state, expiresAt: body.pushExpiresAt ?? null } : null
+	}
 }
 
 export const load: PageServerLoad = async ({ fetch, params, url, cookies }) => {
 	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
 	const cap = await getCapabilities(fetch)
 	if (!cap.sourceModelV2) throw error(404, 'Not found') // the source-model console is v2-only
-	const source = await sourceGovernance(f, params.sourceId)
-	if (!source) throw error(404, 'Not found')
+	const detail = await sourceGovernance(f, params.sourceId)
+	if (!detail) throw error(404, 'Not found')
+	const source = detail.source
 	const runs = await listSourceRuns(f, params.sourceId)
 	// V3: the source-wide conflict count + the item-review navigation rows (bounded
 	// state rows only — no evidence, no previews; that is the item-review page).
@@ -60,6 +76,8 @@ export const load: PageServerLoad = async ({ fetch, params, url, cookies }) => {
 	return {
 		sourceId: params.sourceId,
 		source,
+		// The inbound-push lease, or null when there is none (V4 §1.5).
+		push: detail.push,
 		// Latest run first (runs order by startedAt DESC). nonterminalRuns.count is
 		// spec §6.3, but Task 5 shipped no source-summary route — derive the count
 		// from this first page of runs (honest for the common case; a dedicated

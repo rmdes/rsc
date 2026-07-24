@@ -30,10 +30,15 @@ export interface SchedulerDeps {
   drainVerification: (() => Promise<void>) | undefined
   // The v2 inbound push lifecycle (V4 §1.3). It rides THIS pass too — registration
   // after each successful acquisition commit, then one renewal sweep and the
-  // expired-row purge at pass end — because V4 adds no third loop. Optional, unlike
-  // drainVerification: the runtime composition that supplies it lands in Task 3,
-  // and a scheduler with no push lifecycle simply polls at the base cadence.
-  push?: PushLifecycle
+  // expired-row purge at pass end — because V4 adds no third loop. REQUIRED and
+  // never optional, for drainVerification's reason: an optional one can be
+  // forgotten at the runtime call site and the whole push subsystem then silently
+  // never runs with a fully green suite. A caller that genuinely has none passes an
+  // explicit `undefined`. The BEHAVIOURAL guard is
+  // test/logical-push-callbacks.test.ts's composition test, which drives a real
+  // runtime through a poll pass and asserts a lease row is written — the type alone
+  // cannot stop `push: undefined` from being passed here.
+  push: PushLifecycle | undefined
 }
 
 // A source with a live push lease polls at a reduced cadence: the durable

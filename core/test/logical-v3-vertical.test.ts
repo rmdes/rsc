@@ -18,6 +18,13 @@ import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import type { ProjectionViewer, PublicPublisher, TimelineLens } from '../src/logical/types.ts'
 import type { CommandEnvelope, AuditCategory, User } from '../src/domain/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
+import { loadConfig } from '../src/config.ts'
+
+// createLogicalRuntime takes the WHOLE Config (V4 Task 3): it builds the v2 push
+// lifecycle, which reads RSC_PUSH_IN + RSC_PUBLIC_URL. No public URL here, so
+// pushInEffective is false and the lifecycle is inert in these suites.
+const TEST_CONFIG = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_POLL_SECONDS: '9999' })
+
 
 // The WHOLE-VERTICAL integration proof for logical v3 — moderation, events, and
 // verification (spec §10-§11). It exercises the three foundation-mandated
@@ -127,7 +134,7 @@ const stubEngine: AcquisitionEngine = { acquireSource: async () => ({ kind: 'una
 const mkRuntime = (deps: Deps, opts: { now?: () => string; notify?: (sequence: number) => void; acquisition?: AcquisitionEngine } = {}): LogicalRuntime =>
   createLogicalRuntime({
     db: deps.db, store: deps.store, acquisition: opts.acquisition ?? stubEngine,
-    config: { pollSeconds: 9999 }, now: opts.now ?? (() => NOW), notify: opts.notify,
+    config: TEST_CONFIG, now: opts.now ?? (() => NOW), notify: opts.notify,
   })
 
 // A real-clock stand-in: every call advances one ms, exactly as production's

@@ -38,11 +38,15 @@ const runProjection = (runId: string, status: 'terminal' | 'processing', outcome
 	reconciliation: { reconciled: 1, conflicted: 0, pending: 0, processing: 0, retrying: 0, failed: 0, failedByCategory: { operationalExhausted: 0, invariantOrDataFailure: 0 } }
 })
 
-const sourceDetail = (governance = 'quarantined') => ({
+const NO_PUSH = { mode: null, state: null, endpointFingerprint: null }
+
+const sourceDetail = (governance = 'quarantined', push: Record<string, unknown> = NO_PUSH, pushExpiresAt: string | null = null) => ({
 	source: { id: 's1', canonicalUrl: 'https://feed.test/s1', attributionMode: 'single_publisher', operation: 'enabled', governance, provenance: 'admin_federation', adminRetained: false },
 	federationStatus: 'approved',
 	subscriptionCounts: { active: 1, pending: 0, pendingReview: 0 },
-	latestAudit: null
+	latestAudit: null,
+	push,
+	pushExpiresAt
 })
 
 // GET /admin/sources/:id/items — conflictCount is a TOP-LEVEL source-wide count on
@@ -115,6 +119,32 @@ test('a 404 source-detail (unknown source) is hidden as 404', async () => {
 		return new Response(JSON.stringify({ error: 'unknown source' }), { status: 404 })
 	})
 	await expect(loadDetail(fetch)).rejects.toMatchObject({ status: 404 })
+})
+
+// --- V4: the inbound-push panel beside the acquisition health block -----------
+// The page renders the block from `data.push` alone, so "no lease ⇒ no block" is a
+// loader contract: no lease loads `push: null` and the template's {#if data.push}
+// renders nothing. The token/secret never leave core, so nothing to redact here.
+
+const withPush = (push: Record<string, unknown>, expiresAt: string | null) =>
+	vi.fn(async (url: string | URL) => {
+		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope(0)), { status: 200 })
+		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify(sourceDetail('quarantined', push, expiresAt)), { status: 200 })
+	})
+
+test('a live lease reaches the page as {mode, state, expiresAt} — mechanism and health, no endpoint', async () => {
+	const result = await loadDetail(withPush({ mode: 'websub', state: 'active', endpointFingerprint: 'ab12cd34ef567890' }, '2027-01-01T00:00:00.000Z'))
+	expect(result.push).toEqual({ mode: 'websub', state: 'active', expiresAt: '2027-01-01T00:00:00.000Z' })
+	// the fingerprint is core-side plumbing; the panel shows mechanism/health only
+	expect(JSON.stringify(result.push)).not.toContain('ab12cd34ef567890')
+})
+
+test('no lease ⇒ push is null, so the panel renders no push block at all', async () => {
+	expect((await loadDetail(withPush(NO_PUSH, null))).push).toBeNull()
+	// a mode-less row (never expected, but the DTO allows it) is treated as no lease
+	expect((await loadDetail(withPush({ mode: null, state: 'pending', endpointFingerprint: null }, '2027-01-01T00:00:00.000Z'))).push).toBeNull()
 })
 
 // --- V3: conflictCount + items navigation + the purge form (blocked only) -----

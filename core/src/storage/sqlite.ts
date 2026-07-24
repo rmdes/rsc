@@ -1,6 +1,6 @@
 import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
@@ -108,10 +108,11 @@ function sourceDisplayName(canonicalUrl: string): string {
   }
 }
 
-// ponytail: V4 Task 1 is schema + types only, so the v2 push projection is the
-// constant it would compute anyway — push_subscriptions_v2 stays empty until
-// Task 2 registers the first lease. Task 3 replaces this with the real read.
+// The all-null projection for a source with no lease. The field is always present
+// — an absent lease is nulls, never a missing key.
 const NO_PUSH: PushSummary = { mode: null, state: null, endpointFingerprint: null }
+
+interface PushRowV2Read { mode: PushProtocol; state: 'pending' | 'active'; endpoint: string; expires_at: string }
 
 // actor_kind/category are cast to the TS unions the row is known to carry.
 // Both are now the full SQL vocabulary (V4 re-added 'operator_token' and
@@ -720,7 +721,7 @@ export class SqliteRepository implements Repository, SourceRepository {
     const { page, nextCursor } = this.splitPage(rows, lim)
     const items: SourceSummary[] = page.map((r) => {
       const source = rowToRemoteSourceV2(r)
-      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id), push: NO_PUSH }
+      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id), push: this.pushFor(source.id).push }
     })
     return { items, nextCursor }
   }
@@ -736,8 +737,26 @@ export class SqliteRepository implements Repository, SourceRepository {
       federationStatus: this.federationStatusFor(id),
       subscriptionCounts: this.subscriptionCountsFor(id),
       latestAudit: auditRow ? rowToSourceAuditV2(auditRow) : null,
-      push: NO_PUSH,
-      pushExpiresAt: null,
+      ...this.pushFor(id),
+    }
+  }
+
+  // The administrative push projection (V4 spec §1.5). A source holds at most one
+  // row per mode, so the ONE lease the admin sees is chosen deterministically: a
+  // live lease over a pending one, then websub over its rsscloud fallback. The
+  // endpoint is NEVER shipped — only a stable non-secret digest of it — and the
+  // callback token and secret are not read at all, so they cannot reach any body.
+  // ponytail: one small indexed lookup per listed source (the page is clamped to
+  // ≤50); fold into the list query only if a page read ever shows up in a profile.
+  private pushFor(sourceId: string): { push: PushSummary; pushExpiresAt: string | null } {
+    const row = this.raw.prepare(
+      `SELECT mode, state, endpoint, expires_at FROM push_subscriptions_v2 WHERE source_id = ?
+       ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, CASE mode WHEN 'websub' THEN 0 ELSE 1 END LIMIT 1`,
+    ).get(sourceId) as PushRowV2Read | undefined
+    if (!row) return { push: NO_PUSH, pushExpiresAt: null }
+    return {
+      push: { mode: row.mode, state: row.state, endpointFingerprint: createHash('sha256').update(row.endpoint).digest('hex').slice(0, 16) },
+      pushExpiresAt: row.expires_at,
     }
   }
 

@@ -40,7 +40,7 @@ export type LogicalItemDto = {
 	enclosures: EnclosureDto[]
 	publishedAt: string
 	updatedAt: string | null
-	updatedAtProvenance: 'explicit' | 'arrival' | null
+	updatedAtProvenance: 'explicit' | 'arrival' | 'legacy_unknown' | null
 	directReplyCount: number
 	conversationReplyCount: number
 	classification: { personal: boolean; federated: boolean }
@@ -80,7 +80,7 @@ export type LogicalHistoryEntry = {
 	permalink: string | null
 	enclosures: EnclosureDto[]
 	updatedAt: string | null
-	updatedAtProvenance: 'explicit' | 'arrival' | null
+	updatedAtProvenance: 'explicit' | 'arrival' | 'legacy_unknown' | null
 	current: boolean
 }
 export type LogicalHistoryEnvelope = { model: 'logical-v2'; logicalItemId: string; origin: 'local' | 'remote'; entries: LogicalHistoryEntry[]; currentSequence: number; journalCursor: string }

@@ -58,7 +58,7 @@ test('one pass polls every schedulable source once, in stable sourceId order', a
   await seedSubscribed(raw, repo, 'a')
   await seedSubscribed(raw, repo, 'b')
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   const polled = await sched.pollDue(NOW)
   expect(polled).toBe(3)
@@ -70,7 +70,7 @@ test('skip-if-recent: a source polled within RSC_POLL_SECONDS is skipped next pa
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1)
   // 30s later, still inside the 60s interval → skip
@@ -86,7 +86,7 @@ test('a source with an in-flight acquisition is refused a second one in the same
   await seedSubscribed(raw, repo, 's1')
   await seedSubscribed(raw, repo, 's2')
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order, inFlight: new Set(['s1']) }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order, inFlight: new Set(['s1']) }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1) // s1 in flight, only s2 polled
   expect(order).toEqual(['s2'])
@@ -99,7 +99,7 @@ test('paused and blocked sources are never scheduled', async () => {
   await seedSubscribed(raw, repo, 'paused', { operation: 'paused' })
   await seedSubscribed(raw, repo, 'blocked', { governance: 'blocked' })
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1)
   expect(order).toEqual(['ok'])
@@ -110,7 +110,7 @@ test('a source with no active subscription and no federation is not scheduled', 
   const { raw, store } = await fresh()
   seedSource(raw, 'lonely') // exists, enabled+allowed, but no subscriber
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(0)
   expect(order).toEqual([])
@@ -121,7 +121,7 @@ test('consecutive failures count up on operational failure and reset on success'
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
   let outcome: AdminFetchProjection['outcome'] = 'operational_failure'
-  const sched = createScheduler({ store, acquisition: stubEngine({ outcomeFor: () => outcome }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ outcomeFor: () => outcome }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   await sched.pollDue(NOW)
   await sched.pollDue(at(61))
@@ -142,7 +142,7 @@ test('a later pass may start a new run after the earlier run is no longer in fli
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined })
 
   await sched.pollDue(NOW)
   await sched.pollDue(at(61)) // engine reports not in flight (stub) → a second run starts
@@ -163,7 +163,7 @@ test('the poll tick runs the background verification drain', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
   let drains = 0
-  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ } })
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ }, push: undefined })
   sched.start()
   await turn()
   expect(drains).toBe(1)
@@ -174,7 +174,7 @@ test('the poll tick runs the background verification drain', async () => {
 test('the tick drains verification even when the poll pass polls nothing', async () => {
   const { raw, store } = await fresh() // no schedulable source at all
   let drains = 0
-  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ } })
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ }, push: undefined })
   sched.start()
   await turn()
   expect(drains).toBe(1) // the drain is not conditional on there being work to poll
@@ -186,7 +186,7 @@ test('stop() halts the background drain too — a tick already in flight starts 
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
   let drains = 0
-  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ } })
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ }, push: undefined })
   sched.start() // the tick is now suspended inside the poll pass
   sched.stop()
   await turn()
@@ -207,7 +207,7 @@ test('a throwing background drain is contained by the tick and never takes the p
   const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args[0]) })
   const sched = createScheduler({
     store, acquisition: stubEngine(), config: CONFIG, now: () => NOW,
-    drainVerification: async () => { throw new Error('verification exploded') },
+    drainVerification: async () => { throw new Error('verification exploded') }, push: undefined,
   })
   sched.start()
   await turn()
@@ -297,6 +297,7 @@ test('with push ineffective the pass writes no push row and makes no request', a
   const fetchFn = vi.fn(async () => new Response('', { status: 202 }))
   const push = createLogicalPush({
     db, store, config: loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test', RSC_PUSH_IN: 'off' }),
+    acquisition: stubEngine(),
     fetchFn: fetchFn as unknown as typeof fetch, lookupFn: async () => [{ address: '93.184.216.34' }],
   })
   const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push })
@@ -311,7 +312,7 @@ test('start/stop/wake are present and stop halts the loop', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, now: () => NOW, drainVerification: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, now: () => NOW, drainVerification: undefined, push: undefined })
   expect(typeof sched.start).toBe('function')
   expect(typeof sched.stop).toBe('function')
   expect(typeof sched.wake).toBe('function')
