@@ -924,3 +924,36 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   uniformity. Guard: the convergence test in
   `core/test/migration-convert.test.ts`. Status: backlog, blocked on the §2.4
   fix being specced.
+
+## V4 migration follow-ups (Task 7 review, 2026-07-24)
+
+- **Push endpoint SSRF — registration-time DNS only, no fetch-time
+  re-check.** `convert.ts`'s `publicEndpoint` (and v1's own registration gate,
+  `push-in.ts:114`) resolve DNS once, at registration/conversion time; nothing
+  downstream re-resolves before a POST. `renewDue` (`core/src/logical/push.ts:228,230`)
+  sends `sendWebSubSubscribe`/`sendRssCloudRegister` straight to the stored
+  `row.endpoint` with zero revalidation. **Consequence:** a legacy endpoint
+  whose hostname later re-resolves to a private address is converted clean
+  and then blind-POSTed by the renewal sweep. **Not a regression:** identical
+  to v1 behavior — v1's own renewal sweep never re-resolved either
+  (`push-guard.ts:54-55`). **Fix (if ever picked up):** an async DNS
+  re-check before each `renewDue` POST, reusing `checkFetchHop`'s hop-guard
+  shape — live-path work (`push.ts`), not migration work. Status: backlog,
+  accepted residual, no regression.
+
+- **Duplication collapse: `publicEndpoint` mirrors `checkCallbackUrl` line-for-line
+  (fix, not a tidy-up).** `convert.ts:77-84`'s synchronous prefix
+  (URL parse, http(s)-only, reject `localhost`/`*.localhost`, reject an
+  IP-literal private host) duplicates `checkCallbackUrl`'s own synchronous
+  opening (`push-guard.ts:57-69`) verbatim. Correct collapse: extract those
+  lines into an **exported synchronous predicate in `push-guard.ts`** that
+  `checkCallbackUrl` itself calls, then have both `convert.ts` and
+  `verification.ts` adopt it in place of their private copies — which also
+  closes a latent false-reject at `verification.ts:42` (its own hand-rolled
+  copy diverges slightly from `checkCallbackUrl`'s). **Not the same move:**
+  exporting `normalizeVerificationUrl` instead would be a BEHAVIOR CHANGE,
+  not a de-duplication — it returns a string, not a boolean, rejects
+  credentialed URLs, and calls `isPrivateIp` unguarded by `isIP`, which would
+  false-reject the `fdhub.example` case a test already pins (domain names
+  starting with `fd`/`fc`/`fe8` are not IPv6 private prefixes). Home: Task 11.
+  Status: backlog.

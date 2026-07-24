@@ -631,6 +631,27 @@ composition).
 > the two lines, so the invariant now holds uniformly for all twelve kinds
 > and is asserted as such (`lines starting with "<kind>: " === counts[kind]`,
 > for every kind).
+>
+> **Correction 2026-07-24 (Task 7 review) — the `verification.ts` precedent
+> above holds for the REASON, not the SAFETY NET.** The prior correction
+> called `checkCallbackUrl`'s synchronous prefix "the same narrowing, for the
+> same reason" as `verification.ts`'s `normalizeVerificationUrl`. The reason
+> (a write-transaction gate cannot do DNS) is genuinely shared; the
+> equivalence stops there. `normalizeVerificationUrl`'s narrowing is
+> BACKSTOPPED: its own comment (`verification.ts:32-35`) names the
+> authoritative guard — `checkFetchHop` re-resolves DNS on the initial URL
+> and every redirect hop inside `fetchBounded`, so a stored verification URL
+> is never trusted downstream. The push endpoint has NO equivalent backstop:
+> `renewDue` (`push.ts:228`, `:230`) POSTs straight to the stored
+> `row.endpoint` with zero revalidation, ever. The residual this leaves — a
+> converted row whose endpoint later resolves to a private address is
+> blind-POSTed by `renewDue` — is real, but not a regression: it is exactly
+> the "host does not resolve" / "any resolved address is private" pair
+> `checkCallbackUrl` would also catch (`push-guard.ts:70-77`), and v1's own
+> renewal sweep POSTed to the same drifted rows without re-resolving either.
+> Ledgered in `docs/superpowers/ideas.md` rather than fixed: an async
+> endpoint pre-pass in the pre-listen activation path is new machinery V4's
+> preservation charter does not ask for.
 
 ### Task 8: Cutover — activation extension, both tripwires, reserved-handle redirect
 

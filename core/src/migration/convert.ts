@@ -64,14 +64,25 @@ interface LegacyPush {
 // plan's "checkCallbackUrl on the endpoint": that function is ASYNC because it
 // resolves DNS, and runConversion is synchronous, transaction-bound and
 // network-free by contract. This is therefore checkCallbackUrl's synchronous
-// prefix (push-guard.ts:56-69) — for exactly the reason verification.ts's
-// normalizeVerificationUrl is one: a gate that runs inside a write transaction
-// cannot do DNS. See the dated plan-correction note.
+// prefix (push-guard.ts:56-69) — for the SAME REASON verification.ts's
+// normalizeVerificationUrl is narrowed (a gate running inside a write
+// transaction cannot do DNS), but NOT with the same SAFETY NET.
+// normalizeVerificationUrl's narrowing is BACKSTOPPED downstream: its own
+// comment (verification.ts:32-35) names checkFetchHop as the authoritative
+// guard, re-resolving DNS on the initial URL and every redirect hop inside
+// fetchBounded, so a stored verification URL is never trusted. The push
+// endpoint has NO equivalent backstop — renewDue (push.ts:228, :230) POSTs
+// straight to the stored row.endpoint with zero revalidation, ever. See the
+// dated plan-correction note.
 //
 // The DNS half is deferred, not lost: every legacy row passed the FULL gate at
-// v1 registration time (push-in.ts:114), and re-resolution drift after that
-// point is already the accepted, ledgered rebinding residual
-// (push-guard.ts:54-55) — v1's own renewal sweep does not re-resolve either.
+// v1 registration time (push-in.ts:114). The residual this leaves — a
+// converted row whose endpoint later resolves to a private address is
+// blind-POSTed by renewDue — is real, but not a regression: it is exactly the
+// "host does not resolve" / "any resolved address is private" pair
+// checkCallbackUrl would also catch (push-guard.ts:70-77), and v1's own
+// renewal sweep POSTed to the same drifted rows without re-resolving either
+// (push-guard.ts:54-55). Ledgered in docs/superpowers/ideas.md.
 // isIP guards isPrivateIp exactly as checkCallbackUrl does, so a hostname that
 // merely starts with fc/fd/fe8 is not mistaken for an IPv6 private prefix.
 function publicEndpoint(raw: string): boolean {
@@ -335,9 +346,9 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
       counts[finding]++
       log(`${finding}: ${p.mode} lease for ${p.user_id} (${p.topic}) dropped — ${why}; the poll pass re-registers if the source still advertises the capability`)
     }
+    if (!converted.has(p.user_id)) { drop('push_invalid', 'its user is not a converted remote source'); continue }
     // Expiry first: it is the dominant and most benign explanation, and a row
     // that is both lapsed and unusable must be counted exactly once.
-    if (!converted.has(p.user_id)) { drop('push_invalid', 'its user is not a converted remote source'); continue }
     if (p.expires_at <= now) { drop('push_expired', `the lease expired at ${p.expires_at}`); continue }
     if (p.mode !== 'websub' && p.mode !== 'rsscloud') { drop('push_invalid', `unknown protocol ${JSON.stringify(p.mode)}`); continue }
     if (p.state !== 'pending' && p.state !== 'active') { drop('push_invalid', `legacy state ${JSON.stringify(p.state)} has no live v2 equivalent`); continue }
