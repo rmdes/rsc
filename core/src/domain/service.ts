@@ -98,6 +98,18 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     getTimeline(limit = 100, before?: TimelineCursor, filter?: TimelineFilter) {
       return repo.getTimeline(limit, before, filter)
     },
+    // The reply-target resolver: under v2 a reply may target a remote item
+    // that exists ONLY in logical_items_v2 (posts holds local content only),
+    // so the v1 lookup alone would 404 every reply to an RSS/instance item.
+    // The returned minimal {id} is safe: createLocalPostAs's v2 branch reads
+    // ONLY replyTo.id, and this fallback is reachable ONLY when v2 is on
+    // (the flag-off path still finds every reply target in posts).
+    async resolveReplyTarget(id: string): Promise<Post | null> {
+      const post = await repo.getPost(id)
+      if (post) return post
+      if (logical && logical.replyTargetVisible(id)) return { id } as Post
+      return null
+    },
     getPost(id: string) {
       return repo.getPost(id)
     },

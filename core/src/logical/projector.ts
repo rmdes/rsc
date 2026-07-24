@@ -384,6 +384,11 @@ function remoteVisible(tx: ReadTx, itemId: string): boolean {
 
 // Whether a direct/descendant node counts as ordinary-visible (spec §3.4: retained
 // unavailable evidence and placeholders never count).
+// Exported as the reply-target gate: a LOCAL reply may target exactly what
+// ordinary reads can show — a local post or an ordinary-visible remote item.
+export function itemOrdinaryVisible(tx: ReadTx, id: string): boolean {
+  return nodeVisible(tx, id)
+}
 function nodeVisible(tx: ReadTx, id: string): boolean {
   const post = tx.prepare(`SELECT 1 FROM posts WHERE id = ? AND source = 'local'`).get(id)
   if (post) return true

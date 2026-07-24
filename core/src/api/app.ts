@@ -203,7 +203,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (inReplyTo !== undefined && !isString(inReplyTo, 1, 64)) return c.json({ error: 'inReplyTo invalid' }, 400)
     let replyTarget
     if (typeof inReplyTo === 'string') {
-      replyTarget = await service.getPost(inReplyTo)
+      // Under v2 the target may be a remote logical item with no posts row —
+      // resolveReplyTarget accepts exactly what ordinary reads can show.
+      replyTarget = await service.resolveReplyTarget(inReplyTo)
       if (!replyTarget) return c.json({ error: 'unknown post' }, 404)
     }
     const me = c.get('coreUser')

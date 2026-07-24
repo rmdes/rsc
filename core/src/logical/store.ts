@@ -17,7 +17,7 @@ import { claimReconciliation, reconcileClaim, recordReconciliationFailure, defer
 import { scheduleVerification, resolveVerificationBatch } from './verification.ts'
 import type { ResolveVerificationInput } from './types.ts'
 import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
-import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher, rankAttribution } from './projector.ts'
+import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher, rankAttribution, itemOrdinaryVisible } from './projector.ts'
 import type { EvidenceLevel } from './projector.ts'
 import type { ProjectionViewer, TimelineQuery, LogicalTimelineEnvelope, LogicalHistoryEnvelope, LogicalThreadEnvelope, PublicLocalAccount, PublicPublisher } from './types.ts'
 import type { AdminItemDetail, AdminDeliveryRow, AdminVersionRow, AdminClaimRow, AdminConflictRow, AdminSourceItemRow, TombstoneView } from './types.ts'
@@ -357,6 +357,13 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     createLocalPost(input: { author: User; content: string; replyToId: string | null; now: string }): LogicalItemDto {
       return db.write((tx) => createLocalPost({ tx, ...input }))
+    },
+    // The reply-target gate: true iff the id is a local post or an
+    // ordinary-visible remote logical item — exactly what a reader can see,
+    // so exactly what a reply may target (the v1 posts lookup alone rejects
+    // every remote item under v2).
+    replyTargetVisible(id: string): boolean {
+      return db.read((tx) => itemOrdinaryVisible(tx, id))
     },
     editLocalPost(input: { postId: string; authorId: string; content: string; now: string }): LogicalItemDto {
       return db.write((tx) => editLocalPost({ tx, ...input }))
