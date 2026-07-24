@@ -794,7 +794,7 @@ function seedPush(raw: Raw, over: Record<string, string | null> = {}): Record<st
   raw.prepare(`INSERT INTO push_subscriptions (${PUSH_COLS}) VALUES (${PUSH_VALS})`).run(row)
   return row
 }
-const PRESERVED = ['mode', 'endpoint', 'topic', 'callback_token', 'secret', 'state', 'expires_at', 'created_at']
+const PRESERVED = ['id', 'mode', 'endpoint', 'topic', 'callback_token', 'secret', 'state', 'expires_at', 'created_at']
 const pushV2 = (raw: Raw, sourceId = 'u1') => one(raw, `SELECT * FROM push_subscriptions_v2 WHERE source_id = ?`, sourceId)
 const kindLines = (kind: string): string[] => lines.filter((l) => l.startsWith(`${kind}: `))
 
