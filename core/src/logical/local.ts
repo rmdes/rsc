@@ -3,7 +3,7 @@ import type { WriteTx } from './database.ts'
 import type { LogicalItemDto } from './types.ts'
 import type { User } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
-import { resolveInitialParent, wouldCycle, sweepStructuralTombstones } from './threading.ts'
+import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
 
 export { resolveInitialParent }
 
@@ -74,7 +74,11 @@ function materializeLocalItem(
      VALUES (?, 'local', ?, ?, ?, NULL, NULL, ?)`,
   ).run(input.id, input.timelineSortAt, parentState, input.parentLogicalItemId, input.timelineSortAt)
   tx.prepare(`INSERT OR IGNORE INTO logical_local_origins_v2 (logical_item_id, post_id) VALUES (?, ?)`).run(input.id, input.id)
-  tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('permalink', ?, ?)`).run(input.permalink, input.id)
+  const claimed = tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('permalink', ?, ?)`).run(input.permalink, input.id).changes > 0
+  // A newly-materialized local permalink is a new resolvable alias: any remote
+  // reply already sitting at parent_state 'missing' on this URL adopts via the
+  // orphan worker (spec §4.2) — same producer wiring as reconcile's claims.
+  if (claimed) scheduleOrphanWork(tx, { aliasKind: 'permalink', aliasKey: input.permalink, candidateHighWater: input.timelineSortAt, createdAt: input.timelineSortAt })
 }
 
 // Materialize a local post's bridge row on demand (spec §2.6), reusing the same

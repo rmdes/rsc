@@ -3,7 +3,7 @@ import type { WriteTx } from './database.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput, NormalizedReplyReference } from './types.ts'
 import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
 import { appendJournal } from './journal.ts'
-import { resolveInitialParent } from './threading.ts'
+import { resolveInitialParent, scheduleOrphanWork } from './threading.ts'
 import { materializeLocalPost } from './local.ts'
 import { scheduleVerification } from './verification.ts'
 import {
@@ -184,8 +184,14 @@ function identityOwner(tx: WriteTx, kind: string, key: string): string | null {
   return r ? r.logical_item_id : null
 }
 
-function claimIdentity(tx: WriteTx, kind: string, key: string, itemId: string): void {
-  tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES (?, ?, ?)`).run(kind, key, itemId)
+function claimIdentity(tx: WriteTx, kind: string, key: string, itemId: string, now?: string): void {
+  const inserted = tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES (?, ?, ?)`).run(kind, key, itemId).changes > 0
+  // A NEW resolvable alias (permalink or scoped opaque — never the delivery
+  // bookkeeping kind) schedules durable orphan work in the SAME transaction
+  // (spec §4.2): replies routinely reconcile before their parents in
+  // newest-first feeds, and without this producer the adoption worker never
+  // runs and every such reply stays 'missing' forever.
+  if (inserted && now !== undefined && kind !== 'delivery') scheduleOrphanWork(tx, { aliasKind: kind === 'permalink' ? 'permalink' : 'scoped_opaque', aliasKey: key, candidateHighWater: now, createdAt: now })
 }
 
 function recordConflict(tx: WriteTx, itemId: string | null, versionId: string, kind: string, evidence: unknown, now: string): void {
@@ -309,11 +315,11 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
       claimIdentity(tx, 'delivery', v.delivery_id, targetId)
       // claim every UNCONTESTED valid identity key atomically (§2.5)
       if (permalinkKey) {
-        if (!byPermalink || byPermalink === targetId) claimIdentity(tx, 'permalink', permalinkKey, targetId)
+        if (!byPermalink || byPermalink === targetId) claimIdentity(tx, 'permalink', permalinkKey, targetId, now)
         else recordConflict(tx, targetId, v.version_id, 'contested_permalink', { permalink: permalinkKey, owner: byPermalink }, now)
       }
       if (opaqueGuid) {
-        if (!byOpaque || byOpaque === targetId) claimIdentity(tx, opaqueKind, opaqueGuid, targetId)
+        if (!byOpaque || byOpaque === targetId) claimIdentity(tx, opaqueKind, opaqueGuid, targetId, now)
         else recordConflict(tx, targetId, v.version_id, 'contested_opaque', { opaque: opaqueGuid, owner: byOpaque }, now)
       }
     }

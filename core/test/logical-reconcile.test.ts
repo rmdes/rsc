@@ -397,3 +397,31 @@ test('an aggregate item WITH <source> still names its publisher from the attribu
   const name = raw.prepare(`SELECT normalized_name FROM publisher_names_v2`).get() as { normalized_name: string | null }
   expect(name.normalized_name).toBe('Alice')
 })
+
+// ---- orphan adoption is WIRED: a reply arriving before its parent attaches ---
+
+test('a reply reconciled BEFORE its parent attaches once the parent lands', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://chat.test/f')
+  const RSSNS = (items: string): string =>
+    `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Chat</title>${items}</channel></rss>`
+  const reply = `<item><guid isPermaLink="true">https://chat.test/?id=2</guid><title>t</title><description>re</description><source:inReplyTo>https://chat.test/?id=1</source:inReplyTo></item>`
+  const parent = `<item><guid isPermaLink="true">https://chat.test/?id=1</guid><title>t</title><description>root</description></item>`
+
+  await acquire(db, raw, 's1', 'https://chat.test/f', RSSNS(reply))
+  drain(store)
+  const itemId = (raw.prepare(`SELECT logical_item_id id FROM logical_identity_keys_v2 WHERE kind='permalink' AND key='https://chat.test/?id=2'`).get() as { id: string }).id
+  expect((raw.prepare(`SELECT parent_state s FROM logical_items_v2 WHERE id = ?`).get(itemId) as { s: string }).s).toBe('missing')
+
+  await acquire(db, raw, 's1', 'https://chat.test/f', RSSNS(parent + reply), LATER)
+  drain(store, LATER)
+  for (;;) {
+    const claim = store.claimOrphanWork(LATER)
+    if (!claim) break
+    let r
+    do { r = store.adoptOrphans({ claim, now: LATER, limit: 50 }) } while (r.remaining)
+  }
+  const st = raw.prepare(`SELECT parent_state s, parent_logical_item_id p FROM logical_items_v2 WHERE id = ?`).get(itemId) as { s: string; p: string | null }
+  expect(st.s).toBe('resolved')
+  expect(st.p).not.toBeNull()
+})
