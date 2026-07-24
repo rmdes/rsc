@@ -26,6 +26,13 @@ test('compareFirstArrival orders by committedAt, then runId, then wireOrdinal, t
 test('selectDisplayDelivery takes the strongest evidence level that has an eligible delivery', () => {
   // V3 supersession (spec §4.3): verified_origin is prepended as the new strongest
   // rung, so a later-arriving verified delivery wins over both bound and aggregate.
+  // PURE COMPARATOR TEST — the `verified_origin` DeliveryCandidate below is
+  // hand-built and the integration wiring CANNOT produce one today: applySelectionHints
+  // derives a delivery's level from evidenceLevelFor(attribution_mode), which returns
+  // only aggregate_assertion/bound_single_publisher, and the verified origin source is
+  // created single_publisher. So verified_origin currently reaches DISPLAY selection
+  // never — only AUTHOR selection (publisher_claims_v2 carries the level directly).
+  // Read this as the comparator's contract, not as end-to-end behavior.
   const cands: DeliveryCandidate[] = [
     { deliveryId: 'd_agg', level: 'aggregate_assertion', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
     { deliveryId: 'd_bound', level: 'bound_single_publisher', eligible: true, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
