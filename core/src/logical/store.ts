@@ -227,7 +227,10 @@ function adminItemState(tx: ReadTx, row: { id: string; hidden_at: string | null;
 }
 
 // Derived thread root: walk the parent chain (bounded), never stored authority.
-function adminDeriveRoot(tx: ReadTx, startId: string): string {
+// ponytail: LOCKSTEP with local.ts's and runtime.ts's deriveRoot — see the note
+// in local.ts. Exported only for the behavioural canary in
+// test/logical-lockstep.test.ts. Change one copy, change all three.
+export function adminDeriveRoot(tx: ReadTx, startId: string): string {
   const q = tx.prepare(`SELECT parent_logical_item_id AS p FROM logical_items_v2 WHERE id = ?`)
   let root = startId
   let cur: string | null = startId

@@ -72,7 +72,10 @@ const ORPHAN_BATCH = 100
 
 // The derived root of the chain ending at `id` (inclusive) — roots are derived,
 // never stored authority (spec §4.1).
-function deriveRoot(tx: ReadTx, id: string): string {
+// ponytail: LOCKSTEP with local.ts's deriveRoot and store.ts's adminDeriveRoot
+// — see the note in local.ts. Exported only for the behavioural canary in
+// test/logical-lockstep.test.ts. Change one copy, change all three.
+export function deriveRoot(tx: ReadTx, id: string): string {
   const parentOf = tx.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`)
   let root = id
   let cur: string | null = id

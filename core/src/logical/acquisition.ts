@@ -77,7 +77,11 @@ export type KeyKind = 'opaque' | 'permalink' | 'fallback'
 
 // Normalize a permalink: http(s) only, lowercase scheme+host (URL does the host),
 // strip the fragment. Path/query case is preserved (opaque to us).
-function normalizePermalink(raw: string): string | null {
+// ponytail: LOCKSTEP with reconcile.ts's normalizePermalink — a verified
+// delivery's presentation fingerprint must equal an acquisition-written one, so
+// the two copies must agree on every input. Exported only for the behavioural
+// canary in test/logical-lockstep.test.ts. Change one copy, change both.
+export function normalizePermalink(raw: string): string | null {
   try {
     const u = new URL(raw)
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return null

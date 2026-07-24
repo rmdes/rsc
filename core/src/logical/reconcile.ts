@@ -165,7 +165,11 @@ interface VersionRow {
 }
 interface Material { title: string | null; content: string | null; link: string | null; published: string | null; updated: string | null; inReplyTo: string | null; enclosures: unknown[] }
 
-function normalizePermalink(raw: string | null): string | null {
+// ponytail: LOCKSTEP with acquisition.ts's normalizePermalink — see the note
+// there. This copy additionally accepts null; acquisition's callers guard on
+// truthiness, so that difference is benign. Exported only for the behavioural
+// canary in test/logical-lockstep.test.ts. Change one copy, change both.
+export function normalizePermalink(raw: string | null): string | null {
   if (!raw) return null
   try {
     const u = new URL(raw)

@@ -42,7 +42,11 @@ function loadPost(tx: WriteTx, id: string): PostRow | undefined {
 
 // The derived root of the chain that ends at `parentId` (inclusive) — the topmost
 // ancestor. Roots are derived, never stored authority (spec §4.1).
-function deriveRoot(tx: WriteTx, parentId: string): string {
+// ponytail: LOCKSTEP with runtime.ts's deriveRoot and store.ts's
+// adminDeriveRoot — a thread root must read the same from the write path, the
+// projection overlay and the admin store. Exported only for the behavioural
+// canary in test/logical-lockstep.test.ts. Change one copy, change all three.
+export function deriveRoot(tx: WriteTx, parentId: string): string {
   const parentOf = tx.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`)
   let root = parentId
   let cur: string | null = parentId
