@@ -196,3 +196,68 @@ export const LOGICAL_V2_SCHEMA: string[] = [
   `INSERT INTO logical_journal_meta_v2 (singleton, high_water_seq, reset_generation)
    VALUES (1, 0, 0)`,
 ]
+
+// Additive logical-v3 schema (moderation/events/verification, spec
+// 2026-07-22-rsc-moderation-events-verification-design.md, plan Appendix A).
+// ONE migration entry, appended strictly at the TAIL of MIGRATIONS in
+// sqlite.ts, AFTER LOGICAL_V2_SCHEMA — mid-array insertion would renumber
+// applied migrations and corrupt user_version on the live databases. Pure
+// additive: two ALTER TABLE ADD COLUMN on logical_items_v2, seven CREATE
+// TABLE, one CREATE INDEX. source_audit_v2 is untouched — no rebuild.
+//
+// item_audit_v2 defines its OWN nine-value category CHECK — never a mirror
+// of the narrowed TS AuditCategory (domain/types.ts re-adds only
+// 'false_positive'/'remediated'; 'migration_review' stays deferred to V4).
+// A CHECK mirroring the six/eight-value TS enum would fail restore/unblock
+// at runtime the moment they write a category the TS enum never carried
+// before this widening. blocked_source_tombstones_v2 gets the same nine-wide
+// CHECK for the same reason.
+//
+// Every FK defaults ON DELETE RESTRICT except tombstone_aliases_v2 (ON
+// DELETE CASCADE — the alias row is meaningless once its tombstone is gone).
+// Every INSERT names its columns explicitly.
+export const LOGICAL_V3_SCHEMA: string[] = [
+  `ALTER TABLE logical_items_v2 ADD COLUMN hidden_at TEXT`,
+  `ALTER TABLE logical_items_v2 ADD COLUMN structural_tombstone INTEGER NOT NULL DEFAULT 0 CHECK(structural_tombstone IN(0,1))`,
+  `CREATE TABLE item_audit_v2 (
+    id TEXT PRIMARY KEY,
+    logical_item_id TEXT NOT NULL REFERENCES logical_items_v2(id),
+    command_id TEXT NOT NULL, actor_id TEXT,
+    actor_kind TEXT NOT NULL CHECK(actor_kind IN('administrator','system')),
+    action TEXT NOT NULL,
+    category TEXT CHECK(category IS NULL OR category IN('spam','abuse','illegal_content','compromised_source','migration_review','operator_policy','false_positive','remediated','other')),
+    note TEXT, result_json TEXT NOT NULL, created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE policy_fanout_v2 (
+    source_id TEXT PRIMARY KEY REFERENCES remote_sources_v2(id),
+    generation INTEGER NOT NULL, last_item_cursor TEXT,
+    state TEXT NOT NULL CHECK(state IN('pending','running','done','superseded')),
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE verification_checks_v2 (
+    id TEXT PRIMARY KEY,
+    logical_item_id TEXT NOT NULL REFERENCES logical_items_v2(id),
+    source_id TEXT NOT NULL REFERENCES remote_sources_v2(id),
+    publisher_feed_url TEXT NOT NULL, batch_key TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN('pending','verified','unverified')),
+    created_at TEXT NOT NULL, resolved_at TEXT,
+    UNIQUE(logical_item_id, publisher_feed_url)
+  )`,
+  `CREATE TABLE publisher_feed_aliases_v2 (
+    url TEXT PRIMARY KEY,
+    publisher_id TEXT NOT NULL REFERENCES remote_publishers_v2(id),
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE blocked_source_tombstones_v2 (
+    id TEXT PRIMARY KEY, canonical_url TEXT NOT NULL UNIQUE,
+    action TEXT NOT NULL CHECK(action IN('block','purge')),
+    category TEXT NOT NULL CHECK(category IN('spam','abuse','illegal_content','compromised_source','migration_review','operator_policy','false_positive','remediated','other')),
+    actor_id TEXT, note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE tombstone_aliases_v2 (
+    url TEXT PRIMARY KEY,
+    tombstone_id TEXT NOT NULL REFERENCES blocked_source_tombstones_v2(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX item_audit_v2_page ON item_audit_v2(logical_item_id,created_at DESC,id DESC)`,
+]

@@ -12,7 +12,7 @@
 //    imports the logical vertical. See that module + the dated plan note.
 //  - the journal cursor codec + appendJournal live in ./journal.ts.
 
-import type { CommandEnvelope, RemoteSource } from '../domain/types.ts'
+import type { CommandEnvelope, RemoteSource, AuditCategory } from '../domain/types.ts'
 
 // --- Ordinary-read DTOs (spec §3.4) --------------------------------------
 
@@ -257,6 +257,25 @@ export type AdminReconciliationJobSummary = {
   diagnostic: string | null
 }
 
+// --- Item audit (V3 foundation, spec §1.2) --------------------------------
+// item_audit_v2 mirrors V1's source_audit_v2 shape; actor kind is narrower
+// (no 'operator_token' — nothing v3 audits runs under a token actor). The SQL
+// CHECK on category is its OWN nine-value CHECK (schema.ts) — never a mirror
+// of this TS union.
+
+export interface ItemAuditEvent {
+  id: string
+  logicalItemId: string
+  commandId: string
+  actorId: string | null
+  actorKind: 'administrator' | 'system'
+  action: string
+  category: AuditCategory | null
+  note: string | null
+  resultJson: string
+  createdAt: string
+}
+
 // --- Pagination cursors (spec §6.3) --------------------------------------
 // Decoded forms; the shared opaque codec lives in ../domain/cursor.ts.
 
@@ -448,4 +467,5 @@ export interface LogicalReadTx {
   getRun(id: string): AdminAcquisitionRun | undefined
   listRuns(sourceId: string, cursor: RunCursor | undefined, limit: number): AdminPage<AdminRunProjection>
   listJobs(runId: string, cursor: JobCursor | undefined, limit: number): AdminPage<AdminReconciliationJobSummary>
+  listItemAudit(logicalItemId: string, cursor: { createdAt: string; id: string } | undefined, limit: number): AdminPage<ItemAuditEvent>
 }

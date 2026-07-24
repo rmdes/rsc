@@ -4,6 +4,7 @@ import type {
   CommitAcquisitionInput, FailAcquisitionInput, AcquisitionRun,
   AdminAcquisitionRun, AdminRunProjection, AdminReconciliationJobSummary, AdminPage,
   RunCursor, JobCursor, AdminFetchProjection, AdminReconciliationCounters, AdminAcquisitionCounters,
+  ItemAuditEvent,
 } from './types.ts'
 import type { User, CommandEnvelope } from '../domain/types.ts'
 import { getJournalMetadata, snapshotJournalCursor, appendJournal } from './journal.ts'
@@ -18,6 +19,9 @@ import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJ
 import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
 import type { WriteTx } from './database.ts'
 import { encodeCursor } from '../domain/cursor.ts'
+import { clampLimit } from '../domain/source-repository.ts'
+import { rowToItemAuditEvent } from './moderation.ts'
+import type { ItemAuditRow } from './moderation.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -326,6 +330,25 @@ export function createLogicalStore(db: DatabaseContext) {
         const last = page[page.length - 1]
         const nextCursor = rows.length > limit && last ? encodeCursor(1, [last.created_at, last.id]) : null
         return { model: 'logical-v2', items: page.map((r) => ({ jobId: r.id, createdAt: r.created_at, status: r.status, attempts: r.attempts, nextAttemptAt: r.next_attempt_at, failureCategory: r.failure_category, diagnostic: r.diagnostic })), nextCursor }
+      })
+    },
+
+    // --- item audit reads (Task 1, spec §1.2) -----------------------------
+    // Mirrors listRuns/listJobs exactly: newest-first over the immutable
+    // (createdAt, id) tuple through the shared cursor codec. limit defaults to
+    // 50 and clamps to [1,100] (V1's clampLimit) — Task 1 has no route yet to
+    // apply that default, so the primitive owns it directly.
+    listItemAudit(logicalItemId: string, cursor: { createdAt: string; id: string } | undefined, limit: number = 50): AdminPage<ItemAuditEvent> {
+      return db.read((tx) => {
+        const lim = clampLimit(limit)
+        const COLS = `id, logical_item_id, command_id, actor_id, actor_kind, action, category, note, result_json, created_at`
+        const rows = (cursor
+          ? tx.prepare(`SELECT ${COLS} FROM item_audit_v2 WHERE logical_item_id = ? AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`).all(logicalItemId, cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+          : tx.prepare(`SELECT ${COLS} FROM item_audit_v2 WHERE logical_item_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`).all(logicalItemId, lim + 1)) as ItemAuditRow[]
+        const page = rows.slice(0, lim)
+        const last = page[page.length - 1]
+        const nextCursor = rows.length > lim && last ? encodeCursor(1, [last.created_at, last.id]) : null
+        return { model: 'logical-v2', items: page.map(rowToItemAuditEvent), nextCursor }
       })
     },
 

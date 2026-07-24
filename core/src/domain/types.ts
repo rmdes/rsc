@@ -105,11 +105,13 @@ export type SourceOperation = 'enabled' | 'paused'
 export type SourceGovernance = 'allowed' | 'quarantined' | 'blocked'
 export type FederationStatus = 'pending' | 'approved'
 export type SourceSubscriptionState = 'active' | 'pending' | 'pending_review'
-// TS enum narrowed to V1's emitters; the SQL CHECK keeps all nine foundation
-// values (rev 5, V4 §10 pin). V3/V4 re-add the deferred members.
+// TS enum narrowed to each vertical's actual emitters; the SQL CHECKs keep all
+// nine foundation values (rev 5, V4 §10 pin). V3 re-adds 'false_positive'
+// (restore's first emitter) and 'remediated' (tombstone unblock's first
+// emitter). 'migration_review' stays deferred to V4 with its first emitter.
 export type AuditCategory =
   | 'spam' | 'abuse' | 'illegal_content' | 'compromised_source'
-  | 'operator_policy' | 'other'
+  | 'operator_policy' | 'false_positive' | 'remediated' | 'other'
 
 export interface RemoteSource {
   id: string

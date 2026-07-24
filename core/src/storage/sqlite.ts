@@ -8,7 +8,7 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
-import { LOGICAL_V2_SCHEMA } from '../logical/schema.ts'
+import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
@@ -1374,6 +1374,11 @@ const MIGRATIONS: string[][] = [
   // additive CREATE/ALTER/INSERT; creates only the inactive activation row.
   // Defined in logical/schema.ts; see plan Appendix A.
   LOGICAL_V2_SCHEMA,
+  // Logical-v3 additive schema (moderation/events/verification, RSC_SOURCE_MODEL_V2,
+  // dormant). Appended at the TAIL, AFTER LOGICAL_V2_SCHEMA — mid-array insertion
+  // corrupts user_version on live databases. Pure additive ALTER/CREATE. Defined
+  // in logical/schema.ts; see the V3 plan Appendix A.
+  LOGICAL_V3_SCHEMA,
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
