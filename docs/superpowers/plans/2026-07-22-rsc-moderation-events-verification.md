@@ -794,6 +794,26 @@ logical-routes.ts + AdminSourceAcquisition-  V3 admin routes; conflictCount (Tas
 > `store.listSourceItems`). Task 9's admin source-detail page reads it from
 > there. No `AdminSourceAcquisitionSummary` type or route was invented.
 
+> **Correction 2026-07-24 (Task 10 implementation — the deferred runtime drain
+> wiring):** the Appendix B "reconcile.ts drain loop" row above wires fan-out and
+> claim dispatch, but the RUNTIME half of that seam was deliberately deferred to
+> Task 10 by Task 4 ("runtime wiring is Task 10", `reconcile.ts:518`;
+> `verification.ts:23`). Until it lands, **verification never runs in
+> production**: `createLogicalRuntime`'s `drainAll` closure
+> (`core/src/logical/runtime.ts:283`) calls the SYNCHRONOUS `drainReconciliation`,
+> which cannot perform the async verification fetch and therefore `deferVerification`s
+> every verification job for an async drain that is never called. Task 10 completes
+> it: the runtime constructs `createVerificationRunner({db, store, now})` (default
+> `fetchFn`/`lookupFn` — matching acquisition's production posture, `server.ts:45`)
+> and `drainAll` becomes async, calling `drainReconciliationAsync` and awaited at
+> both call sites. **`core/src/logical/runtime.ts` is therefore added to the Task 10
+> staged set** (Appendix C row below updated to match) — this is the one piece of
+> production wiring Step 4 anticipates ("fix only what the scenarios expose"), and
+> Step 1's origin-verify scenario is what exposes it. Retiring the bridge means the
+> RUNTIME stops using it: `drainReconciliation` and `deferVerification` STAY in
+> `reconcile.ts` (five V2/V3 suites use the sync drain as their harness and create
+> no verification jobs, so it is inert there). No second source file changes.
+
 Fault-injection tests for every V3 command follow the V2 Appendix D pattern:
 throw immediately before audit, journal, ledger, and commit; assert all
 affected table families unchanged.
@@ -828,7 +848,7 @@ exit 0 after.
 | 7 | `npm test -w core -- logical-tombstones logical-journal-effects source-cleanup source-subscribe opml source-federation && npm run typecheck -w core` | `core/src/logical/tombstones.ts core/src/domain/source-service.ts core/src/domain/source-repository.ts core/src/logical/acquisition.ts core/src/logical/verification.ts core/test/logical-tombstones.test.ts core/test/source-cleanup.test.ts core/test/logical-journal-effects.test.ts` | `core: resolve tombstones and extend cleanup` |
 | 8 | `npm test -w core -- logical-review-api logical-admin-api && npm run typecheck -w core` | `core/src/api/logical-routes.ts core/src/logical/store.ts core/src/logical/types.ts core/test/logical-review-api.test.ts` | `core: expose logical v3 review APIs` |
 | 9 | `npm test -w web && npm run check -w web && npm run build -w web` | `web/src/routes/admin/items/[id]/+page.server.ts web/src/routes/admin/items/[id]/+page.svelte web/src/routes/admin/items/[id]/item-review.test.ts web/src/lib/logical-api.ts web/src/lib/logical-types.ts web/src/routes/admin/sources/[sourceId]/+page.server.ts web/src/routes/admin/sources/[sourceId]/+page.svelte web/src/routes/admin/sources/[sourceId]/source-detail.test.ts web/src/routes/admin/feeds/+page.server.ts web/src/routes/admin/feeds/+page.svelte web/src/routes/admin/feeds/source-actions.test.ts` | `web: render moderation review surfaces` |
-| 10 | full completion gate in Task 10 | `core/test/logical-v3-vertical.test.ts` | `test: complete logical v3 vertical` |
+| 10 | full completion gate in Task 10 | `core/test/logical-v3-vertical.test.ts core/src/logical/runtime.ts` | `test: complete logical v3 vertical` |
 
 Every subject is committed with this exact final paragraph:
 
