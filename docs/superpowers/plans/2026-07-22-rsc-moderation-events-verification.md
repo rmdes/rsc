@@ -850,3 +850,26 @@ expect(tombstoned).toEqual({kind:'unavailable'}) // byte-identical to the ordina
 Every mutation fault test repeats the purge pattern with throws immediately
 before audit, journal, ledger, and commit. Every HTTP test uses Hono
 `app.request`.
+
+---
+
+> **V2 execution handoff (2026-07-24, branch 8eab088..18eefbc READY):** facts
+> this plan's executor inherits:
+> 1. **Three char-identical duplications exist by design** (deriveRoot and the
+>    permalink normalizer, lockstep-marked in-code): if any V3 task touches
+>    one copy, add the drift-canary test the markers call for rather than a
+>    fourth copy — or consolidate then, not before.
+> 2. **AdminSourceAcquisitionSummary never shipped** (V2 Task 5 gap,
+>    non-blocking): do not consume it. V3's admin reads must query the
+>    run/job/status routes that DID ship (logical-routes.ts), and any V3/V4
+>    reference to that DTO name is stale until someone ships it.
+> 3. **Local-reply-to-remote-parent backfill gap** (tracked follow-up): a
+>    local reply whose remote parent arrives later converges going forward
+>    only; V3's moderation/purge logic must not assume historical local
+>    replies are edge-linked.
+> 4. **Cursor wire format is FROZEN after first deploy**
+>    (core/src/domain/cursor.ts — shared by V1+V2 pagination); V3 cursors use
+>    the same codec, never a variant.
+> 5. Chore to fold into the first fix round: bump the two OPML tests'
+>    per-test timeout (known load-timeout flakes under full-suite contention,
+>    noisy since the SP era).
