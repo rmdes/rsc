@@ -8,7 +8,8 @@ import {
 } from './journal.ts'
 import { createScheduler } from './scheduler.ts'
 import type { LogicalScheduler } from './scheduler.ts'
-import { drainReconciliation } from './reconcile.ts'
+import { drainReconciliationAsync } from './reconcile.ts'
+import { createVerificationRunner } from './verification.ts'
 import { projectItem } from './projector.ts'
 import { materializeLocalPost } from './local.ts'
 
@@ -280,8 +281,16 @@ export function createLogicalRuntime(input: {
       do { res = store.adoptOrphans({ claim, now: now(), limit: ORPHAN_BATCH }) } while (res.remaining)
     }
   }
-  const drainAll = (): void => {
-    drainReconciliation({ store, now })
+  // Origin verification (spec §7.1) rides the SAME drain as observation and
+  // fan-out, so the drain must be the ASYNC one: the synchronous drain cannot run
+  // verification's bounded fetch and only defers those jobs. Production posture
+  // matches acquisition (server.ts): default global fetch, no injected DNS lookup.
+  const verificationRunner = createVerificationRunner({ db, store, now })
+  const drainAll = async (): Promise<void> => {
+    await drainReconciliationAsync({
+      store, now,
+      runVerificationBatch: (i) => verificationRunner.runVerificationBatch(i.claim, i.now),
+    })
     drainOrphans()
     hint()
   }
@@ -292,7 +301,7 @@ export function createLogicalRuntime(input: {
     inFlight: (id) => acquisition.inFlight(id),
     async acquireSource(id, reason, signal) {
       const r = await acquisition.acquireSource(id, reason, signal)
-      if (!('kind' in r)) drainAll()
+      if (!('kind' in r)) await drainAll()
       return r
     },
   }
@@ -307,7 +316,7 @@ export function createLogicalRuntime(input: {
     trace('activate')
     // Startup drain: pick up pending/retrying jobs and pending orphan work a crash
     // may have left, then start the serial poll loop.
-    drainAll()
+    await drainAll()
     scheduler.start()
   })()
 
