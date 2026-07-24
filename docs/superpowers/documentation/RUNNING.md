@@ -164,7 +164,7 @@ RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `RSC_AUTH_SECRET` | yes | — | better-auth session/cookie signing secret. Generate with `openssl rand -hex 32`. |
-| `RSC_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke, also usable there in place of a registered session) **until cutover**; once `RSC_SOURCE_MODEL_V2=on`, that job becomes `POST /ops/sources/federation` (see "Source model v2" below). The token reaches that one route and nothing else: on every `/admin/*` route a bearer-only request has no session and gets 401. |
+| `RSC_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke, also usable there in place of a registered session) **until cutover**; once `RSC_SOURCE_MODEL_V2=on`, that job becomes `POST /ops/sources/federation` (see "Source model v2" below). It reaches `/ops/sources/federation` and is refused (401) on every `/admin/*` route — but `adminOrToken` also admits any bearer-bearing request to `POST /users` and `DELETE /users/:handle` (the latter **destructive**: removes a legacy remote feed and its posts). Size the token's distribution to that reach, not to "one route only". |
 | `RSC_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
 | `RSC_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
 | `RSC_ADMIN_EMAIL` | no | — | Comma-separated admin email(s). An account whose **verified** email matches becomes an instance admin (`isAdmin` on `/me`; unlocks admin-only routes like `GET /admin/status`). Unset = no admin (admin routes 403 for everyone). |
@@ -544,11 +544,13 @@ until an operator flips it. Core refuses to boot on any value other than `on` or
 - **After the marker is committed, `off` is a startup error.** Running the v1
   branch beside converted v2 state would corrupt both, so core refuses with a
   message naming the backup-restore procedure. See "Rollback posture" below.
-- **Web has no flag of its own.** It discovers the state per request from core's
+- **Web has no flag of its own.** It discovers the state from core's
   `GET /capabilities` (`{"sourceModelV2": true|false}`) and switches the home,
-  following and `/admin/feeds` surfaces accordingly. Do not add a web-side
-  environment variable — a second switch could disagree with the routes core
-  actually serves.
+  following and `/admin/feeds` surfaces accordingly. The first successful read
+  is memoized for the life of the web process (see "Flipping the flag requires
+  restarting web too" below) — not re-probed per request. Do not add a
+  web-side environment variable — a second switch could disagree with the
+  routes core actually serves.
 - **`POST /users` becomes inert under v2.** The route is still registered (the
   legacy branch is deleted only in the retirement release), but the legacy
   remote-user row it writes is never converted — conversion runs once — and no
@@ -640,6 +642,15 @@ roll back a healthy migration over them.
    spurious history revision. It is not fixable — the data does not exist in
    `posts` to convert — and it self-corrects: the item is correct from that poll
    onward, and the next genuine content change is recorded normally.
+
+   More broadly: the converted canonical material is stamped `synthetic:
+   "migration"`, a field live acquisition never writes. That mismatches the
+   live fingerprint for **every** converted item, not just enclosure-bearing
+   ones, so expect a "changed" burst across all converted items in the logs
+   on the first post-cutover poll of each source — a new version row per
+   item, no new presentation revision unless content actually changed. This
+   is that same mismatch and self-corrects the same way; a normal burst, not
+   a fault.
 2. **Display names fall back to the feed hostname** (`a.test` instead of
    `Alice's Blog`) until the first post-cutover poll of each source. Publisher
    name evidence is not converted, so the real name lands with the first
@@ -702,7 +713,7 @@ form). Anything unknown, duplicated, mismatched or malformed aborts preflight:
 | `entries[].sourceId` | Exact `users.id` of a legacy **remote** row with `feed_type = 'instance'`. |
 | `entries[].feedUrl` | Exact `users.feed_url` of that same row. A mismatch aborts. |
 | `entries[].attributionMode` | `single_publisher` or `aggregate`. |
-| `entries[].note` | Free text; stored as the source's provenance note. |
+| `entries[].note` | **Required** — a missing or non-string `note` aborts preflight. Free text, stored as the source's provenance note. |
 
 Approved entries convert to `allowed` + federation `approved`; every unlisted
 instance row still takes the quarantined default.

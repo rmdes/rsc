@@ -406,15 +406,18 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
     app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator'))
 
-    // The ops-token compatibility route (V4 spec §6) — the ONE route RSC_TOKEN
-    // reaches. Bearer-only: an admin session carries no bearer header and gets
-    // 401 here, and on every /admin/* route a bearer-only request has no
-    // better-auth session, so sessionAuth answers 401 before requireAdmin's 403
-    // is reachable (V1 review Finding 3). Registered inside the v2 branch, so
-    // with RSC_SOURCE_MODEL_V2 off the path is an ordinary 404. NOT part of the
-    // public Caddy exposure set — operators call core internally, exactly as
-    // they call POST /users today. The actor id is a stable NON-SECRET
-    // fingerprint of the token; the raw token is never stored or returned.
+    // The ops-token compatibility route (V4 spec §6). Bearer-only: an admin
+    // session carries no bearer header and gets 401 here, and on every
+    // /admin/* route a bearer-only request has no better-auth session, so
+    // sessionAuth answers 401 before requireAdmin's 403 is reachable (V1
+    // review Finding 3). This is NOT the token's only reach: adminOrToken
+    // also admits a bearer request to POST /users and DELETE /users/:handle
+    // (the latter destructive) — see RUNNING.md's RSC_TOKEN row. Registered
+    // inside the v2 branch, so with RSC_SOURCE_MODEL_V2 off the path is an
+    // ordinary 404. NOT part of the public Caddy exposure set — operators
+    // call core internally, exactly as they call POST /users today. The
+    // actor id is a stable NON-SECRET fingerprint of the token; the raw
+    // token is never stored or returned.
     const opsActorId = `ops:${createHash('sha256').update(token).digest('hex').slice(0, 16)}`
     app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token'))
 

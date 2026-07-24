@@ -329,7 +329,7 @@ async function cutOver() {
     },
   })
   mountLogicalHandleRoute(app, { raw })
-  return { repo, raw, store, app, runtime }
+  return { repo, raw, store, app }
 }
 
 test('ON: one pass through the runbook step-6 verify list composes end to end', async () => {
@@ -406,6 +406,6 @@ test('ON: one pass through the runbook step-6 verify list composes end to end', 
   expect(store.listSchedulableSources().sort()).toEqual(SOURCE_IDS)
   // Health is recorded by the scheduler's poll pass alone, so a lastPollAt on all
   // four is the proof that the loop resumed over the converted sources.
-  for (const id of SOURCE_IDS) expect([id, store.getHealth(id)?.lastPollAt]).toEqual([id, NOW])
+  for (const id of SOURCE_IDS) await vi.waitFor(() => expect([id, store.getHealth(id)?.lastPollAt]).toEqual([id, NOW]))
   repo.close()
 })
