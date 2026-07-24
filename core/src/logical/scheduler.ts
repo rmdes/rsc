@@ -17,6 +17,11 @@ export interface SchedulerDeps {
   acquisition: AcquisitionEngine
   config: { pollSeconds: number }
   now?: () => string
+  // Background work that does NETWORK I/O (origin verification, spec §7.1). It
+  // rides THIS loop — there is no second timer — which is what keeps it off the
+  // pre-listen startup path and off every request path. Its I/O therefore delays
+  // the next poll; that is the accepted trade for one loop.
+  drainVerification?: () => Promise<void>
 }
 
 export interface LogicalScheduler {
@@ -59,6 +64,10 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
     busy = true
     try {
       await pollDue(now())
+      // …then the background drain, in the same serial turn. `stopped` is re-checked
+      // because stop() may have landed while the poll pass was in flight, and a
+      // throw from either is caught here — neither may take the process down.
+      if (!stopped) await deps.drainVerification?.()
     } catch (err) {
       console.error('poll loop failed:', err instanceof Error ? err.message : err)
     } finally {

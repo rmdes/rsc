@@ -29,12 +29,17 @@ import type { LookupFn } from '../src/domain/push-guard.ts'
 // logical-moderation (hidden surfaces) and logical-purge (tombstones).
 //
 // One thing it deliberately proves that no per-task suite can: the RUNTIME wires
-// the ASYNC drain. Tasks 4-5 built verification behind `drainReconciliationAsync`
-// + `createVerificationRunner` and left the runtime on the SYNCHRONOUS drain,
-// which can only `deferVerification` — so verification never ran in production.
-// The origin-verify scenario below drives verification through
-// `createLogicalRuntime`'s OWN drain (never a direct async-drain call), so a
-// runtime regressed to the sync drain leaves the check `pending` and fails.
+// the ASYNC drain, and wires it in the right PLACE. Tasks 4-5 built verification
+// behind `drainReconciliationAsync` + `createVerificationRunner` and left the
+// runtime on the SYNCHRONOUS drain, which can only `deferVerification` — so
+// verification never ran in production. Task 10 wired the async drain onto
+// startup, which then held `ready` (and every acquisition) on up to 10 s of fetch
+// per batch key. Both are regressions, in opposite directions, and the
+// runtime-drain-posture block below pins both ends: startup and the acquisition
+// result path do NO network I/O, while the BACKGROUND drain
+// (`runtime.drainVerification()`, called by the poll tick) still verifies. Every
+// one of those tests drives `createLogicalRuntime`'s OWN drain — never a direct
+// async-drain call — so a runtime regressed either way fails here.
 
 type Raw = InstanceType<typeof Database>
 type Db = ReturnType<typeof createDatabaseContext>
@@ -119,8 +124,20 @@ const drain = (store: Store): number => drainReconciliation({ store, now: () => 
 // Every scenario drives acquisition itself and asks the runtime only for
 // activation + its drain, so the engine is always the inert stub.
 const stubEngine: AcquisitionEngine = { acquireSource: async () => ({ kind: 'unavailable', reason: 'unscheduled' }), inFlight: () => false }
-const mkRuntime = (deps: Deps, now = NOW): LogicalRuntime =>
-  createLogicalRuntime({ db: deps.db, store: deps.store, acquisition: stubEngine, config: { pollSeconds: 9999 }, now: () => now })
+const mkRuntime = (deps: Deps, opts: { now?: () => string; notify?: (sequence: number) => void; acquisition?: AcquisitionEngine } = {}): LogicalRuntime =>
+  createLogicalRuntime({
+    db: deps.db, store: deps.store, acquisition: opts.acquisition ?? stubEngine,
+    config: { pollSeconds: 9999 }, now: opts.now ?? (() => NOW), notify: opts.notify,
+  })
+
+// A real-clock stand-in: every call advances one ms, exactly as production's
+// `new Date()` does. It matters wherever a verification job is in play — the sync
+// drain defers such a job to now+1 ms, so only a clock that MOVES lets the
+// background drain claim it (a frozen clock is the one thing production never has).
+const ticking = (from: string) => {
+  let t = Date.parse(from)
+  return (): string => new Date(t++).toISOString()
+}
 
 // --- read helpers ------------------------------------------------------------
 const itemByLink = (raw: Raw, link: string): string =>
@@ -238,36 +255,135 @@ test('moderation: an item hidden from an approved aggregate peer leaves every su
   deps.repo.close()
 })
 
+// =============================================================================
+// RUNTIME DRAIN POSTURE (pre-V4 fix I1) + the runtime-wiring canary.
+//
+// The binding contract: pre-listen startup and the acquisition result path do NO
+// network I/O. Verification's bounded fetch (up to 10 s per batch key, 25 batch
+// keys per source) rides the scheduler's BACKGROUND cadence instead —
+// `runtime.drainVerification()`, which the poll `tick()` itself calls — so it can
+// neither delay `listen` (server.ts awaits `runtime.ready` BEFORE listening) nor
+// stall `POST /admin/sources/:id/refresh`.
+// =============================================================================
+
+const AGG = 'https://agg.test/f'
+// The origin feed contains the same guid → containment holds.
+const originFeed = () => fakeFetch({ [ORIGIN]: () => ok(RSS(`<item><guid isPermaLink="false">g1</guid><title>t</title><description>d</description></item>`)) })
+
+// One aggregate claim naming an origin feed URL → one pending verification check
+// plus its batch job, which the SYNC drain can only defer. Returns the item id.
+async function seedPendingVerification(deps: Deps): Promise<string> {
+  seedSource(deps.raw, 's_agg', AGG, { mode: 'aggregate' })
+  await acquire(deps.db, 's_agg', AGG, RSS(sourcedItem('g1', ORIGIN)))
+  drain(deps.store)
+  expect(count(deps.raw, 'verification_checks_v2', "WHERE state = 'pending'")).toBe(1)
+  return remoteIdForSource(deps.raw, 's_agg')
+}
+const checkState = (raw: Raw, item: string): string =>
+  (raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = ?`).get(item) as { state: string }).state
+
+test('startup: `ready` completes with NO network I/O, leaving verification to the background cadence', async () => {
+  const deps = await fresh()
+  const item = await seedPendingVerification(deps)
+  // Only the global fetch is stubbed: the runtime builds its own verification
+  // runner in production posture (default fetch, no injected DNS lookup).
+  const origin = originFeed()
+  vi.stubGlobal('fetch', origin.fn)
+  try {
+    const rt = mkRuntime(deps, { now: ticking(LATER) }) // LATER: past the sync drain's deferral bump
+    // Stop the background loop FIRST, so nothing but startup itself can be what
+    // this measures. `ready` awaits no I/O, so it has already run to completion.
+    await rt.stop()
+    await rt.ready
+    expect(origin.callsFor(ORIGIN)).toBe(0) // not one byte of network on the startup path
+  } finally {
+    vi.unstubAllGlobals()
+  }
+  expect(checkState(deps.raw, item)).toBe('pending')
+  expect(deps.store.snapshot((tx) => tx.getActivation()).state).toBe('active') // …and activation still happened
+  deps.repo.close()
+})
+
+test('acquireSource: a committed acquisition drains synchronously — no verification fetch on the request path', async () => {
+  const deps = await fresh()
+  // An engine reporting a committed run, so the runtime's wrapper drains after it.
+  const engine: AcquisitionEngine = {
+    acquireSource: async () => ({ runId: 'r1', sourceId: 's_agg', status: 'terminal', outcome: 'parsed' }),
+    inFlight: () => false,
+  }
+  // The runner captures the global `fetch` when the runtime is CONSTRUCTED, so the
+  // stub goes in first; the runtime is then built over a database with no
+  // verification work at all, so `ready` cannot be what fetches below.
+  const origin = originFeed()
+  vi.stubGlobal('fetch', origin.fn)
+  let item: string
+  try {
+    const rt = mkRuntime(deps, { now: ticking(LATER), acquisition: engine })
+    await rt.stop()
+    await rt.ready
+    // Only NOW does verification work exist — so a fetch after this point can only
+    // come from the acquisition result path (poll loop / admin refresh await it).
+    item = await seedPendingVerification(deps)
+    const run = await rt.acquisition.acquireSource('s_agg', { kind: 'scheduled' }, undefined)
+    expect(run).toMatchObject({ status: 'terminal' })
+    expect(origin.callsFor(ORIGIN)).toBe(0)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+  expect(checkState(deps.raw, item)).toBe('pending')
+  deps.repo.close()
+})
+
+test('the BACKGROUND drain resolves a pending verification and publishes the wake-up hint', async () => {
+  const deps = await fresh()
+  const item = await seedPendingVerification(deps)
+  const origin = originFeed()
+  vi.stubGlobal('fetch', origin.fn)
+  const hints: number[] = []
+  try {
+    const rt = mkRuntime(deps, { now: ticking(LATER), notify: (sequence) => hints.push(sequence) })
+    await rt.stop()
+    await rt.ready
+    hints.length = 0 // startup's own hint is not the subject
+    await rt.drainVerification() // exactly what the poll tick calls
+  } finally {
+    vi.unstubAllGlobals()
+  }
+  expect(origin.callsFor(ORIGIN)).toBe(1)
+  expect(checkState(deps.raw, item)).toBe('verified')
+  // An open /stream must see verification-driven writes without waiting for an
+  // unrelated hint: the background drain publishes the coalesced high-water hint.
+  expect(hints.at(-1)).toBe(deps.store.snapshot((tx) => tx.getJournalMetadata().highWaterSeq))
+  expect(hints.at(-1)).toBeGreaterThan(0)
+  deps.repo.close()
+})
+
 // -----------------------------------------------------------------------------
-// The RUNTIME-WIRING proof (Step 1's "origin-verify it hidden"). Verification is
-// driven ONLY through createLogicalRuntime's own drain: the runtime builds the
-// verification runner itself (production posture — default fetch/lookup), so the
-// only seam this test touches is the global `fetch` the runner captures. Revert
-// runtime.ts to the synchronous drain and the check stays `pending`, failing here.
+// The RUNTIME-WIRING canary (Step 1's "origin-verify it hidden"). Verification is
+// driven ONLY through createLogicalRuntime's own drain — never a direct
+// drainReconciliationAsync call: the runtime builds the verification runner itself
+// (production posture — default fetch/lookup), so the only seam this test touches
+// is the global `fetch` the runner captures. Point `drainVerification` at the
+// SYNCHRONOUS drain (which can only `deferVerification`) and the check stays
+// `pending`, failing here. The startup assertion inside it is what stops the
+// regression being "fixed" by awaiting verification at startup again — the very
+// thing the two posture tests above forbid.
 // -----------------------------------------------------------------------------
 
 test('moderation: the RUNTIME drain runs origin verification, and a hidden item stays hidden through it', async () => {
   const deps = await fresh()
-  const { raw, db, store } = deps
-  const AGG = 'https://agg.test/f'
-  seedSource(raw, 's_agg', AGG, { mode: 'aggregate' })
-
-  // An aggregate claim naming an origin feed URL → one pending verification check
-  // and its batch job. The SYNC drain can only defer that job (one ms past NOW).
-  await acquire(db, 's_agg', AGG, RSS(sourcedItem('g1', ORIGIN)))
-  drain(store)
-  const item = remoteIdForSource(raw, 's_agg')
-  expect(count(raw, 'verification_checks_v2', "WHERE state = 'pending'")).toBe(1)
+  const { raw, store } = deps
+  const item = await seedPendingVerification(deps)
   expect(hide(store, item, 'c1')).toMatchObject({ kind: 'applied' })
 
-  // The origin feed contains the same guid → containment holds. Only the global
-  // fetch is stubbed; the runtime constructs its own runner with no injected deps.
-  const origin = fakeFetch({ [ORIGIN]: () => ok(RSS(`<item><guid isPermaLink="false">g1</guid><title>t</title><description>d</description></item>`)) })
+  const origin = originFeed()
   vi.stubGlobal('fetch', origin.fn)
   try {
-    const rt = mkRuntime(deps, LATER) // LATER: past the sync drain's deferral bump
-    await rt.ready                    // the runtime's OWN startup drain
+    const rt = mkRuntime(deps, { now: ticking(LATER) }) // LATER: past the sync drain's deferral bump
     await rt.stop()
+    await rt.ready
+    expect(origin.callsFor(ORIGIN)).toBe(0) // startup verified NOTHING…
+    await rt.drainVerification()            // …the background cadence does
   } finally {
     vi.unstubAllGlobals()
   }

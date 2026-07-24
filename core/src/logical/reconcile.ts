@@ -495,9 +495,14 @@ export function drainReconciliation(deps: { store: Reconciler; now: () => string
   for (;;) {
     let claim = store.claimReconciliation(now())
     if (claim && claim.kind === 'verification') {
+      // ALWAYS un-claim: claimReconciliation already set the job 'processing', and a
+      // job left there can never be re-claimed (the background drain reads only
+      // pending/retrying). Under a real MOVING clock the drain re-reaches a job it
+      // deferred one ms ago, so the cycled-back branch has to un-claim it too — a
+      // frozen test clock never re-reaches it, which is what hid this.
+      store.deferVerification(claim.jobId, now())
       if (!deferred.has(claim.jobId)) {
         deferred.add(claim.jobId)
-        store.deferVerification(claim.jobId, now())
         continue
       }
       claim = null // cycled back: only already-deferred verification jobs remain — reach fan-out below

@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { test, expect, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
@@ -144,6 +144,62 @@ test('a later pass may start a new run after the earlier run is no longer in fli
   await sched.pollDue(NOW)
   await sched.pollDue(at(61)) // engine reports not in flight (stub) → a second run starts
   expect(order).toEqual(['s1', 's1'])
+  raw.close()
+})
+
+// --- the background verification drain rides THIS loop (pre-V4 fix I1) --------
+// Verification's bounded fetch is network I/O, so it may not run on the pre-listen
+// startup path or on a request path. It rides the poll tick instead — no second
+// timer — which also means `stop()` halts it and `tick()`'s catch contains it.
+
+// One turn of the event loop: `start()` fires its tick immediately, and the tick
+// awaits before it reaches the background drain.
+const turn = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 0) })
+
+test('the poll tick runs the background verification drain', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  let drains = 0
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ } })
+  sched.start()
+  await turn()
+  expect(drains).toBe(1)
+  sched.stop()
+  raw.close()
+})
+
+test('stop() halts the background drain too — a tick already in flight starts none', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  let drains = 0
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, now: () => NOW, drainVerification: async () => { drains++ } })
+  sched.start() // the tick is now suspended inside the poll pass
+  sched.stop()
+  await turn()
+  expect(drains).toBe(0)
+  // …and the same loop, not stopped, does run it — so the zero above is the stop,
+  // never an absent wiring.
+  sched.start()
+  await turn()
+  expect(drains).toBe(1)
+  sched.stop()
+  raw.close()
+})
+
+test('a throwing background drain is contained by the tick and never takes the process down', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  const errors: unknown[] = []
+  const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args[0]) })
+  const sched = createScheduler({
+    store, acquisition: stubEngine(), config: CONFIG, now: () => NOW,
+    drainVerification: async () => { throw new Error('verification exploded') },
+  })
+  sched.start()
+  await turn()
+  sched.stop()
+  spy.mockRestore()
+  expect(errors).toContain('poll loop failed:')
   raw.close()
 })
 

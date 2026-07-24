@@ -8,7 +8,7 @@ import {
 } from './journal.ts'
 import { createScheduler } from './scheduler.ts'
 import type { LogicalScheduler } from './scheduler.ts'
-import { drainReconciliationAsync } from './reconcile.ts'
+import { drainReconciliation, drainReconciliationAsync } from './reconcile.ts'
 import { createVerificationRunner } from './verification.ts'
 import { projectItem } from './projector.ts'
 import { materializeLocalPost } from './local.ts'
@@ -62,6 +62,9 @@ export interface LogicalRuntime {
   streamSource: LogicalStreamSource
   ready: Promise<void>
   order: string[]
+  // The background drain — the ONLY path that runs verification's network I/O.
+  // The scheduler's poll tick calls it; exposed so a test can drive it explicitly.
+  drainVerification(): Promise<void>
   stop(): Promise<void>
 }
 
@@ -281,12 +284,22 @@ export function createLogicalRuntime(input: {
       do { res = store.adoptOrphans({ claim, now: now(), limit: ORPHAN_BATCH }) } while (res.remaining)
     }
   }
-  // Origin verification (spec §7.1) rides the SAME drain as observation and
-  // fan-out, so the drain must be the ASYNC one: the synchronous drain cannot run
-  // verification's bounded fetch and only defers those jobs. Production posture
-  // matches acquisition (server.ts): default global fetch, no injected DNS lookup.
+  // The drain that STARTUP and the acquisition result path run: observation, fan-out
+  // and orphan work — local DB work only, NO network. Verification jobs are
+  // deferred here (deferVerification) and picked up by the background drain below.
+  const drainSync = (): void => {
+    drainReconciliation({ store, now })
+    drainOrphans()
+    hint()
+  }
+
+  // Origin verification (spec §7.1) rides the SAME claim ordering, but its bounded
+  // fetch is NETWORK I/O — up to 10 s per batch key — so it runs ONLY on the
+  // scheduler's background cadence (scheduler.tick calls this), never pre-listen
+  // and never on a request path. Production posture matches acquisition
+  // (server.ts): default global fetch, no injected DNS lookup.
   const verificationRunner = createVerificationRunner({ db, store, now })
-  const drainAll = async (): Promise<void> => {
+  const drainVerification = async (): Promise<void> => {
     await drainReconciliationAsync({
       store, now,
       runVerificationBatch: (i) => verificationRunner.runVerificationBatch(i.claim, i.now),
@@ -301,12 +314,12 @@ export function createLogicalRuntime(input: {
     inFlight: (id) => acquisition.inFlight(id),
     async acquireSource(id, reason, signal) {
       const r = await acquisition.acquireSource(id, reason, signal)
-      if (!('kind' in r)) await drainAll()
+      if (!('kind' in r)) drainSync()
       return r
     },
   }
 
-  const scheduler = createScheduler({ store, acquisition: wrapped, config, now })
+  const scheduler = createScheduler({ store, acquisition: wrapped, config, now, drainVerification })
   trace('scheduler')
   trace('reconcile')
   trace('orphan')
@@ -315,8 +328,10 @@ export function createLogicalRuntime(input: {
     activateLogicalV2(db, now())
     trace('activate')
     // Startup drain: pick up pending/retrying jobs and pending orphan work a crash
-    // may have left, then start the serial poll loop.
-    await drainAll()
+    // may have left, then start the serial poll loop. NOTHING here awaits network
+    // I/O — server.ts awaits this promise BEFORE it listens, so a crash-left
+    // verification backlog must never delay the process accepting traffic.
+    drainSync()
     scheduler.start()
   })()
 
@@ -326,6 +341,7 @@ export function createLogicalRuntime(input: {
     streamSource,
     ready,
     order,
+    drainVerification,
     async stop() { scheduler.stop() },
   }
 }
