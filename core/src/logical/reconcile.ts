@@ -376,7 +376,12 @@ function createRemoteItem(tx: WriteTx, v: VersionRow, material: Material, normal
 }
 
 // Returns whether a new presentation entry was written (a visible content change).
-function applyPresentation(tx: WriteTx, v: VersionRow, material: Material, normalized: { permalink: string | null; enclosures: unknown[] }, arrival: string, now: string): boolean {
+// The ONE accepted-presentation-chain writer: origin verification routes its
+// verified delivery through here too, so a verified entry is indistinguishable
+// in shape from an acquisition-written one (§4.4 watermark/rollback included).
+// The parameters are narrowed to what the chain actually reads, so callers that
+// hold no full VersionRow/Material (verification) need synthesize neither.
+export function applyPresentation(tx: WriteTx, v: { version_id: string; delivery_id: string }, material: { title: string | null; content: string | null; link: string | null; updated: string | null; inReplyTo: string | null }, normalized: { permalink: string | null; enclosures: unknown[] }, arrival: string, now: string): boolean {
   const top = tx.prepare(`SELECT sequence, material_fingerprint FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(v.delivery_id) as { sequence: number; material_fingerprint: string } | undefined
   const wm = tx.prepare(`SELECT MAX(effective_updated_at) AS w FROM presentation_entries_v2 WHERE delivery_id = ? AND provenance = 'explicit'`).get(v.delivery_id) as { w: string | null }
   const fingerprint = presentationFingerprint({

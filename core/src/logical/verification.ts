@@ -7,8 +7,8 @@ import {
   type FetchCtx, type FetchResult,
 } from './acquisition.ts'
 import type { ResolveVerificationInput, VerificationFeedItem, NewObservationVersion, PermanentRedirectProof, ProjectionViewer } from './types.ts'
-import { applySelectionHints, recordReconciliationFailure } from './reconcile.ts'
-import { presentationFingerprint, projectItem } from './projector.ts'
+import { applyPresentation, applySelectionHints, recordReconciliationFailure } from './reconcile.ts'
+import { projectItem } from './projector.ts'
 import { appendJournal } from './journal.ts'
 import { appendItemAudit } from './moderation.ts'
 import { isTombstoned } from './tombstones.ts'
@@ -356,12 +356,14 @@ function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: str
        VALUES (?, 'observation', ?, ?, NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
     ).run(randomUUID(), runId, versionId, now, now)
 
-    // a baseline presentation entry at the delivery's next sequence.
-    const top = tx.prepare(`SELECT MAX(sequence) AS s FROM presentation_entries_v2 WHERE delivery_id = ?`).get(deliveryId) as { s: number | null }
-    const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; inReplyTo: string | null }
-    const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[]; inReplyTo: string | null }
-    const fp = presentationFingerprint({ title: mat.title, content: mat.content, contentMarkdown: null, permalink: norm.permalink, sourceLink: mat.link, enclosures: (norm.enclosures ?? []) as never, inReplyTo: mat.inReplyTo })
-    tx.prepare(`INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, ?, ?, NULL, NULL, ?)`).run(deliveryId, top.s === null ? 0 : top.s + 1, versionId, fp)
+    // The presentation entry goes through the SHARED accepted-chain writer, so a
+    // verified delivery's entry carries the same effective_updated_at/provenance,
+    // the same unchanged-material suppression and the same rollback watermark an
+    // acquisition-written entry does. The synthetic run above commits at `now`, so
+    // that is this delivery's arrival.
+    const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; updated: string | null; inReplyTo: string | null }
+    const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[] }
+    applyPresentation(tx, { version_id: versionId, delivery_id: deliveryId }, mat, norm, now, now)
   }
 
   // link the delivery to the logical item (the first matching item owns the key).

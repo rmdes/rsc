@@ -11,6 +11,7 @@ import {
   VERIFICATION_MAX_NEW_PER_RESPONSE, VERIFICATION_MAX_PENDING_PER_PUBLISHER,
   VERIFICATION_MAX_PENDING_PER_SOURCE, VERIFICATION_RESPONSE_REUSE_MS,
 } from '../src/logical/verification.ts'
+import { presentationFingerprint } from '../src/logical/projector.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
 type Raw = InstanceType<typeof Database>
@@ -236,20 +237,21 @@ test('the one async drain dispatches on kind: it reconciles observations AND fet
 const ANON = { localAccountId: null, activeSourceIds: [] as string[] }
 
 // A NewObservationVersion as the fetch would produce it (fresh ids, origin material).
-function evidenceFor(opts: { permalink?: string | null; guid?: string | null; content?: string }): {
+function evidenceFor(opts: { permalink?: string | null; guid?: string | null; content?: string; updated?: string | null }): {
   normalizedPermalink: string | null; opaqueId: string | null
   evidence: { id: string; deliveryId: string; wireOrdinal: number; arrivalAt: string; fingerprintVersion: 1; fingerprint: string; canonicalMaterial: Uint8Array; rawEvidenceJson: string; normalizedJson: string }
 } {
   const permalink = opts.permalink ?? null
   const guid = opts.guid ?? null
   const content = opts.content ?? 'd'
-  const canonical = Buffer.from(JSON.stringify({ title: 't', content, link: permalink, inReplyTo: null }))
+  const updated = opts.updated ?? null
+  const canonical = Buffer.from(JSON.stringify({ title: 't', content, link: permalink, updated, inReplyTo: null }))
   const normalizedJson = JSON.stringify({ keyKind: guid ? 'opaque' : 'permalink', key: guid ?? permalink, permalink, inReplyTo: null, enclosures: [] })
   return {
     normalizedPermalink: permalink, opaqueId: guid,
     evidence: {
       id: randomUUID(), deliveryId: randomUUID(), wireOrdinal: 0, arrivalAt: NOW, fingerprintVersion: 1,
-      fingerprint: createHash('sha256').update((permalink ?? guid ?? '') + content).digest('hex'),
+      fingerprint: createHash('sha256').update((permalink ?? guid ?? '') + content + (updated ?? '')).digest('hex'),
       canonicalMaterial: new Uint8Array(canonical), rawEvidenceJson: JSON.stringify({ title: 't', sourceName: null }), normalizedJson,
     },
   }
@@ -533,4 +535,77 @@ test('a NON-exhausting verification failure leaves its checks pending for the re
   expect(job).toMatchObject({ status: 'retrying', attempts: MAX_OPERATIONAL_ATTEMPTS - 1 })
   // terminalizing here would silently kill a verification the retry could still resolve
   expect(raw.prepare(`SELECT state, resolved_at FROM verification_checks_v2 WHERE batch_key = ?`).get(ORIGIN)).toEqual({ state: 'pending', resolved_at: null })
+})
+
+// ---- the presentation entry a verified delivery writes (spec §4.4) ----------
+// A verified delivery's presentation entry must be indistinguishable in shape
+// from an acquisition-written one: it runs the SAME shared applyPresentation
+// path — real effective_updated_at + provenance, the unchanged-material and
+// rollback-watermark decisions included.
+
+const entries = (raw: Raw) =>
+  raw.prepare(`SELECT sequence, effective_updated_at, provenance, material_fingerprint FROM presentation_entries_v2 ORDER BY sequence`).all() as
+    { sequence: number; effective_updated_at: string | null; provenance: string | null; material_fingerprint: string }[]
+
+test('a verified delivery baseline carries the explicit updated timestamp, on the normalized permalink', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  const perma = 'https://origin.test/post/1#frag'
+  const updated = '2026-07-23T00:00:00.000Z'
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, permalink: perma })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ permalink: perma, updated })]), now: NOW })
+
+  const rows = entries(raw)
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ sequence: 0, effective_updated_at: updated, provenance: 'explicit' })
+  // the fingerprint is taken over the NORMALIZED permalink, exactly as acquisition does
+  const fpOf = (link: string | null) => presentationFingerprint({ title: 't', content: 'd', contentMarkdown: null, permalink: link, sourceLink: perma, enclosures: [], inReplyTo: null })
+  expect(rows[0].material_fingerprint).toBe(fpOf('https://origin.test/post/1'))
+  expect(rows[0].material_fingerprint).not.toBe(fpOf(perma))
+})
+
+test('unchanged presentation material on a re-verified delivery writes NO new entry', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  const j1 = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_a' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j1, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
+  // a later re-verification of the SAME origin entry: new observation material
+  // (its <updated> moved) but identical presentation material.
+  const j2 = seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_b' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', updated: '2026-07-23T00:00:00.000Z' })]), now: NOW })
+
+  expect(count(raw, 'deliveries_v2')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(2) // new material ⇒ new version
+  expect(entries(raw)).toHaveLength(1) // unchanged presentation ⇒ no second entry
+})
+
+test('a re-verified delivery with changed material and an at-or-below explicit timestamp records presentation_rollback and writes no entry', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  const j1 = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_a' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j1, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', updated: '2026-07-23T00:00:00.000Z' })]), now: NOW })
+  const j2 = seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_b' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', content: 'edited', updated: '2026-07-22T00:00:00.000Z' })]), now: NOW })
+
+  expect(count(raw, 'logical_conflicts_v2', "WHERE kind = 'presentation_rollback'")).toBe(1)
+  const rows = entries(raw)
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ sequence: 0, effective_updated_at: '2026-07-23T00:00:00.000Z', provenance: 'explicit' })
+})
+
+test('re-verifying EDITED origin material on an existing delivery appends a correctly-shaped entry at the next sequence', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  const j1 = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_a' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j1, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
+  // C1a's "delivery exists, NEW fingerprint" branch: edited material, no <updated>.
+  const j2 = seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_b' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', content: 'edited' })]), now: NOW })
+
+  expect(count(raw, 'deliveries_v2')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(2)
+  const rows = entries(raw)
+  expect(rows).toHaveLength(2)
+  expect(rows[0]).toMatchObject({ sequence: 0, effective_updated_at: null, provenance: null })
+  expect(rows[1]).toMatchObject({ sequence: 1, effective_updated_at: NOW, provenance: 'arrival' })
 })
