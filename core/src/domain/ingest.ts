@@ -7,7 +7,12 @@ import { discoverFeed } from './discovery.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
 
-export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string; inReplyTo: string | null; sourceName: string | null; sourceFeedUrl: string | null; contentMarkdown: string | null; updatedAt: string | null; replyContextAuthor: string | null; replyContextSnippet: string | null }
+// `uid` is ADDITIVE and read by NOTHING in v1 ingest — `guid` (the folded
+// `uid ?? url ?? fallbackGuid`) is unchanged, so the flag-off path and the
+// existing `posts` rows are byte-identical. Only discoverFeed sets it (the raw
+// h-feed u-uid) and only the v2 acquisition h-feed adapter reads it, to key an
+// edited uid-bearing entry as opaque:<uid> instead of forking on a url change.
+export interface ParsedItem { guid: string; title: string | null; content: string; url: string | null; publishedAt: string; inReplyTo: string | null; sourceName: string | null; sourceFeedUrl: string | null; contentMarkdown: string | null; updatedAt: string | null; replyContextAuthor: string | null; replyContextSnippet: string | null; uid?: string | null }
 
 export interface FeedDiscovery {
   hubs: string[]

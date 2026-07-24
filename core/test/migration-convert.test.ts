@@ -9,6 +9,7 @@ import { createLogicalPush } from '../src/logical/push.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { projectItem, projectHistory, projectTimeline } from '../src/logical/projector.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
+import { discoverFeed } from '../src/domain/discovery.ts'
 import { loadConfig } from '../src/config.ts'
 import { runConversion, type ConversionCounts, type ConversionFindingKind } from '../src/migration/convert.ts'
 import type { Manifest, ManifestEntry } from '../src/migration/preflight.ts'
@@ -818,7 +819,7 @@ test('guid branch: a legacy item carrying a real guid converges on the SAME deli
   expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 1 })
 })
 
-test('url branch: a guid-less but link-bearing legacy item converges on the SAME delivery', async () => {
+test('url branch: a guid-less but link-bearing legacy item converges on the SAME item', async () => {
   const raw = await fresh()
   seedRemote(raw)
   const feed = RSS(`<link>https://a.test/post/1</link><title>t</title><description>d</description>`)
@@ -826,9 +827,14 @@ test('url branch: a guid-less but link-bearing legacy item converges on the SAME
   expect(row.guid).toBe('https://a.test/post/1') // V1 branch 2: the guid IS the url
   seedPost(raw, row)
   convert(raw)
-  expect(one(raw, `SELECT key_kind, key FROM deliveries_v2`)).toEqual({ key_kind: 'permalink', key: 'https://a.test/post/1' })
+  // `guid == url` keys 'opaque' (not permalink): the rss.chat shape (a present
+  // <guid> == url) then matches the poll's opaque exactly. Conversion cannot tell
+  // that shape from THIS one (a link-synthesized guid), so here the poll adds a
+  // benign second permalink delivery that converges onto the SAME item via the
+  // permalink identity key conversion claims — one item, never a duplicate.
+  expect(one(raw, `SELECT key_kind, key FROM deliveries_v2`)).toEqual({ key_kind: 'opaque', key: 'https://a.test/post/1' })
 
-  expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 1 })
+  expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 2 })
 })
 
 test('fallback branch: a guid-less AND link-less legacy item converges on the SAME delivery', async () => {
@@ -847,6 +853,75 @@ test('fallback branch: a guid-less AND link-less legacy item converges on the SA
   // Without this the poll writes a SECOND delivery reconcile can attach to no
   // existing item — a permanent duplicate, not a self-healing one.
   expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 1 })
+})
+
+// ── R1: the permanent 9-shape convergence matrix ─────────────────────────
+// Each cell is driven end to end: the REAL v1 parser (parseFeedWithMeta for a
+// feed, discoverFeed for an h-feed) seeds the legacy `posts` row → REAL
+// runConversion → REAL acquireSource (same document, no seam stub) → REAL
+// drainReconciliation. items/deliveries/lineages are then read from SQLite
+// (lineages = COUNT(DISTINCT delivery_id) over presentation_entries_v2).
+//
+// The load-bearing invariant is EXACTLY ONE logical item per shape. Deliveries
+// and lineages are recorded too: reverting `guid === url` to 'opaque' (see the
+// convert.ts keying table) leaves a benign SECOND permalink delivery on the
+// link-synthesized-guid shapes (3/5a/5c/7) — one item, an extra delivery, never
+// a duplicate — the deliberate cost of making the rss.chat shape (2) exact.
+// Shapes 8 (h-feed uid-only) and 9 (h-feed neither) DUPLICATE (2 items) against
+// the pre-fix live path; those are the reds this wave removes.
+
+const HFEED_PAGE = 'https://a.test/feed.xml' // == the source's canonical URL, so the poll's effectiveUrl matches the seed's pageUrl
+const hentry = (inner: string) => `<div class="h-entry">${inner}<p class="e-content">body</p></div>`
+const ATOM = (entry: string) => `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>A</title><entry>${entry}</entry></feed>`
+const JSONF = (item: string) => `{"version":"https://jsonfeed.org/version/1.1","title":"A","items":[${item}]}`
+
+interface Shape { n: string; doc: string; hfeed?: boolean; deliveries: number; lineages: number }
+const SHAPES: Shape[] = [
+  { n: '1 rss guid+link', doc: RSS(`<guid isPermaLink="false">g1</guid><link>https://a.test/post/1</link><title>t</title><description>d</description>`), deliveries: 1, lineages: 1 },
+  { n: '2 rss guid==url no-link (rss.chat)', doc: RSS(`<guid>https://a.test/post/1</guid><title>t</title><description>d</description>`), deliveries: 1, lineages: 1 },
+  { n: '3 rss no-guid+link', doc: RSS(`<link>https://a.test/post/1</link><title>t</title><description>d</description>`), deliveries: 2, lineages: 2 },
+  { n: '4 rss neither', doc: RSS(`<title>t</title><description>d</description><pubDate>Mon, 02 Feb 2026 00:00:00 GMT</pubDate>`), deliveries: 1, lineages: 1 },
+  { n: '5a atom no-id+link', doc: ATOM(`<title>t</title><content>d</content><link href="https://a.test/post/1"/><updated>2026-02-02T00:00:00Z</updated>`), deliveries: 2, lineages: 2 },
+  { n: '5b atom no-id no-link', doc: ATOM(`<title>t</title><content>d</content><updated>2026-02-02T00:00:00Z</updated>`), deliveries: 1, lineages: 1 },
+  { n: '5c json no-id+url', doc: JSONF(`{"title":"t","content_html":"d","url":"https://a.test/post/1","date_published":"2026-02-02T00:00:00Z"}`), deliveries: 2, lineages: 2 },
+  { n: '5d json no-id no-url', doc: JSONF(`{"title":"t","content_html":"d","date_published":"2026-02-02T00:00:00Z"}`), deliveries: 1, lineages: 1 },
+  { n: '6 hfeed uid+url', doc: hentry(`<data class="u-uid" value="urn:uuid:abc"></data><a class="u-url" href="https://a.test/post/1">l</a>`), hfeed: true, deliveries: 1, lineages: 1 },
+  { n: '7 hfeed url-only', doc: hentry(`<a class="u-url" href="https://a.test/post/1">l</a>`), hfeed: true, deliveries: 2, lineages: 2 },
+  { n: '8 hfeed uid-only', doc: hentry(`<data class="u-uid" value="urn:uuid:abc"></data>`), hfeed: true, deliveries: 1, lineages: 1 },
+  { n: '9 hfeed neither', doc: hentry(``), hfeed: true, deliveries: 1, lineages: 1 },
+]
+
+async function legacyRow(shape: Shape): Promise<Record<string, string | null>> {
+  const item = shape.hfeed ? discoverFeed(shape.doc, HFEED_PAGE).hentries[0] : (await parseFeedWithMeta(shape.doc)).items[0]
+  return { guid: item.guid, title: item.title, content: item.content, url: item.url, published_at: item.publishedAt }
+}
+
+for (const shape of SHAPES) {
+  test(`convergence matrix — ${shape.n}: exactly one logical item`, async () => {
+    const raw = await fresh()
+    seedRemote(raw)
+    seedPost(raw, await legacyRow(shape))
+    convert(raw)
+    const { items, deliveries } = await pollAfterCutover(raw, shape.doc)
+    const lineages = (one(raw, `SELECT COUNT(DISTINCT delivery_id) AS n FROM presentation_entries_v2`) as { n: number }).n
+    expect({ items, deliveries, lineages }, shape.n).toEqual({ items: 1, deliveries: shape.deliveries, lineages: shape.lineages })
+  })
+}
+
+// ── R2: F2 edit-stability (live path, independent of migration) ───────────
+// A u-uid is the microformats analogue of RSS <guid>: the STABLE identity that
+// must survive a link change. Before F2 the h-feed adapter discarded the uid
+// and keyed on the u-url, so a title-driven slug rename on an edit forked a new
+// logical item. With F2 the uid keys 'opaque:<uid>' and the rename converges.
+test('a uid-bearing h-entry keeps one identity across a slug-changing edit (F2)', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  convert(raw) // mints the v2 source; there are no posts to convert
+  const entry = (slug: string, body: string) =>
+    `<div class="h-entry"><data class="u-uid" value="urn:uuid:edit"></data><a class="u-url" href="https://a.test/${slug}">l</a><p class="e-content">${body}</p></div>`
+  await pollAfterCutover(raw, entry('first-title', 'body one'))
+  const after = await pollAfterCutover(raw, entry('renamed-title', 'body two, edited'))
+  expect(after.items).toBe(1) // the uid holds identity across the url change
 })
 
 // ── zero rows ───────────────────────────────────────────────────────────

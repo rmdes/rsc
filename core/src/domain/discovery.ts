@@ -93,7 +93,10 @@ export function discoverFeed(html: string, pageUrl: string): Discovered {
       const rawDate = typeof e.published === 'string' ? e.published : ''
       const irt = e['in-reply-to']
       const { ref, contextAuthor, contextSnippet } = parseInReplyTo(irt)
-      return toParsedItem(e.uid ?? e.url, title, content, e.url ?? null, rawDate, now, ref, undefined, null, null, { author: contextAuthor, snippet: contextSnippet })
+      // `guid` stays `e.uid ?? e.url ?? fallbackGuid` (unchanged, v1-load-bearing);
+      // the raw u-uid is surfaced ADDITIVELY for the v2 acquisition h-feed adapter.
+      const uid = typeof e.uid === 'string' ? e.uid : null
+      return { ...toParsedItem(e.uid ?? e.url, title, content, e.url ?? null, rawDate, now, ref, undefined, null, null, { author: contextAuthor, snippet: contextSnippet }), uid }
     })
 
   return { feedUrl, hentries }

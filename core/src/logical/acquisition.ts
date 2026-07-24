@@ -164,7 +164,12 @@ const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 
 function extractHfeed(html: string, pageUrl: string): RawItem[] {
   const { hentries } = discoverFeed(html, pageUrl)
   return hentries.map((e): RawItem => ({
-    opaqueId: null,
+    // F2: a publisher-assigned u-uid is the microformats analogue of RSS <guid> —
+    // the stable identity that must survive a u-url change. Keying it opaque (over
+    // the link) stops an edited uid-bearing entry forking on a slug rename, and
+    // matches conversion's opaque:<uid> for the same item. Null uid ⇒ the link/
+    // fallback path below, exactly as before.
+    opaqueId: e.uid ?? null,
     link: e.url,
     title: e.title,
     content: e.content,
@@ -296,7 +301,11 @@ export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'
     } else {
       const norm = it.link ? normalizePermalink(it.link) : null
       if (norm) { keyKind = 'permalink'; key = norm }
-      else if (it.identitySeed != null) { keyKind = 'fallback'; key = 'fallback:' + createHash('sha256').update(it.identitySeed).digest('hex') }
+      // F1: identitySeed IS discoverFeed's stable id — `e.guid`, itself already
+      // `fallbackGuid(...)` = one sha256 of the material for a link-less h-entry.
+      // Prefix it directly; a SECOND hash here (the old bug) forked a duplicate
+      // against conversion's `fallback:<guid>` and RSS's single-hash fallbackKey.
+      else if (it.identitySeed != null) { keyKind = 'fallback'; key = 'fallback:' + it.identitySeed }
       else { keyKind = 'fallback'; key = fallbackKey(it.title, it.content, it.rawDate) }
     }
     // structural: an oversized required operational identifier skips the whole item.

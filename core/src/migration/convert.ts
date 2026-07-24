@@ -105,45 +105,54 @@ interface LegacyPost {
 
 // THE DELIVERY KEY A CONVERTED POST MUST CARRY
 // ============================================================================
-// V1 stored ONE identifier per item, `posts.guid`, derived by a three-branch
-// chain (ingest.ts toParsedItem): `guid ?? url ?? fallbackGuid(title, content,
-// rawDate)`. v2 acquisition derives THREE kinds from the same wire item
-// (acquisition.ts parseCandidates): the exact opaque id, else the normalized
-// permalink, else `'fallback:' + sha256(title \0 content \0 rawDate)`. Since a
-// delivery is looked up by (source_id, key_kind, key), conversion has to write
-// the pair the FIRST post-cutover poll re-derives, per branch — keying
-// everything 'opaque' forked a second delivery on the url branch and, because
-// reconcile gives a fallback delivery no identity key at all (no opaque guid, no
-// permalink), a second and permanent logical ITEM on the fallback branch.
+// THE PRINCIPLE (2026-07-24, replaces the earlier "never write fallback" rule,
+// which the reviewer-run matrix falsified — it came from the implementer's
+// BLOCKED escalation, a stop-and-report that was correct). Conversion writes
+// the identity-key KIND the first poll will re-derive. Where that kind is
+// `fallback` — a LINK-LESS item, whose poll itself derives `fallback`, and onto
+// whose `fallback` delivery an `opaque`/`permalink` delivery does NOT converge
+// (reconcile gives a fallback delivery no identity key at all) — conversion must
+// reproduce the EXACT fallback key. Convergence there requires the poll's
+// derivation to be deterministic from stored data: true for RSS (one hash of the
+// material = the stored guid) and made true for h-feed by F1 (un-double-hash) in
+// acquisition.ts.
 //
-// Two of the three branches are decided exactly by the stored row:
-//  - `url` non-null and `guid !== url` — the url branch stores the raw url in
-//    BOTH columns (posts.url is httpOnly(url), which for an http(s) url is the
-//    same string), so an inequality proves the guid came from the feed.
-//  - `url` non-null and `guid === url` — the url branch, whose v2 key is the
-//    normalized permalink. V1's fallback hash can never be a url, so the only
-//    other producer is a real <guid> that equals <link>.
-//  - `url` null — the fallback branch, whose v2 key is 'fallback:' + the SAME
-//    hash (v1 fallbackGuid and v2 fallbackKey hash identical material, so the
-//    stored guid IS the hash and nothing needs recomputing). V1 hashed the RAW
-//    wire date, which `published_at` (an ISO normalization of it) does not
-//    preserve, so recomputation could not decide this branch anyway; the 64-hex
-//    shape does, up to a real guid that is itself 64 lowercase hex digits.
+// V1 stored ONE identifier per item, `posts.guid` = `guid ?? url ??
+// fallbackGuid(title, content, rawDate)` (ingest.ts toParsedItem). v2 acquisition
+// derives THREE kinds from the same wire item (acquisition.ts parseCandidates):
+// the exact opaque id, else the normalized permalink, else `'fallback:' +
+// sha256(title \0 content \0 rawDate)`. A delivery is looked up by (source_id,
+// key_kind, key), so conversion writes per stored row:
+//  - `url` null — the fallback branch: `'fallback:' + guid` (v1 fallbackGuid and
+//    v2 fallbackKey hash identical material, so the stored guid IS the hash — the
+//    64-hex shape, up to a real guid of 64 lowercase hex digits). Reproduced
+//    exactly, per the principle: a mismatch here is a permanent DUPLICATE ITEM.
+//  - `url` non-null — `opaque` = the guid. A link-bearing item's poll derives
+//    `opaque` (a present <guid>/id) OR `permalink` (a synthesized guid == link);
+//    conversion cannot tell a real <guid>==<link> from a link-synthesized guid,
+//    and keys `opaque` for BOTH. On the rss.chat shape (a present <guid> equal to
+//    the url, no <link>) this MATCHES the poll's opaque exactly — the interop
+//    case, kept exact. On a link-synthesized-guid item it costs one extra
+//    (benign) permalink delivery the poll adds, since conversion ALSO claims the
+//    `permalink` identity key (below) so that delivery converges onto the SAME
+//    item. 143a6a5 routed `guid == url` to `permalink` and thereby forked the
+//    extra delivery onto the rss.chat shape instead; reverted here.
 //
-// THE RESIDUAL, AND WHY IT IS BOUNDED. Both ambiguous cases can only mistake a
-// real guid for the other branch, and conversion ALSO claims
-// `opaque:publisher:<publisherId>` = the guid (below), so a poll deriving
-// `opaque:<guid>` still resolves onto the converted item through that key: the
-// cost is one extra delivery, never a second item. The reverse — the mistake
-// this code replaces — is a duplicate item that never self-heals.
+// THE RESIDUAL, AND WHY IT IS BOUNDED. On `url` non-null, conversion ALSO claims
+// `permalink` = normalized url AND `opaque:publisher:<publisherId>` = the guid
+// (below), so whichever kind the poll derives resolves onto the converted item
+// through one of those keys: the cost is at most one extra delivery, NEVER a
+// second item. The `url` null branch has no such backstop, which is why its key
+// must be reproduced exactly.
 const FALLBACK_HASH = /^[0-9a-f]{64}$/
 
 function deliveryKeyFor(post: LegacyPost): { kind: 'opaque' | 'permalink' | 'fallback'; key: string } {
-  if (post.url !== null && post.guid === post.url) {
-    const permalink = normalizePermalink(post.url)
-    if (permalink) return { kind: 'permalink', key: permalink }
-  }
+  // url null → the fallback branch, reproduced exactly (no opaque/permalink
+  // backstop converges onto a poll's fallback delivery).
   if (post.url === null && FALLBACK_HASH.test(post.guid)) return { kind: 'fallback', key: `fallback:${post.guid}` }
+  // url non-null → opaque = guid. `guid == url` (rss.chat, or a link-synthesized
+  // guid) keys opaque too: the poll's opaque matches on the rss.chat shape, and
+  // the permalink identity key conversion claims catches the synthesized case.
   return { kind: 'opaque', key: post.guid }
 }
 
