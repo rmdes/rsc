@@ -216,10 +216,10 @@ test("core's two distinct conflicts reach the admin verbatim", async () => {
 	expect((res as { data: { error: string } }).data.error).toBe('invalid transition')
 })
 
-test('establish federation posts the url, mode, category, note and command id', async () => {
+test('establish federation posts fixed aggregate/operator_policy with the url, note and command id', async () => {
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ source: {}, federation: {} }), { status: 201 }))
 	const res = await actions.establish(
-		formEvent('establish', { url: 'https://peer.test/feed.xml', attributionMode: 'aggregate', category: 'operator_policy', note: 'peer', commandId: 'cmd-5' }, fetch) as never
+		formEvent('establish', { url: 'https://peer.test/feed.xml', note: 'peer', commandId: 'cmd-5' }, fetch) as never
 	)
 	expect(res).toEqual({ established: true })
 	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
@@ -236,7 +236,7 @@ test('establish federation posts the url, mode, category, note and command id', 
 
 test('establish refuses a missing commandId without calling core, and never mints one in its place', async () => {
 	const fetch = vi.fn()
-	expect(await actions.establish(formEvent('establish', { url: 'https://peer.test/feed.xml', attributionMode: 'aggregate', category: 'operator_policy' }, fetch) as never)).toMatchObject({
+	expect(await actions.establish(formEvent('establish', { url: 'https://peer.test/feed.xml' }, fetch) as never)).toMatchObject({
 		status: 400
 	})
 	expect(fetch).not.toHaveBeenCalled()
@@ -245,7 +245,7 @@ test('establish refuses a missing commandId without calling core, and never mint
 test('a failed establish echoes back the exact submitted commandId so a retry replays the original command', async () => {
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: 'idempotency conflict' }), { status: 409 }))
 	const res = await actions.establish(
-		formEvent('establish', { url: 'https://peer.test/feed.xml', attributionMode: 'aggregate', category: 'operator_policy', commandId: 'retry-establish' }, fetch) as never
+		formEvent('establish', { url: 'https://peer.test/feed.xml', commandId: 'retry-establish' }, fetch) as never
 	)
 	expect((res as { data: { error: string; commandId: string } }).data).toEqual({ error: 'idempotency conflict', commandId: 'retry-establish' })
 })

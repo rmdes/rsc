@@ -199,11 +199,15 @@ export const actions: Actions = {
 	establish: async (event) => {
 		const form = await event.request.formData()
 		const url = String(form.get('url') ?? '').trim()
-		const attributionMode = String(form.get('attributionMode') ?? '').trim()
-		const category = String(form.get('category') ?? '').trim()
+		// Establishing federation is an operator-policy act with an instance peer:
+		// the audit category and attribution mode are properties of the ACT, not
+		// operator choices, so the form no longer asks (2026-07-24 maintainer call).
+		// Core's pinned contract still requires both in the body.
+		const attributionMode = 'aggregate'
+		const category = 'operator_policy'
 		const note = String(form.get('note') ?? '').trim()
 		const commandId = String(form.get('commandId') ?? '').trim()
-		if (!url || !category) return fail(400, { error: 'a source URL and a category are required' })
+		if (!url) return fail(400, { error: 'a source URL is required' })
 		// See the `source` action: a missing commandId is rejected, never minted.
 		if (!commandId) return fail(400, { error: 'commandId is required' })
 		try {

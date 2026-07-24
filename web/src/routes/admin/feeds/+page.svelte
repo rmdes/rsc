@@ -128,16 +128,7 @@
 		<summary>Establish federation with a source</summary>
 		<form method="POST" action="?/establish{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}" class="add-remote" use:enhance>
 			<label class="visually-hidden" for="fed-url">Source URL</label>
-			<input id="fed-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-			<label class="visually-hidden" for="fed-mode">Attribution mode</label>
-			<select id="fed-mode" name="attributionMode">
-				<option value="single_publisher">single publisher</option>
-				<option value="aggregate">aggregate</option>
-			</select>
-			<label class="visually-hidden" for="fed-category">Category</label>
-			<select id="fed-category" name="category" required>
-				{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-			</select>
+			<input id="fed-url" name="url" type="url" placeholder="https://their-instance.example/feed.xml" required />
 			<label class="visually-hidden" for="fed-note">Note (optional)</label>
 			<input id="fed-note" name="note" placeholder="note (optional)" />
 			<input type="hidden" name="commandId" value={establishRetryCommandId ?? data.establishCommandId} />
