@@ -321,7 +321,11 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
 
   // ---- publisher name + mode-neutral claim (spec §2.4) --------------------
   const level = evidenceLevelFor(source.attribution_mode)
-  const normalizedName = normalizePublisherName(asName(raw.sourceName) ?? asName(raw.title))
+  // sourceName only: the adapters supply <source> attribution or the channel
+  // title. An ITEM title is never a publisher name — falling back to it named
+  // publishers after their latest post (a linkblog became "Interesting read
+  // as always !"). No evidence → NULL → the projector's hostname fallback.
+  const normalizedName = normalizePublisherName(asName(raw.sourceName))
   // A visible author change is a change in the publisher's observed name; a fresh
   // claim row with an unchanged name is not (the name/claim are always inserted).
   const prevName = tx.prepare(`SELECT normalized_name FROM publisher_names_v2 WHERE publisher_id = ? ORDER BY rowid DESC LIMIT 1`).get(publisherId) as { normalized_name: string | null } | undefined

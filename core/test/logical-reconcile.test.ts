@@ -375,3 +375,25 @@ test('a dateless, url-less h-entry polled across two polls does NOT create a sec
   expect(count(raw, 'logical_items_v2')).toBe(1) // stable identity across polls
   expect(count(raw, 'deliveries_v2')).toBe(1)
 })
+
+// ---- publisher naming: channel title, never the item title (§2.4) -----------
+
+test('a single-publisher item without <source> names its publisher from the CHANNEL title, never the item title', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  await acquire(db, raw, 's1', 'https://feed.test/f', RSS(guidItem('g1')))
+  drain(store)
+  const name = raw.prepare(`SELECT normalized_name FROM publisher_names_v2`).get() as { normalized_name: string | null }
+  expect(name.normalized_name).toBe('Feed T')
+  expect(name.normalized_name).not.toBe('t')
+})
+
+test('an aggregate item WITH <source> still names its publisher from the attribution, not the channel', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://agg.test/f', { mode: 'aggregate' })
+  const item = `<item><guid isPermaLink="false">g1</guid><title>t</title><description>d</description><source url="https://alice.test/feed.xml">Alice</source></item>`
+  await acquire(db, raw, 's1', 'https://agg.test/f', RSS(item))
+  drain(store)
+  const name = raw.prepare(`SELECT normalized_name FROM publisher_names_v2`).get() as { normalized_name: string | null }
+  expect(name.normalized_name).toBe('Alice')
+})

@@ -249,7 +249,10 @@ function extractRawItems(doc: string, pageUrl: string): { adapter: ParseResult['
     rawDate: str(it.pubDate) ?? '',
     updatedAt: str(it.atom?.updated ?? null),
     inReplyTo: it.sourceNs?.inReplyTo?.value ?? it.thr?.inReplyTos?.[0]?.ref ?? null,
-    sourceName: str(it.source?.title ?? null),
+    // <source> attribution wins (rss.chat aggregates); the CHANNEL title is the
+    // fallback name evidence, matching the atom/jsonfeed/h-feed adapters. Never
+    // the item title — reconcile treats a missing name as no evidence.
+    sourceName: str(it.source?.title ?? null) ?? str(parsed.feed.title),
     sourceFeedUrl: str(it.source?.url ?? null),
     enclosures: (it.enclosures ?? []).filter((e) => typeof e.url === 'string').slice(0, BOUNDS.maxEnclosures).map((e) => ({ url: e.url as string, mimeType: str(e.type ?? null), title: null, sizeBytes: typeof e.length === 'number' ? e.length : null, durationSeconds: null })),
   }))
