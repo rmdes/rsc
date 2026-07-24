@@ -746,7 +746,7 @@ V3 modifies only these existing seams; everything else is additive:
 
 ```text
 projector.ts single visibility predicate     + hidden_at IS NULL AND structural_tombstone = 0 (Task 2)
-source-repository.ts generation-advancing    upsert policy_fanout_v2 row in the same
+sqlite.ts generation-advancing               upsert policy_fanout_v2 row in the same
   transitions + establishFederation           transaction as their reset (Task 3)
 reconcile.ts drain loop                      fan-out processing after commit + at startup;
                                               claim dispatch on ReconciliationClaim.kind (Tasks 3-5)
@@ -767,6 +767,19 @@ Fault-injection tests for every V3 command follow the V2 Appendix D pattern:
 throw immediately before audit, journal, ledger, and commit; assert all
 affected table families unchanged.
 
+**Correction (2026-07-24, Task 3 — analogous to V2 Task 9's `089d47b`):** the
+generation-advancing transition BODIES live in `core/src/storage/sqlite.ts`
+(the `SqliteRepository` class — `establishFederation`, `transition`), NOT in
+`source-repository.ts` (interface + free helpers only). The fan-out enqueue
+therefore wires in `sqlite.ts`, folded into `advancePolicyGeneration` (now
+`(raw, sourceId, now)` → new generation) so the `scheduleFanout` upsert
+commits inside the SAME `raw.transaction` as the reset + generation advance.
+`source-repository.ts` needed no change and is dropped from the Task 3 staged
+set; `core/src/storage/sqlite.ts` is added (Appendix B and the Appendix C
+Task 3 row updated to match). `FanoutClaim`/`FanoutBatchResult`/
+`FANOUT_BATCH_SIZE` are owned by the new `fanout.ts` (not `types.ts`, which
+stays out of the Task 3 staged set).
+
 ## Appendix C: mandatory per-task commands and commits
 
 A task is not complete until its row passes exactly. Red = same command
@@ -777,7 +790,7 @@ exit 0 after.
 |---|---|---|---|
 | 1 | `npm test -w core -- logical-v3-schema && npm run typecheck -w core` | `core/src/logical/schema.ts core/src/logical/types.ts core/src/logical/moderation.ts core/src/logical/store.ts core/src/domain/types.ts core/src/storage/sqlite.ts core/test/logical-v3-schema.test.ts` | `core: add logical v3 moderation schema and item audit` |
 | 2 | `npm test -w core -- logical-moderation logical-journal-effects logical-projector logical-sse && npm run typecheck -w core` | `core/src/logical/moderation.ts core/src/logical/projector.ts core/src/logical/store.ts core/src/logical/types.ts core/test/logical-moderation.test.ts core/test/logical-journal-effects.test.ts` | `core: hide and restore logical items` |
-| 3 | `npm test -w core -- logical-fanout logical-journal-effects logical-policy-events && npm run typecheck -w core` | `core/src/logical/fanout.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/domain/source-repository.ts core/test/logical-fanout.test.ts core/test/logical-journal-effects.test.ts` | `core: converge hints with policy fan-out` |
+| 3 | `npm test -w core -- logical-fanout logical-journal-effects logical-policy-events && npm run typecheck -w core` | `core/src/logical/fanout.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/storage/sqlite.ts core/test/logical-fanout.test.ts core/test/logical-journal-effects.test.ts` | `core: converge hints with policy fan-out` |
 | 4 | `npm test -w core -- logical-verification logical-reconcile && npm run typecheck -w core` | `core/src/logical/verification.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/logical/types.ts core/test/logical-verification.test.ts` | `core: schedule bounded origin verification` |
 | 5 | `npm test -w core -- logical-verification logical-presentation logical-journal-effects logical-projector && npm run typecheck -w core` | `core/src/logical/verification.ts core/src/logical/projector.ts core/src/logical/store.ts core/src/logical/types.ts core/test/logical-verification.test.ts core/test/logical-presentation.test.ts core/test/logical-journal-effects.test.ts` | `core: verify origins and rank verified evidence` |
 | 6 | `npm test -w core -- logical-purge logical-journal-effects logical-local logical-threading && npm run typecheck -w core` | `core/src/logical/tombstones.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/logical/threading.ts core/src/logical/local.ts core/src/logical/projector.ts core/test/logical-purge.test.ts core/test/logical-journal-effects.test.ts` | `core: purge blocked sources into tombstones` |
