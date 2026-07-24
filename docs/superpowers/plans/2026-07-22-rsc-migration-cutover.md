@@ -1146,3 +1146,24 @@ verified against the code, not inferred from the document.
    the marker nor the reset — the runtime owns both, in the same transaction),
    and Tasks 6-7 completed it; Task 8 only calls it. It is absent from the
    Task 8 commit for that reason, not by oversight.
+
+6. **Preflight runs INSIDE the write transaction, not ahead of it.** Spec §4.1
+   sequences preflight as step 2, before step 3's transaction; the shipped
+   `convertLegacy` (`core/src/logical/runtime.ts`) calls `loadManifest` +
+   `runPreflight` as the first thing inside `activateLogicalV2`'s single
+   `db.write`. This is strictly safer, not a weakening: `runPreflight` is
+   read-only by construction, so it still commits nothing, and running it in
+   the transaction guarantees the checks see exactly the rows conversion is
+   about to convert rather than a snapshot that could have moved between the
+   two. An aborting finding throws, and the whole transaction — schema and
+   legacy data alike — rolls back untouched, which the cutover suite asserts.
+   The count of divergences from Task 8's text is therefore six, not five.
+
+**Amendment to (5) (2026-07-24, Task 8 review follow-up).** `convert.ts` did
+change after all, in the follow-up that fixed the skipped local-reply-to-remote-
+parent case: its ancestry backfill now calls the shared `materializeLocalChain`
+instead of `materializeLocalPost`, because conversion runs BEFORE the cutover's
+materialization pass and can therefore be the first writer of a local bridge
+row — a local parent that is itself a reply would otherwise FK-violate on its
+own unmaterialized ancestor. Item (5) records the state of the original Task 8
+commit and is left as written for that reason.
