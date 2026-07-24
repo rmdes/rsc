@@ -544,6 +544,25 @@ no delete, no v2 reader touches them.
 > plus preflight's URL-collision check make two posts under one publisher
 > with one guid impossible. Its count stays a truthful 0.
 
+> **Carry 2026-07-24 (recorded during Task 6 review closure) — the enclosure
+> fingerprint drift at cutover.** Same class of carry as the
+> `publisher_names_v2` and orphan-work carries recorded in the Task 6 report
+> (`v4-task-6-report.md` §8, Deliberate omissions): legacy
+> `posts` stores no enclosures, so a converted item's presentation
+> fingerprint always carries `enclosures: []`, regardless of what the live
+> feed actually contains. On the first post-cutover poll of that source, a
+> still-plain item is correctly suppressed as unchanged, but an item that
+> now carries a real `<enclosure>` (podcast/audio) fingerprints differently
+> than its converted baseline, so reconciliation writes a second
+> presentation entry with `provenance: 'arrival'` and
+> `effective_updated_at` = cutover time. User-visible effect: every
+> enclosure-bearing item still inside the feed window at cutover reads as
+> "updated at cutover" and gains one spurious history revision — the same
+> class applies to any V1↔V2 parser text divergence. Not fixable in code
+> (the enclosure data does not exist in `posts` to convert); self-corrects
+> on the item's next genuine content change, since only the one
+> post-cutover poll can see the divergence.
+
 ### Task 7: Conversion III — exact push preservation, findings, marker, reset
 
 **Files:** Modify `core/src/migration/convert.ts`,
