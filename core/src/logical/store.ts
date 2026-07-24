@@ -6,7 +6,8 @@ import type {
   RunCursor, JobCursor, AdminFetchProjection, AdminReconciliationCounters, AdminAcquisitionCounters,
   ItemAuditEvent,
 } from './types.ts'
-import type { User, CommandEnvelope } from '../domain/types.ts'
+import type { User, CommandEnvelope, PushProtocol } from '../domain/types.ts'
+import type { PushRowV2 } from './push.ts'
 import { getJournalMetadata, snapshotJournalCursor, appendJournal } from './journal.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
@@ -78,6 +79,24 @@ function makeReadTx(tx: ReadTx): ReadSeam {
     resolveLocalAccount: (handle) => resolveLocalAccount(tx, handle),
     resolvePublisher: (publisherId) => resolvePublisher(tx, publisherId),
     journalCursor: () => snapshotJournalCursor(tx),
+  }
+}
+
+// --- v2 inbound push rows (V4 Task 2, spec §1.2) -----------------------------
+// The same idiom as the legacy repo methods (core/src/domain/repository.ts:51-55)
+// over push_subscriptions_v2, keyed by source instead of user. Two states only.
+const PUSH_COLUMNS = `id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at`
+
+interface PushRow {
+  id: string; source_id: string; mode: PushProtocol; endpoint: string; topic: string
+  callback_token: string; secret: string | null; state: 'pending' | 'active'
+  expires_at: string; created_at: string
+}
+
+function toPushRowV2(r: PushRow): PushRowV2 {
+  return {
+    id: r.id, sourceId: r.source_id, mode: r.mode, endpoint: r.endpoint, topic: r.topic,
+    callbackToken: r.callback_token, secret: r.secret, state: r.state, expiresAt: r.expires_at, createdAt: r.created_at,
   }
 }
 
@@ -613,6 +632,42 @@ export function createLogicalStore(db: DatabaseContext) {
         tx.prepare(`INSERT INTO acquisition_commands_v2 (actor_id, command_id, request_fingerprint, run_id, refusal_json, created_at) VALUES (?, ?, ?, NULL, ?, ?)`)
           .run(input.command.actorId, input.command.commandId, input.command.requestFingerprint, JSON.stringify(input.refusal), input.now)
       })
+    },
+
+    // --- v2 inbound push rows (V4 Task 2, spec §1.2) ----------------------
+    // The write methods take the caller's WriteTx so a registration's row and
+    // whatever else the caller commits stay in one transaction.
+    findPushRow(filter: { token?: string; sourceId?: string; mode?: PushProtocol; topic?: string }, opts?: { unexpiredAt?: string; state?: 'pending' | 'active' }): PushRowV2 | undefined {
+      return db.read((tx) => {
+        const where: string[] = []
+        const args: unknown[] = []
+        if (filter.token !== undefined) { where.push('callback_token = ?'); args.push(filter.token) }
+        if (filter.sourceId !== undefined) { where.push('source_id = ?'); args.push(filter.sourceId) }
+        if (filter.mode !== undefined) { where.push('mode = ?'); args.push(filter.mode) }
+        if (filter.topic !== undefined) { where.push('topic = ?'); args.push(filter.topic) }
+        if (opts?.unexpiredAt !== undefined) { where.push('expires_at > ?'); args.push(opts.unexpiredAt) }
+        if (opts?.state !== undefined) { where.push('state = ?'); args.push(opts.state) }
+        const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+        const r = tx.prepare(`SELECT ${PUSH_COLUMNS} FROM push_subscriptions_v2${clause} LIMIT 1`).get(...args) as PushRow | undefined
+        return r ? toPushRowV2(r) : undefined
+      })
+    },
+    // H4 (v1 sqlite.ts:597-599, kept): token and secret are the subscription's
+    // IDENTITY across renewals — never rewritten on conflict.
+    upsertPushRow(tx: WriteTx, row: PushRowV2): void {
+      tx.prepare(
+        `INSERT INTO push_subscriptions_v2 (${PUSH_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_id, mode) DO UPDATE SET endpoint = excluded.endpoint, topic = excluded.topic, state = excluded.state, expires_at = excluded.expires_at`,
+      ).run(row.id, row.sourceId, row.mode, row.endpoint, row.topic, row.callbackToken, row.secret, row.state, row.expiresAt, row.createdAt)
+    },
+    deletePushRow(tx: WriteTx, id: string): void {
+      tx.prepare(`DELETE FROM push_subscriptions_v2 WHERE id = ?`).run(id)
+    },
+    listRenewablePushRows(horizon: string): PushRowV2[] {
+      return db.read((tx) => (tx.prepare(`SELECT ${PUSH_COLUMNS} FROM push_subscriptions_v2 WHERE state = 'active' AND expires_at < ? ORDER BY id ASC`).all(horizon) as PushRow[]).map(toPushRowV2))
+    },
+    purgeExpiredPushRows(tx: WriteTx, now: string): void {
+      tx.prepare(`DELETE FROM push_subscriptions_v2 WHERE expires_at <= ?`).run(now)
     },
 
     // --- scheduler support (spec §1.3) ------------------------------------

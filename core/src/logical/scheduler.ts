@@ -1,5 +1,6 @@
 import type { AcquisitionEngine } from './acquisition.ts'
 import type { LogicalStore } from './store.ts'
+import type { PushLifecycle } from './push.ts'
 
 // Single-lane serial poll loop (spec §1.3-1.4). One global loop in the single
 // Core process polls one source at a time, in stable sourceId order, skipping any
@@ -27,7 +28,22 @@ export interface SchedulerDeps {
   // deliberate posture as createSourcePlane's required logicalStore. Do not
   // "clean up" the `| undefined` back into a `?`.
   drainVerification: (() => Promise<void>) | undefined
+  // The v2 inbound push lifecycle (V4 §1.3). It rides THIS pass too — registration
+  // after each successful acquisition commit, then one renewal sweep and the
+  // expired-row purge at pass end — because V4 adds no third loop. Optional, unlike
+  // drainVerification: the runtime composition that supplies it lands in Task 3,
+  // and a scheduler with no push lifecycle simply polls at the base cadence.
+  push?: PushLifecycle
 }
+
+// A source with a live push lease polls at a reduced cadence: the durable
+// equivalent of v1's in-memory `tick % 10 !== 0 && hasActivePush` skip
+// (push-in.ts:264), composed with the lastPollAt comparison instead of tick state.
+const PUSH_POLL_FACTOR = 10
+
+// "Successful acquisition commit" — the same outcomes recordHealth counts as a
+// success (store.ts recordHealth): the run reached the source and committed.
+const SUCCESS_OUTCOMES = new Set(['parsed', 'completed_truncated', 'not_modified', 'redirect_conflict'])
 
 export interface LogicalScheduler {
   start(): void
@@ -52,15 +68,23 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
     // Serial: await each source before the next (no overlap, stable id order).
     for (const sourceId of store.listSchedulableSources()) {
       const health = store.getHealth(sourceId)
-      if (health?.lastPollAt && nowMs - Date.parse(health.lastPollAt) < intervalMs) continue // skip-if-recent
+      const factor = deps.push?.hasActivePush(sourceId, nowStr) ? PUSH_POLL_FACTOR : 1
+      if (health?.lastPollAt && nowMs - Date.parse(health.lastPollAt) < intervalMs * factor) continue // skip-if-recent
       if (acquisition.inFlight(sourceId)) continue // a run is already active for this source
       const run = await acquisition.acquireSource(sourceId, { kind: 'scheduled' })
       if (!('kind' in run)) {
         store.recordHealth({ sourceId, outcome: run.outcome, now: nowStr })
         polled++
+        // After a successful acquisition commit, register from that run's claim.
+        // A failed run committed no document, so it carries no fresh claim and an
+        // older run's is inert (spec §1.1).
+        if (SUCCESS_OUTCOMES.has(run.outcome) && deps.push) await deps.push.maybeRegister(sourceId, deps.push.latestClaim(sourceId))
       }
       // an 'unavailable' result (e.g. the source paused since listing) is skipped
     }
+    // v1's runPollCycle tail (push-in.ts:271-272) rebuilt over sources.
+    await deps.push?.renewDue()
+    deps.push?.purgeExpired(nowStr)
     return polled
   }
 

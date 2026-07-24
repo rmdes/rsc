@@ -4,6 +4,9 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createScheduler } from '../src/logical/scheduler.ts'
+import { createLogicalPush } from '../src/logical/push.ts'
+import type { PushClaim } from '../src/logical/push.ts'
+import { loadConfig } from '../src/config.ts'
 import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import type { AcquisitionRun, AcquisitionReason, AdminFetchProjection } from '../src/logical/types.ts'
 
@@ -211,6 +214,96 @@ test('a throwing background drain is contained by the tick and never takes the p
   sched.stop()
   spy.mockRestore()
   expect(errors).toContain('poll loop failed:')
+  raw.close()
+})
+
+// --- the v2 push lifecycle rides THIS pass (V4 Task 2, spec §1.3) ------------
+// Registration after each successful acquisition commit, one renewal sweep plus
+// the expired-row purge at pass end, and the reduced cadence for a live lease —
+// v1's runPollCycle tail (push-in.ts:264,271-272) rebuilt over sources.
+
+function stubPush(opts: { claim?: PushClaim | null; active?: Set<string> } = {}) {
+  const registered: Array<{ sourceId: string; claim: PushClaim | null }> = []
+  const passes: string[] = []
+  return {
+    registered,
+    passes,
+    hasActivePush: (sourceId: string) => opts.active?.has(sourceId) ?? false,
+    latestClaim: () => opts.claim ?? null,
+    async maybeRegister(sourceId: string, claim: PushClaim | null) { registered.push({ sourceId, claim }) },
+    async renewDue() { passes.push('renew') },
+    purgeExpired() { passes.push('purge') },
+  }
+}
+
+const CLAIM: PushClaim = { mode: 'websub', endpoint: 'https://hub.test/hub', topic: 'https://blog.test/feed.xml' }
+
+test('a successful poll registers from the latest run’s claim; each pass ends with one renewal sweep then the purge', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  const push = stubPush({ claim: CLAIM })
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push })
+
+  expect(await sched.pollDue(NOW)).toBe(1)
+  expect(push.registered).toEqual([{ sourceId: 's1', claim: CLAIM }])
+  expect(push.passes).toEqual(['renew', 'purge']) // exactly once per pass, in order
+  raw.close()
+})
+
+test('a failed poll registers nothing, and the sweep still ends the pass', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  const push = stubPush({ claim: CLAIM })
+  const sched = createScheduler({ store, acquisition: stubEngine({ outcomeFor: () => 'operational_failure' }), config: CONFIG, drainVerification: undefined, push })
+
+  await sched.pollDue(NOW)
+  expect(push.registered).toEqual([])
+  expect(push.passes).toEqual(['renew', 'purge'])
+  raw.close()
+})
+
+test('an active push lease reduces the cadence to 10 × the base interval — durable, no tick state', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  const order: string[] = []
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: stubPush({ active: new Set(['s1']) }) })
+
+  expect(await sched.pollDue(NOW)).toBe(1)
+  expect(await sched.pollDue(at(61))).toBe(0) // past the base interval, inside the push one
+  expect(await sched.pollDue(at(599))).toBe(0)
+  expect(await sched.pollDue(at(601))).toBe(1) // 10 × 60 s elapsed since lastPollAt
+  expect(order).toEqual(['s1', 's1'])
+  raw.close()
+})
+
+test('a pending push row does not reduce the cadence', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  // hasActivePush is false for a pending row (see logical-push.test.ts) → base cadence
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push: stubPush({ active: new Set() }) })
+
+  expect(await sched.pollDue(NOW)).toBe(1)
+  expect(await sched.pollDue(at(61))).toBe(1)
+  raw.close()
+})
+
+test('with push ineffective the pass writes no push row and makes no request', async () => {
+  const { raw, db, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  raw.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES ('r1', 's1', 'scheduled', 'terminal', ?, ?, ?, 'parsed', '{}', NULL, NULL, ?)`,
+  ).run(NOW, NOW, NOW, JSON.stringify(CLAIM))
+  const fetchFn = vi.fn(async () => new Response('', { status: 202 }))
+  const push = createLogicalPush({
+    db, store, config: loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test', RSC_PUSH_IN: 'off' }),
+    fetchFn: fetchFn as unknown as typeof fetch, lookupFn: async () => [{ address: '93.184.216.34' }],
+  })
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push })
+
+  await sched.pollDue(NOW)
+  expect(raw.prepare(`SELECT COUNT(*) AS n FROM push_subscriptions_v2`).get()).toEqual({ n: 0 })
+  expect(fetchFn).not.toHaveBeenCalled()
   raw.close()
 })
 
