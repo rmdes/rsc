@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import {
   compareFirstArrival, selectDisplayDelivery, selectAuthor,
   normalizePublisherName, selectPublisherName, presentationFingerprint,
-  nextPresentationEntry, normalizeUtc,
+  nextPresentationEntry, normalizeUtc, rankAttribution, LEVEL_RANK,
   type FirstArrival, type DeliveryCandidate, type AuthorCandidate, type NameCandidate, type WatermarkState,
 } from '../src/logical/projector.ts'
 
@@ -24,11 +24,47 @@ test('compareFirstArrival orders by committedAt, then runId, then wireOrdinal, t
 // ---- display-delivery selection (spec §3.2) ---------------------------------
 
 test('selectDisplayDelivery takes the strongest evidence level that has an eligible delivery', () => {
+  // V3 supersession (spec §4.3): verified_origin is prepended as the new strongest
+  // rung, so a later-arriving verified delivery wins over both bound and aggregate.
   const cands: DeliveryCandidate[] = [
     { deliveryId: 'd_agg', level: 'aggregate_assertion', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
     { deliveryId: 'd_bound', level: 'bound_single_publisher', eligible: true, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
+    { deliveryId: 'd_ver', level: 'verified_origin', eligible: true, arrival: fa('2026-01-03T00:00:00Z', 'r3', 0, 'v3') },
   ]
-  expect(selectDisplayDelivery(cands, null)).toBe('d_bound') // stronger level wins even though it arrived later
+  expect(selectDisplayDelivery(cands, null)).toBe('d_ver') // verified_origin wins even though it arrived last
+  expect(selectDisplayDelivery(cands.slice(0, 2), null)).toBe('d_bound') // without verified, bound still wins
+})
+
+// ---- the verified_origin rung (spec §4.3, intentional supersession) ---------
+
+test('rankAttribution ranks verified_origin strongest of the four levels', () => {
+  expect(rankAttribution(['aggregate_assertion', 'verified_origin', 'bound_single_publisher'])).toBe('verified_origin')
+  expect(rankAttribution(['aggregate_assertion', 'bound_single_publisher'])).toBe('bound_single_publisher')
+  expect(rankAttribution(['source_scoped_fallback'])).toBe('source_scoped_fallback')
+  expect(rankAttribution([])).toBeNull()
+})
+
+test('LEVEL_RANK is strongest-first with verified_origin at rank 0 (purely additive prepend)', () => {
+  expect(LEVEL_RANK.verified_origin).toBe(0)
+  expect(LEVEL_RANK.bound_single_publisher).toBeGreaterThan(LEVEL_RANK.verified_origin)
+  expect(LEVEL_RANK.aggregate_assertion).toBeGreaterThan(LEVEL_RANK.bound_single_publisher)
+  expect(LEVEL_RANK.source_scoped_fallback).toBeGreaterThan(LEVEL_RANK.aggregate_assertion)
+})
+
+test('selectAuthor prefers a verified_origin claim over bound_single_publisher (additive rung)', () => {
+  const cands: AuthorCandidate[] = [
+    { claimId: 'c_bound', publisherId: 'p_b', level: 'bound_single_publisher', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
+    { claimId: 'c_ver', publisherId: 'p_v', level: 'verified_origin', eligible: true, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
+  ]
+  expect(selectAuthor(cands, null)).toEqual({ publisherId: 'p_v', level: 'verified_origin' })
+})
+
+test('a verified_origin candidate that is ineligible (quarantined) does not participate', () => {
+  const cands: AuthorCandidate[] = [
+    { claimId: 'c_ver', publisherId: 'p_v', level: 'verified_origin', eligible: false, arrival: fa('2026-01-02T00:00:00Z', 'r2', 0, 'v2') },
+    { claimId: 'c_agg', publisherId: 'p_a', level: 'aggregate_assertion', eligible: true, arrival: fa('2026-01-01T00:00:00Z', 'r1', 0, 'v1') },
+  ]
+  expect(selectAuthor(cands, null)).toEqual({ publisherId: 'p_a', level: 'aggregate_assertion' })
 })
 
 test('selectDisplayDelivery retains the current delivery when it is still eligible at the strongest level', () => {

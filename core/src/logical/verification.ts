@@ -6,7 +6,11 @@ import {
   BOUNDS, fetchBounded, readCappedBody, raceDeadline, DeadlineError, parseCandidates,
   type FetchCtx, type FetchResult,
 } from './acquisition.ts'
-import type { ResolveVerificationInput, VerificationFeedItem, NewObservationVersion } from './types.ts'
+import type { ResolveVerificationInput, VerificationFeedItem, NewObservationVersion, PermanentRedirectProof, ProjectionViewer } from './types.ts'
+import { applySelectionHints, recordReconciliationFailure } from './reconcile.ts'
+import { presentationFingerprint, projectItem } from './projector.ts'
+import { appendJournal } from './journal.ts'
+import { appendItemAudit } from './moderation.ts'
 
 // Bounded origin verification — SCHEDULING + the batched fetch (V3 Task 4, spec
 // §7). A valid publisher (origin feed) URL first seen in an aggregate claim
@@ -201,4 +205,175 @@ async function fetchAndParse(url: string, fetchFn: typeof fetch, lookupFn: Looku
     ? { fromUrl: url, toUrl: result.provenAliases[result.provenAliases.length - 1] }
     : null
   return { kind: 'fetched', parsedItems, publisherRedirect }
+}
+
+// ---- outcome handling (V3 Task 5, spec §4.2-4.3) ----------------------------
+// Resolve a fetched verification batch into per-check verified/unverified outcomes
+// inside the caller's ONE db.write() (store.resolveVerificationBatch wraps this).
+// On a containment match: persist a direct-origin delivery + evidence under a
+// find-or-created origin_verification source (governance INHERITED from the
+// asserting aggregate — a verified origin of a quarantined aggregate is itself
+// quarantined), a verified_origin publisher claim, one system-actor item-audit
+// entry, and an inline hint recompute through the SHARED comparator. The §6
+// journal upsert fires ONLY when the ordinary selection/author actually changed.
+// A successful fetch with no match is terminal `unverified` (never contradicted,
+// no retry); an operational failure rides the SHARED drain backoff and exhausts
+// to `unverified` at eight attempts.
+
+const ANON_VIEWER: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
+// A valid empty AdminAcquisitionCounters JSON for the synthetic verification run.
+const EMPTY_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false })
+
+export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerificationInput): void {
+  const { claim, outcome, now } = input
+  const batchKey = claim.batchKey
+
+  if (outcome.kind === 'operational_failure') {
+    // Shared drain backoff + eight-attempt exhaustion (reused verbatim). On
+    // exhaustion the job fails and every still-pending check terminalises unverified.
+    recordReconciliationFailure(tx, { jobId: claim.jobId, now, category: 'operational_exhausted', diagnostic: outcome.diagnostic, retryAt: null })
+    const job = tx.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE id = ?`).get(claim.jobId) as { status: string } | undefined
+    if (job && job.status === 'failed') terminalizePending(tx, batchKey, now)
+    return
+  }
+
+  const checks = tx.prepare(`SELECT id, logical_item_id, source_id FROM verification_checks_v2 WHERE batch_key = ? AND state = 'pending'`).all(batchKey) as { id: string; logical_item_id: string; source_id: string }[]
+  let anyVerified = false
+  let originSourceId: string | null = null
+  let originPublisherId: string | null = null
+
+  for (const check of checks) {
+    const match = matchContainment(tx, check.logical_item_id, outcome.parsedItems)
+    if (!match) {
+      tx.prepare(`UPDATE verification_checks_v2 SET state = 'unverified', resolved_at = ? WHERE id = ?`).run(now, check.id)
+      continue
+    }
+    if (originSourceId === null) {
+      originSourceId = findOrCreateOriginSource(tx, batchKey, check.source_id, now)
+      originPublisherId = getOrCreatePublisher(tx, batchKey, now)
+    }
+    persistVerifiedDelivery(tx, { itemId: check.logical_item_id, sourceId: originSourceId, publisherId: originPublisherId!, match, commandId: `verify:${claim.jobId}:${check.id}`, batchKey, now })
+    tx.prepare(`UPDATE verification_checks_v2 SET state = 'verified', resolved_at = ? WHERE id = ?`).run(now, check.id)
+    anyVerified = true
+  }
+
+  // A proven permanent redirect of the publisher's OWN feed (spec §1.6) may
+  // establish a publisher-feed alias — only when a verified direct origin was
+  // actually established (an aggregate redirect never merges publishers).
+  if (anyVerified && outcome.publisherRedirect) writePublisherFeedAlias(tx, outcome.publisherRedirect, originPublisherId!, now)
+
+  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'reconciled' WHERE id = ?`).run(claim.jobId)
+}
+
+function terminalizePending(tx: WriteTx, batchKey: string, now: string): void {
+  tx.prepare(`UPDATE verification_checks_v2 SET state = 'unverified', resolved_at = ? WHERE batch_key = ? AND state = 'pending'`).run(now, batchKey)
+}
+
+// Containment holds ONLY by the two convergence keys (spec §4.2): exact normalized
+// permalink, or resolved (origin) publisher + exact explicit opaque id — never by
+// title/timestamp/similarity. The item's stored identity keys are already the
+// normalized forms the origin feed's normalized_json produces, so compare directly.
+function matchContainment(tx: WriteTx, itemId: string, parsedItems: VerificationFeedItem[]): VerificationFeedItem | null {
+  const permalinks = new Set((tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'permalink' AND logical_item_id = ?`).all(itemId) as { key: string }[]).map((r) => r.key))
+  const opaques = new Set((tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE logical_item_id = ? AND kind LIKE 'opaque:%'`).all(itemId) as { key: string }[]).map((r) => r.key))
+  for (const p of parsedItems) {
+    if (p.normalizedPermalink && permalinks.has(p.normalizedPermalink)) return p
+    if (p.opaqueId && opaques.has(p.opaqueId)) return p
+  }
+  return null
+}
+
+// Find-or-create the direct-origin source keyed by the batch (origin feed) URL,
+// with the foundation's verification defaults; governance INHERITED from the
+// asserting aggregate source at creation time (found sources keep their state).
+function findOrCreateOriginSource(tx: WriteTx, url: string, assertingSourceId: string, now: string): string {
+  const existing = tx.prepare(`SELECT id FROM remote_sources_v2 WHERE canonical_url = ?`).get(url) as { id: string } | undefined
+  if (existing) return existing.id
+  const gov = (tx.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(assertingSourceId) as { governance: string } | undefined)?.governance ?? 'allowed'
+  const id = randomUUID()
+  tx.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', ?, 'origin_verification', NULL, 0, ?)`,
+  ).run(id, url, gov, now)
+  return id
+}
+
+// find-or-create a publisher by canonical feed url (mirrors reconcile.ts).
+function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, now: string): string {
+  const r = tx.prepare(`SELECT id FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string } | undefined
+  if (r) return r.id
+  const id = randomUUID()
+  tx.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`).run(id, canonicalUrl, now)
+  return id
+}
+
+// Persist a fully-reconciled direct-origin delivery so the verified evidence
+// participates in BOTH ordinary comparators (while its source is ordinary-eligible)
+// and can supply displayed content: a synthetic terminal acquisition run, the
+// delivery + its observation version, a reconciled observation job (so the version
+// is ordinary-eligible), the delivery identity key + a baseline presentation entry,
+// and a verified_origin publisher claim. Then a system-actor audit + inline hint
+// recompute + the §6 journal effect.
+function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: string; publisherId: string; match: VerificationFeedItem; commandId: string; batchKey: string; now: string }): void {
+  const { itemId, sourceId, publisherId, match, commandId, batchKey, now } = a
+  const ev = match.evidence
+  const runId = randomUUID()
+  tx.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL)`,
+  ).run(runId, sourceId, now, now, now, EMPTY_COUNTERS)
+
+  const deliveryId = ev.deliveryId
+  const keyKind = match.opaqueId ? 'opaque' : 'permalink'
+  const key = match.opaqueId ?? match.normalizedPermalink ?? deliveryId
+  tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(deliveryId, sourceId, keyKind, key, now, now, runId)
+
+  const versionId = ev.id
+  tx.prepare(
+    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+  ).run(versionId, deliveryId, ev.fingerprintVersion, ev.fingerprint, Buffer.from(ev.canonicalMaterial), now, runId, ev.wireOrdinal, now, runId, ev.rawEvidenceJson, ev.normalizedJson)
+
+  // reconciled observation job → the version is ordinary-eligible immediately.
+  tx.prepare(
+    `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
+     VALUES (?, 'observation', ?, ?, NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
+  ).run(randomUUID(), runId, versionId, now, now)
+
+  // link the delivery to the logical item + a baseline presentation entry.
+  tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(deliveryId, itemId)
+  const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; inReplyTo: string | null }
+  const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[]; inReplyTo: string | null }
+  const fp = presentationFingerprint({ title: mat.title, content: mat.content, contentMarkdown: null, permalink: norm.permalink, sourceLink: mat.link, enclosures: (norm.enclosures ?? []) as never, inReplyTo: mat.inReplyTo })
+  tx.prepare(`INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, 0, ?, NULL, NULL, ?)`).run(deliveryId, versionId, fp)
+
+  // the verified_origin author claim — the new strongest rung (spec §4.3).
+  tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, 'verified_origin', ?)`).run(randomUUID(), itemId, publisherId, sourceId, versionId, now)
+
+  // ONE system-actor item-audit entry (Task 1's appendItemAudit, synthesized commandId).
+  appendItemAudit(tx, { logicalItemId: itemId, commandId, actorId: null, actorKind: 'system', action: 'origin_verified', category: null, note: null, result: { kind: 'verified', sourceId, publisherId, batchKey }, now })
+
+  // inline hint recompute through the SHARED comparator; §6 upsert only when the
+  // ordinary selection/author actually changed AND the item is ordinarily visible
+  // (a hidden/quarantined item emits no frame).
+  const sel = applySelectionHints(tx, itemId, versionId)
+  if ((sel.deliveryChanged || sel.publisherChanged) && projectItem(tx, itemId, ANON_VIEWER) !== undefined) {
+    appendJournal(tx, { kind: 'upsert', logicalItemId: itemId, changeMask: sel.deliveryChanged ? 'presentation' : 'author' }, now)
+  }
+}
+
+// A verified direct-origin permanent-chain proof establishes URL → origin publisher
+// (spec §1.6/§4.3). A URL already mapped to a DIFFERENT publisher is a collision:
+// record a conflict and merge nothing.
+function writePublisherFeedAlias(tx: WriteTx, redirect: PermanentRedirectProof, publisherId: string, now: string): void {
+  const url = redirect.toUrl
+  const existing = tx.prepare(`SELECT publisher_id FROM publisher_feed_aliases_v2 WHERE url = ?`).get(url) as { publisher_id: string } | undefined
+  if (existing) {
+    if (existing.publisher_id !== publisherId) {
+      tx.prepare(`INSERT INTO logical_conflicts_v2 (id, logical_item_id, observation_version_id, kind, evidence_json, created_at) VALUES (?, NULL, NULL, 'publisher_alias_collision', ?, ?)`)
+        .run(randomUUID(), JSON.stringify({ url, existing: existing.publisher_id, attempted: publisherId }), now)
+    }
+    return
+  }
+  tx.prepare(`INSERT INTO publisher_feed_aliases_v2 (url, publisher_id, created_at) VALUES (?, ?, ?)`).run(url, publisherId, now)
 }

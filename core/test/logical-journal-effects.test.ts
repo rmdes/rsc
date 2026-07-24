@@ -62,6 +62,25 @@ const highWater = (raw: Raw): number => (raw.prepare(`SELECT high_water_seq AS n
 const journalKindsSince = (raw: Raw, id: string, sinceSeq: number): string[] =>
   (raw.prepare(`SELECT kind FROM logical_journal_v2 WHERE sequence > ? AND logical_item_id = ? ORDER BY sequence`).all(sinceSeq, id) as { kind: string }[]).map((r) => r.kind)
 
+const ORIGIN = 'https://origin.test/feed.xml'
+const guidSrcItem = (guid: string, sourceUrl: string): string =>
+  `<item><guid isPermaLink="false">${guid}</guid><title>t</title><description>d</description><source url="${sourceUrl}">O</source></item>`
+function seedAggSource(raw: Raw, id: string, url: string, governance = 'allowed'): void {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, ?, 'aggregate', 'enabled', ?, 'admin_federation', NULL, 0, ?)`,
+  ).run(id, url, governance, NOW)
+}
+// A fetched origin-feed candidate matching a guid, as resolveVerificationBatch consumes it.
+function evidenceFor(guid: string) {
+  const canonical = Buffer.from(JSON.stringify({ title: 't', content: 'd', link: null, inReplyTo: null }))
+  return {
+    normalizedPermalink: null, opaqueId: guid,
+    evidence: { id: randomUUID(), deliveryId: randomUUID(), wireOrdinal: 0, arrivalAt: NOW, fingerprintVersion: 1 as const, fingerprint: createHash('sha256').update(guid).digest('hex'), canonicalMaterial: new Uint8Array(canonical), rawEvidenceJson: JSON.stringify({ title: 't', sourceName: null }), normalizedJson: JSON.stringify({ keyKind: 'opaque', key: guid, permalink: null, inReplyTo: null, enclosures: [] }) },
+  }
+}
+const verifyJobId = (raw: Raw): string => (raw.prepare(`SELECT id FROM reconciliation_jobs_v2 WHERE kind = 'verification' LIMIT 1`).get() as { id: string }).id
+
 // Seed a remote item; `governance='quarantined'` makes it ordinarily absent.
 async function remoteItem(db: Db, raw: Raw, store: Store, sourceId: string, governance = 'allowed'): Promise<string> {
   const url = `https://feed.test/${sourceId}`
@@ -127,6 +146,35 @@ const ROWS: Row[] = [
       raw.prepare(`UPDATE remote_sources_v2 SET governance = 'quarantined', policy_generation = policy_generation + 1 WHERE id = ?`).run('s1')
       db.write((tx) => scheduleFanout(tx, { sourceId: 's1', generation: 1, now: NOW }))
       return { id, mutate: () => drain(store) } // the drain processes the fan-out row
+    },
+  },
+  {
+    // A verified origin flips the item's selected author to verified_origin →
+    // one upsert (the ordinary author changed). The fetch is elided: the outcome
+    // is handed straight to the synchronous resolveVerificationBatch.
+    name: 'verification success changing the selected author → one upsert',
+    expected: ['upsert'],
+    run: async ({ db, raw, store }) => {
+      seedAggSource(raw, 's_agg', 'https://agg.test/f')
+      await acquire(db, 's_agg', 'https://agg.test/f', RSS(guidSrcItem('g1', ORIGIN)))
+      drain(store) // creates the item + the pending check + the verification job
+      const id = remoteId(raw, 's_agg')
+      const jobId = verifyJobId(raw)
+      return { id, mutate: () => store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: { kind: 'fetched', parsedItems: [evidenceFor('g1')], publisherRedirect: null }, now: NOW }) }
+    },
+  },
+  {
+    // A verified origin of a quarantined aggregate is itself quarantined —
+    // ineligible for both ordinary comparators, so nothing ordinary changes.
+    name: 'verification success changing nothing ordinary → no record',
+    expected: [],
+    run: async ({ db, raw, store }) => {
+      seedAggSource(raw, 's_agg', 'https://agg.test/f', 'quarantined')
+      await acquire(db, 's_agg', 'https://agg.test/f', RSS(guidSrcItem('g1', ORIGIN)))
+      drain(store)
+      const id = remoteId(raw, 's_agg')
+      const jobId = verifyJobId(raw)
+      return { id, mutate: () => store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: { kind: 'fetched', parsedItems: [evidenceFor('g1')], publisherRedirect: null }, now: NOW }) }
     },
   },
 ]

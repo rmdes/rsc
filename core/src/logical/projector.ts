@@ -14,16 +14,20 @@ import { encodeCursor } from '../domain/cursor.ts'
 // stored selected-delivery/author/name fields are never authority (spec §3.1).
 
 export type EvidenceLevel =
+  | 'verified_origin'
   | 'bound_single_publisher'
   | 'aggregate_assertion'
   | 'source_scoped_fallback'
 
-// Strongest first (rank 0). Vertical 3 prepends a verified-origin rung; because the
-// comparator is strongest-first, that is purely additive (spec §3.2, review rev 1 P2).
+// Strongest first (rank 0). Vertical 3 PREPENDS the verified_origin rung at rank 0
+// — an intentional in-place supersession of V2's exact three-level enum (spec §4.3).
+// Because the comparator is strongest-first, the addition is PURELY ADDITIVE: no
+// item without verified evidence changes selection. The others shift down one rank.
 export const LEVEL_RANK: Record<EvidenceLevel, number> = {
-  bound_single_publisher: 0,
-  aggregate_assertion: 1,
-  source_scoped_fallback: 2,
+  verified_origin: 0,
+  bound_single_publisher: 1,
+  aggregate_assertion: 2,
+  source_scoped_fallback: 3,
 }
 
 // The complete durable first-arrival tuple (spec §2.2). Every first/latest rule
@@ -48,6 +52,12 @@ function strongestEligibleLevel(levels: EvidenceLevel[]): EvidenceLevel | null {
   let best: EvidenceLevel | null = null
   for (const l of levels) if (best === null || LEVEL_RANK[l] < LEVEL_RANK[best]) best = l
   return best
+}
+
+// Public alias (spec §4.3, plan Appendix D): the strongest of a set of levels,
+// null when empty — the four-level comparator, verified_origin first.
+export function rankAttribution(levels: EvidenceLevel[]): EvidenceLevel | null {
+  return strongestEligibleLevel(levels)
 }
 
 // ---- display-delivery selection (spec §3.2) ---------------------------------

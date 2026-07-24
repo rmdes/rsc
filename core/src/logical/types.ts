@@ -18,6 +18,12 @@ import type { CommandEnvelope, RemoteSource, AuditCategory } from '../domain/typ
 
 export type LogicalItemId = string
 
+// V3 widens V2's exact three-level enum to FOUR, strongest first — the intentional
+// in-place supersession spec §4.3 authorizes (verified_origin prepended at rank 0).
+export type AttributionLevel =
+  | 'verified_origin' | 'bound_single_publisher'
+  | 'aggregate_assertion' | 'source_scoped_fallback'
+
 export type SelectedAuthor =
   | { kind: 'local'; id: string; handle: string; displayName: string }
   | {
@@ -26,7 +32,7 @@ export type SelectedAuthor =
       displayName: string
       canonicalFeedUrl: string | null
       profileAvailable: boolean
-      attributionLevel: 'bound_single_publisher' | 'aggregate_assertion' | 'source_scoped_fallback'
+      attributionLevel: AttributionLevel
     }
 
 export type ReplyContextDto = {

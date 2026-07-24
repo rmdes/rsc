@@ -12,7 +12,7 @@ import { HandleTakenError } from '../domain/types.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure, deferVerification } from './reconcile.ts'
-import { scheduleVerification } from './verification.ts'
+import { scheduleVerification, resolveVerificationBatch } from './verification.ts'
 import type { ResolveVerificationInput } from './types.ts'
 import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
 import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher } from './projector.ts'
@@ -301,9 +301,11 @@ export function createLogicalStore(db: DatabaseContext) {
     deferVerification(jobId: string, now: string): void {
       db.write((tx) => deferVerification(tx, jobId, now))
     },
-    resolveVerificationBatch(_input: ResolveVerificationInput): void {
-      // ponytail: Task-5 stub. Outcome handling (containment match, verified rung,
-      // publisher aliases, job terminalisation) is out of Task 4's scope.
+    // Task 5 outcome handling: ONE db.write() resolves the fetched/failed batch —
+    // per-check verified/unverified, verified direct-origin evidence, the audit,
+    // hint recompute, journal effect, and publisher aliases all commit atomically.
+    resolveVerificationBatch(input: ResolveVerificationInput): void {
+      db.write((tx) => resolveVerificationBatch(tx, input))
     },
 
     // --- orphan-work write seam (Task 7) ----------------------------------
