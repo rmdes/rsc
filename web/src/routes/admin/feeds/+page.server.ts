@@ -92,8 +92,9 @@ const toRow = (s: SourceSummary) => ({
 	actions: availableActions(s).map((action) => ({ action, commandId: crypto.randomUUID() }))
 })
 
-async function listSources(f: typeof fetch, cursor: string | null): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {
-	const res = await f(`${base()}/admin/sources${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`)
+async function listSources(f: typeof fetch, cursor: string | null, filter?: 'governance'): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {
+	const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', filter ? `filter=${filter}` : ''].filter(Boolean).join('&')
+	const res = await f(`${base()}/admin/sources${qs ? `?${qs}` : ''}`)
 	if (!res.ok) throw new Error(await coreError(res, `listAdminSources ${res.status}`))
 	return (await res.json()) as { items: SourceSummary[]; nextCursor: string | null }
 }
@@ -107,8 +108,16 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	const cap = await getCapabilities(fetch)
 	if (!cap.sourceModelV2) return { mode: 'legacy' as const, feeds: await listAdminFeeds(f) }
 	const cursor = url.searchParams.get('cursor')
-	const page = await listSources(f, cursor)
-	const rows = page.items.map(toRow)
+	// The federation/review sections must not depend on WHICH page of the
+	// created_at pagination is being viewed (a bulk OPML import buried three
+	// approved federations behind "None." — found dogfooding 2026-07-25). The
+	// governance fetch returns every federated-or-quarantined row; the page
+	// fetch keeps paginating ordinary subscriptions. Union, governance first,
+	// deduped by id — grouping below then sees the complete governance set on
+	// every page.
+	const [page, governance] = await Promise.all([listSources(f, cursor), listSources(f, null, 'governance')])
+	const governanceIds = new Set(governance.items.map((s) => s.source.id))
+	const rows = [...governance.items, ...page.items.filter((s) => !governanceIds.has(s.source.id))].map(toRow)
 	// V3: the reserved blocked/tombstoned URLs (unpaginated). One command id per
 	// rendered unblock form — a resubmit replays the identical id (design §11).
 	const tombstones = (await listTombstones(f)).map((t) => ({ ...t, commandId: crypto.randomUUID() }))

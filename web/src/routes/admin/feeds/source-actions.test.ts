@@ -347,3 +347,20 @@ test('a capability failure with core down still throws to the error page — nev
 	})
 	await expect(loadAdminWith(fetch)).rejects.toThrow()
 })
+
+test('the federation and review sections come from the governance fetch, not from whichever page is being viewed', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (isCap(u)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (u.includes('filter=governance'))
+			return new Response(
+				JSON.stringify({ items: [summary('fed-buried', 'allowed', 'approved'), summary('quar-buried', 'quarantined', 'none')], nextCursor: null }),
+				{ status: 200 }
+			)
+		return new Response(JSON.stringify({ items: [summary('bulk1', 'allowed', 'none'), summary('bulk2', 'allowed', 'none')], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch)
+	expect(result.groups?.find((g) => g.key === 'federation')?.rows.map((r) => r.id)).toEqual(['fed-buried'])
+	expect(result.groups?.find((g) => g.key === 'review')?.rows.map((r) => r.id)).toEqual(['quar-buried'])
+	expect(result.groups?.find((g) => g.key === 'user')?.rows.map((r) => r.id)).toEqual(['bulk1', 'bulk2'])
+})

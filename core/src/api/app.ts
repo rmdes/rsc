@@ -354,7 +354,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     app.get('/admin/sources', async (c) => {
       const args = pageArgs(c)
       if (args instanceof Response) return args
-      return c.json(await v2repo.listSourceSummaries(args.cursor, args.limit))
+      const filter = c.req.query('filter')
+      if (filter !== undefined && filter !== 'governance') return c.json({ error: 'filter invalid' }, 400)
+      return c.json(await v2repo.listSourceSummaries(args.cursor, args.limit, filter))
     })
 
     app.get('/admin/sources/:id', async (c) => {

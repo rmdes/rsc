@@ -94,7 +94,7 @@ export const CATEGORY_OPTIONAL_ACTIONS: ReadonlySet<SourceTransitionAction> = ne
 
 export interface SourceRepository {
   getSource(id: string): Promise<RemoteSource | undefined>
-  listSourceSummaries(cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>>
+  listSourceSummaries(cursor: Cursor | undefined, limit: number, filter?: 'governance'): Promise<Page<SourceSummary>>
   getSourceDetail(id: string): Promise<SourceDetail | undefined>
   listSourceSubscriptions(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSubscription>>
   listSourceAudit(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceAuditEvent>>

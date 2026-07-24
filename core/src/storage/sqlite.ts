@@ -721,14 +721,21 @@ export class SqliteRepository implements Repository, SourceRepository {
     return row ? rowToRemoteSourceV2(row) : undefined
   }
 
-  async listSourceSummaries(cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>> {
+  async listSourceSummaries(cursor: Cursor | undefined, limit: number, filter?: 'governance'): Promise<Page<SourceSummary>> {
     const lim = clampLimit(limit)
+    // 'governance' narrows to the administratively load-bearing rows — any
+    // federation relationship (approved OR pending) or a quarantined source —
+    // so the admin page's federation/review sections can be built independent
+    // of where bulk subscriptions push them in the created_at pagination.
+    const where = filter === 'governance'
+      ? `(EXISTS(SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id) OR governance = 'quarantined')`
+      : '1=1'
     const rows = (cursor
       ? this.raw.prepare(
-          `SELECT * FROM remote_sources_v2 WHERE (created_at < ?) OR (created_at = ? AND id < ?)
+          `SELECT * FROM remote_sources_v2 WHERE ${where} AND ((created_at < ?) OR (created_at = ? AND id < ?))
            ORDER BY created_at DESC, id DESC LIMIT ?`,
         ).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
-      : this.raw.prepare(`SELECT * FROM remote_sources_v2 ORDER BY created_at DESC, id DESC LIMIT ?`).all(lim + 1)
+      : this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ?`).all(lim + 1)
     ) as RemoteSourceV2Row[]
     const { page, nextCursor } = this.splitPage(rows, lim)
     const items: SourceSummary[] = page.map((r) => {

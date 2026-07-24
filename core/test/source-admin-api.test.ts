@@ -352,3 +352,33 @@ test('ordinary callers never reach the admin surface even when the flag is on', 
   expect((await app.request(`/admin/sources/${id}/block`, post({ cookie }, { commandId: 'o-1', category: 'abuse' }))).status).toBe(403)
   repo.close()
 })
+
+// --- ?filter=governance: federation/review rows independent of pagination ----
+
+test('?filter=governance returns federated and quarantined sources even when newer bulk rows bury them', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const created = await app.request('/admin/sources', post({ cookie }, { url: FED_URL, attributionMode: 'aggregate', category: 'operator_policy', commandId: 'gov-1' }))
+  const fedId = (await created.json()).source.id
+  const seed = repo.raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', ?, 'user_subscription', NULL, 0, ?)`,
+  )
+  for (let i = 0; i < 60; i++) seed.run(randomUUID(), `https://filler${i}.test/feed`, 'allowed', `2027-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`)
+  const quarId = randomUUID()
+  seed.run(quarId, 'https://quarantined.test/feed', 'quarantined', '2027-01-01T00:01:30.000Z')
+
+  const page1 = (await (await app.request('/admin/sources', { headers: { cookie } })).json()) as { items: Array<{ source: { id: string } }> }
+  expect(page1.items.some((s) => s.source.id === fedId)).toBe(false) // the burial precondition
+
+  const gov = (await (
+    await app.request('/admin/sources?filter=governance', { headers: { cookie } })
+  ).json()) as { items: Array<{ source: { id: string; governance: string }; federationStatus: string }> }
+  const ids = gov.items.map((s) => s.source.id)
+  expect(ids).toContain(fedId)
+  expect(ids).toContain(quarId)
+  expect(gov.items.every((s) => s.federationStatus !== 'none' || s.source.governance === 'quarantined')).toBe(true)
+
+  expect((await app.request('/admin/sources?filter=bogus', { headers: { cookie } })).status).toBe(400)
+  repo.close()
+})
