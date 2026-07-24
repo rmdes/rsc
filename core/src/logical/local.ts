@@ -46,6 +46,9 @@ function loadPost(tx: WriteTx, id: string): PostRow | undefined {
 // adminDeriveRoot — a thread root must read the same from the write path, the
 // projection overlay and the admin store. Exported only for the behavioural
 // canary in test/logical-lockstep.test.ts. Change one copy, change all three.
+// projector.ts's remoteThreadRoot is a FOURTH parent-chain walk, deliberately
+// OUTSIDE this lockstep set: it stops at the first non-`resolved`
+// parent_state, so it must NOT agree with these three. Don't fold it in.
 export function deriveRoot(tx: WriteTx, parentId: string): string {
   const parentOf = tx.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`)
   let root = parentId

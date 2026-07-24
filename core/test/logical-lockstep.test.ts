@@ -53,6 +53,8 @@ const PERMALINK_CORPUS = [
   'https://user:pw@example.com/a',
   'https://example.com',
   'https://example.com/',
+  'https://www.example.com/a',
+  'https://example.com/a?utm_source=x',
   'mailto:someone@example.com',
   'tag:example.com,2026:1',
   'urn:uuid:00000000-0000-0000-0000-000000000000',
@@ -78,9 +80,20 @@ test('normalizePermalink copies agree (acquisition.ts vs reconcile.ts — lockst
 //   one → root                — one deep
 //   d1 → d2 → d3 → deepRoot   — multi deep
 //   cycA ↔ cycB               — a cycle (every copy bounds its walk at 1000)
+//   deepChain65 → … → deepChainRoot — 65 edges deep (see DEEP_CHAIN_LENGTH)
 // A dangling parent id is NOT seeded: parent_logical_item_id is FK RESTRICT,
 // so it cannot exist. The missing-row branch of the walk is exercised instead
 // by deriving from an id that was never seeded ('missing' in the id list).
+
+// All three deriveRoot copies bound their walk at `i < 1000`; production
+// caps real reply depth at 64 edges (threading.ts's MAX_DEPTH). A fixture
+// only 3 edges deep can't catch a walk bound that drifted to any other
+// value in 4..64 — e.g. store.ts's admin walk quietly "hardened" to
+// `i < 32` — because every copy still reaches the true root well within
+// that shallower bound. Seed a chain past MAX_DEPTH so a drift anywhere in
+// the realistic range makes one copy stop short and the others don't.
+const DEEP_CHAIN_LENGTH = 65 // edges; MAX_DEPTH (threading.ts) is 64
+
 function seedChain(raw: Raw): void {
   const ins = raw.prepare(
     `INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at)
@@ -97,6 +110,11 @@ function seedChain(raw: Raw): void {
   node('cycB', 'cycA')
   // Close the cycle after both rows exist — the FK permits it, so the walk bound is real.
   raw.prepare(`UPDATE logical_items_v2 SET parent_logical_item_id = 'cycB' WHERE id = 'cycA'`).run()
+
+  node('deepChainRoot', null)
+  for (let i = 1; i <= DEEP_CHAIN_LENGTH; i++) {
+    node(`deepChain${i}`, i === 1 ? 'deepChainRoot' : `deepChain${i - 1}`)
+  }
 }
 
 test('deriveRoot copies agree (local.ts vs runtime.ts vs store.ts — lockstep canary)', async () => {
@@ -104,7 +122,8 @@ test('deriveRoot copies agree (local.ts vs runtime.ts vs store.ts — lockstep c
   const raw = repo.raw
   seedChain(raw)
 
-  for (const id of ['root', 'one', 'deepRoot', 'd3', 'd2', 'd1', 'cycA', 'cycB', 'missing']) {
+  const deepestId = `deepChain${DEEP_CHAIN_LENGTH}`
+  for (const id of ['root', 'one', 'deepRoot', 'd3', 'd2', 'd1', 'cycA', 'cycB', 'missing', deepestId]) {
     const local = localDeriveRoot(raw, id)
     expect(runtimeDeriveRoot(raw, id), `input: ${id}`).toBe(local)
     expect(adminDeriveRoot(raw, id), `input: ${id}`).toBe(local)
@@ -113,4 +132,5 @@ test('deriveRoot copies agree (local.ts vs runtime.ts vs store.ts — lockstep c
   // Non-vacuity: the corpus must actually exercise a walk, not just identity.
   expect(localDeriveRoot(raw, 'd1')).toBe('deepRoot')
   expect(localDeriveRoot(raw, 'one')).toBe('root')
+  expect(localDeriveRoot(raw, deepestId)).toBe('deepChainRoot')
 })
