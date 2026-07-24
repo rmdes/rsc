@@ -7,8 +7,8 @@ import { fingerprintRequest } from '../domain/source-repository.ts'
 import { decodeCursor } from '../domain/cursor.ts'
 import type { LogicalStore } from '../logical/store.ts'
 import type { AcquisitionEngine } from '../logical/acquisition.ts'
-import type { CommandEnvelope } from '../domain/types.ts'
-import type { RunCursor, JobCursor, AdminRunProjection, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto } from '../logical/types.ts'
+import type { CommandEnvelope, AuditCategory } from '../domain/types.ts'
+import type { RunCursor, JobCursor, AdminRunProjection, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult } from '../logical/types.ts'
 import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
 import type { Service } from '../domain/service.ts'
@@ -38,6 +38,23 @@ const IDEMPOTENCY_CONFLICT = { model: MODEL, error: 'idempotency conflict' }
 const INVALID_CURSOR = { model: MODEL, error: 'invalid cursor' }
 const DEFAULT_LIMIT = 50
 
+// V3 review-command fixed non-success bodies (spec §7.3). The neutral 404 is
+// uniform across all four mutation routes (unknown item/source/tombstone are
+// indistinguishable); the state-conflict 409 bodies are DISTINCT from the
+// idempotency-conflict body.
+const ITEM_UNAVAILABLE = { model: MODEL, error: 'item unavailable' }
+const LOCAL_ORIGIN = { model: MODEL, error: 'local origin' }
+const NOT_APPLICABLE = { model: MODEL, error: 'not applicable' }
+const NOT_BLOCKED = { model: MODEL, error: 'source not blocked' }
+
+// The full eight-value TS AuditCategory (V3 re-added false_positive/remediated —
+// the moderation categories). Typed as AuditCategory[] so dropping a union member
+// fails typecheck here too. Distinct from app.ts's narrower six-value list.
+const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
+function isAuditCategory(v: unknown): v is AuditCategory {
+  return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
+}
+
 function isString(v: unknown, min: number, max: number): v is string {
   return typeof v === 'string' && v.length >= min && v.length <= max
 }
@@ -47,6 +64,47 @@ async function readJsonBody(c: Context): Promise<Record<string, unknown> | null>
   } catch {
     return null
   }
+}
+
+// Every V3 mutation body is {commandId, category, note?}: commandId ONLY as the
+// JSON body field (no header), category required (it enters the route fingerprint),
+// note free text and EXCLUDED from the fingerprint (spec §7.1).
+type ModBody = { commandId: string; category: AuditCategory; note: string | null }
+async function readModBody(c: Context): Promise<ModBody | Response> {
+  const body = await readJsonBody(c)
+  if (!body || !isString(body.commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+  if (!isAuditCategory(body.category)) return c.json({ error: 'category invalid' }, 400)
+  if (body.note !== undefined && body.note !== null && !isString(body.note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+  return { commandId: body.commandId, category: body.category, note: typeof body.note === 'string' ? body.note : null }
+}
+
+// Disposition mapping for hide/restore (spec §7.3). A matching replay re-maps the
+// STORED result to the same 200/404/409 — the body is a pure function of the kind.
+function moderationResponse(c: Context, r: ItemModerationResult): Response {
+  switch (r.kind) {
+    case 'applied': return c.json({ model: MODEL, ...r }, 200)
+    case 'unknown': return c.json(ITEM_UNAVAILABLE, 404)
+    case 'local_origin': return c.json(LOCAL_ORIGIN, 409)
+    case 'not_applicable': return c.json(NOT_APPLICABLE, 409)
+    case 'conflict': return c.json(IDEMPOTENCY_CONFLICT, 409)
+  }
+}
+
+// Decode ?before= through the SHARED tuple codec into a raw 2-tuple (the audit and
+// source→items reads map it to their cursor shapes). Neutral invalid-cursor 400 on
+// any malformed input, via the shared invalid-cursor table.
+function parseTuplePage(c: Context): { before: [string, string] | undefined; limit: number } | Response {
+  let before: [string, string] | undefined
+  const beforeRaw = c.req.query('before')
+  if (beforeRaw !== undefined) {
+    const dec = decodeCursor(beforeRaw)
+    if (!dec || dec.tuple.length !== 2) return c.json(INVALID_CURSOR, 400)
+    before = [dec.tuple[0], dec.tuple[1]]
+  }
+  const limitRaw = c.req.query('limit')
+  const n = limitRaw === undefined ? DEFAULT_LIMIT : Number(limitRaw)
+  const limit = Number.isInteger(n) ? Math.max(1, Math.min(100, n)) : DEFAULT_LIMIT
+  return { before, limit }
 }
 
 // Every paginated read decodes ?before= through the SHARED tuple codec (VP7) and
@@ -148,6 +206,85 @@ export function mountLogicalRoutes(app: Hono, deps: LogicalRouteDeps): void {
     if (page instanceof Response) return page
     return c.json(store.listJobs(c.req.param('runId') ?? '', page.before as JobCursor | undefined, page.limit))
   })
+
+  // --- V3 review mutations (spec §7.3, §1.1, §5.2) ------------------------
+  // Each composes jsonWrite positionally, takes {commandId, category, note?} in the
+  // JSON body, folds the pinned fingerprint (notes excluded, category included),
+  // and maps the store result's kind to the fixed 200/404/409 bodies. Registered
+  // before app.ts's /admin/sources/:id/:action transition matrix so `.../purge`
+  // matches here, not the matrix (like /refresh above).
+  app.post('/admin/items/:logicalItemId/hide', jsonWrite, async (c) => {
+    const logicalItemId = c.req.param('logicalItemId') ?? ''
+    const b = await readModBody(c)
+    if (b instanceof Response) return b
+    const actorId = c.get('coreUser').id
+    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId: b.commandId, requestFingerprint: fingerprintRequest(['hide', logicalItemId, actorId, b.category]) }
+    return moderationResponse(c, store.hideItem({ command, logicalItemId, category: b.category, note: b.note, now: now() }))
+  })
+
+  app.post('/admin/items/:logicalItemId/restore', jsonWrite, async (c) => {
+    const logicalItemId = c.req.param('logicalItemId') ?? ''
+    const b = await readModBody(c)
+    if (b instanceof Response) return b
+    const actorId = c.get('coreUser').id
+    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId: b.commandId, requestFingerprint: fingerprintRequest(['restore', logicalItemId, actorId, b.category]) }
+    return moderationResponse(c, store.restoreItem({ command, logicalItemId, category: b.category, note: b.note, now: now() }))
+  })
+
+  app.post('/admin/sources/:sourceId/purge', jsonWrite, async (c) => {
+    const sourceId = c.req.param('sourceId') ?? ''
+    const b = await readModBody(c)
+    if (b instanceof Response) return b
+    const actorId = c.get('coreUser').id
+    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId: b.commandId, requestFingerprint: fingerprintRequest(['purge', sourceId, actorId, b.category]) }
+    const result = store.purgeSource({ command, sourceId, category: b.category, note: b.note, now: now() })
+    switch (result.kind) {
+      case 'purged': return c.json({ model: MODEL, ...result }, 200)
+      case 'unknown': return c.json(ITEM_UNAVAILABLE, 404)
+      case 'not_blocked': return c.json(NOT_BLOCKED, 409)
+      case 'conflict': return c.json(IDEMPOTENCY_CONFLICT, 409)
+    }
+  })
+
+  app.post('/admin/tombstones/:tombstoneId/unblock', jsonWrite, async (c) => {
+    const tombstoneId = c.req.param('tombstoneId') ?? ''
+    const b = await readModBody(c)
+    if (b instanceof Response) return b
+    const actorId = c.get('coreUser').id
+    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId: b.commandId, requestFingerprint: fingerprintRequest(['tombstone-unblock', tombstoneId, actorId, b.category]) }
+    const result = store.unblockTombstone({ command, tombstoneId, category: b.category, note: b.note, now: now() })
+    switch (result.kind) {
+      case 'unblocked': return c.json({ model: MODEL, ...result }, 200)
+      case 'unknown': return c.json(ITEM_UNAVAILABLE, 404)
+      case 'conflict': return c.json(IDEMPOTENCY_CONFLICT, 409)
+    }
+  })
+
+  // --- V3 review reads (spec §7.3) ----------------------------------------
+  // Bounded item detail; audit + source→items paginate via the shared codec + the
+  // shared invalid-cursor table; tombstones list unpaginated (spec: only audit and
+  // source→items page). Every envelope carries model:'logical-v2'.
+  app.get('/admin/items/:logicalItemId', (c) => {
+    const detail = store.getAdminItemDetail(c.req.param('logicalItemId') ?? '')
+    if (!detail) return c.json(ITEM_UNAVAILABLE, 404)
+    return c.json(detail)
+  })
+
+  app.get('/admin/items/:logicalItemId/audit', (c) => {
+    const page = parseTuplePage(c)
+    if (page instanceof Response) return page
+    const cursor = page.before ? { createdAt: page.before[0], id: page.before[1] } : undefined
+    return c.json(store.listItemAudit(c.req.param('logicalItemId') ?? '', cursor, page.limit))
+  })
+
+  app.get('/admin/sources/:sourceId/items', (c) => {
+    const page = parseTuplePage(c)
+    if (page instanceof Response) return page
+    const cursor = page.before ? { timelineSortAt: page.before[0], logicalItemId: page.before[1] } : undefined
+    return c.json(store.listSourceItems(c.req.param('sourceId') ?? '', cursor, page.limit))
+  })
+
+  app.get('/admin/tombstones', (c) => c.json({ model: MODEL, tombstones: store.listTombstones() }))
 }
 
 // =============================================================================

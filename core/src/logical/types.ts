@@ -296,6 +296,78 @@ export type ItemModerationResult =
   | { kind: 'applied'; logicalItemId: string; hiddenAt: string | null }
   | { kind: 'unknown' | 'local_origin' | 'not_applicable' | 'conflict' }
 
+// --- V3 admin review DTOs (spec §7.3, plan shared-interfaces table) --------
+// The bounded evidence-review surface behind GET /admin/items/:id and the
+// source→items / tombstone reads. Sections are inline-capped at ADMIN_SECTION_CAP
+// (store.ts), newest-first, with TRUE totals in `counts`. Raw evidence is BOUNDED
+// escaped text (Core returns semantic text; Web alone renders — spec §1.5): no
+// secrets, no unbounded blobs, no rendered HTML from Core.
+
+export interface AdminVersionRow {
+  observationVersionId: string
+  arrivalAt: string
+  wireOrdinal: number
+  fingerprint: string
+  rawEvidence: string
+}
+export interface AdminDeliveryRow {
+  deliveryId: string
+  sourceId: string
+  eligible: boolean
+  keyKind: string
+  key: string
+  firstSeenAt: string
+  versions: AdminVersionRow[]
+}
+export interface AdminClaimRow {
+  claimId: string
+  evidenceLevel: AttributionLevel
+  publisherId: string
+  firstSeenAt: string
+  observationVersionId: string
+  conflictIds: string[]
+}
+export interface AdminConflictRow {
+  conflictId: string
+  kind: string
+  disputed: string
+  logicalItemId: string | null
+  observationVersionId: string | null
+  createdAt: string
+}
+export interface AdminItemDetail {
+  model: 'logical-v2'
+  logicalItemId: string
+  origin: 'local' | 'remote'
+  state: 'ordinary' | 'hidden' | 'unsupported' | 'structural_tombstone' | 'deleted_local'
+  hiddenAt: string | null
+  selected: { deliveryId: string | null; publisherId: string | null; attributionLevel: AttributionLevel | null }
+  parentLogicalItemId: string | null
+  threadRootId: string | null
+  counts: { deliveries: number; versions: number; claims: number; conflicts: number; audit: number }
+  deliveries: AdminDeliveryRow[]
+  claims: AdminClaimRow[]
+  conflicts: AdminConflictRow[]
+  // rev 2 (RC5): one entry per verification check for this item; [] = never
+  // scheduled. state from verification_checks_v2; attempts from the batch-key job.
+  verification: { publisherFeedUrl: string; state: 'pending' | 'verified' | 'unverified'; attempts: number; lastCheckedAt: string | null }[]
+}
+export interface AdminSourceItemRow {
+  logicalItemId: string
+  state: AdminItemDetail['state']
+  timelineSortAt: string
+  hiddenAt: string | null
+}
+export interface TombstoneView {
+  id: string
+  canonicalUrl: string
+  action: 'block' | 'purge'
+  category: AuditCategory
+  note: string | null
+  createdAt: string
+  aliases: string[]
+}
+
 // --- Pagination cursors (spec §6.3) --------------------------------------
 // Decoded forms; the shared opaque codec lives in ../domain/cursor.ts.
 
@@ -514,4 +586,11 @@ export interface LogicalReadTx {
   listRuns(sourceId: string, cursor: RunCursor | undefined, limit: number): AdminPage<AdminRunProjection>
   listJobs(runId: string, cursor: JobCursor | undefined, limit: number): AdminPage<AdminReconciliationJobSummary>
   listItemAudit(logicalItemId: string, cursor: { createdAt: string; id: string } | undefined, limit: number): AdminPage<ItemAuditEvent>
+  // V3 admin review reads (spec §7.3, Task 8). listSourceItems carries the
+  // source-level conflictCount (a true count across ALL the source's items) that
+  // Task 9's source-detail page reads — AdminSourceAcquisitionSummary never
+  // shipped (V2 Task 5 gap), so it lives on the shipped source→items envelope.
+  getAdminItemDetail(id: string): AdminItemDetail | undefined
+  listSourceItems(sourceId: string, cursor: { timelineSortAt: string; logicalItemId: string } | undefined, limit: number): AdminPage<AdminSourceItemRow> & { conflictCount: number }
+  listTombstones(): TombstoneView[]
 }

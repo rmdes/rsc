@@ -15,8 +15,10 @@ import { claimReconciliation, reconcileClaim, recordReconciliationFailure, defer
 import { scheduleVerification, resolveVerificationBatch } from './verification.ts'
 import type { ResolveVerificationInput } from './types.ts'
 import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
-import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher } from './projector.ts'
+import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher, rankAttribution } from './projector.ts'
+import type { EvidenceLevel } from './projector.ts'
 import type { ProjectionViewer, TimelineQuery, LogicalTimelineEnvelope, LogicalHistoryEnvelope, LogicalThreadEnvelope, PublicLocalAccount, PublicPublisher } from './types.ts'
+import type { AdminItemDetail, AdminDeliveryRow, AdminVersionRow, AdminClaimRow, AdminConflictRow, AdminSourceItemRow, TombstoneView } from './types.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput } from './types.ts'
 import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
 import type { WriteTx } from './database.ts'
@@ -27,8 +29,8 @@ import type { ItemAuditRow } from './moderation.ts'
 import type { ModerationCommandInput, ItemModerationResult } from './types.ts'
 import { scheduleFanout, claimFanout, processFanoutBatch } from './fanout.ts'
 import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
-import { purgeSource, removeSourceEvidence, isTombstoned } from './tombstones.ts'
-import type { PurgeCommandInput, PurgeResult } from './tombstones.ts'
+import { purgeSource, removeSourceEvidence, isTombstoned, unblockTombstone } from './tombstones.ts'
+import type { PurgeCommandInput, PurgeResult, UnblockCommandInput, UnblockResult } from './tombstones.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -193,6 +195,133 @@ export type RefreshLedgerCheck =
   | { kind: 'conflict' }
   | { kind: 'refused'; refusal: unknown }
   | { kind: 'replay'; runId: string }
+
+// --- V3 admin review reads (Task 8, spec §7.3) -------------------------------
+// Every section is inline-capped at ADMIN_SECTION_CAP newest-first (ponytail:
+// inline caps, no cursors; paginate a section only when a real item ever exceeds
+// 100). Raw evidence is BOUNDED text (Core returns semantic text; Web renders):
+// truncated, never HTML-rendered here.
+const ADMIN_SECTION_CAP = 100
+const ADMIN_RAW_EVIDENCE_CAP = 4096
+const ADMIN_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
+
+function boundText(s: string, cap: number): string {
+  return s.length > cap ? s.slice(0, cap) : s
+}
+
+interface AdminItemRow {
+  id: string; origin: 'local' | 'remote'; timeline_sort_at: string
+  parent_state: string; parent_logical_item_id: string | null
+  selected_delivery_id: string | null; selected_publisher_id: string | null
+  hidden_at: string | null; structural_tombstone: number
+}
+
+// The five terminal/moderation states (spec §5.3, §1.1): structural tombstone and
+// deleted-local markers first, then hidden, then ordinary-visible vs unsupported
+// (no ordinary-eligible delivery) via THE shared projector gate.
+function adminItemState(tx: ReadTx, row: { id: string; hidden_at: string | null; structural_tombstone: number }): AdminItemDetail['state'] {
+  if (row.structural_tombstone === 1) return 'structural_tombstone'
+  if (tx.prepare(`SELECT 1 FROM logical_deleted_local_v2 WHERE logical_item_id = ? LIMIT 1`).get(row.id)) return 'deleted_local'
+  if (row.hidden_at != null) return 'hidden'
+  return projectItem(tx, row.id, ADMIN_ANON) !== undefined ? 'ordinary' : 'unsupported'
+}
+
+// Derived thread root: walk the parent chain (bounded), never stored authority.
+function adminDeriveRoot(tx: ReadTx, startId: string): string {
+  const q = tx.prepare(`SELECT parent_logical_item_id AS p FROM logical_items_v2 WHERE id = ?`)
+  let root = startId
+  let cur: string | null = startId
+  for (let i = 0; i < 1000 && cur; i++) {
+    root = cur
+    const r = q.get(cur) as { p: string | null } | undefined
+    cur = r ? r.p : null
+  }
+  return root
+}
+
+function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
+  const li = tx.prepare(
+    `SELECT id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, hidden_at, structural_tombstone
+     FROM logical_items_v2 WHERE id = ?`,
+  ).get(id) as AdminItemRow | undefined
+  if (!li) return undefined
+
+  // TRUE totals (independent of the per-section caps).
+  const one = (sql: string, ...args: unknown[]): number => (tx.prepare(sql).get(...args) as { n: number }).n
+  const counts = {
+    deliveries: one(`SELECT COUNT(*) AS n FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?`, id),
+    versions: one(`SELECT COUNT(*) AS n FROM observation_versions_v2 WHERE delivery_id IN (SELECT key FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?)`, id),
+    claims: one(`SELECT COUNT(*) AS n FROM publisher_claims_v2 WHERE logical_item_id = ?`, id),
+    conflicts: one(`SELECT COUNT(*) AS n FROM logical_conflicts_v2 WHERE logical_item_id = ?`, id),
+    audit: one(`SELECT COUNT(*) AS n FROM item_audit_v2 WHERE logical_item_id = ?`, id),
+  }
+
+  // deliveries (cap, newest-first) + each delivery's bounded versions section
+  const deliveryRows = tx.prepare(
+    `SELECT d.id, d.source_id, d.key_kind, d.key, d.first_seen_at
+     FROM deliveries_v2 d
+     JOIN logical_identity_keys_v2 ik ON ik.key = d.id AND ik.kind = 'delivery'
+     WHERE ik.logical_item_id = ?
+     ORDER BY d.first_seen_at DESC, d.id DESC LIMIT ?`,
+  ).all(id, ADMIN_SECTION_CAP) as { id: string; source_id: string; key_kind: string; key: string; first_seen_at: string }[]
+  const deliveries: AdminDeliveryRow[] = deliveryRows.map((d) => {
+    const gov = tx.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(d.source_id) as { governance: string } | undefined
+    const hasEligibleVersion = tx.prepare(
+      `SELECT 1 FROM observation_versions_v2 v JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id AND j.kind = 'observation'
+       WHERE v.delivery_id = ? AND j.status IN ('reconciled','conflicted') LIMIT 1`,
+    ).get(d.id) !== undefined
+    const vRows = tx.prepare(
+      `SELECT id, arrival_at, wire_ordinal, fingerprint, raw_evidence_json FROM observation_versions_v2 WHERE delivery_id = ? ORDER BY arrival_at DESC, id DESC LIMIT ?`,
+    ).all(d.id, ADMIN_SECTION_CAP) as { id: string; arrival_at: string; wire_ordinal: number; fingerprint: string; raw_evidence_json: string }[]
+    const versions: AdminVersionRow[] = vRows.map((v) => ({ observationVersionId: v.id, arrivalAt: v.arrival_at, wireOrdinal: v.wire_ordinal, fingerprint: v.fingerprint, rawEvidence: boundText(v.raw_evidence_json, ADMIN_RAW_EVIDENCE_CAP) }))
+    return { deliveryId: d.id, sourceId: d.source_id, eligible: gov?.governance === 'allowed' && hasEligibleVersion, keyKind: d.key_kind, key: d.key, firstSeenAt: d.first_seen_at, versions }
+  })
+
+  // claims (cap, newest-first) — conflictIds are the conflicts sharing the claim's version
+  const claimRows = tx.prepare(
+    `SELECT id, evidence_level, publisher_id, first_seen_at, observation_version_id FROM publisher_claims_v2 WHERE logical_item_id = ? ORDER BY first_seen_at DESC, id DESC LIMIT ?`,
+  ).all(id, ADMIN_SECTION_CAP) as { id: string; evidence_level: EvidenceLevel; publisher_id: string; first_seen_at: string; observation_version_id: string }[]
+  const claims: AdminClaimRow[] = claimRows.map((c) => ({
+    claimId: c.id, evidenceLevel: c.evidence_level, publisherId: c.publisher_id, firstSeenAt: c.first_seen_at, observationVersionId: c.observation_version_id,
+    conflictIds: (tx.prepare(`SELECT id FROM logical_conflicts_v2 WHERE observation_version_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`).all(c.observation_version_id, ADMIN_SECTION_CAP) as { id: string }[]).map((r) => r.id),
+  }))
+
+  // conflicts (cap, newest-first)
+  const conflictRows = tx.prepare(
+    `SELECT id, kind, evidence_json, logical_item_id, observation_version_id, created_at FROM logical_conflicts_v2 WHERE logical_item_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+  ).all(id, ADMIN_SECTION_CAP) as { id: string; kind: string; evidence_json: string; logical_item_id: string | null; observation_version_id: string | null; created_at: string }[]
+  const conflicts: AdminConflictRow[] = conflictRows.map((c) => ({ conflictId: c.id, kind: c.kind, disputed: boundText(c.evidence_json, ADMIN_RAW_EVIDENCE_CAP), logicalItemId: c.logical_item_id, observationVersionId: c.observation_version_id, createdAt: c.created_at }))
+
+  // verification (cap, newest-first): one row per check; attempts from the batch job
+  const checkRows = tx.prepare(
+    `SELECT publisher_feed_url, state, batch_key, resolved_at FROM verification_checks_v2 WHERE logical_item_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+  ).all(id, ADMIN_SECTION_CAP) as { publisher_feed_url: string; state: 'pending' | 'verified' | 'unverified'; batch_key: string; resolved_at: string | null }[]
+  const verification = checkRows.map((c) => {
+    const job = tx.prepare(`SELECT attempts FROM reconciliation_jobs_v2 WHERE kind = 'verification' AND verification_batch_key = ? ORDER BY attempts DESC LIMIT 1`).get(c.batch_key) as { attempts: number } | undefined
+    return { publisherFeedUrl: c.publisher_feed_url, state: c.state, attempts: job?.attempts ?? 0, lastCheckedAt: c.resolved_at }
+  })
+
+  // selected: stored hints + the selected publisher's strongest claim level
+  const selLevels = li.selected_publisher_id
+    ? (tx.prepare(`SELECT evidence_level FROM publisher_claims_v2 WHERE logical_item_id = ? AND publisher_id = ?`).all(id, li.selected_publisher_id) as { evidence_level: EvidenceLevel }[]).map((r) => r.evidence_level)
+    : []
+
+  return {
+    model: 'logical-v2',
+    logicalItemId: li.id,
+    origin: li.origin,
+    state: adminItemState(tx, li),
+    hiddenAt: li.hidden_at,
+    selected: { deliveryId: li.selected_delivery_id, publisherId: li.selected_publisher_id, attributionLevel: rankAttribution(selLevels) },
+    parentLogicalItemId: li.parent_logical_item_id,
+    threadRootId: li.parent_logical_item_id ? adminDeriveRoot(tx, li.parent_logical_item_id) : null,
+    counts,
+    deliveries,
+    claims,
+    conflicts,
+    verification,
+  }
+}
 
 // The local-mutation write seam (Task 3): each command runs inside ONE db.write()
 // so local storage, logical metadata, and journal effects commit atomically (spec
@@ -385,6 +514,12 @@ export function createLogicalStore(db: DatabaseContext) {
     isTombstoned(url: string): boolean {
       return db.read((tx) => isTombstoned(tx, url))
     },
+    // Unblock (Task 7 built the free fn; Task 8 wires it): ONE ledger-backed write
+    // deleting the tombstone + its aliases, creating NO source. The route maps on
+    // .kind.
+    unblockTombstone(input: UnblockCommandInput): UnblockResult {
+      return db.write((tx) => unblockTombstone(tx, input))
+    },
 
     // --- policy fan-out (Task 3, spec §4.1) -------------------------------
     // scheduleFanout takes the caller's WriteTx so the enqueue commits atomically
@@ -418,6 +553,42 @@ export function createLogicalStore(db: DatabaseContext) {
         const last = page[page.length - 1]
         const nextCursor = rows.length > lim && last ? encodeCursor(1, [last.created_at, last.id]) : null
         return { model: 'logical-v2', items: page.map(rowToItemAuditEvent), nextCursor }
+      })
+    },
+
+    // --- V3 admin review reads (Task 8, spec §7.3) ------------------------
+    // Bounded item evidence detail; the source→items list (paginated, newest-first
+    // over the shared (timelineSortAt, logicalItemId) tuple) carrying the source's
+    // TRUE conflictCount; the unpaginated tombstone list.
+    getAdminItemDetail(id: string): AdminItemDetail | undefined {
+      return db.read((tx) => adminItemDetail(tx, id))
+    },
+    listSourceItems(sourceId: string, cursor: { timelineSortAt: string; logicalItemId: string } | undefined, limit: number): AdminPage<AdminSourceItemRow> & { conflictCount: number } {
+      return db.read((tx) => {
+        const lim = clampLimit(limit)
+        const rows = (cursor
+          ? tx.prepare(`SELECT DISTINCT li.id, li.timeline_sort_at, li.hidden_at, li.structural_tombstone FROM logical_items_v2 li JOIN logical_identity_keys_v2 ik ON ik.logical_item_id = li.id AND ik.kind = 'delivery' JOIN deliveries_v2 d ON d.id = ik.key WHERE d.source_id = ? AND (li.timeline_sort_at < ? OR (li.timeline_sort_at = ? AND li.id < ?)) ORDER BY li.timeline_sort_at DESC, li.id DESC LIMIT ?`).all(sourceId, cursor.timelineSortAt, cursor.timelineSortAt, cursor.logicalItemId, lim + 1)
+          : tx.prepare(`SELECT DISTINCT li.id, li.timeline_sort_at, li.hidden_at, li.structural_tombstone FROM logical_items_v2 li JOIN logical_identity_keys_v2 ik ON ik.logical_item_id = li.id AND ik.kind = 'delivery' JOIN deliveries_v2 d ON d.id = ik.key WHERE d.source_id = ? ORDER BY li.timeline_sort_at DESC, li.id DESC LIMIT ?`).all(sourceId, lim + 1)) as { id: string; timeline_sort_at: string; hidden_at: string | null; structural_tombstone: number }[]
+        const page = rows.slice(0, lim)
+        const last = page[page.length - 1]
+        const nextCursor = rows.length > lim && last ? encodeCursor(1, [last.timeline_sort_at, last.id]) : null
+        const items: AdminSourceItemRow[] = page.map((r) => ({ logicalItemId: r.id, state: adminItemState(tx, r), timelineSortAt: r.timeline_sort_at, hiddenAt: r.hidden_at }))
+        // TRUE conflict count across ALL the source's items (not just this page) —
+        // Task 9's source-detail page reads it (AdminSourceAcquisitionSummary never
+        // shipped; see the dated plan note).
+        const conflictCount = (tx.prepare(
+          `SELECT COUNT(*) AS n FROM logical_conflicts_v2 WHERE logical_item_id IN (SELECT DISTINCT ik.logical_item_id FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key WHERE ik.kind = 'delivery' AND d.source_id = ?)`,
+        ).get(sourceId) as { n: number }).n
+        return { model: 'logical-v2', items, nextCursor, conflictCount }
+      })
+    },
+    listTombstones(): TombstoneView[] {
+      return db.read((tx) => {
+        const rows = tx.prepare(`SELECT id, canonical_url, action, category, note, created_at FROM blocked_source_tombstones_v2 ORDER BY created_at DESC, id DESC`).all() as { id: string; canonical_url: string; action: 'block' | 'purge'; category: TombstoneView['category']; note: string | null; created_at: string }[]
+        return rows.map((r) => ({
+          id: r.id, canonicalUrl: r.canonical_url, action: r.action, category: r.category, note: r.note, createdAt: r.created_at,
+          aliases: (tx.prepare(`SELECT url FROM tombstone_aliases_v2 WHERE tombstone_id = ? ORDER BY url ASC`).all(r.id) as { url: string }[]).map((a) => a.url),
+        }))
       })
     },
 
