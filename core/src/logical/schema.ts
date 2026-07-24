@@ -261,3 +261,50 @@ export const LOGICAL_V3_SCHEMA: string[] = [
   )`,
   `CREATE INDEX item_audit_v2_page ON item_audit_v2(logical_item_id,created_at DESC,id DESC)`,
 ]
+
+// Additive logical-v4 schema (migration & cutover, spec
+// 2026-07-22-rsc-migration-cutover-design.md, plan Appendix A). ONE migration
+// entry, appended strictly at the TAIL of MIGRATIONS in sqlite.ts, AFTER
+// LOGICAL_V3_SCHEMA — mid-array insertion would renumber applied migrations and
+// corrupt user_version on the live databases. Pure additive: two CREATE TABLE,
+// one CREATE INDEX, three ALTER TABLE ADD COLUMN. No table is rebuilt.
+//
+// Three deliberate inversions of the house conventions, all pinned:
+//  - push_subscriptions_v2.state is a NARROW two-value CHECK, not the usual
+//    wide-SQL/narrow-TS split (spec WP1): the v2 push lifecycle collapses to
+//    v1's shape, and migration-time expired/invalid facts become report
+//    findings, never rows. A third value resurrects the deleted 4x4 matrix.
+//  - push_subscriptions_v2.source_id is ON DELETE CASCADE (V3 §5.2: purge
+//    deletes push state with the rest of the operational state), so it is NOT
+//    a PURGE_INVENTORY entry — only non-CASCADE children of a purged row are.
+//  - handle_reservations_v2 has NO foreign keys: the reservation must survive
+//    source removal and purge (foundation §12).
+//
+// acquisition_runs_v2.reason keeps V2's two values — push provenance is the
+// additive nullable delivery_mechanism column, not a new reason (FC1).
+// The conversion marker extends V2's activation singleton instead of adding a
+// table: converted_at IS NOT NULL is marker-present, conversion_findings_json
+// holds the per-kind counts. (Dev reset: clear both columns.)
+export const LOGICAL_V4_SCHEMA: string[] = [
+  `CREATE TABLE push_subscriptions_v2 (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES remote_sources_v2(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL CHECK(mode IN('websub','rsscloud')),
+    endpoint TEXT NOT NULL, topic TEXT NOT NULL,
+    callback_token TEXT NOT NULL UNIQUE,
+    secret TEXT,
+    state TEXT NOT NULL CHECK(state IN('pending','active')),
+    expires_at TEXT NOT NULL, created_at TEXT NOT NULL,
+    UNIQUE(source_id, mode)
+  )`,
+  `CREATE INDEX push_subscriptions_v2_expires ON push_subscriptions_v2(state, expires_at)`,
+  `CREATE TABLE handle_reservations_v2 (
+    handle TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    publisher_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `ALTER TABLE logical_activation_v2 ADD COLUMN converted_at TEXT`,
+  `ALTER TABLE logical_activation_v2 ADD COLUMN conversion_findings_json TEXT`,
+  `ALTER TABLE acquisition_runs_v2 ADD COLUMN delivery_mechanism TEXT`,
+]

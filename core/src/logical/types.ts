@@ -67,10 +67,11 @@ export type LogicalItemDto = {
   enclosures: EnclosureDto[]
   publishedAt: string
   updatedAt: string | null
-  // spec §3.4: null exactly when updatedAt is null; Vertical 4 widens the SQL
-  // CHECK with 'legacy_unknown' at cutover, so DTO consumers check membership,
-  // not exhaustive equality.
-  updatedAtProvenance: 'explicit' | 'arrival' | null
+  // spec §3.4: null exactly when updatedAt is null. Vertical 4 widens the DTO
+  // with 'legacy_unknown' (the SQL CHECK was created wide by V2), written only
+  // by the legacy conversion — DTO consumers check membership, not exhaustive
+  // equality.
+  updatedAtProvenance: 'explicit' | 'arrival' | 'legacy_unknown' | null
   directReplyCount: number
   conversationReplyCount: number
   classification: { personal: boolean; federated: boolean }
@@ -140,7 +141,7 @@ export type LogicalHistoryEnvelope = {
     permalink: string | null
     enclosures: EnclosureDto[]
     updatedAt: string | null
-    updatedAtProvenance: 'explicit' | 'arrival' | null
+    updatedAtProvenance: 'explicit' | 'arrival' | 'legacy_unknown' | null
     current: boolean
   }>
   currentSequence: number

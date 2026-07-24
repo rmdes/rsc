@@ -18,6 +18,9 @@ export interface Config {
   mailFrom: string
   mailEnabled: boolean
   adminEmails: Set<string>
+  // Optional legacy-conversion manifest path. Presence only — the file is read
+  // and validated by preflight (V4 Task 4), never here.
+  migrationManifestPath: string | null
 }
 
 function positiveInt(name: string, raw: string): number {
@@ -105,5 +108,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     mailFrom,
     mailEnabled: smtpUrl !== null,
     adminEmails,
+    migrationManifestPath: env.RSC_MIGRATION_MANIFEST || null,
   }
 }

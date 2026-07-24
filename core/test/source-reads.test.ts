@@ -32,7 +32,7 @@ function insertAudit(raw: Raw, id: string, sourceId: string, createdAt: string) 
   ).run(id, sourceId, `cmd-${id}`, createdAt)
 }
 
-test('listSourceSummaries paginates stably across equal timestamps and SourceSummary carries only the three DTO keys', async () => {
+test('listSourceSummaries paginates stably across equal timestamps and SourceSummary carries only the four DTO keys', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
   const sourceA = randomUUID()
@@ -43,7 +43,9 @@ test('listSourceSummaries paginates stably across equal timestamps and SourceSum
   const first = await repo.listSourceSummaries(undefined, 1)
   expect(first.items).toHaveLength(1)
   expect(first.nextCursor).not.toBeNull()
-  expect(Object.keys(first.items[0]).sort()).toEqual(['federationStatus', 'source', 'subscriptionCounts'])
+  // 'push' joined the DTO in V4 Task 1 (all-null until a lease exists).
+  expect(Object.keys(first.items[0]).sort()).toEqual(['federationStatus', 'push', 'source', 'subscriptionCounts'])
+  expect(first.items[0].push).toEqual({ mode: null, state: null, endpointFingerprint: null })
 
   const second = await repo.listSourceSummaries(decodeCursor(first.nextCursor!), 1)
   expect(second.items).toHaveLength(1)

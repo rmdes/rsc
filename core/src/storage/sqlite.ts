@@ -5,10 +5,10 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
-import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA } from '../logical/schema.ts'
+import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 
@@ -108,9 +108,14 @@ function sourceDisplayName(canonicalUrl: string): string {
   }
 }
 
-// actor_kind/category are cast to the V1-narrowed TS unions: nothing writes
-// the wider SQL-only values ('operator_token'; the three deferred categories)
-// yet, so the cast is a documented no-op today (rev 5, V4 §10 pin).
+// ponytail: V4 Task 1 is schema + types only, so the v2 push projection is the
+// constant it would compute anyway — push_subscriptions_v2 stays empty until
+// Task 2 registers the first lease. Task 3 replaces this with the real read.
+const NO_PUSH: PushSummary = { mode: null, state: null, endpointFingerprint: null }
+
+// actor_kind/category are cast to the TS unions the row is known to carry.
+// Both are now the full SQL vocabulary (V4 re-added 'operator_token' and
+// 'migration_review'), so the cast is a pure row-typing no-op.
 function rowToSourceAuditV2(r: SourceAuditV2Row): SourceAuditEvent {
   return {
     id: r.id, sourceId: r.source_id, commandId: r.command_id, actorId: r.actor_id,
@@ -715,7 +720,7 @@ export class SqliteRepository implements Repository, SourceRepository {
     const { page, nextCursor } = this.splitPage(rows, lim)
     const items: SourceSummary[] = page.map((r) => {
       const source = rowToRemoteSourceV2(r)
-      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id) }
+      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id), push: NO_PUSH }
     })
     return { items, nextCursor }
   }
@@ -731,6 +736,8 @@ export class SqliteRepository implements Repository, SourceRepository {
       federationStatus: this.federationStatusFor(id),
       subscriptionCounts: this.subscriptionCountsFor(id),
       latestAudit: auditRow ? rowToSourceAuditV2(auditRow) : null,
+      push: NO_PUSH,
+      pushExpiresAt: null,
     }
   }
 
@@ -1048,9 +1055,12 @@ export class SqliteRepository implements Repository, SourceRepository {
   // a conflict NEVER writes, not even a ledger row, so a corrected retry is
   // re-evaluated against live state instead of replaying a stale refusal.
 
+  // actorKind widens with the audit vocabulary: the ops-token federation route
+  // (V4 Task 9) establishes as 'operator_token'. The SourceRepository /
+  // SourceService declarations widen with their own tasks.
   async establishFederation(input: {
     command: CommandEnvelope; canonicalUrl: string; attributionMode: AttributionMode
-    category: AuditCategory; note: string | null; actorKind: 'administrator'; now: string
+    category: AuditCategory; note: string | null; actorKind: 'administrator' | 'operator_token'; now: string
   }): Promise<EstablishFederationResult> {
     if (!input.category) return { kind: 'conflict' } // every establishment is audited under a category
     const raw = this.raw
@@ -1388,6 +1398,11 @@ const MIGRATIONS: string[][] = [
   // corrupts user_version on live databases. Pure additive ALTER/CREATE. Defined
   // in logical/schema.ts; see the V3 plan Appendix A.
   LOGICAL_V3_SCHEMA,
+  // Logical-v4 additive schema (migration & cutover, RSC_SOURCE_MODEL_V2,
+  // dormant). Appended at the TAIL, AFTER LOGICAL_V3_SCHEMA — mid-array
+  // insertion corrupts user_version on live databases. Pure additive
+  // CREATE/ALTER. Defined in logical/schema.ts; see the V4 plan Appendix A.
+  LOGICAL_V4_SCHEMA,
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

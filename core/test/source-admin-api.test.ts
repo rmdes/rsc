@@ -172,12 +172,13 @@ test('the admin reads paginate and project summary/detail/subresources', async (
   expect(page2.items).toHaveLength(1)
   expect(page2.items[0].source.id).not.toBe(page1.items[0].source.id)
   expect([page1.items[0].source.id, page2.items[0].source.id].sort()).toEqual([first, second].sort())
-  expect(Object.keys(page1.items[0]).sort()).toEqual(['federationStatus', 'source', 'subscriptionCounts'])
+  // 'push' / 'pushExpiresAt' joined the DTOs in V4 Task 1 (all-null until a lease exists).
+  expect(Object.keys(page1.items[0]).sort()).toEqual(['federationStatus', 'push', 'source', 'subscriptionCounts'])
 
   const detail = await app.request(`/admin/sources/${first}`, { headers: { cookie } })
   expect(detail.status).toBe(200)
   const detailJson = await detail.json()
-  expect(Object.keys(detailJson).sort()).toEqual(['federationStatus', 'latestAudit', 'source', 'subscriptionCounts'])
+  expect(Object.keys(detailJson).sort()).toEqual(['federationStatus', 'latestAudit', 'push', 'pushExpiresAt', 'source', 'subscriptionCounts'])
   expect(detailJson.subscriptionCounts).toEqual({ active: 1, pending: 0, pendingReview: 0 })
   expect((await app.request(`/admin/sources/${randomUUID()}`, { headers: { cookie } })).status).toBe(404)
 

@@ -108,10 +108,11 @@ export type SourceSubscriptionState = 'active' | 'pending' | 'pending_review'
 // TS enum narrowed to each vertical's actual emitters; the SQL CHECKs keep all
 // nine foundation values (rev 5, V4 §10 pin). V3 re-adds 'false_positive'
 // (restore's first emitter) and 'remediated' (tombstone unblock's first
-// emitter). 'migration_review' stays deferred to V4 with its first emitter.
+// emitter). V4 re-adds the last one, 'migration_review' — first emitted by the
+// legacy conversion.
 export type AuditCategory =
   | 'spam' | 'abuse' | 'illegal_content' | 'compromised_source'
-  | 'operator_policy' | 'false_positive' | 'remediated' | 'other'
+  | 'migration_review' | 'operator_policy' | 'false_positive' | 'remediated' | 'other'
 
 export interface RemoteSource {
   id: string
@@ -139,8 +140,8 @@ export interface SourceSubscription {
   createdAt: string
 }
 export interface CommandEnvelope {
-  // TS narrowed for V1; the SQL CHECK keeps 'ops' (rev 5, V4 §10 pin)
-  actorScope: 'owner' | 'administrator' | 'system'
+  // V4 re-adds 'ops' (the operator-token federation route), matching the CHECK
+  actorScope: 'owner' | 'administrator' | 'ops' | 'system'
   actorId: string
   commandId: string
   requestFingerprint: string
@@ -150,8 +151,8 @@ export interface SourceAuditEvent {
   sourceId: string
   commandId: string
   actorId: string | null
-  // TS narrowed for V1; the SQL CHECK keeps 'operator_token' (rev 5, V4 §10 pin)
-  actorKind: 'administrator' | 'system'
+  // V4 re-adds 'operator_token', matching the CHECK
+  actorKind: 'administrator' | 'operator_token' | 'system'
   action: string
   category: AuditCategory | null
   note: string | null
@@ -187,9 +188,18 @@ export interface SourceSummary {
   source: RemoteSource
   federationStatus: 'none' | FederationStatus
   subscriptionCounts: { active: number; pending: number; pendingReview: number }
+  // V1-deferred, first written here. Null throughout while the v2 push tables
+  // are empty; the lease itself lands in V4 Task 2/3.
+  push: PushSummary
+}
+export interface PushSummary {
+  mode: PushProtocol | null
+  state: 'pending' | 'active' | null // two-state union (spec 1.2/1.5)
+  endpointFingerprint: string | null // sha256(endpoint) first 16 hex — non-secret
 }
 export interface SourceDetail extends SourceSummary {
   latestAudit: SourceAuditEvent | null
+  pushExpiresAt: string | null
 }
 export type SourceTransitionResult =
   | {kind:'applied'; source:RemoteSource; audit:SourceAuditEvent}

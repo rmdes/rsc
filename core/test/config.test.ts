@@ -87,3 +87,12 @@ test('RSC_SOURCE_MODEL_V2 defaults off and accepts only on/off', () => {
   expect(loadConfig({ ...base, RSC_SOURCE_MODEL_V2: 'on' }).sourceModelV2).toBe(true)
   expect(() => loadConfig({ ...base, RSC_SOURCE_MODEL_V2: 'yes' })).toThrow('RSC_SOURCE_MODEL_V2')
 })
+
+test('RSC_MIGRATION_MANIFEST defaults null and passes a path straight through, unvalidated', () => {
+  const base = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' }
+  expect(loadConfig(base).migrationManifestPath).toBeNull()
+  expect(loadConfig({ ...base, RSC_MIGRATION_MANIFEST: '/data/manifest.json' }).migrationManifestPath).toBe('/data/manifest.json')
+  // presence only — the file is read and validated by preflight, never by config
+  expect(loadConfig({ ...base, RSC_MIGRATION_MANIFEST: 'not-a-file' }).migrationManifestPath).toBe('not-a-file')
+  expect(loadConfig({ ...base, RSC_MIGRATION_MANIFEST: '' }).migrationManifestPath).toBeNull()
+})
