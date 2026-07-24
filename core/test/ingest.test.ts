@@ -394,6 +394,15 @@ test('h-cite reply persists context and threads onto an existing parent', async 
 // every delivery and select one by evidence rank, instead of collapsing authors.
 // test.fails() INVERTS when that lands: this starts passing, the assertion on
 // the failure starts failing, and you are forced to flip it back to test().
+//
+// STATUS (Vertical 2, flag-OFF by default): STILL expected-fail. V2 adds the
+// logical model behind RSC_SOURCE_MODEL_V2 but does NOT yet replace the v1
+// ingestion path this test exercises — that replacement is the V4 cutover, when
+// this marker flips from test.fails() to test(). The POSITIVE proof that the v2
+// logical model already fixes this exact dual-path scenario (one item via two
+// source paths → ONE logical item that still resolves as a parent) lives in
+// core/test/logical-vertical.test.ts ("v2 fix: one item reached by TWO source
+// paths…"); that assertion is what becomes the live guarantee at V4.
 test.fails('KNOWN BUG: one post reached by two subscription paths is stored twice and stops resolving as a parent', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()

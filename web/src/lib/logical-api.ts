@@ -100,3 +100,94 @@ export async function getLogicalHistory(f: typeof fetch, id: string): Promise<Lo
 	if (!res.ok) throw new Error(`revisions ${res.status}`)
 	return asLogicalHistory(await res.json())
 }
+
+// --- Admin acquisition operations (spec §6.2-6.3) — run/status only -----------
+// The v2 admin refresh + run/job reads that back the /admin/sources/[sourceId]
+// console. These are admin-only, same-origin envelopes carrying model:'logical-v2';
+// unlike the ordinary read surfaces above they are NOT rendered through the
+// sanitizer, so they carry no {@html} risk. Types are defined here (server-only)
+// rather than in the pure logical-types twin — no browser bundle imports them, and
+// logical-types.ts is not a Task 12 staged path (frozen).
+
+export interface AdminFetchProjection {
+	outcome: 'pending' | 'not_modified' | 'parsed' | 'completed_truncated' | 'redirect_conflict' | 'operational_failure' | 'cancelled' | 'superseded' | 'policy_rejected'
+	effectiveUrl: string | null
+	httpStatus: number | null
+	failureCategory: 'network' | 'timeout' | 'http' | 'body_limit' | 'feed_parse' | 'policy' | 'superseded' | null
+	diagnostic: string | null
+}
+export interface AdminAcquisitionCounters {
+	candidates: number; seen: number; observed: number; unchanged: number; skipped: number; omitted: number; itemsTruncated: boolean; bodyLimitExceeded: boolean; notModified: boolean
+}
+export interface AdminReconciliationCounters {
+	reconciled: number; conflicted: number; pending: number; processing: number; retrying: number; failed: number
+	failedByCategory: { operationalExhausted: number; invariantOrDataFailure: number }
+}
+export interface AdminRunProjection {
+	model: 'logical-v2'
+	runId: string
+	sourceId: string
+	status: 'terminal' | 'processing'
+	statusLocation: string
+	fetch: AdminFetchProjection
+	acquisition: AdminAcquisitionCounters
+	reconciliation: AdminReconciliationCounters
+}
+export interface AdminRefreshResult extends AdminRunProjection {
+	disposition: 'created' | 'joined' | 'replayed'
+}
+export interface AdminJobSummary {
+	jobId: string
+	createdAt: string
+	status: 'pending' | 'processing' | 'retrying' | 'reconciled' | 'conflicted' | 'failed'
+	attempts: number
+	nextAttemptAt: string | null
+	failureCategory: 'operational_exhausted' | 'invariant_or_data_failure' | null
+	diagnostic: string | null
+}
+export interface AdminPage<T> {
+	model: 'logical-v2'
+	items: T[]
+	nextCursor: string | null
+}
+
+// The refresh outcome, mapped from the four terminal HTTP results (spec §6.2):
+// 200 → terminal (the run reached terminal in the wait window), 202 → polling
+// (still processing — the page offers a poll affordance), 404 → refused (a
+// paused/blocked/unknown source; NEUTRAL — no run and no evidence leaks), 409 →
+// conflict (a reused commandId with a mismatched [command,sourceId,actor]).
+export type RefreshOutcome =
+	| { kind: 'terminal'; run: AdminRefreshResult }
+	| { kind: 'polling'; run: AdminRefreshResult }
+	| { kind: 'refused' }
+	| { kind: 'conflict' }
+
+export async function refreshSource(f: typeof fetch, sourceId: string, commandId: string): Promise<RefreshOutcome> {
+	// commandId travels ONLY as the JSON body field (spec §6.2, review rev 1 C4) —
+	// no Idempotency-Key header. The stable id is minted server-side and retained
+	// across retry so a resubmit replays the original run rather than starting a new one.
+	const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/refresh`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ commandId })
+	})
+	if (res.status === 404) return { kind: 'refused' } // neutral refusal — never read the body (no evidence)
+	if (res.status === 409) return { kind: 'conflict' }
+	if (!res.ok) throw new Error(`refresh ${res.status}`)
+	const run = (await res.json()) as AdminRefreshResult
+	return { kind: res.status === 202 ? 'polling' : 'terminal', run }
+}
+
+export async function listSourceRuns(f: typeof fetch, sourceId: string, before?: string | null): Promise<AdminPage<AdminRunProjection>> {
+	const q = before ? `?before=${encodeURIComponent(before)}` : ''
+	const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/runs${q}`)
+	if (!res.ok) throw new Error(`runs ${res.status}`)
+	return (await res.json()) as AdminPage<AdminRunProjection>
+}
+
+export async function listRunJobs(f: typeof fetch, runId: string, before?: string | null): Promise<AdminPage<AdminJobSummary>> {
+	const q = before ? `?before=${encodeURIComponent(before)}` : ''
+	const res = await f(`${base()}/admin/acquisition-runs/${encodeURIComponent(runId)}/jobs${q}`)
+	if (!res.ok) throw new Error(`jobs ${res.status}`)
+	return (await res.json()) as AdminPage<AdminJobSummary>
+}

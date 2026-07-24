@@ -140,6 +140,12 @@ test('REAL-TIME LOOP (rssCloud): thin ping triggers immediate re-fetch', async (
 // core/test/ingest.test.ts for why the per-author constraint can't catch it and
 // why the duplicate then breaks threading. Fixed by the source-governance
 // milestone; test.fails() flips this to a normal test when that lands.
+//
+// STATUS (Vertical 2, flag-OFF by default): STILL expected-fail — V2 does not
+// replace the v1 ingestion path this exercises; that is the V4 cutover, when this
+// marker flips to test(). The v2 logical model's positive fix for the same
+// dual-path duplicate is proven in core/test/logical-vertical.test.ts ("v2 fix:
+// one item reached by TWO source paths…").
 test.fails('KNOWN BUG: a peer followed by BOTH its firehose and its user feed lands the same post twice', async () => {
   const A = await makeInstance({ RSC_TOKEN: 'a', RSC_PUBLIC_URL: 'https://a.example' })
   const B = await makeInstance({ RSC_TOKEN: 'b', RSC_PUBLIC_URL: 'https://b.example' })
