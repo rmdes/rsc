@@ -502,6 +502,48 @@ no delete, no v2 reader touches them.
   the new sections. Implement part 2.
 - [ ] **Step 6:** Run `npm test -w core -- migration-convert logical-projector && npm run typecheck -w core`; expect PASS (projector suite proves converted items project as ordinary logical items). Commit per Appendix C.
 
+> **Correction 2026-07-24 (recorded during Task 6 execution) — the synthetic
+> migration run.** Step 1's "no run row" cannot hold together with Step 6's
+> "converted items project as ordinary logical items" and Task 8 Step 4's
+> "a pre-cutover `/post/:id` permalink resolves to the same-ID logical item".
+> Ordinary visibility is gated twice on facts a bare observation version
+> cannot supply: every comparator and the whole ordinary projection JOIN
+> `acquisition_runs_v2` for the first-arrival tuple
+> (`projector.ts:311/353/371`, `reconcile.ts:437/460`), and
+> `REMOTE_VISIBLE` (`projector.ts:626`) additionally requires a
+> `reconciliation_jobs_v2` row in `reconciled`/`conflicted` — a table whose
+> `run_id` FK is enforced (`foreign_keys=ON`). With no run row a converted
+> item is invisible on every surface, and history older than the current feed
+> window would never become visible at all.
+>
+> Task 6 therefore writes, per source that has posts, ONE terminal
+> `acquisition_runs_v2` row plus one `reconciled` observation job per
+> version — **exactly V3's `persistVerifiedDelivery` pattern**
+> (`verification.ts:341-357`), the established house precedent for durable
+> evidence no drain produced. `reason` stays `'scheduled'` (V2's two values,
+> unwidened) and `delivery_mechanism` stays NULL. Because a run row belongs
+> to ONE source, the pinned literal `run_id = 'migration'` is realized as
+> **`migration:<sourceId>`**: still a marked synthetic value, still
+> FK-free on `observation_versions_v2`, and now JOIN-able. Nothing else in
+> the FC2 contract moves — the marked synthetic envelope, `wire_ordinal`,
+> `seen_count`, `last_seen_run_id`, `last_seen_at` are as pinned (with
+> `wire_ordinal` extending 0..n across a revision chain, since it is the only
+> tuple component that can order one delivery's versions).
+>
+> Two further Task 6 clarifications, same date: (a) Step 2's "aggregates
+> resolve a provisional publisher … fall back to the source-scoped
+> unattributed publisher" is **superseded by the spec's 2026-07-24
+> feed-anchored amendment** — there is exactly ONE publisher per source, both
+> branches collapse onto it, and the item's claimed origin feed URL is
+> retained in `normalized_json.originFeedUrl` for V3 verification to prove
+> against the live web instead; the conflict case is a BOUND single-publisher
+> source whose item claims a different origin feed. (b) `guid_collision` is
+> implemented (one shared claim helper with `permalink_collision`) but is
+> **structurally unreachable** given preflight: the opaque key is
+> publisher-scoped, one publisher per source, and `posts_author_guid_uq`
+> plus preflight's URL-collision check make two posts under one publisher
+> with one guid impossible. Its count stays a truthful 0.
+
 ### Task 7: Conversion III — exact push preservation, findings, marker, reset
 
 **Files:** Modify `core/src/migration/convert.ts`,
