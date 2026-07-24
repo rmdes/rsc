@@ -1,5 +1,7 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
+import { removeSourceEvidence } from '../logical/tombstones.ts'
+import { appendJournal } from '../logical/journal.ts'
 import { encodeCursor as encodeTupleCursor, decodeCursor as decodeTupleCursor } from './cursor.ts'
 import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow, OwnerFollowingView, PublicFollowingEntry, AttributionMode, AuditCategory, FederationRelationship, FederationStatus, SourceGovernance, SourceOperation, SourceTransitionResult } from './types.ts'
 
@@ -202,31 +204,36 @@ export function checkCommand<T>(tx: Db, command: CommandEnvelope): LedgerCheck<T
 // INSIDE the caller's own transaction; returns true iff the source row was
 // deleted. A source is kept when anything still depends on it: a remaining
 // subscriber, non-allowed governance, a federation relationship, the
-// administrative retention flag, or ANY audit history — source_audit_v2.source_id
-// is ON DELETE CASCADE, so keeping the source row is the only way to keep a
-// moderation record. (The origin_verification evidence branch is Vertical 3 —
-// rev 5 deferral; do not add it here.)
-export function reapSourceIfOrphaned(tx: Db, sourceId: string): boolean {
+// administrative retention flag, ANY audit history (source_audit_v2.source_id is
+// ON DELETE CASCADE, so keeping the source row is the only way to keep a
+// moderation record), or CURRENT verification evidence.
+//
+// V3 Task 7 — evidence-aware cleanup (spec §5, replacing V2's interim
+// retain-if-any-RESTRICT-child rule AND V1's deferred origin_verification
+// branch). When nothing above retains the source, it applies the SAME step-4
+// rules purge uses (via the shared removeSourceEvidence helper) — shared logical
+// items reselect, unsupported items delete, descendant-referenced items become
+// structural tombstones, unreferenced publishers delete — then deletes the source
+// row. It writes NO block tombstone (cleanup is not a moderation action) and
+// appends ONE journal reset only when an ordinary item was actually affected.
+export function reapSourceIfOrphaned(tx: Db, sourceId: string, now: string = new Date().toISOString()): boolean {
   const { n } = tx.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(sourceId) as { n: number }
   if (n > 0) return false
   const source = tx.prepare(`SELECT governance, admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { governance: SourceGovernance; admin_retained: 0 | 1 } | undefined
   if (!source || source.governance !== 'allowed' || source.admin_retained !== 0) return false
   if (tx.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId)) return false
   if (tx.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
-  // Interim RESTRICT-aware cleanup (rev 5 RC4 — V3 plan lockstep amendment 2,
-  // applied broadened). Once Vertical 2 acquisition/reconciliation has written v2
-  // child rows under ON DELETE RESTRICT foreign keys, DELETE FROM remote_sources_v2
-  // would FK-throw. Retain the source row while ANY RESTRICT child still references
-  // it, deleting only what can be deleted and reporting the retention. These six
-  // are exactly the ON DELETE RESTRICT children of remote_sources_v2 in
-  // logical/schema.ts; source_aliases_v2 is ON DELETE CASCADE and does NOT block
-  // deletion, so it is deliberately absent. INTERIM: Vertical 3's Task 7 replaces
-  // this with evidence-aware cleanup.
-  const RESTRICT_CHILDREN = ['deliveries_v2', 'source_health_v2', 'source_validators_v2', 'acquisition_runs_v2', 'publisher_names_v2', 'publisher_claims_v2'] as const
-  for (const child of RESTRICT_CHILDREN) {
-    if (tx.prepare(`SELECT 1 FROM ${child} WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
-  }
-  tx.prepare(`DELETE FROM remote_sources_v2 WHERE id = ?`).run(sourceId)
+  // Verification-evidence retention guard (spec §2.4/§7): a source whose
+  // deliveries are CURRENT verification evidence for any logical item — i.e. they
+  // back a verified_origin publisher claim — is never removed. Such sources carry
+  // no subscription, so this condition (not provenance) is the guard that keeps
+  // them; it replaces V1's deferred provenance='origin_verification' branch.
+  if (tx.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)) return false
+  // Evidence-aware cleanup: remove the source's evidence under the shared step-4
+  // rules and delete the source row. NO block tombstone; ONE reset iff an ordinary
+  // item was affected (a zero-effect cleanup appends nothing).
+  const { ordinaryAffected } = removeSourceEvidence(tx, { sourceId, now })
+  if (ordinaryAffected) appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, now)
   return true
 }
 

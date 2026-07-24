@@ -6,6 +6,7 @@ import type { LookupFn } from '../domain/push-guard.ts'
 import { parseFeedWithMeta, mergeDiscovery } from '../domain/ingest.ts'
 import { discoverFeed } from '../domain/discovery.ts'
 import { choosePushTarget } from '../domain/push-in.ts'
+import { isTombstoned } from './tombstones.ts'
 import type {
   AcquisitionReason, AcquisitionRun, ClaimAcquisitionResult, CommitAcquisitionInput,
   ConditionalValidators, RedirectObservation, AcquisitionFinding, AdminAcquisitionCounters,
@@ -327,6 +328,9 @@ export interface FetchCtx {
   ownedAliases: Set<string>
   validators: ConditionalValidators | null
   aliasOwner: (url: string) => string | null
+  // V3 Task 7 (spec §5.1): a redirect hop landing on a tombstoned URL is rejected
+  // exactly like an SSRF-blocked hop — indistinguishable network failure, no fetch.
+  isTombstoned?: (url: string) => boolean
 }
 
 export async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<FetchResult> {
@@ -344,6 +348,9 @@ export async function fetchBounded(startUrl: string, ctx: FetchCtx): Promise<Fet
     // never assume a stored row's URL was guarded at creation.
     const guard = await checkFetchHop(current, ctx.lookupFn)
     if (!guard.ok) return { kind: 'failure', category: 'network', diagnostic: `blocked ${guard.reason}`, redirects }
+    // A tombstoned hop is never fetched and returns the same generic network
+    // failure an SSRF-blocked hop does (spec §5.1: no oracle).
+    if (ctx.isTombstoned?.(current)) return { kind: 'failure', category: 'network', diagnostic: 'blocked tombstoned', redirects }
     // alias-ownership: a hop landing on a URL owned by a DIFFERENT source is an
     // ownership collision (a domain outcome, not a scheduler failure — spec §1.6).
     const owner = ctx.aliasOwner(current)
@@ -608,7 +615,7 @@ export interface AcquisitionEngine {
 
 // Read the per-source acquisition context the engine needs before fetching:
 // conditional validators, the source's own aliases, and a URL→owner resolver.
-function readContext(tx: ReadTx, sourceId: string, canonicalUrl: string): { validators: ConditionalValidators | null; ownedAliases: Set<string>; aliasOwner: (url: string) => string | null } {
+function readContext(tx: ReadTx, sourceId: string, canonicalUrl: string): { validators: ConditionalValidators | null; ownedAliases: Set<string>; aliasOwner: (url: string) => string | null; isTombstoned: (url: string) => boolean } {
   const vRows = tx.prepare(`SELECT effective_url, etag, last_modified FROM source_validators_v2 WHERE source_id = ?`).all(sourceId) as { effective_url: string; etag: string | null; last_modified: string | null }[]
   // Prefer the canonical URL's validators; else the most recent effective URL's.
   const pick = vRows.find((v) => v.effective_url === canonicalUrl) ?? vRows[0]
@@ -621,7 +628,7 @@ function readContext(tx: ReadTx, sourceId: string, canonicalUrl: string): { vali
     const a = tx.prepare(`SELECT source_id FROM source_aliases_v2 WHERE url = ?`).get(url) as { source_id: string } | undefined
     return a ? a.source_id : null
   }
-  return { validators, ownedAliases, aliasOwner }
+  return { validators, ownedAliases, aliasOwner, isTombstoned: (url) => isTombstoned(tx, url) }
 }
 
 export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
@@ -660,7 +667,7 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
     try {
       const ctxData = db.read((tx) => readContext(tx, sourceId, claim.source.canonicalUrl))
       const fetchSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]) : AbortSignal.timeout(deadlineMs)
-      const ctx: FetchCtx = { fetchFn, lookupFn: deps.lookupFn, signal: fetchSignal, sourceId, ownedAliases: ctxData.ownedAliases, validators: ctxData.validators, aliasOwner: ctxData.aliasOwner }
+      const ctx: FetchCtx = { fetchFn, lookupFn: deps.lookupFn, signal: fetchSignal, sourceId, ownedAliases: ctxData.ownedAliases, validators: ctxData.validators, aliasOwner: ctxData.aliasOwner, isTombstoned: ctxData.isTombstoned }
 
       let result: FetchResult
       try {

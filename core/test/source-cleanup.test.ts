@@ -1,12 +1,14 @@
 import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
+import { reapSourceIfOrphaned } from '../src/domain/source-repository.ts'
 import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 
 type Raw = InstanceType<typeof Database>
 
 const PUBLIC_URL = 'https://cast.example'
+const NOW = '2026-07-24T00:00:00.000Z'
 
 function countRows(raw: Raw, table: string): number {
   const { n } = raw.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }
@@ -179,6 +181,65 @@ test('deleting an account removes the sources it orphans but keeps audited and f
   expect(surviving.sort()).toEqual([audited, federated, shared].sort())
   expect(countRows(raw, 'source_audit_v2')).toBe(2)
 
+  repo.close()
+})
+
+// --- V3 Task 7: evidence-aware cleanup (replaces V2's interim retain-if-referenced) ---
+
+// A remote item + a delivery/version supported ONLY by `sourceId`, plus an
+// optional verified_origin publisher claim from that source. Returns the item id.
+function seedEvidence(raw: Raw, sourceId: string, opts: { verified?: boolean } = {}): string {
+  const itemId = randomUUID()
+  const deliveryId = randomUUID()
+  const versionId = randomUUID()
+  raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'none', NULL, ?, NULL, ?)`).run(itemId, NOW, deliveryId, NOW)
+  raw.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, 'opaque', ?, ?, ?, ?, 1)`).run(deliveryId, sourceId, itemId, NOW, NOW, randomUUID())
+  raw.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?, ?, 1, ?, ?, ?, ?, 0, ?, ?, 1, '{}', '{}')`).run(versionId, deliveryId, randomUUID(), Buffer.from('m'), NOW, randomUUID(), NOW, randomUUID())
+  raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(deliveryId, itemId)
+  if (opts.verified) {
+    const pub = randomUUID()
+    raw.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`).run(pub, `https://pub-${pub}.test/f`, NOW)
+    raw.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, 'verified_origin', ?)`).run(randomUUID(), itemId, pub, sourceId, versionId, NOW)
+  }
+  return itemId
+}
+
+test('the last unsubscribe of an allowed source with evidence removes the source AND its evidence, writing no block tombstone', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const owner = await repo.createLocalUser({ handle: 'ownerE', displayName: 'OwnerE' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const src = insertSourceRow(raw, { canonicalUrl: 'https://ev.test/feed' })
+  insertSubscription(raw, owner.id, src, 'active')
+  seedEvidence(raw, src) // a delivery/version/item supported only by this source
+
+  const result = await service.unsubscribe(owner.id, src, 'unsub-ev')
+  // Behavior change from V2's interim rule: cleanup now REMOVES the evidence and
+  // the source instead of retaining it because a RESTRICT child exists.
+  expect(result).toEqual({ kind: 'removed', sourceRemoved: true })
+  expect(countRows(raw, 'remote_sources_v2')).toBe(0)
+  expect(countRows(raw, 'deliveries_v2')).toBe(0)
+  expect(countRows(raw, 'logical_items_v2')).toBe(0) // unsupported item deleted
+  expect(countRows(raw, 'blocked_source_tombstones_v2')).toBe(0) // cleanup is not a moderation action
+
+  repo.close()
+})
+
+test('a source whose deliveries are current verification evidence is never removed even with no subscribers', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const verified = insertSourceRow(raw, { canonicalUrl: 'https://verified.test/feed' })
+  seedEvidence(raw, verified, { verified: true }) // a verified_origin claim, no subscription
+
+  const kept = raw.transaction(() => reapSourceIfOrphaned(raw, verified, NOW))()
+  expect(kept).toBe(false)
+  expect(countRows(raw, 'remote_sources_v2')).toBe(1) // the verification-evidence source survives
+  expect(countRows(raw, 'publisher_claims_v2')).toBe(1)
+
+  void service // constructed to mirror the other cases; the guard is tested directly
   repo.close()
 })
 

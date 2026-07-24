@@ -11,6 +11,7 @@ import { applySelectionHints, recordReconciliationFailure } from './reconcile.ts
 import { presentationFingerprint, projectItem } from './projector.ts'
 import { appendJournal } from './journal.ts'
 import { appendItemAudit } from './moderation.ts'
+import { isTombstoned } from './tombstones.ts'
 
 // Bounded origin verification — SCHEDULING + the batched fetch (V3 Task 4, spec
 // §7). A valid publisher (origin feed) URL first seen in an aggregate claim
@@ -140,12 +141,16 @@ export function createVerificationRunner(deps: VerificationRunnerDeps): {
       return
     }
 
+    // Every redirect hop is tombstone-checked (spec §5.1) exactly like acquisition:
+    // a hop landing on a tombstoned URL is never fetched. Read-through per hop.
+    const isTombstonedHop = (url: string): boolean => deps.db.read((tx) => isTombstoned(tx, url))
+
     let outcome: FetchedOutcome
     const cached = cache.get(batchKey)
     if (cached && Date.parse(now) - cached.fetchedAt < VERIFICATION_RESPONSE_REUSE_MS) {
       outcome = cached.outcome // reuse within the 10-minute window: no refetch
     } else {
-      outcome = await fetchAndParse(batchKey, fetchFn, deps.lookupFn, now)
+      outcome = await fetchAndParse(batchKey, fetchFn, deps.lookupFn, now, isTombstonedHop)
       if (outcome.kind === 'fetched') cache.set(batchKey, { fetchedAt: Date.parse(now), outcome })
     }
     // Hand off to Task 5's outcome handler (stub today — it terminalizes the job,
@@ -156,7 +161,7 @@ export function createVerificationRunner(deps: VerificationRunnerDeps): {
   return { runVerificationBatch }
 }
 
-async function fetchAndParse(url: string, fetchFn: typeof fetch, lookupFn: LookupFn | undefined, now: string): Promise<FetchedOutcome> {
+async function fetchAndParse(url: string, fetchFn: typeof fetch, lookupFn: LookupFn | undefined, now: string, isTombstonedHop: (url: string) => boolean): Promise<FetchedOutcome> {
   const deadlineMs = BOUNDS.totalDeadlineMs
   // Verification owns no aliases and sends no conditional validators (always a
   // fresh fetch when uncached); the per-hop SSRF/credential guard is inside
@@ -165,6 +170,7 @@ async function fetchAndParse(url: string, fetchFn: typeof fetch, lookupFn: Looku
   const ctx: FetchCtx = {
     fetchFn, lookupFn, signal: AbortSignal.timeout(deadlineMs),
     sourceId: `verify:${url}`, ownedAliases: new Set<string>(), validators: null, aliasOwner: () => null,
+    isTombstoned: isTombstonedHop,
   }
   let result: FetchResult
   try {

@@ -215,23 +215,26 @@ test('a fault before the ledger write rolls back the domain change, audit, gener
   expect(journalSeq(raw)).toBe(0)
 })
 
-// --- interim RESTRICT-aware last-subscription cleanup (Rev 5 RC4) ------------
+// --- evidence-aware last-subscription cleanup (V3 Task 7 — replaces the interim
+//     Rev 5 RC4 retain-if-RESTRICT-child rule) ------------------------------
 
-test('removing the last subscription retains the source when an ON DELETE RESTRICT child references it', async () => {
+test('removing the last subscription REMOVES the source and its evidence (evidence-aware cleanup)', async () => {
   const repo = await fresh()
   const raw = repo.raw
   const owner = await repo.createLocalUser({ handle: 'own', displayName: 'Own' })
   const id = insertSourceRow(raw, { canonicalUrl: 'https://keep.test/f' })
   insertSub(raw, owner.id, id, 'active')
-  // a deliveries_v2 row is an ON DELETE RESTRICT child — cleanup must not delete the source
+  // a deliveries_v2 row is evidence — Task 7 cleanup now REMOVES it (via
+  // removeSourceEvidence) instead of retaining the source, then deletes the source.
   raw.prepare(
     `INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count)
      VALUES (?, ?, 'guid', 'k1', ?, ?, 'run1', 1)`,
   ).run(randomUUID(), id, T0, T0)
 
   const r = await repo.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: id, now: NOW })
-  expect(r).toEqual({ kind: 'removed', sourceRemoved: false })
-  expect(count(raw, 'remote_sources_v2', 'WHERE id = ?', id)).toBe(1) // retained, no FK throw
+  expect(r).toEqual({ kind: 'removed', sourceRemoved: true })
+  expect(count(raw, 'remote_sources_v2', 'WHERE id = ?', id)).toBe(0) // source + evidence gone
+  expect(count(raw, 'deliveries_v2', 'WHERE source_id = ?', id)).toBe(0)
 })
 
 test('removing the last subscription deletes an orphan source with no RESTRICT children', async () => {

@@ -25,6 +25,16 @@ export type PurgeResult =
   | { kind: 'purged'; tombstoneId: string }
   | { kind: 'unknown' | 'not_blocked' | 'conflict' }
 
+// Unblock command types (owned here alongside purge; types.ts is off this task's
+// staged set — same fanout.ts precedent). The success result carries the audit
+// facts (action + tombstone identity + category + note): the command_ledger_v2
+// row IS the audit, so result_json is where those live.
+// ponytail: the ledger row is the audit; a standalone FK-less audit table adds nothing.
+export interface UnblockCommandInput { command: CommandEnvelope; tombstoneId: string; category: AuditCategory; note: string | null; now: string }
+export type UnblockResult =
+  | { kind: 'unblocked'; action: 'unblock'; tombstoneId: string; canonicalUrl: string; category: AuditCategory; note: string | null }
+  | { kind: 'unknown' | 'conflict' }
+
 // --- the FK-graph deletion inventory (spec §5.2, plan rev 2 RC2) -------------
 // The purge inventory is DERIVED from the FK graph: every blocking (RESTRICT or
 // NO ACTION) child of a row purge deletes must be deleted first, else the parent
@@ -208,4 +218,28 @@ export function isTombstoned(tx: ReadTx, url: string): boolean {
   if (tx.prepare(`SELECT 1 FROM blocked_source_tombstones_v2 WHERE canonical_url = ? LIMIT 1`).get(url)) return true
   if (tx.prepare(`SELECT 1 FROM tombstone_aliases_v2 WHERE url = ? LIMIT 1`).get(url)) return true
   return false
+}
+
+// The unblock command (spec §5): ONE ledger-backed transaction. It deletes the
+// tombstone and its alias rows (tombstone_aliases_v2 also cascade via ON DELETE
+// CASCADE — deleted explicitly for clarity), creating NO source; the next
+// resolution of that URL is an ordinary fresh creation. Requires a category
+// (remediated is its first emitter). No item/source audit row — the ledger row
+// (with result_json carrying action + note + tombstone identity) is the audit.
+export function unblockTombstone(tx: WriteTx, input: UnblockCommandInput): UnblockResult {
+  const check = checkCommand<UnblockResult>(tx, input.command)
+  if (check.kind === 'replay') return check.result
+  if (check.kind === 'conflict') return { kind: 'conflict' }
+
+  const result = decideUnblock(tx, input)
+  storeCommand(tx, input.command, result, input.now) // durable: an identical retry replays this
+  return result
+}
+
+function decideUnblock(tx: WriteTx, input: UnblockCommandInput): UnblockResult {
+  const row = tx.prepare(`SELECT canonical_url FROM blocked_source_tombstones_v2 WHERE id = ?`).get(input.tombstoneId) as { canonical_url: string } | undefined
+  if (!row) return { kind: 'unknown' }
+  tx.prepare(`DELETE FROM tombstone_aliases_v2 WHERE tombstone_id = ?`).run(input.tombstoneId)
+  tx.prepare(`DELETE FROM blocked_source_tombstones_v2 WHERE id = ?`).run(input.tombstoneId)
+  return { kind: 'unblocked', action: 'unblock', tombstoneId: input.tombstoneId, canonicalUrl: row.canonical_url, category: input.category, note: input.note }
 }

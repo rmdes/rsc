@@ -70,7 +70,13 @@ export interface SourceService {
 // SSRF-checks, and routes to resolveAndSubscribeSource. Both targets are
 // single ledger-backed transactions on the repository — this layer never
 // touches the database directly.
-export function createSourceService(repo: Repository & SourceRepository, publicUrl: string | null, lookupFn?: LookupFn): SourceService {
+// `isTombstoned` (V3 Task 7) resolves a URL against blocked_source_tombstones_v2
+// + tombstone_aliases_v2 (the logical store's read-through query). It is optional
+// so the V1 source plane keeps working with v2 off and existing callers unchanged;
+// omitted (or with empty tombstone tables) it never fires, so the OFF path is
+// byte-identical. A tombstoned URL resolves to the SAME generic unavailable result
+// an SSRF/invalid URL returns — no oracle distinguishes the two (spec §5.1).
+export function createSourceService(repo: Repository & SourceRepository, publicUrl: string | null, lookupFn?: LookupFn, isTombstoned?: (url: string) => boolean): SourceService {
   return {
     async subscribeByUrl(owner: User, url: string, commandId: string): Promise<SubscribeResult> {
       const now = new Date().toISOString()
@@ -91,6 +97,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
       const canonicalUrl = normalizeSourceUrl(url)
       const guard = await checkCallbackUrl(canonicalUrl, lookupFn)
       if (!guard.ok) return { kind: 'unavailable' }
+      if (isTombstoned?.(canonicalUrl)) return { kind: 'unavailable' } // tombstoned resolves as generic unavailable
       const cap = Number((await repo.getSetting('max_subs_per_user')) ?? '500')
       const command = { actorScope: 'owner' as const, actorId: owner.id, commandId, requestFingerprint: fingerprintRequest([OPERATION, canonicalUrl]) }
       return repo.resolveAndSubscribeSource({ command, ownerId: owner.id, canonicalUrl, cap, now })
@@ -134,6 +141,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
         }
         const guard = await checkCallbackUrl(canonicalUrl, lookupFn)
         if (!guard.ok) { unavailableCount++; continue }
+        if (isTombstoned?.(canonicalUrl)) { unavailableCount++; continue } // tombstoned: same generic bucket
         canonicalUrls.add(canonicalUrl)
       }
 
@@ -177,6 +185,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
     }): Promise<EstablishFederationResult> {
       const now = new Date().toISOString()
       const canonicalUrl = normalizeSourceUrl(input.url)
+      if (isTombstoned?.(canonicalUrl)) return { kind: 'unavailable' } // tombstoned: unblock or re-establish anew
       const command = {
         actorScope: 'administrator' as const,
         actorId: input.actorId,

@@ -7,6 +7,8 @@ import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { scheduleFanout } from '../src/logical/fanout.ts'
+import { reapSourceIfOrphaned } from '../src/domain/source-repository.ts'
+import { unblockTombstone } from '../src/logical/tombstones.ts'
 import type { CommandEnvelope, AuditCategory } from '../src/domain/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
@@ -201,4 +203,32 @@ test('§6 journal effect: purge → one reset', async () => {
   const before = highWater(raw)
   expect(purgeCmd(store, 's1', 'c1').kind).toBe('purged')
   expect(allKindsSince(raw, before)).toEqual(['reset'])
+})
+
+// Task 7 §6 rows: cleanup appends ONE reset only when an ordinary item was
+// affected (a zero-effect cleanup appends nothing); unblock appends nothing.
+test('§6 journal effect: last-subscription cleanup affecting an ordinary item → one reset', async () => {
+  const { db, raw, store } = await fresh()
+  const id = await remoteItem(db, raw, store, 's1') // an ordinarily-visible item, source has no subscriber
+  const before = highWater(raw)
+  db.write((tx) => reapSourceIfOrphaned(tx, 's1', NOW))
+  expect(allKindsSince(raw, before)).toEqual(['reset'])
+  expect(raw.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ?`).get(id)).toBeUndefined() // unsupported item removed
+})
+
+test('§6 journal effect: zero-effect cleanup (no evidence) → no record', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's_empty', 'https://empty.test/f') // allowed, no subscription, no evidence
+  const before = highWater(raw)
+  db.write((tx) => reapSourceIfOrphaned(tx, 's_empty', NOW))
+  expect(allKindsSince(raw, before)).toEqual([])
+})
+
+test('§6 journal effect: unblock → no record', async () => {
+  const { raw, db } = await fresh()
+  const id = randomUUID()
+  raw.prepare(`INSERT INTO blocked_source_tombstones_v2 (id, canonical_url, action, category, actor_id, note, created_at, updated_at) VALUES (?, 'https://t.test/f', 'purge', 'abuse', ?, NULL, ?, ?)`).run(id, ADMIN, NOW, NOW)
+  const before = highWater(raw)
+  db.write((tx) => unblockTombstone(tx, { command: env('u1', fp(['tombstone-unblock', id, ADMIN, 'remediated'])), tombstoneId: id, category: 'remediated', note: null, now: NOW }))
+  expect(allKindsSince(raw, before)).toEqual([])
 })
