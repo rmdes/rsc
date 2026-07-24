@@ -5,6 +5,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
+import { projectItem, projectHistory, projectTimeline } from '../src/logical/projector.ts'
 import { runConversion, type ConversionCounts } from '../src/migration/convert.ts'
 import type { Manifest, ManifestEntry } from '../src/migration/preflight.ts'
 
@@ -345,17 +346,411 @@ test('a fault before commit leaves the database legacy-intact — nothing conver
   seedRemote(raw, { id: 'u2', handle: 'bob', feed_url: 'https://b.test/f.xml', feed_type: 'instance' })
   seedFollow(raw, 'l1', 'u1')
   seedFollow(raw, 'l1', 'u2')
+  seedPost(raw)
+  seedRevision(raw, 'p1', { content: '<p>older</p>' })
   const legacyUsers = raw.prepare(`SELECT * FROM users ORDER BY id`).all()
   const legacyFollows = raw.prepare(`SELECT * FROM follows ORDER BY followed_id`).all()
+  const legacyPosts = raw.prepare(`SELECT * FROM posts ORDER BY id`).all()
+  const legacyRevisions = raw.prepare(`SELECT * FROM post_revisions ORDER BY id`).all()
 
   expect(() => raw.transaction(() => {
     runConversion(raw, { manifest: manifest([{ sourceId: 'u2', feedUrl: 'https://b.test/f.xml' }]), now: NOW, log: () => {} })
     throw new Error('injected fault before the marker') // Task 8 writes marker + reset AFTER this point
   }).immediate()).toThrow('injected fault before the marker')
 
-  for (const t of ['remote_sources_v2', 'remote_publishers_v2', 'federation_relationships_v2', 'source_subscriptions_v2', 'source_audit_v2', 'handle_reservations_v2']) {
+  // every table family Tasks 5 AND 6 write (V2 Appendix D fault-injection pattern)
+  for (const t of [
+    'remote_sources_v2', 'remote_publishers_v2', 'federation_relationships_v2', 'source_subscriptions_v2',
+    'source_audit_v2', 'handle_reservations_v2', 'logical_items_v2', 'logical_local_origins_v2',
+    'logical_identity_keys_v2', 'deliveries_v2', 'observation_versions_v2', 'presentation_entries_v2',
+    'publisher_claims_v2', 'logical_conflicts_v2', 'acquisition_runs_v2', 'reconciliation_jobs_v2',
+  ]) {
     expect(count(raw, t), t).toBe(0)
   }
   expect(raw.prepare(`SELECT * FROM users ORDER BY id`).all()).toEqual(legacyUsers)
   expect(raw.prepare(`SELECT * FROM follows ORDER BY followed_id`).all()).toEqual(legacyFollows)
+  expect(raw.prepare(`SELECT * FROM posts ORDER BY id`).all()).toEqual(legacyPosts)
+  expect(raw.prepare(`SELECT * FROM post_revisions ORDER BY id`).all()).toEqual(legacyRevisions)
+})
+
+// =============================================================================
+// V4 Task 6 — Conversion II: items, deliveries, ancestry, revisions
+// =============================================================================
+// Legacy remote posts become logical items with the SAME post id (so every
+// pre-cutover /post/:id keeps resolving), each carrying one delivery on the
+// same-ID source, synthetic observation evidence, a claim on the source's
+// converted publisher, and an accepted presentation chain. Legacy rows stay
+// inert: `posts`/`post_revisions` are never deleted or rewritten.
+
+const POST_COLS = `id, author_id, source, guid, title, content, url, published_at, created_at,
+  in_reply_to, in_reply_to_post_id, thread_root_id, source_name, source_feed_url,
+  content_markdown, edited_at, reply_context_author, reply_context_snippet`
+const POST_VALS = `@id, @author_id, @source, @guid, @title, @content, @url, @published_at, @created_at,
+  @in_reply_to, @in_reply_to_post_id, @thread_root_id, @source_name, @source_feed_url,
+  @content_markdown, @edited_at, @reply_context_author, @reply_context_snippet`
+const PUBLISHED_AT = '2026-02-01T00:00:00.000Z'
+const ARRIVED_AT = '2026-02-01T00:05:00.000Z'
+
+function seedPost(raw: Raw, over: Record<string, string | null> = {}): string {
+  const row = {
+    id: 'p1', author_id: 'u1', source: 'remote', guid: 'g1', title: 'Title', content: '<p>body</p>',
+    url: 'https://a.test/post/1', published_at: PUBLISHED_AT, created_at: ARRIVED_AT,
+    in_reply_to: null, in_reply_to_post_id: null, thread_root_id: null,
+    source_name: null, source_feed_url: null, content_markdown: null, edited_at: null,
+    reply_context_author: null, reply_context_snippet: null, ...over,
+  }
+  raw.prepare(`INSERT INTO posts (${POST_COLS}) VALUES (${POST_VALS})`).run(row)
+  return row.id as string
+}
+function seedLocalPost(raw: Raw, over: Record<string, string | null> = {}): string {
+  return seedPost(raw, { id: 'lp1', author_id: 'l1', source: 'local', guid: 'lg1', url: '/post/lp1', ...over })
+}
+let revSeq = 0
+function seedRevision(raw: Raw, postId: string, over: Record<string, string | null> = {}): void {
+  raw.prepare(`INSERT INTO post_revisions (id, post_id, title, content, content_markdown, seen_at) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(`rev${++revSeq}`, postId, over.title ?? 'Title', over.content ?? '<p>old</p>', over.content_markdown ?? null, over.seen_at ?? '2026-02-02T00:00:00.000Z')
+}
+
+const ANON = { localAccountId: null, activeSourceIds: [] }
+const one = (raw: Raw, sql: string, ...args: unknown[]) => raw.prepare(sql).get(...args) as Record<string, unknown> | undefined
+const all = (raw: Raw, sql: string, ...args: unknown[]) => raw.prepare(sql).all(...args) as Record<string, unknown>[]
+const publisherOf = (raw: Raw) => (raw.prepare(`SELECT id FROM remote_publishers_v2 LIMIT 1`).get() as { id: string }).id
+const materialOf = (raw: Raw, versionId: string) =>
+  JSON.parse((one(raw, `SELECT canonical_material AS m FROM observation_versions_v2 WHERE id = ?`, versionId)!.m as Buffer).toString('utf8')) as Record<string, unknown>
+
+// ── identity: one post, one item, one delivery, one claim ────────────────
+
+test('a legacy remote post becomes a logical item with the SAME post id', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw)
+  convert(raw)
+
+  const delivery = one(raw, `SELECT * FROM deliveries_v2`)!
+  expect(delivery).toMatchObject({ source_id: 'u1', key_kind: 'opaque', key: 'g1', first_seen_at: ARRIVED_AT, seen_count: 1 })
+  expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p1'`)).toMatchObject({
+    id: 'p1', origin: 'remote', timeline_sort_at: PUBLISHED_AT, parent_state: 'none', parent_logical_item_id: null,
+    selected_delivery_id: delivery.id, selected_publisher_id: publisherOf(raw), created_at: NOW,
+  })
+  expect(count(raw, 'logical_items_v2')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+  // the claim attaches to the SOURCE's converted publisher (2026-07-24 adjudication)
+  expect(one(raw, `SELECT * FROM publisher_claims_v2`)).toMatchObject({
+    logical_item_id: 'p1', publisher_id: publisherOf(raw), source_id: 'u1',
+    evidence_level: 'bound_single_publisher', first_seen_at: NOW,
+  })
+  // identity keys: the delivery, the permalink, and the publisher-scoped guid
+  expect(all(raw, `SELECT kind, key, logical_item_id FROM logical_identity_keys_v2 ORDER BY kind`)).toEqual([
+    { kind: 'delivery', key: delivery.id, logical_item_id: 'p1' },
+    { kind: `opaque:publisher:${publisherOf(raw)}`, key: 'g1', logical_item_id: 'p1' },
+    { kind: 'permalink', key: 'https://a.test/post/1', logical_item_id: 'p1' },
+  ])
+})
+
+test('a converted item projects as an ordinary logical item', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { content_markdown: '# body' })
+  convert(raw)
+
+  expect(projectItem(raw, 'p1', ANON)).toMatchObject({
+    kind: 'logical_item', id: 'p1', origin: 'remote', parentResolutionState: 'none',
+    title: 'Title', content: '<p>body</p>', permalink: 'https://a.test/post/1',
+    publishedAt: PUBLISHED_AT, updatedAt: null, updatedAtProvenance: null,
+  })
+  // and it appears in the public river, not just by id
+  expect(projectTimeline(raw, { lens: { kind: 'public' }, before: null, limit: 10, viewer: ANON }).timeline.map((i) => i.id)).toEqual(['p1'])
+})
+
+test('legacy posts and revisions stay INERT — never deleted, never rewritten', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { edited_at: '2026-02-02T00:00:00.000Z' })
+  seedRevision(raw, 'p1')
+  const posts = raw.prepare(`SELECT * FROM posts ORDER BY id`).all()
+  const revisions = raw.prepare(`SELECT * FROM post_revisions ORDER BY id`).all()
+  convert(raw)
+  expect(raw.prepare(`SELECT * FROM posts ORDER BY id`).all()).toEqual(posts)
+  expect(raw.prepare(`SELECT * FROM post_revisions ORDER BY id`).all()).toEqual(revisions)
+})
+
+test('local posts convert to no remote item and no delivery', async () => {
+  const raw = await fresh()
+  seedLocal(raw)
+  seedRemote(raw)
+  seedLocalPost(raw)
+  convert(raw)
+  expect(count(raw, 'logical_items_v2')).toBe(0)
+  expect(count(raw, 'deliveries_v2')).toBe(0)
+})
+
+// ── the synthetic observation evidence contract (FC2) ────────────────────
+
+test('the migration observation is a MARKED synthetic envelope built from the post', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { content_markdown: '# body', in_reply_to: 'https://other.test/p/9', source_name: 'A', reply_context_author: 'bob', reply_context_snippet: 'hi' })
+  convert(raw)
+
+  const v = one(raw, `SELECT * FROM observation_versions_v2`)!
+  // canonical_material: the post's own fields, under a synthetic marker
+  expect(materialOf(raw, v.id as string)).toMatchObject({
+    synthetic: 'migration', keyKind: 'opaque', key: 'g1',
+    title: 'Title', content: '<p>body</p>', link: 'https://a.test/post/1',
+    published: PUBLISHED_AT, inReplyTo: 'https://other.test/p/9', enclosures: [],
+  })
+  expect(JSON.parse(v.normalized_json as string)).toMatchObject({
+    synthetic: 'migration', keyKind: 'opaque', key: 'g1',
+    permalink: 'https://a.test/post/1', inReplyTo: 'https://other.test/p/9',
+    contentMarkdown: '# body', replyContext: { author: 'bob', snippet: 'hi' },
+  })
+  expect(JSON.parse(v.raw_evidence_json as string)).toMatchObject({ synthetic: 'migration', title: 'Title', sourceName: 'A', link: 'https://a.test/post/1' })
+})
+
+test('the migration observation takes the DEFINED synthetic run/ordinal/seen values', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw)
+  convert(raw)
+
+  const v = one(raw, `SELECT * FROM observation_versions_v2`)!
+  expect(v).toMatchObject({
+    fingerprint_version: 1, wire_ordinal: 0, seen_count: 1,
+    arrival_at: ARRIVED_AT, last_seen_at: NOW, last_seen_run_id: v.run_id,
+  })
+  expect(String(v.run_id)).toMatch(/^migration:/)
+  // the synthetic run is terminal and belongs to the converted source, so the
+  // arrival tuple every comparator reads is complete
+  expect(one(raw, `SELECT * FROM acquisition_runs_v2 WHERE id = ?`, v.run_id)).toMatchObject({
+    source_id: 'u1', reason: 'scheduled', status: 'terminal', outcome: 'parsed',
+    acquisition_committed_at: NOW, delivery_mechanism: null,
+  })
+  // a reconciled observation job — the version is ordinary-eligible immediately
+  expect(one(raw, `SELECT * FROM reconciliation_jobs_v2`)).toMatchObject({
+    kind: 'observation', run_id: v.run_id, observation_version_id: v.id, status: 'reconciled', attempts: 0,
+  })
+  expect(one(raw, `SELECT * FROM deliveries_v2`)).toMatchObject({ last_seen_run_id: v.run_id, last_seen_at: NOW, seen_count: 1 })
+})
+
+// ── attribution ─────────────────────────────────────────────────────────
+
+test('per-item attribution naming a DIFFERENT feed on a bound source counts attribution_conflict', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { source_name: 'Elsewhere', source_feed_url: 'https://elsewhere.test/feed.xml' })
+  const counts = convert(raw)
+
+  expect(counts.attribution_conflict).toBe(1)
+  expect(one(raw, `SELECT * FROM logical_conflicts_v2`)).toMatchObject({ logical_item_id: 'p1', kind: 'attribution_conflict' })
+  // the BOUND publisher still wins, and no second publisher is minted
+  expect(one(raw, `SELECT * FROM publisher_claims_v2`)).toMatchObject({ publisher_id: publisherOf(raw), evidence_level: 'bound_single_publisher' })
+  expect(count(raw, 'remote_publishers_v2')).toBe(1)
+  expect(lines.join('\n')).toContain('attribution_conflict')
+})
+
+test('per-item attribution AGREEING with the bound source is no conflict', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { source_name: 'A', source_feed_url: 'https://A.test:443/feed.xml' })
+  const counts = convert(raw)
+  expect(counts.attribution_conflict).toBe(0)
+  expect(count(raw, 'logical_conflicts_v2')).toBe(0)
+})
+
+test('an aggregate item claims the source publisher at aggregate_assertion, origin preserved for verification', async () => {
+  const raw = await fresh()
+  seedRemote(raw, { feed_type: 'instance' })
+  seedPost(raw, { source_name: 'Origin', source_feed_url: 'https://origin.test/feed.xml' })
+  const counts = convert(raw, manifest([{}])) // approved aggregate, so it stays ordinary-eligible
+
+  expect(one(raw, `SELECT * FROM publisher_claims_v2`)).toMatchObject({ publisher_id: publisherOf(raw), evidence_level: 'aggregate_assertion' })
+  expect(count(raw, 'remote_publishers_v2')).toBe(1)
+  // per-item attribution is EXPECTED on an aggregate — no conflict, and the origin
+  // URL is retained so post-cutover verification can fetch it LIVE.
+  expect(counts.attribution_conflict).toBe(0)
+  const v = one(raw, `SELECT normalized_json FROM observation_versions_v2`)!
+  expect(JSON.parse(v.normalized_json as string).originFeedUrl).toBe('https://origin.test/feed.xml')
+})
+
+test("a quarantined instance's items convert as retained admin evidence, ordinarily invisible", async () => {
+  const raw = await fresh()
+  seedRemote(raw, { feed_type: 'instance' }) // no manifest ⇒ quarantined
+  seedPost(raw)
+  convert(raw)
+  expect(count(raw, 'logical_items_v2')).toBe(1)
+  expect(count(raw, 'publisher_claims_v2')).toBe(1)
+  expect(projectItem(raw, 'p1', ANON)).toBeUndefined()
+  expect(projectTimeline(raw, { lens: { kind: 'public' }, before: null, limit: 10, viewer: ANON }).timeline).toEqual([])
+})
+
+// ── ancestry ────────────────────────────────────────────────────────────
+
+test('a resolved legacy remote reply edge copies as a resolved logical parent edge', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw)
+  seedPost(raw, { id: 'p2', guid: 'g2', url: 'https://a.test/post/2', in_reply_to: 'https://a.test/post/1', in_reply_to_post_id: 'p1', thread_root_id: 'p1' })
+  const counts = convert(raw)
+
+  expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p2'`)).toMatchObject({ parent_state: 'resolved', parent_logical_item_id: 'p1' })
+  expect(counts.unresolved_reference).toBe(0)
+  expect(projectItem(raw, 'p2', ANON)).toMatchObject({ parentResolutionState: 'resolved', parentLogicalItemId: 'p1', threadRootId: 'p1' })
+})
+
+test('a legacy reply to a LOCAL parent materializes the local bridge row and resolves', async () => {
+  const raw = await fresh()
+  seedLocal(raw)
+  seedRemote(raw)
+  seedLocalPost(raw)
+  seedPost(raw, { id: 'p2', guid: 'g2', url: 'https://a.test/post/2', in_reply_to: '/post/lp1', in_reply_to_post_id: 'lp1' })
+  convert(raw)
+
+  expect(one(raw, `SELECT * FROM logical_local_origins_v2`)).toEqual({ logical_item_id: 'lp1', post_id: 'lp1' })
+  expect(one(raw, `SELECT origin FROM logical_items_v2 WHERE id = 'lp1'`)).toEqual({ origin: 'local' })
+  expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p2'`)).toMatchObject({ parent_state: 'resolved', parent_logical_item_id: 'lp1' })
+})
+
+test('a reply whose parent post is GONE converts to missing and counts unresolved_reference', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { in_reply_to: 'https://a.test/post/0', in_reply_to_post_id: 'ghost' })
+  const counts = convert(raw)
+
+  expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p1'`)).toMatchObject({ parent_state: 'missing', parent_logical_item_id: null })
+  expect(counts.unresolved_reference).toBe(1)
+  expect(lines.join('\n')).toContain('unresolved_reference')
+  // the bounded asserted context survives as the reply-context the projector shows
+  expect(projectItem(raw, 'p1', ANON)).toMatchObject({
+    parentResolutionState: 'missing',
+    replyContext: { kind: 'asserted_external', url: 'https://a.test/post/0', authorLabel: null, snippet: null },
+  })
+})
+
+test('an UNRESOLVED raw legacy reference converts to missing and counts unresolved_reference', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { in_reply_to: 'https://elsewhere.test/p/1' }) // never resolved by legacy ingest
+  const counts = convert(raw)
+  expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p1'`)).toMatchObject({ parent_state: 'missing' })
+  expect(counts.unresolved_reference).toBe(1)
+})
+
+test('a self-referential legacy edge is never copied — missing, counted, no cycle', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { in_reply_to: 'https://a.test/post/1', in_reply_to_post_id: 'p1' })
+  const counts = convert(raw)
+  expect(one(raw, `SELECT * FROM logical_items_v2 WHERE id = 'p1'`)).toMatchObject({ parent_state: 'missing', parent_logical_item_id: null })
+  expect(counts.unresolved_reference).toBe(1)
+})
+
+test('two converted items sharing a permalink are BOTH kept and count permalink_collision', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedRemote(raw, { id: 'u2', handle: 'bob', feed_url: 'https://b.test/f.xml' })
+  seedPost(raw)
+  seedPost(raw, { id: 'p2', author_id: 'u2', guid: 'g2' }) // same url as p1
+  const counts = convert(raw)
+
+  expect(counts.permalink_collision).toBe(1)
+  expect(lines.join('\n')).toContain('permalink_collision')
+  // BOTH items are kept, and exactly one owns the contested key
+  expect(all(raw, `SELECT id FROM logical_items_v2 ORDER BY id`)).toEqual([{ id: 'p1' }, { id: 'p2' }])
+  expect(all(raw, `SELECT logical_item_id FROM logical_identity_keys_v2 WHERE kind = 'permalink'`)).toEqual([{ logical_item_id: 'p1' }])
+  expect(projectItem(raw, 'p2', ANON)).toMatchObject({ id: 'p2' })
+})
+
+test('distinct permalinks count NO collision', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedRemote(raw, { id: 'u2', handle: 'bob', feed_url: 'https://b.test/f.xml' })
+  seedPost(raw)
+  seedPost(raw, { id: 'p2', author_id: 'u2', guid: 'g2', url: 'https://b.test/post/2' })
+  const counts = convert(raw)
+  expect(counts.permalink_collision).toBe(0)
+  expect(counts.guid_collision).toBe(0)
+})
+
+// ── revisions → the accepted presentation chain ─────────────────────────
+
+test('legacy revisions convert into the accepted chain in seen_at order as legacy_unknown', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { content: '<p>v3</p>', edited_at: '2026-02-04T00:00:00.000Z' })
+  seedRevision(raw, 'p1', { content: '<p>v2</p>', seen_at: '2026-02-04T00:00:00.000Z' })
+  seedRevision(raw, 'p1', { content: '<p>v1</p>', seen_at: '2026-02-03T00:00:00.000Z' })
+  convert(raw)
+
+  const entries = all(raw, `SELECT sequence, observation_version_id, effective_updated_at, provenance FROM presentation_entries_v2 ORDER BY sequence`)
+  expect(entries.map((e) => e.sequence)).toEqual([0, 1, 2])
+  expect(entries.map((e) => e.provenance)).toEqual(['legacy_unknown', 'legacy_unknown', 'legacy_unknown'])
+  expect(entries.map((e) => e.effective_updated_at)).toEqual(['2026-02-03T00:00:00.000Z', '2026-02-04T00:00:00.000Z', '2026-02-04T00:00:00.000Z'])
+  // oldest revision first, current post last — each on its OWN observation version
+  expect(entries.map((e) => materialOf(raw, e.observation_version_id as string).content)).toEqual(['<p>v1</p>', '<p>v2</p>', '<p>v3</p>'])
+  expect(new Set(entries.map((e) => e.observation_version_id)).size).toBe(3)
+  expect(count(raw, 'observation_versions_v2')).toBe(3)
+  expect(count(raw, 'reconciliation_jobs_v2')).toBe(3)
+})
+
+test('the wire updatedAtProvenance of a converted edited item reads legacy_unknown', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { content: '<p>new</p>', edited_at: '2026-02-04T00:00:00.000Z' })
+  seedRevision(raw, 'p1', { content: '<p>old</p>', seen_at: '2026-02-04T00:00:00.000Z' })
+  convert(raw)
+  expect(projectItem(raw, 'p1', ANON)).toMatchObject({
+    content: '<p>new</p>', updatedAt: '2026-02-04T00:00:00.000Z', updatedAtProvenance: 'legacy_unknown',
+  })
+  const history = projectHistory(raw, 'p1', ANON)!
+  expect(history.entries.map((e) => e.content)).toEqual(['<p>old</p>', '<p>new</p>'])
+  expect(history.entries.map((e) => e.updatedAtProvenance)).toEqual(['legacy_unknown', 'legacy_unknown'])
+})
+
+test('legacy_unknown never initializes the explicit-update watermark', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { edited_at: '2026-02-04T00:00:00.000Z' })
+  seedRevision(raw, 'p1', { seen_at: '2026-02-04T00:00:00.000Z' })
+  convert(raw)
+  // the ONE query applyPresentation reads as the watermark
+  expect(one(raw, `SELECT MAX(effective_updated_at) AS w FROM presentation_entries_v2 WHERE provenance = 'explicit'`)).toEqual({ w: null })
+})
+
+test('a post-cutover explicit update starts the watermark FRESH above the legacy chain', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPost(raw, { content: '<p>legacy</p>', edited_at: '2026-02-04T00:00:00.000Z' })
+  seedRevision(raw, 'p1', { content: '<p>older</p>', seen_at: '2026-02-04T00:00:00.000Z' })
+  convert(raw)
+
+  const db = createDatabaseContext(raw)
+  const feed = `<?xml version="1.0"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>A</title>`
+    + `<item><guid isPermaLink="false">g1</guid><link>https://a.test/post/1</link><title>Title</title>`
+    + `<description>&lt;p&gt;fresh&lt;/p&gt;</description><atom:updated>2026-02-05T00:00:00Z</atom:updated></item></channel></rss>`
+  const eng = createAcquisition({
+    db,
+    fetchFn: (async () => new Response(feed, { status: 200 })) as unknown as typeof fetch,
+    lookupFn: async () => [{ address: '93.184.216.34' }],
+    now: () => NOW,
+  })
+  await eng.acquireSource('u1', { kind: 'scheduled' }, undefined)
+  expect(drainReconciliation({ store: createLogicalStore(db), now: () => NOW })).toBe(1)
+
+  // ONE delivery still — the converted key was found, not forked
+  expect(count(raw, 'deliveries_v2')).toBe(1)
+  expect(count(raw, 'logical_items_v2')).toBe(1)
+  const top = one(raw, `SELECT sequence, effective_updated_at, provenance FROM presentation_entries_v2 ORDER BY sequence DESC LIMIT 1`)!
+  expect(top).toMatchObject({ sequence: 2, provenance: 'explicit', effective_updated_at: '2026-02-05T00:00:00.000Z' })
+})
+
+// ── zero rows ───────────────────────────────────────────────────────────
+
+test('a legacy set with no posts writes no item family at all', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  convert(raw)
+  for (const t of ['logical_items_v2', 'deliveries_v2', 'observation_versions_v2', 'presentation_entries_v2',
+    'publisher_claims_v2', 'logical_identity_keys_v2', 'acquisition_runs_v2', 'reconciliation_jobs_v2']) {
+    expect(count(raw, t), t).toBe(0)
+  }
 })

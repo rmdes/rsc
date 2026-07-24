@@ -1,6 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { normalizeSourceUrl } from '../domain/source-url.ts'
 import { insertAudit } from '../storage/sqlite.ts'
+import { normalizePermalink } from '../logical/reconcile.ts'
+import { normalizeUtc, presentationFingerprint } from '../logical/projector.ts'
+import { materializeLocalPost } from '../logical/local.ts'
 import type { WriteTx } from '../logical/database.ts'
 import type { AttributionMode } from '../domain/types.ts'
 import type { Manifest } from './preflight.ts'
@@ -46,6 +49,67 @@ function zeroCounts(): ConversionCounts {
 }
 
 interface LegacyRemote { id: string; handle: string; feed_url: string; feed_type: string | null }
+interface ConvertedSource { publisherId: string; mode: AttributionMode; canonicalUrl: string }
+
+interface LegacyPost {
+  id: string; author_id: string; guid: string; title: string | null; content: string
+  url: string | null; published_at: string; created_at: string
+  in_reply_to: string | null; in_reply_to_post_id: string | null
+  source_name: string | null; source_feed_url: string | null
+  content_markdown: string | null; edited_at: string | null
+  reply_context_author: string | null; reply_context_snippet: string | null
+}
+
+// ============================================================================
+// THE SYNTHETIC OBSERVATION EVIDENCE CONTRACT (spec §3.2, adjudication FC2)
+// ============================================================================
+// A converted post has no fetched feed document behind it, so its observation
+// evidence is BUILT from the legacy row's own fields and wrapped in a marked
+// envelope: `synthetic: 'migration'` is the FIRST key of canonical_material,
+// raw_evidence_json and normalized_json alike. Nothing here fabricates a feed
+// document, a wire body, or a publisher assertion the legacy row did not carry.
+//
+// WHY INTEGRITY HOLDS — converted evidence can never masquerade as fetched
+// proof, because nothing treats stored evidence as proof of anything:
+//  - reconciliation reads `normalized_json` for identity/ancestry/presentation
+//    material, and that JSON IS the correct converted content — it is the
+//    payload, never the warrant;
+//  - origin verification (V3 §7.1) proves attribution by FETCHING the live
+//    publisher feed URL and matching containment there; it never re-reads
+//    stored evidence. A converted item's claimed origin therefore has to be
+//    re-earned against the live web exactly like an acquired item's;
+//  - the `synthetic` marker means any future reader that DOES want to
+//    distinguish provenance can, without re-deriving this argument.
+//
+// The synthetic values, chosen deliberately (plan Task 6 Step 1a):
+//  - `wire_ordinal` = the presentation sequence: 0 for the ordinary
+//    single-version post (the pinned value), 0..n when legacy revisions make
+//    the chain deeper. The first-arrival tuple is
+//    (committed_at, run_id, wire_ordinal, version_id) and every migration
+//    version of a source shares the first two, so the ordinal is the ONLY
+//    component that can order a delivery's revisions deterministically —
+//    leaving them all 0 would fall through to random UUID order.
+//  - `seen_count` = 1 and `last_seen_run_id` = the migration run: conversion
+//    observes each version exactly once. A legacy revision whose material
+//    repeats an earlier one is skipped entirely (live acquisition likewise
+//    creates no second version for identical material); the legacy tables
+//    never recorded re-appearances, so the count stays a truthful 1.
+//  - `last_seen_at` = the conversion timestamp (when this evidence was
+//    written); `arrival_at` = the legacy `created_at` (when the item actually
+//    arrived), so the durable arrival fact is preserved, not overwritten.
+//
+// THE SYNTHETIC RUN. `observation_versions_v2.run_id` carries no FK, but every
+// comparator and the whole ordinary projection JOIN through
+// `acquisition_runs_v2` for the arrival tuple, and `reconciliation_jobs_v2`
+// (which DOES have an FK to it) gates ordinary eligibility. So conversion
+// writes ONE terminal run per source that has posts, plus one 'reconciled'
+// observation job per version — exactly V3's persistVerifiedDelivery pattern
+// (verification.ts), the established house precedent for durable evidence that
+// no drain produced. Because a run belongs to ONE source, the pinned literal
+// `run_id = 'migration'` is per-source `migration:<sourceId>`: still marked,
+// still recognizable, and now JOIN-able. See the dated plan-correction note.
+const SYNTHETIC = 'migration'
+const MIGRATION_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false })
 
 export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; now: string; log: (line: string) => void }): ConversionCounts {
   const { manifest, now, log } = input
@@ -63,6 +127,8 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
   // LEGACY kind, not the resulting attribution mode (a manifest-approved
   // instance is still an instance follow).
   const wasInstance = new Set<string>()
+  // what the item pass (below) needs about each converted source
+  const converted = new Map<string, ConvertedSource>()
 
   for (const row of rows) {
     const canonicalUrl = normalizeSourceUrl(row.feed_url)
@@ -129,6 +195,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     tx.prepare(
       `INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`,
     ).run(publisherId, canonicalUrl, now)
+    converted.set(row.id, { publisherId, mode, canonicalUrl })
 
     if (federation) {
       tx.prepare(
@@ -191,6 +258,206 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     if (n > cap) {
       counts.over_cap_grandfathered++
       log(`over_cap_grandfathered: ${ownerId} keeps ${n} subscriptions over the cap of ${cap}; no new subscription until back under it`)
+    }
+  }
+
+  // --- items, deliveries, presentation, ancestry ---------------------------
+  // Legacy remote posts become logical items with the SAME post id (spec §3.2),
+  // so every pre-cutover /post/:id keeps resolving. TWO passes: every item row
+  // exists before any ancestry edge is written, so a reply converted ahead of
+  // its parent still finds it (parent_logical_item_id is RESTRICT).
+  const legacyPosts = tx.prepare(
+    `SELECT id, author_id, guid, title, content, url, published_at, created_at,
+            in_reply_to, in_reply_to_post_id, source_name, source_feed_url,
+            content_markdown, edited_at, reply_context_author, reply_context_snippet
+     FROM posts WHERE source = 'remote' ORDER BY published_at, id`,
+  ).all() as LegacyPost[]
+
+  const insertRun = tx.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json, delivery_mechanism)
+     VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL, NULL)`,
+  )
+  const insertDelivery = tx.prepare(
+    `INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count)
+     VALUES (?, ?, 'opaque', ?, ?, ?, ?, 1)`,
+  )
+  const insertItem = tx.prepare(
+    `INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at)
+     VALUES (?, 'remote', ?, 'none', NULL, ?, ?, ?)`,
+  )
+  const insertVersion = tx.prepare(
+    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+     VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+  )
+  const insertJob = tx.prepare(
+    `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
+     VALUES (?, 'observation', ?, ?, NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
+  )
+  const insertEntry = tx.prepare(
+    `INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  const insertClaim = tx.prepare(
+    `INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+  const insertConflict = tx.prepare(
+    `INSERT INTO logical_conflicts_v2 (id, logical_item_id, observation_version_id, kind, evidence_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  const keyOwner = tx.prepare(`SELECT logical_item_id FROM logical_identity_keys_v2 WHERE kind = ? AND key = ?`)
+  const insertKey = tx.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES (?, ?, ?)`)
+  const revisionsOf = tx.prepare(`SELECT title, content, content_markdown, seen_at FROM post_revisions WHERE post_id = ? ORDER BY seen_at, id`)
+
+  // Historical items are NEVER merged (spec §3.2): a contested key is left with
+  // its first owner, both items are kept, and the collision is counted.
+  const claimKey = (kind: string, key: string, itemId: string, finding: 'permalink_collision' | 'guid_collision'): void => {
+    const owner = keyOwner.get(kind, key) as { logical_item_id: string } | undefined
+    if (!owner) { insertKey.run(kind, key, itemId); return }
+    if (owner.logical_item_id === itemId) return
+    counts[finding]++
+    log(`${finding}: ${itemId} and ${owner.logical_item_id} both claim ${kind} ${key}; both kept, neither merged`)
+  }
+
+  const runs = new Set<string>()
+  const convertedItems = new Set<string>()
+
+  for (const post of legacyPosts) {
+    const src = converted.get(post.author_id)
+    // ponytail: a remote post whose author is not a converted remote user is a
+    // legacy anomaly with nothing to attach to — skipped, not crashed.
+    if (!src) continue
+    convertedItems.add(post.id)
+
+    const runId = `${SYNTHETIC}:${post.author_id}`
+    if (!runs.has(runId)) { insertRun.run(runId, post.author_id, now, now, now, MIGRATION_COUNTERS); runs.add(runId) }
+
+    // The legacy UNIQUE(author_id, guid) tuple IS the v2 delivery key: the guid
+    // was V1's opaque dedup identifier, so it converts as key_kind 'opaque' —
+    // the same classification acquisition gives an item carrying a guid, which
+    // is what lets the first post-cutover poll FIND this delivery instead of
+    // forking a second one beside it.
+    const deliveryId = randomUUID()
+    insertDelivery.run(deliveryId, post.author_id, post.guid, post.created_at, now, runId)
+
+    // timeline_sort_at preserves the legacy publication instant exactly (spec
+    // §3.2): V1 already ordered the timeline by it, so preserving it is what
+    // keeps the timeline looking identical across cutover.
+    const timelineSortAt = normalizeUtc(post.published_at) ?? normalizeUtc(post.created_at) ?? now
+    insertItem.run(post.id, timelineSortAt, deliveryId, src.publisherId, now)
+
+    const permalink = normalizePermalink(post.url)
+    insertKey.run('delivery', deliveryId, post.id)
+    if (permalink) claimKey('permalink', permalink, post.id, 'permalink_collision')
+    claimKey(`opaque:publisher:${src.publisherId}`, post.guid, post.id, 'guid_collision')
+
+    // Per-item attribution. An aggregate is EXPECTED to carry it, and the
+    // claimed origin is retained in normalized_json so V3 verification can
+    // fetch it live; a BOUND single-publisher source asserting a different
+    // origin feed is the conflict (spec §3.2). Names are not identity —
+    // publishers are feed-anchored — so a bare source_name is evidence only.
+    const perItemUrl = post.source_feed_url && /^https?:\/\//i.test(post.source_feed_url) ? post.source_feed_url : null
+    if (src.mode === 'single_publisher' && perItemUrl) {
+      let normalizedPerItem: string | null = null
+      try { normalizedPerItem = normalizeSourceUrl(perItemUrl) } catch { normalizedPerItem = null }
+      if (normalizedPerItem !== src.canonicalUrl) {
+        counts.attribution_conflict++
+        insertConflict.run(randomUUID(), post.id, null, 'attribution_conflict', JSON.stringify({ sourceId: post.author_id, boundUrl: src.canonicalUrl, claimedUrl: perItemUrl, claimedName: post.source_name }), now)
+        log(`attribution_conflict: ${post.id} claims origin ${perItemUrl} on bound source ${post.author_id} (${src.canonicalUrl}); the bound publisher wins`)
+      }
+    }
+
+    // The accepted presentation chain: legacy revisions oldest-first, then the
+    // post's CURRENT state (post_revisions holds superseded snapshots, and
+    // seen_at is the moment each was superseded — sqlite.ts recordEdit).
+    const revisions = revisionsOf.all(post.id) as { title: string | null; content: string; content_markdown: string | null; seen_at: string }[]
+    const steps = [
+      ...revisions.map((r) => ({ title: r.title, content: r.content, contentMarkdown: r.content_markdown, updated: r.seen_at })),
+      { title: post.title, content: post.content, contentMarkdown: post.content_markdown, updated: post.edited_at },
+    ]
+
+    let sequence = 0
+    let baselineVersionId: string | null = null
+    const seenFingerprints = new Set<string>()
+    for (const step of steps) {
+      const material = {
+        synthetic: SYNTHETIC, v: 1, keyKind: 'opaque', key: post.guid,
+        title: step.title, content: step.content, link: post.url,
+        published: post.published_at, updated: step.updated, inReplyTo: post.in_reply_to, enclosures: [],
+      }
+      const canonicalMaterial = Buffer.from(JSON.stringify(material), 'utf8')
+      const fingerprint = createHash('sha256').update(canonicalMaterial).digest('hex')
+      // Repeated material creates no second version — the UNIQUE(delivery_id,
+      // fingerprint_version, fingerprint) rule live acquisition obeys too.
+      if (seenFingerprints.has(fingerprint)) continue
+      seenFingerprints.add(fingerprint)
+
+      const normalized = {
+        synthetic: SYNTHETIC, keyKind: 'opaque', key: post.guid,
+        permalink, inReplyTo: post.in_reply_to, enclosures: [], originFeedUrl: perItemUrl,
+        // Retained legacy detail the v2 remote projection has no field for yet
+        // (contentMarkdown is remote-null in V2, reply context is URL-only) —
+        // preserved here so conversion loses nothing.
+        contentMarkdown: step.contentMarkdown,
+        replyContext: { author: post.reply_context_author, snippet: post.reply_context_snippet },
+      }
+      const rawEvidence = {
+        synthetic: SYNTHETIC, title: step.title, sourceName: post.source_name,
+        link: post.url, published: post.published_at, updated: step.updated, enclosureCount: 0,
+      }
+      const versionId = randomUUID()
+      insertVersion.run(versionId, deliveryId, fingerprint, canonicalMaterial, post.created_at, runId, sequence, now, runId, JSON.stringify(rawEvidence), JSON.stringify(normalized))
+      insertJob.run(randomUUID(), runId, versionId, now, now)
+      // provenance legacy_unknown (spec §3.2, V2 rev 6's widened CHECK): a
+      // legacy timestamp is NOT an authoritative explicit watermark, and the
+      // watermark query reads provenance = 'explicit' only — so a converted
+      // chain leaves the watermark unset and the first post-cutover explicit
+      // update starts it fresh.
+      insertEntry.run(deliveryId, sequence, versionId, normalizeUtc(step.updated), step.updated ? 'legacy_unknown' : null, presentationFingerprint({
+        title: step.title, content: step.content, contentMarkdown: null,
+        permalink, sourceLink: post.url, enclosures: [], inReplyTo: post.in_reply_to,
+      }))
+      baselineVersionId ??= versionId
+      sequence++
+    }
+
+    // One claim on the SOURCE's converted publisher (2026-07-24 adjudication):
+    // the same identity a post-cutover reconcile resolves, so nothing forks.
+    insertClaim.run(randomUUID(), post.id, src.publisherId, post.author_id, baselineVersionId, src.mode === 'aggregate' ? 'aggregate_assertion' : 'bound_single_publisher', now)
+  }
+
+  // Ancestry (spec §3.2): a resolved legacy edge copies AS-IS — V2 §4.1 permits
+  // preserving it without recreating the retired global-uniqueness fallback, and
+  // legacy edges always pointed at a real post, so no depth/cycle re-derivation.
+  // Everything else — a reference legacy ingest never resolved, a parent since
+  // deleted, a self-edge — converts to `missing` with its bounded asserted
+  // context (canonical_material.inReplyTo, which the projector renders as the
+  // asserted external reply context) and is COUNTED.
+  //
+  // Known carry (V2): a `missing` converted reply is not enqueued for orphan
+  // adoption — historical local replies to a remote parent converge going
+  // forward only, exactly as V2 already behaves.
+  const postSource = tx.prepare(`SELECT source FROM posts WHERE id = ?`)
+  for (const post of legacyPosts) {
+    if (!convertedItems.has(post.id)) continue
+    if (!post.in_reply_to && !post.in_reply_to_post_id) continue
+
+    let parent: string | null = null
+    const pid = post.in_reply_to_post_id
+    if (pid && pid !== post.id) {
+      if (convertedItems.has(pid)) parent = pid
+      else if ((postSource.get(pid) as { source: string } | undefined)?.source === 'local') {
+        // V2 §2.6's explicit-backfill site: the local bridge row must exist for
+        // the edge endpoint to be referenceable.
+        materializeLocalPost(tx, pid)
+        parent = pid
+      }
+    }
+    if (parent) {
+      tx.prepare(`UPDATE logical_items_v2 SET parent_state = 'resolved', parent_logical_item_id = ? WHERE id = ?`).run(parent, post.id)
+    } else {
+      tx.prepare(`UPDATE logical_items_v2 SET parent_state = 'missing' WHERE id = ?`).run(post.id)
+      counts.unresolved_reference++
+      log(`unresolved_reference: ${post.id} references ${JSON.stringify(pid ?? post.in_reply_to)}, which is not a convertible parent; converted as missing`)
     }
   }
 
