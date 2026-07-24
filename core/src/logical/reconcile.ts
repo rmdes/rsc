@@ -9,6 +9,7 @@ import { scheduleVerification } from './verification.ts'
 import {
   compareFirstArrival, selectDisplayDelivery, selectAuthor,
   normalizePublisherName, presentationFingerprint, nextPresentationEntry, normalizeUtc,
+  isStructuralTombstone,
   type EvidenceLevel, type FirstArrival, type DeliveryCandidate, type AuthorCandidate,
 } from './projector.ts'
 
@@ -318,20 +319,29 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
     scheduleVerification(tx, { logicalItemId: targetId, sourceId: v.source_id, publisherFeedUrl: normalized.originFeedUrl, now })
   }
 
+  // ---- structural-tombstone arrival guard (spec §5.3) ---------------------
+  // A delivery homed to a structural tombstone is administrator-only evidence and
+  // NEVER resurrects it: the name/claim above stay as admin evidence, but no
+  // selection hint is written back onto the terminal row and no journal frame is
+  // emitted (it is not ordinary-visible). A NEW delivery cannot reach here — a
+  // tombstone's identity keys are stripped, so convergence creates a fresh item.
+  const tombstoned = isStructuralTombstone(tx, targetId)
+
   // ---- accepted presentation chain (spec §4.4) ----------------------------
   const presentationChanged = applyPresentation(tx, v, material, normalized, arrival, now)
 
   // ---- selection hints (spec §3.1-3.2): recomputed, never trusted ---------
-  const selection = applySelectionHints(tx, targetId, v.version_id)
+  const selection = tombstoned ? { deliveryChanged: false, publisherChanged: false } : applySelectionHints(tx, targetId, v.version_id)
 
   // ---- journal + job terminalisation --------------------------------------
   // Emit an upsert ONLY when something visible changed (spec §5.1), with a mask
   // reflecting what changed — otherwise a no-op re-reconcile churns the journal
   // and misfires SSE. Presentation/display-delivery reads as 'presentation';
-  // an author-only change (selected publisher or its name) reads as 'author'.
-  if (presentationChanged || selection.deliveryChanged) {
+  // an author-only change (selected publisher or its name) reads as 'author'. A
+  // structural tombstone emits neither.
+  if (!tombstoned && (presentationChanged || selection.deliveryChanged)) {
     appendJournal(tx, { kind: 'upsert', logicalItemId: targetId, changeMask: 'presentation' }, now)
-  } else if (selection.publisherChanged || nameChanged) {
+  } else if (!tombstoned && (selection.publisherChanged || nameChanged)) {
     appendJournal(tx, { kind: 'upsert', logicalItemId: targetId, changeMask: 'author' }, now)
   }
   tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = ? WHERE id = ?`).run(outcome, claim.jobId)

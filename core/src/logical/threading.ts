@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ReadTx, WriteTx } from './database.ts'
 import { appendJournal, snapshotJournalCursor } from './journal.ts'
+import { isStructuralTombstone } from './projector.ts'
 import type {
   NormalizedReplyReference, ParentResolutionResult,
   NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult,
@@ -87,8 +88,10 @@ export function resolveInitialParent(
 
   // No owner yet — `missing` stays adoptable later (Task 7), not a conflict.
   if (candidate === null) return { state: 'missing', parentLogicalItemId: null }
-  // A terminal deletion marker is never a valid new parent (spec §4.2).
-  if (isDeletedMarker(tx, candidate)) return { state: 'missing', parentLogicalItemId: null }
+  // A terminal deletion marker or a structural tombstone is never a valid new
+  // parent (spec §4.2, §5.3) — both leave the reference `missing`, adoptable if a
+  // live owner appears later.
+  if (isDeletedMarker(tx, candidate) || isStructuralTombstone(tx, candidate)) return { state: 'missing', parentLogicalItemId: null }
   if (candidate === logicalItemId || wouldCycle(tx, candidate, logicalItemId)) return ambiguous('cycle')
   if (logicalDepth(tx, candidate) + 1 > MAX_DEPTH) return ambiguous('excessive_depth')
   return { state: 'resolved', parentLogicalItemId: candidate }
@@ -235,9 +238,10 @@ export function adoptOrphans(tx: WriteTx, input: AdoptOrphansInput): AdoptOrphan
     const ref = awaitedReference(tx, id)
     const owner = ref ? referenceOwner(tx, ref) : null
     // Not ripe: no live owner yet, or the only owner is a terminal deleted
-    // marker (never a valid adoption target, spec §2.6). Leave it missing —
-    // it consumes no batch budget and does not block completion.
-    if (!owner || isDeletedMarker(tx, owner)) continue
+    // marker or a structural tombstone (never a valid adoption target, spec
+    // §2.6/§5.3). Leave it missing — it consumes no batch budget and does not
+    // block completion.
+    if (!owner || isDeletedMarker(tx, owner) || isStructuralTombstone(tx, owner)) continue
     if (adopted + ambiguous >= limit) { ripeRemaining = true; break }
     if (adoptOne(tx, id, owner, now) === 'adopted') adopted++
     else ambiguous++
@@ -249,6 +253,67 @@ export function adoptOrphans(tx: WriteTx, input: AdoptOrphansInput): AdoptOrphan
   // Complete only once every candidate through the high-water has been examined.
   if (!ripeRemaining) tx.prepare(`UPDATE orphan_work_v2 SET status = 'complete' WHERE id = ?`).run(claim.workId)
   return { adopted, ambiguous, remaining: ripeRemaining }
+}
+
+// ===========================================================================
+// Structural-tombstone graph operations (spec §5.3) — Task 6
+// ===========================================================================
+// A remote logical node whose evidence a purge (or last-subscription cleanup)
+// removed either vanishes entirely (unreferenced) or degrades to a structural
+// tombstone (a surviving descendant references it). The tombstone retains ONLY
+// logical ID, parent/root edges, and the immutable sort key; it is swept the
+// moment the deletion of its last referencing descendant leaves it childless
+// (`ponytail: swept at descendant-deletion time only; no background reaper`).
+
+// True if any logical node still edges to `id` as its parent — the RESTRICT
+// self-edge that blocks a full node deletion.
+export function hasChildEdge(tx: WriteTx, id: string): boolean {
+  return tx.prepare(`SELECT 1 FROM logical_items_v2 WHERE parent_logical_item_id = ? LIMIT 1`).get(id) !== undefined
+}
+
+// Delete a remote logical node and every row that references it (its identity
+// keys, claims, conflicts, item-audit, verification checks, and the never-present
+// local-only children — defensive, so the inventory names every logical_items_v2
+// child). The caller guarantees no surviving descendant edges to it.
+export function deleteLogicalNode(tx: WriteTx, id: string): void {
+  tx.prepare(`DELETE FROM logical_identity_keys_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM publisher_claims_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM item_audit_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM verification_checks_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM logical_deleted_local_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM logical_local_origins_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM logical_items_v2 WHERE id = ?`).run(id)
+}
+
+// Convert a remote node to a structural tombstone: strip all content/author/
+// source/publisher/evidence/moderation, keep the row + its parent/root edge +
+// immutable sort key (spec §5.3). NOT applied to local items — those become
+// deleted_local markers instead (the anchor asymmetry, spec §5.3).
+export function convertToStructuralTombstone(tx: WriteTx, id: string): void {
+  tx.prepare(`DELETE FROM logical_identity_keys_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM publisher_claims_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`DELETE FROM verification_checks_v2 WHERE logical_item_id = ?`).run(id)
+  tx.prepare(`UPDATE logical_items_v2 SET structural_tombstone = 1, selected_delivery_id = NULL, selected_publisher_id = NULL, hidden_at = NULL WHERE id = ?`).run(id)
+}
+
+// Sweep the tombstone chain above the parents of just-deleted nodes: a structural
+// tombstone with no remaining child edge is deleted, and the sweep continues up to
+// ITS parent (a chain of tombstones collapses in one pass). A non-tombstone parent,
+// or a tombstone that still has children, stops the walk. Called from the existing
+// descendant-deletion paths in local.ts and from purge itself (tombstones.ts).
+export function sweepStructuralTombstones(tx: WriteTx, parentIds: Array<string | null>, _now: string): void {
+  for (const start of parentIds) {
+    let cur: string | null = start
+    while (cur) {
+      const row = tx.prepare(`SELECT structural_tombstone, parent_logical_item_id FROM logical_items_v2 WHERE id = ?`).get(cur) as { structural_tombstone: number; parent_logical_item_id: string | null } | undefined
+      if (!row || row.structural_tombstone !== 1 || hasChildEdge(tx, cur)) break
+      const next = row.parent_logical_item_id
+      deleteLogicalNode(tx, cur)
+      cur = next
+    }
+  }
 }
 
 // ===========================================================================

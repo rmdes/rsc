@@ -572,6 +572,15 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
   }
 }
 
+// A structural tombstone (spec §5.3): the terminal remote state retaining only
+// logical ID, parent/root edges, and the immutable sort key. Shared read used by
+// the reconciliation arrival guard and threading's adoption/parent guards so an
+// arriving delivery or reply never resurrects or adopts one.
+export function isStructuralTombstone(tx: ReadTx, id: string): boolean {
+  const r = tx.prepare(`SELECT structural_tombstone FROM logical_items_v2 WHERE id = ?`).get(id) as { structural_tombstone: number } | undefined
+  return r?.structural_tombstone === 1
+}
+
 // Project one logical item to its ordinary DTO, or undefined when it is not
 // currently ordinary-visible (spec §3.4). Local id === post.id; a live local post
 // projects directly (no logical row needed); a deleted/absent local post ⇒ undefined.

@@ -3,7 +3,7 @@ import type { WriteTx } from './database.ts'
 import type { LogicalItemDto } from './types.ts'
 import type { User } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
-import { resolveInitialParent, wouldCycle } from './threading.ts'
+import { resolveInitialParent, wouldCycle, sweepStructuralTombstones } from './threading.ts'
 
 export { resolveInitialParent }
 
@@ -185,8 +185,15 @@ function terminallyDelete(tx: WriteTx, postId: string, now: string): void {
 }
 
 export function deleteLocalPost(input: { tx: WriteTx; postId: string; actorId: string; now: string }): void {
-  terminallyDelete(input.tx, input.postId, input.now)
-  appendJournal(input.tx, { kind: 'remove', logicalItemId: input.postId, changeMask: 'presentation' }, input.now)
+  const { tx, postId, now } = input
+  // The deleted post's parent edge, captured before the delete. terminallyDelete
+  // keeps the logical row (as a deleted_local marker), so this is a no-op for the
+  // ordinary no-tombstone case; it only fires if the post ever edged directly to a
+  // remote structural tombstone (spec §5.3 descendant-deletion sweep hook).
+  const parent = (loadPost(tx, postId)?.in_reply_to_post_id) ?? null
+  terminallyDelete(tx, postId, now)
+  sweepStructuralTombstones(tx, [parent], now)
+  appendJournal(tx, { kind: 'remove', logicalItemId: postId, changeMask: 'presentation' }, now)
 }
 
 export function deleteLocalAccount(input: { tx: WriteTx; accountId: string; actorId: string; now: string }): void {

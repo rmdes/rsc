@@ -27,6 +27,8 @@ import type { ItemAuditRow } from './moderation.ts'
 import type { ModerationCommandInput, ItemModerationResult } from './types.ts'
 import { scheduleFanout, claimFanout, processFanoutBatch } from './fanout.ts'
 import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
+import { purgeSource, removeSourceEvidence, isTombstoned } from './tombstones.ts'
+import type { PurgeCommandInput, PurgeResult } from './tombstones.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -366,6 +368,22 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     restoreItem(input: ModerationCommandInput): ItemModerationResult {
       return db.write((tx) => restoreItem(tx, input))
+    },
+
+    // --- purge + tombstones (Task 6, spec §5) -----------------------------
+    // purgeSource is ONE ledger-backed BEGIN IMMEDIATE write: the tombstone +
+    // alias copy, the FK-ordered evidence deletion, per-item reselect/delete/
+    // tombstone, and exactly one journal reset commit atomically. removeSourceEvidence
+    // is the shared step-4 helper (Task 7's cleanup reuses it inside its own write);
+    // isTombstoned is the resolution guard (Task 7's first caller).
+    purgeSource(input: PurgeCommandInput): PurgeResult {
+      return db.write((tx) => purgeSource(tx, input))
+    },
+    removeSourceEvidence(tx: WriteTx, input: { sourceId: string; now: string }): { ordinaryAffected: boolean } {
+      return removeSourceEvidence(tx, input)
+    },
+    isTombstoned(url: string): boolean {
+      return db.read((tx) => isTombstoned(tx, url))
     },
 
     // --- policy fan-out (Task 3, spec §4.1) -------------------------------

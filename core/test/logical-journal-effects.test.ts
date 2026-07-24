@@ -186,3 +186,19 @@ test.each(ROWS)('§6 journal effect: $name', async ({ run, expected }) => {
   mutate()
   expect(journalKindsSince(ctx.raw, id, before)).toEqual(expected)
 })
+
+// Purge's §6 effect is exactly ONE reset (spec §6). A reset row carries a NULL
+// logical_item_id, so it is asserted against the whole journal, not per-item.
+const purgeCmd = (store: Store, sourceId: string, commandId: string, category: AuditCategory = 'abuse') =>
+  store.purgeSource({ command: env(commandId, fp(['purge', sourceId, ADMIN, category])), sourceId, category, note: null, now: NOW })
+const allKindsSince = (raw: Raw, sinceSeq: number): string[] =>
+  (raw.prepare(`SELECT kind FROM logical_journal_v2 WHERE sequence > ? ORDER BY sequence`).all(sinceSeq) as { kind: string }[]).map((r) => r.kind)
+
+test('§6 journal effect: purge → one reset', async () => {
+  const { db, raw, store } = await fresh()
+  await remoteItem(db, raw, store, 's1') // one blocked-source item that will be purged
+  raw.prepare(`UPDATE remote_sources_v2 SET governance = 'blocked' WHERE id = 's1'`).run()
+  const before = highWater(raw)
+  expect(purgeCmd(store, 's1', 'c1').kind).toBe('purged')
+  expect(allKindsSince(raw, before)).toEqual(['reset'])
+})
