@@ -1167,3 +1167,44 @@ materialization pass and can therefore be the first writer of a local bridge
 row — a local parent that is itself a reply would otherwise FK-violate on its
 own unmaterialized ancestor. Item (5) records the state of the original Task 8
 commit and is left as written for that reason.
+
+## Plan correction (2026-07-24, Task 9 execution)
+
+Two divergences from Task 9's text, both verified against the code.
+
+1. **The ops route landed in `core/src/api/app.ts`, not
+   `core/src/api/logical-routes.ts`.** Appendix C's Task 9 row stages
+   `logical-routes.ts`; the task text hedges it ("or `app.ts` — wherever the v2
+   route branch lives"), and `app.ts` is where the branch lives. Two facts
+   forced it. `mountLogicalRoutes(app, deps.logical)` receives only
+   `LogicalRouteDeps` (`{store, acquisition, refreshWaitMs, now}`) — it has
+   access to neither the `SourceService` nor the ops token, so hosting the
+   route there means threading both through `app.ts` (and `server.ts`) plus
+   duplicating `isAttributionMode`, `isBadSourceUrl` and the two neutral bodies
+   into that file. And `logical-routes.ts`'s stated premise is that everything
+   `mountLogicalRoutes` registers sits under the `/admin/*` gate and is
+   "admin-only by construction"; a bearer-only `/ops/*` route contradicts it.
+   Inside `app.ts`'s existing `if (sources)` branch every piece already exists,
+   so the route is four lines beside the admin one. Appendix C's Task 9 staged
+   paths therefore read `core/src/api/app.ts core/src/domain/source-service.ts
+   core/test/source-ops-api.test.ts`; the red/green command is unchanged.
+
+2. **`POST /admin/sources` and the ops route are ONE handler, not two callers
+   of one service method.** Task 9 requires "no second code path" at the domain
+   layer; the shipped code goes further and shares the HTTP layer too — a local
+   `establishFederation(c, actorId, actorKind)` holds the validator, the service
+   call and the 201/409 dispositions, and each route is a one-line registration
+   supplying its actor. The admin route's observable behavior is unchanged
+   (`source-admin-api.test.ts` passes untouched); the reason to record it is
+   that a future change to either federation route now changes both by
+   construction.
+
+Two things Task 9 anticipated that turned out to need no work: the SQL CHECKs
+already admit the new vocabulary — `source_audit_v2.actor_kind` allows
+`'operator_token'` and `command_ledger_v2.actor_scope` allows `'ops'`
+(`core/src/storage/sqlite.ts`), and `SourceAuditEvent['actorKind']` already
+carries `'operator_token'` — so `user_version` stays 15 with no migration; and
+`SourceRepository.establishFederation` was already widened by Task 3, leaving
+only `SourceService` (its interface declaration and the implementation
+signature) to widen, plus the one line that maps `actorKind ===
+'operator_token'` to ledger scope `'ops'`.
