@@ -750,6 +750,7 @@ sqlite.ts generation-advancing               upsert policy_fanout_v2 row in the 
   transitions + establishFederation           transaction as their reset (Task 3)
 reconcile.ts drain loop                      fan-out processing after commit + at startup;
                                               claim dispatch on ReconciliationClaim.kind (Tasks 3-5)
+acquisition.ts RSS aggregate capture         persist the per-item <source url> origin feed URL (Task 4)
 reconcile.ts aggregate-claim path            scheduleVerification on first-seen publisher URL (Task 4)
 projector.ts comparator                      verified_origin prepended, strongest-first (Task 5)
 local.ts / threading.ts descendant deletion  structural-tombstone sweep hook (Task 6)
@@ -762,6 +763,24 @@ source-repository.ts unsubscribe cleanup     removeSourceEvidence + verification
 logical-routes.ts + AdminSourceAcquisition-  V3 admin routes; conflictCount (Task 8)
   Summary
 ```
+
+> **Correction 2026-07-24 (Task 4 implementation):** the aggregate-claim seam
+> above assumed the per-item origin publisher feed URL (`<source url>`) was
+> already persisted by V2's logical acquisition. It is NOT: V2's
+> `acquisition.ts` captures only `<source>`'s *title* (`sourceName`,
+> `acquisition.ts:236`), never its `url` attribute, and V2's `reconcile.ts`
+> attributes every aggregate item to the aggregate source's `canonical_url`
+> (`:199`) — i.e. V2 shipped only the source-scoped-fallback half of spec §2.4,
+> never the `<source url>` resolution. Legacy `ingest.ts:71` DOES capture it
+> (`sourceFeedUrl: httpOnly(source?.url)`), confirming it is on the wire. So
+> Task 4 must ALSO capture `<source url>` into the persisted observation
+> evidence in `core/src/logical/acquisition.ts` (RSS branch only — other
+> adapters carry no `<source>`), which `reconcile.ts` then reads to pass to
+> `scheduleVerification`. **`core/src/logical/acquisition.ts` is added to the
+> Task 4 staged set** (below). Scope boundary: Task 4 persists the URL + schedules
+> verification from it; it does NOT rewrite V2's aggregate *publisher
+> attribution* (the deeper §2.4 provisional-publisher-from-`<source url>` gap is
+> flagged for the whole-branch review, not folded here).
 
 Fault-injection tests for every V3 command follow the V2 Appendix D pattern:
 throw immediately before audit, journal, ledger, and commit; assert all
@@ -791,7 +810,7 @@ exit 0 after.
 | 1 | `npm test -w core -- logical-v3-schema && npm run typecheck -w core` | `core/src/logical/schema.ts core/src/logical/types.ts core/src/logical/moderation.ts core/src/logical/store.ts core/src/domain/types.ts core/src/storage/sqlite.ts core/test/logical-v3-schema.test.ts` | `core: add logical v3 moderation schema and item audit` |
 | 2 | `npm test -w core -- logical-moderation logical-journal-effects logical-projector logical-sse && npm run typecheck -w core` | `core/src/logical/moderation.ts core/src/logical/projector.ts core/src/logical/store.ts core/src/logical/types.ts core/test/logical-moderation.test.ts core/test/logical-journal-effects.test.ts` | `core: hide and restore logical items` |
 | 3 | `npm test -w core -- logical-fanout logical-journal-effects logical-policy-events && npm run typecheck -w core` | `core/src/logical/fanout.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/storage/sqlite.ts core/test/logical-fanout.test.ts core/test/logical-journal-effects.test.ts` | `core: converge hints with policy fan-out` |
-| 4 | `npm test -w core -- logical-verification logical-reconcile && npm run typecheck -w core` | `core/src/logical/verification.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/logical/types.ts core/test/logical-verification.test.ts` | `core: schedule bounded origin verification` |
+| 4 | `npm test -w core -- logical-verification logical-reconcile && npm run typecheck -w core` | `core/src/logical/verification.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/logical/types.ts core/src/logical/acquisition.ts core/test/logical-verification.test.ts` | `core: schedule bounded origin verification` |
 | 5 | `npm test -w core -- logical-verification logical-presentation logical-journal-effects logical-projector && npm run typecheck -w core` | `core/src/logical/verification.ts core/src/logical/projector.ts core/src/logical/store.ts core/src/logical/types.ts core/test/logical-verification.test.ts core/test/logical-presentation.test.ts core/test/logical-journal-effects.test.ts` | `core: verify origins and rank verified evidence` |
 | 6 | `npm test -w core -- logical-purge logical-journal-effects logical-local logical-threading && npm run typecheck -w core` | `core/src/logical/tombstones.ts core/src/logical/store.ts core/src/logical/reconcile.ts core/src/logical/threading.ts core/src/logical/local.ts core/src/logical/projector.ts core/test/logical-purge.test.ts core/test/logical-journal-effects.test.ts` | `core: purge blocked sources into tombstones` |
 | 7 | `npm test -w core -- logical-tombstones logical-journal-effects source-cleanup source-subscribe opml source-federation && npm run typecheck -w core` | `core/src/logical/tombstones.ts core/src/domain/source-service.ts core/src/domain/source-repository.ts core/src/logical/acquisition.ts core/src/logical/verification.ts core/test/logical-tombstones.test.ts core/test/source-cleanup.test.ts core/test/logical-journal-effects.test.ts` | `core: resolve tombstones and extend cleanup` |
