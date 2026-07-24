@@ -26,6 +26,12 @@ import type { CommandEnvelope, RemoteSource } from '../domain/types.ts'
 export const BOUNDS = {
   totalDeadlineMs: 10_000,
   maxRedirects: 5,
+  // Pinned equal to `api/app.ts`'s MAX_FAT_PING_BYTES (V4 Task 3 review pin):
+  // the fat-ping route bounds the incoming body at the HTTP layer BEFORE this
+  // module ever sees it, so a pushed document must never be admitted at a
+  // larger size than this bound ever allows a fetched one. Not derived by
+  // import — see MAX_FAT_PING_BYTES's comment for why — `logical-bounds.test.ts`
+  // asserts the two constants stay equal instead.
   maxBodyBytes: 5 * 1024 * 1024,
   maxCandidates: 1000,
   maxEnclosures: 32,
@@ -705,14 +711,25 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
     const runId = claim.runId
     inFlightMap.set(sourceId, runId)
     try {
+      const ctxData = db.read((tx) => readContext(tx, sourceId, claim.source.canonicalUrl))
+
       // A fat ping delivered the document (V4 §1.4): the fetch is SKIPPED and the
       // delivered body IS the document. Everything after it — bounds profile,
       // observation writer, reconciliation jobs, commit-time policy recheck — is
       // the poll's own path, unchanged.
       if (reason.kind === 'push' && reason.document !== null) {
-        return await commitFromBody({ runId, sourceId, body: reason.document, effectiveUrl: claim.source.canonicalUrl, res: null, redirects: [], aliases: [], committedAt: now() })
+        // Relative-link base (V4 Task 3 review pin): remote_sources_v2.canonical_url
+        // is NEVER updated on a permanent redirect (only source_aliases_v2 gains a
+        // row — grep confirms no UPDATE ... SET canonical_url anywhere). A push
+        // carries no fetch, so unlike the poll path it cannot re-walk the redirect
+        // chain to learn today's effective URL. Reuse the same post-redirect
+        // location the poll path already trusts for conditional GETs
+        // (source_validators_v2.effective_url, the last URL a poll actually landed
+        // on) instead of the possibly-stale canonicalUrl; canonicalUrl only when no
+        // poll has ever recorded one.
+        const pushBaseUrl = ctxData.validators?.effectiveUrl ?? claim.source.canonicalUrl
+        return await commitFromBody({ runId, sourceId, body: reason.document, effectiveUrl: pushBaseUrl, res: null, redirects: [], aliases: [], committedAt: now() })
       }
-      const ctxData = db.read((tx) => readContext(tx, sourceId, claim.source.canonicalUrl))
       const fetchSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]) : AbortSignal.timeout(deadlineMs)
       const ctx: FetchCtx = { fetchFn, lookupFn: deps.lookupFn, signal: fetchSignal, sourceId, ownedAliases: ctxData.ownedAliases, validators: ctxData.validators, aliasOwner: ctxData.aliasOwner, isTombstoned: ctxData.isTombstoned }
 

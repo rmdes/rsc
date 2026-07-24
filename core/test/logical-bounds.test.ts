@@ -3,6 +3,7 @@ import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { BOUNDS, createAcquisition, parseCandidates } from '../src/logical/acquisition.ts'
+import { MAX_FAT_PING_BYTES } from '../src/api/app.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
 type Raw = InstanceType<typeof Database>
@@ -62,6 +63,16 @@ test('the bounds profile pins every §1.5 numeric constant', () => {
   expect(BOUNDS.maxOpStringCodePoints).toBe(2048)
   expect(BOUNDS.maxOpStringBytes).toBe(8192)
   expect(BOUNDS.maxItemEvidenceBytes).toBe(1024 * 1024)
+})
+
+// V4 Task 3 review pin: the fat-ping route (api/app.ts) bounds a pushed body
+// at the HTTP layer, BEFORE it ever reaches this module's own maxBodyBytes
+// enforcement for a fetched body. The two are defined in different modules
+// (an import in either direction is awkward — see both constants' comments)
+// so an unasserted coincidence would let a future change to one silently make
+// the untrusted push path more permissive than the trusted poll path ever is.
+test('the fat-ping route bound matches the fetched-body bound exactly', () => {
+  expect(MAX_FAT_PING_BYTES).toBe(BOUNDS.maxBodyBytes)
 })
 
 // ---- the total deadline (spec §1.5: begins before DNS/SSRF) -----------------
