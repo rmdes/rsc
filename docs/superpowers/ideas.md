@@ -1019,3 +1019,16 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   **Fix:** export the flag-off composition from `server.ts` (or a small module
   it calls) and have the test drive that one function, instead of mirroring it.
   Status: backlog.
+
+- **Admin feeds page: surface federations above the bulk** — after an OPML
+  import (60+ sources) the admin list's created_at-DESC pagination buries
+  the few federation rows on page 2+, and nothing on /admin/feeds filters
+  or groups them (found dogfooding 2026-07-24: "I can't see the federation
+  I just added"). Mechanism: a pinned "Federated instances" section (core
+  gains a filtered listSourceSummaries — provenance/federation-status
+  param — reusing the existing cursor idiom) and/or a provenance filter
+  row on the page. Why: federations are few and administratively load-
+  bearing; bulk subscriptions are many and routine — the default ordering
+  optimizes for the wrong one. Grounding: SourceSummary already carries
+  federationStatus; the web page already badges it. Tradeoff: one more
+  query param on an admin route. Status: backlog.
