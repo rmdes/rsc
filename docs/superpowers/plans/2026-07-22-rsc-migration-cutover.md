@@ -859,3 +859,52 @@ expect(() => startCore({sourceModelV2: false, db: convertedDb}))
 expect(() => startCore({sourceModelV2: true, db: activeButUnmarkedDb}))
   .toThrow(/activation active without conversion marker/)
 ```
+
+## V3 execution handoff (2026-07-24, recorded after the V3 whole-branch review — 19 commits 18eefbc..b4144e2, READY WITH FOLLOW-UPS)
+
+Facts the V3 execution produced that this plan's implementer must know. They
+are recorded here because the next implementer starts from this plan, not
+from V3's history.
+
+1. **A pre-V4 fix wave gates this plan's start.** Three discoveries from the
+   V3 whole-branch review are being fixed in the V3 lane BEFORE V4 begins:
+   (I1) the verification drain (network I/O, worst-case minutes) was awaited
+   on pre-listen `ready` and on the acquisition result path
+   (`core/src/logical/runtime.ts`) — it moves to the background cadence;
+   (n2) a verification job exhausted via `recordDrainFailure` never
+   terminalized its pending `verification_checks_v2` rows, permanently
+   consuming the per-source URL caps; (n1) `persistVerifiedDelivery`'s
+   presentation write bypassed `applyPresentation` (null `updatedAt`, skipped
+   rollback watermark). **Contract this plan inherits: pre-listen startup
+   performs NO network I/O.** V4's conversion transaction extends the
+   activation barrier — do not reintroduce an awaited network drain there.
+2. **The sync-drain regression canary must stay meaningful.**
+   `core/test/logical-v3-vertical.test.ts` asserts that a runtime regressed
+   to the synchronous drain leaves verification checks `pending`. After the
+   I1 fix this proof drives the background path explicitly; any V4 runtime
+   change must keep that assertion honest rather than satisfying it by
+   re-awaiting the drain at startup.
+3. **Flag-OFF isolation is behavioral, not load-level.**
+   `core/src/domain/source-repository.ts` statically imports v2 logical
+   modules, so they LOAD with the flag off (server.ts comments corrected in
+   3f688f8). This plan's off-flag gate assertions (spec WP3) must assert
+   routing/behavior, never module non-loading.
+4. **The tombstone guard is wired by signature.** `createSourcePlane`
+   (`core/src/domain/source-service.ts`) takes `logicalStore` as a REQUIRED
+   positional parameter — omitting it is a compile error; explicit
+   `undefined` is the flag-off posture. V4's cutover composition always
+   passes the real store. Do not "clean up" the signature into an optional.
+5. **Still-open chores this plan may batch into a fix round:** the OPML
+   per-test timeout bump (two known load-timeout flakes under full-suite
+   contention, carried since V2); the deriveRoot/permalink-normalizer
+   drift canary for the 3× char-identical duplications (called for in the
+   V2→V3 handoff, never added — verified absent 2026-07-24).
+6. **Live-path backfill remains open.** Step 3 of the conversion covers the
+   historical local-parent bridge rows; the LIVE-path variant (a local reply
+   posted while the flag is on, to a remote parent not yet materialized)
+   was carried from V2 and not addressed by V3 — verify during Task 6 or
+   record it as a counted finding class.
+7. **Accepted-and-tracked debt (do not re-litigate):** §2.4 display-axis
+   `verified_origin` is exercised comparator-only (the integration wiring
+   cannot yet produce it — named in b4144e2); the two v1 `test.fails()`
+   orphaning markers stay fenced until THIS plan's cutover flips them.
