@@ -147,6 +147,13 @@ test('POST /admin/sources establishes federation, replays, and distinguishes reu
   expect(json.source.provenance).toBe('admin_federation')
   expect(json.federation).toMatchObject({ sourceId: json.source.id, status: 'approved', provenanceNote: 'partner' })
 
+  // Ledger: an administrator federation ledgers under scope 'administrator'
+  // (V4 §6) — the ops route ledgers the same command under 'ops' instead
+  // (source-ops-api.test.ts). Pins source-service.ts:206's actorScope mapping
+  // on the real HTTP path, not a hand-built envelope.
+  const ledgerRow = repo.raw.prepare(`SELECT actor_scope FROM command_ledger_v2 WHERE command_id = ?`).get('fed-1') as { actor_scope: string } | undefined
+  expect(ledgerRow?.actor_scope).toBe('administrator')
+
   const replay = await app.request('/admin/sources', post({ cookie }, body))
   expect(replay.status).toBe(201)
   expect(await replay.json()).toEqual(json)

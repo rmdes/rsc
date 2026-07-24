@@ -168,7 +168,7 @@ test('the ops route is bearer-only: [none,invalid bearer,admin session,valid bea
   repo.close()
 })
 
-test('the ops token reaches ONLY this route — every /admin/* route answers 401, never 403', async () => {
+test('the ops token reaches no /admin/* route — every one answers 401, never 403', async () => {
   const { app, repo } = await makeApp()
   const created = await app.request(OPS_PATH, post(bearer, fedBody()))
   expect(created.status).toBe(201)
@@ -176,7 +176,15 @@ test('the ops token reaches ONLY this route — every /admin/* route answers 401
 
   // No better-auth session → sessionAuth answers 401 (api/auth.ts:64-66) before
   // requireAdmin's 403 (:82) is ever reachable. The token grants no read,
-  // moderation, purge, evidence or subscriber access.
+  // moderation, purge, evidence or subscriber access under /admin/*.
+  //
+  // This probe does NOT cover the token's full reach: adminOrToken
+  // (api/auth.ts:92, used at api/app.ts:179 and :498) also admits this same
+  // bearer to POST /users and DELETE /users/:handle — routes that live under
+  // /users, not /admin, and keep their own adminOrToken gate (api/app.ts:245-
+  // 246). DELETE /users/:handle removes a remote feed. That reach is
+  // pre-existing and deliberate (app.ts:244-246), not a regression — it is
+  // simply outside what this test asserts.
   const admin: Array<[string, RequestInit | undefined]> = [
     ['/admin/sources', undefined],
     [`/admin/sources/${sourceId}`, undefined],
