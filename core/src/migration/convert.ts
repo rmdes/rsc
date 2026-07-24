@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { isIP } from 'node:net'
 import { normalizeSourceUrl } from '../domain/source-url.ts'
+import { isPrivateIp } from '../domain/push-guard.ts'
 import { insertAudit } from '../storage/sqlite.ts'
 import { normalizePermalink } from '../logical/reconcile.ts'
 import { normalizeUtc, presentationFingerprint } from '../logical/projector.ts'
@@ -51,6 +53,35 @@ function zeroCounts(): ConversionCounts {
 
 interface LegacyRemote { id: string; handle: string; feed_url: string; feed_type: string | null }
 interface ConvertedSource { publisherId: string; mode: AttributionMode; canonicalUrl: string }
+
+interface LegacyPush {
+  id: string; user_id: string; mode: string; endpoint: string; topic: string
+  callback_token: string; secret: string | null; state: string
+  expires_at: string; created_at: string
+}
+
+// The endpoint revalidation of spec §3.4, and a DELIBERATE narrowing of the
+// plan's "checkCallbackUrl on the endpoint": that function is ASYNC because it
+// resolves DNS, and runConversion is synchronous, transaction-bound and
+// network-free by contract. This is therefore checkCallbackUrl's synchronous
+// prefix (push-guard.ts:56-69) — for exactly the reason verification.ts's
+// normalizeVerificationUrl is one: a gate that runs inside a write transaction
+// cannot do DNS. See the dated plan-correction note.
+//
+// The DNS half is deferred, not lost: every legacy row passed the FULL gate at
+// v1 registration time (push-in.ts:114), and re-resolution drift after that
+// point is already the accepted, ledgered rebinding residual
+// (push-guard.ts:54-55) — v1's own renewal sweep does not re-resolve either.
+// isIP guards isPrivateIp exactly as checkCallbackUrl does, so a hostname that
+// merely starts with fc/fd/fe8 is not mistaken for an IPv6 private prefix.
+function publicEndpoint(raw: string): boolean {
+  let url: URL
+  try { url = new URL(raw) } catch { return false }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+  const host = url.hostname.replace(/^\[|\]$/g, '') // strip IPv6 brackets
+  if (host === 'localhost' || host.endsWith('.localhost')) return false
+  return !(isIP(host) && isPrivateIp(host))
+}
 
 interface LegacyPost {
   id: string; author_id: string; guid: string; title: string | null; content: string
@@ -162,10 +193,12 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
       }
     } else if (row.feed_type === 'person') {
       counts.default_person++
+      log(`default_person: ${row.id} (@${row.handle}) -> single_publisher, allowed`)
     } else {
       // migration 11 backfilled every non-instance remote row to 'webfeed';
       // a NULL that predates it takes the same default.
       counts.default_webfeed++
+      log(`default_webfeed: ${row.id} (@${row.handle}) -> single_publisher, allowed`)
     }
 
     // Same ID as the legacy user row (spec §3.1) — every existing /post/:id
@@ -259,6 +292,60 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
       counts.over_cap_grandfathered++
       log(`over_cap_grandfathered: ${ownerId} keeps ${n} subscriptions over the cap of ${cap}; no new subscription until back under it`)
     }
+  }
+
+  // --- push leases (spec §3.4) ---------------------------------------------
+  // Exact preservation is what lets a hub's in-flight lease keep delivering
+  // across cutover with NO re-subscription: protocol, endpoint, topic, callback
+  // token, secret, state, expiry and creation time convert byte-for-byte onto
+  // the same-ID source, so the next fat ping — signed with the legacy secret and
+  // addressed to the legacy callback token — authenticates against the converted
+  // row and takes the ordinary acquisition path. The legacy row id is kept too:
+  // nothing outside this table references it, and it keeps the converted row
+  // traceable to the legacy one for free.
+  //
+  // THE WP1 PIN. `push_subscriptions_v2.state` is a two-value CHECK, and the
+  // legacy table has NO CHECK on state or mode (sqlite.ts:1291-1303), so a
+  // legacy row may hold values v2 refuses. Such a row — like an expired one, a
+  // revalidation-failing one, or one whose user did not convert — becomes a
+  // COUNTED, LOGGED finding and NO row. That is the whole point of the narrow
+  // CHECK: migration cannot resurrect a dead lease as a re-attemptable row. The
+  // durable fact is the latest run's capability claim, so the first post-cutover
+  // poll pass simply re-registers (spec §1.2) and mints fresh token/secret.
+  //
+  // CONTINUITY CEILING (recorded honestly): preservation holds for a lease that
+  // is LIVE at conversion, not indefinitely afterwards. v1 never purged this
+  // table — purgeExpiredSubscriptions (sqlite.ts:602-604, push-in.ts:272) deletes
+  // from the OUTBOUND `subscriptions` table — so under v1 R1 token/secret reuse
+  // was permanent. Under v2, spec §1.2 mandates purging expired push rows every
+  // poll cycle, so after a lapse the row is gone and re-registration generates
+  // fresh material. Consequence to know: a hub verification arriving more than
+  // PENDING_TTL_MS (10 min) after registration now 404s and self-heals on the
+  // next poll pass. Conversion neither causes nor can compensate for that.
+  const legacyPush = tx.prepare(
+    `SELECT id, user_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at
+     FROM push_subscriptions ORDER BY user_id, mode`,
+  ).all() as LegacyPush[]
+  const insertPush = tx.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  for (const p of legacyPush) {
+    const drop = (finding: 'push_expired' | 'push_invalid', why: string): void => {
+      counts[finding]++
+      log(`${finding}: ${p.mode} lease for ${p.user_id} (${p.topic}) dropped — ${why}; the poll pass re-registers if the source still advertises the capability`)
+    }
+    // Expiry first: it is the dominant and most benign explanation, and a row
+    // that is both lapsed and unusable must be counted exactly once.
+    if (!converted.has(p.user_id)) { drop('push_invalid', 'its user is not a converted remote source'); continue }
+    if (p.expires_at <= now) { drop('push_expired', `the lease expired at ${p.expires_at}`); continue }
+    if (p.mode !== 'websub' && p.mode !== 'rsscloud') { drop('push_invalid', `unknown protocol ${JSON.stringify(p.mode)}`); continue }
+    if (p.state !== 'pending' && p.state !== 'active') { drop('push_invalid', `legacy state ${JSON.stringify(p.state)} has no live v2 equivalent`); continue }
+    if (!publicEndpoint(p.endpoint)) { drop('push_invalid', `endpoint ${JSON.stringify(p.endpoint)} fails revalidation`); continue }
+
+    insertPush.run(p.id, p.user_id, p.mode, p.endpoint, p.topic, p.callback_token, p.secret, p.state, p.expires_at, p.created_at)
+    counts.push_preserved++
+    log(`push_preserved: ${p.mode} lease for ${p.user_id} (${p.topic}) kept ${p.state} until ${p.expires_at}; callback token and secret unchanged`)
   }
 
   // --- items, deliveries, presentation, ancestry ---------------------------

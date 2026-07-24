@@ -1,12 +1,15 @@
-import { test, expect } from 'vitest'
+import { test, expect, vi } from 'vitest'
+import { createHmac } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
+import { createLogicalPush } from '../src/logical/push.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { projectItem, projectHistory, projectTimeline } from '../src/logical/projector.ts'
-import { runConversion, type ConversionCounts } from '../src/migration/convert.ts'
+import { loadConfig } from '../src/config.ts'
+import { runConversion, type ConversionCounts, type ConversionFindingKind } from '../src/migration/convert.ts'
 import type { Manifest, ManifestEntry } from '../src/migration/preflight.ts'
 
 // V4 Task 5 — Conversion I: legacy sources, publishers, federation, follows,
@@ -334,7 +337,7 @@ test('an empty legacy set converts through the same path with all-zero counts', 
   const raw = await fresh()
   const counts = convert(raw)
   expect(Object.values(counts).every((n) => n === 0)).toBe(true)
-  for (const t of ['remote_sources_v2', 'remote_publishers_v2', 'federation_relationships_v2', 'source_subscriptions_v2', 'source_audit_v2', 'handle_reservations_v2']) {
+  for (const t of ['remote_sources_v2', 'remote_publishers_v2', 'federation_relationships_v2', 'source_subscriptions_v2', 'source_audit_v2', 'handle_reservations_v2', 'push_subscriptions_v2']) {
     expect(count(raw, t), t).toBe(0)
   }
 })
@@ -348,6 +351,7 @@ test('a fault before commit leaves the database legacy-intact — nothing conver
   seedFollow(raw, 'l1', 'u2')
   seedPost(raw)
   seedRevision(raw, 'p1', { content: '<p>older</p>' })
+  seedPush(raw)
   const legacyUsers = raw.prepare(`SELECT * FROM users ORDER BY id`).all()
   const legacyFollows = raw.prepare(`SELECT * FROM follows ORDER BY followed_id`).all()
   const legacyPosts = raw.prepare(`SELECT * FROM posts ORDER BY id`).all()
@@ -364,9 +368,11 @@ test('a fault before commit leaves the database legacy-intact — nothing conver
     'source_audit_v2', 'handle_reservations_v2', 'logical_items_v2', 'logical_local_origins_v2',
     'logical_identity_keys_v2', 'deliveries_v2', 'observation_versions_v2', 'presentation_entries_v2',
     'publisher_claims_v2', 'logical_conflicts_v2', 'acquisition_runs_v2', 'reconciliation_jobs_v2',
+    'push_subscriptions_v2',
   ]) {
     expect(count(raw, t), t).toBe(0)
   }
+  expect(raw.prepare(`SELECT * FROM push_subscriptions ORDER BY id`).all()).toHaveLength(1) // the legacy lease is untouched
   expect(raw.prepare(`SELECT * FROM users ORDER BY id`).all()).toEqual(legacyUsers)
   expect(raw.prepare(`SELECT * FROM follows ORDER BY followed_id`).all()).toEqual(legacyFollows)
   expect(raw.prepare(`SELECT * FROM posts ORDER BY id`).all()).toEqual(legacyPosts)
@@ -753,4 +759,300 @@ test('a legacy set with no posts writes no item family at all', async () => {
     'publisher_claims_v2', 'logical_identity_keys_v2', 'acquisition_runs_v2', 'reconciliation_jobs_v2']) {
     expect(count(raw, t), t).toBe(0)
   }
+})
+
+// =============================================================================
+// V4 Task 7 — Conversion III: exact push preservation and the findings contract
+// =============================================================================
+// A hub's in-flight lease must keep delivering ACROSS cutover with no
+// re-subscription: protocol, endpoint, topic, callback token, secret, state,
+// expiry and creation time all survive byte-exact, so the next fat ping
+// authenticates against the converted row (spec §3.4).
+//
+// THE WP1 PIN: an expired or unusable legacy row is a FINDING — counted,
+// logged, and dropped. push_subscriptions_v2.state is a two-value CHECK
+// precisely so migration cannot resurrect such a row in a third state; the
+// poll pass re-registers from the latest run's capability claim instead.
+
+const HUB = 'https://hub.test/hub'
+const CLOUD = 'http://a.test:5337/rsscloud/pleaseNotify'
+const LEASE_UNTIL = '2026-08-01T00:00:00.000Z' // > NOW
+const LAPSED_AT = '2026-07-01T00:00:00.000Z' // < NOW
+const PUSH_COLS = `id, user_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at`
+const PUSH_VALS = `@id, @user_id, @mode, @endpoint, @topic, @callback_token, @secret, @state, @expires_at, @created_at`
+
+let pushSeq = 0
+function seedPush(raw: Raw, over: Record<string, string | null> = {}): Record<string, string | null> {
+  const row = {
+    id: `ps${++pushSeq}`, user_id: 'u1', mode: 'websub', endpoint: HUB,
+    // the LEGACY topic string verbatim — the hub echoes it back, so conversion
+    // must NOT renormalize it onto the source's canonical_url
+    topic: 'https://A.test:443/feed.xml',
+    callback_token: `cb-${pushSeq}`, secret: `sec-${pushSeq}`, state: 'active',
+    expires_at: LEASE_UNTIL, created_at: LEGACY_AT, ...over,
+  }
+  raw.prepare(`INSERT INTO push_subscriptions (${PUSH_COLS}) VALUES (${PUSH_VALS})`).run(row)
+  return row
+}
+const PRESERVED = ['mode', 'endpoint', 'topic', 'callback_token', 'secret', 'state', 'expires_at', 'created_at']
+const pushV2 = (raw: Raw, sourceId = 'u1') => one(raw, `SELECT * FROM push_subscriptions_v2 WHERE source_id = ?`, sourceId)
+const kindLines = (kind: string): string[] => lines.filter((l) => l.startsWith(`${kind}: `))
+
+// ── exact preservation ──────────────────────────────────────────────────
+
+test('an unexpired legacy lease converts byte-exact onto the same-ID source', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  const legacy = seedPush(raw)
+  const counts = convert(raw)
+
+  const v2 = pushV2(raw)!
+  for (const col of PRESERVED) expect(v2[col], col).toBe(legacy[col]) // byte-exact, spec §3.4
+  expect(v2.source_id).toBe('u1')
+  expect(counts.push_preserved).toBe(1)
+  expect(counts.push_expired).toBe(0)
+  expect(counts.push_invalid).toBe(0)
+  expect(kindLines('push_preserved')).toHaveLength(1)
+  expect(count(raw, 'push_subscriptions_v2')).toBe(1)
+})
+
+test('a PENDING lease stays pending and a secret-less rsscloud lease keeps its NULL secret', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  const pending = seedPush(raw, { state: 'pending' })
+  const cloud = seedPush(raw, { mode: 'rsscloud', endpoint: CLOUD, secret: null })
+  const counts = convert(raw)
+
+  const rows = all(raw, `SELECT * FROM push_subscriptions_v2 ORDER BY mode`)
+  expect(rows).toHaveLength(2)
+  const [rsscloud, websub] = rows
+  for (const col of PRESERVED) expect(websub[col], col).toBe(pending[col])
+  for (const col of PRESERVED) expect(rsscloud[col], col).toBe(cloud[col])
+  expect(websub.state).toBe('pending')
+  expect(rsscloud.secret).toBeNull()
+  expect(counts.push_preserved).toBe(2)
+})
+
+test('a QUARANTINED source retains its active lease — governance alone makes it admin-only', async () => {
+  const raw = await fresh()
+  seedRemote(raw, { feed_type: 'instance' }) // no manifest: quarantined
+  const legacy = seedPush(raw)
+  const counts = convert(raw)
+  expect(source(raw, 'u1')).toMatchObject({ governance: 'quarantined' })
+  for (const col of PRESERVED) expect(pushV2(raw)![col], col).toBe(legacy[col])
+  expect(counts.push_preserved).toBe(1)
+})
+
+// ── expired: a finding, never a row ─────────────────────────────────────
+
+test('an EXPIRED lease converts to NO live row and counts push_expired', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedRemote(raw, { id: 'u2', handle: 'bob', feed_url: 'https://b.test/f.xml' })
+  seedPush(raw, { expires_at: LAPSED_AT })
+  seedPush(raw, { user_id: 'u2', expires_at: NOW }) // boundary: expiry AT now is expired (v1 `expires_at > now`)
+  const counts = convert(raw)
+
+  expect(count(raw, 'push_subscriptions_v2')).toBe(0)
+  expect(counts.push_expired).toBe(2)
+  expect(counts.push_preserved).toBe(0)
+  expect(counts.push_invalid).toBe(0)
+  expect(kindLines('push_expired')).toHaveLength(2)
+})
+
+test('a lease that is BOTH expired and unusable is counted once, as expired', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPush(raw, { expires_at: LAPSED_AT, endpoint: 'http://127.0.0.1/hub' })
+  const counts = convert(raw)
+  expect(counts.push_expired).toBe(1)
+  expect(counts.push_invalid).toBe(0)
+  expect(count(raw, 'push_subscriptions_v2')).toBe(0)
+})
+
+// ── revalidation: a finding, never a row ────────────────────────────────
+
+test('a lease whose endpoint fails revalidation converts to NO live row and counts push_invalid', async () => {
+  const raw = await fresh()
+  const bad = ['not a url', 'ftp://hub.test/hub', 'http://localhost:4000/hub', 'http://127.0.0.1/hub', 'http://192.168.1.10/hub', 'http://[::1]/hub']
+  bad.forEach((endpoint, i) => {
+    seedRemote(raw, { id: `u${i}`, handle: `r${i}`, feed_url: `https://r${i}.test/f.xml` })
+    seedPush(raw, { user_id: `u${i}`, endpoint })
+  })
+  const counts = convert(raw)
+
+  expect(count(raw, 'push_subscriptions_v2')).toBe(0)
+  expect(counts.push_invalid).toBe(bad.length)
+  expect(counts.push_preserved).toBe(0)
+  expect(kindLines('push_invalid')).toHaveLength(bad.length)
+})
+
+test('an ordinary DOMAIN endpoint is not mistaken for a private host', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  // fd… / fe8… are IPv6 private PREFIXES, not domain prefixes: a hostname that
+  // merely starts with those letters is public and its lease must survive.
+  seedPush(raw, { endpoint: 'https://fdhub.example/hub' })
+  const counts = convert(raw)
+  expect(counts.push_preserved).toBe(1)
+  expect(counts.push_invalid).toBe(0)
+})
+
+test('a legacy state or protocol the two-state CHECK rejects is DROPPED, never resurrected (WP1)', async () => {
+  const raw = await fresh()
+  const rejected: Record<string, string>[] = [{ state: 'expired' }, { state: 'invalid' }, { state: 'unsubscribed' }, { mode: 'webmention' }]
+  rejected.forEach((over, i) => {
+    seedRemote(raw, { id: `u${i}`, handle: `r${i}`, feed_url: `https://r${i}.test/f.xml` })
+    seedPush(raw, { user_id: `u${i}`, ...over })
+  })
+  const counts = convert(raw)
+
+  // the whole point of the narrow CHECK: no third state exists to carry them into
+  expect(all(raw, `SELECT state FROM push_subscriptions_v2`)).toEqual([])
+  expect(counts.push_invalid).toBe(rejected.length)
+  expect(kindLines('push_invalid')).toHaveLength(rejected.length)
+})
+
+test('a lease whose user is not a converted remote source is dropped and counted', async () => {
+  const raw = await fresh()
+  seedLocal(raw)
+  seedPush(raw, { user_id: 'l1' })
+  const counts = convert(raw)
+  expect(count(raw, 'push_subscriptions_v2')).toBe(0)
+  expect(counts.push_invalid).toBe(1)
+})
+
+// ── no network, ever ────────────────────────────────────────────────────
+
+test('conversion sends NO subscribe, unsubscribe, verify or fetch — zero fetch calls', async () => {
+  const raw = await fresh()
+  seedLocal(raw)
+  seedRemote(raw)
+  seedRemote(raw, { id: 'u2', handle: 'bob', feed_url: 'https://b.test/f.xml', feed_type: 'instance' })
+  seedFollow(raw, 'l1', 'u1')
+  seedPost(raw)
+  seedPush(raw)
+  seedPush(raw, { user_id: 'u2', endpoint: 'http://127.0.0.1/hub' })
+
+  const spy = vi.spyOn(globalThis, 'fetch')
+  try {
+    const counts = convert(raw, manifest([{ sourceId: 'u2', feedUrl: 'https://b.test/f.xml' }]))
+    expect(counts.push_preserved).toBe(1)
+  } finally {
+    spy.mockRestore()
+  }
+  expect(spy).not.toHaveBeenCalled()
+})
+
+// ── the whole point: the legacy lease still delivers after cutover ───────
+
+test('a fat ping signed with the LEGACY secret authenticates against the converted row and ingests', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  seedLocal(raw)
+  seedRemote(raw)
+  seedFollow(raw, 'l1', 'u1') // makes the converted source schedulable, hence push-eligible
+  const legacy = seedPush(raw, { callback_token: 'legacy-token', secret: 'legacy-secret', topic: 'https://a.test/feed.xml' })
+  convert(raw)
+  expect(pushV2(raw)!.callback_token).toBe(legacy.callback_token)
+
+  const db = createDatabaseContext(raw)
+  const store = createLogicalStore(db)
+  // refusing fetch: a fat ping carries its own document — the path must not fetch
+  const fetchFn = (async (input: string | URL | Request) => {
+    throw new Error(`unexpected fetch: ${String(input)}`)
+  }) as unknown as typeof fetch
+  const acquisition = createAcquisition({ db, fetchFn, lookupFn: async () => [{ address: '93.184.216.34' }], now: () => NOW })
+  const push = createLogicalPush({
+    db, store, acquisition, fetchFn, lookupFn: async () => [{ address: '93.184.216.34' }],
+    config: loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test' }),
+  })
+
+  const body = `<?xml version="1.0"?><rss version="2.0"><channel><title>A</title>`
+    + `<item><guid isPermaLink="false">g-after-cutover</guid><title>t</title><description>d</description></item></channel></rss>`
+  const signature = `sha256=${createHmac('sha256', 'legacy-secret').update(body).digest('hex')}`
+
+  expect(await push.websubDeliver('legacy-token', body, signature)).toBe(202)
+  expect(one(raw, `SELECT reason, delivery_mechanism FROM acquisition_runs_v2 WHERE id NOT LIKE 'migration:%'`))
+    .toMatchObject({ reason: 'scheduled', delivery_mechanism: 'push' })
+  expect(one(raw, `SELECT id FROM deliveries_v2 WHERE key = 'g-after-cutover'`)).toBeDefined()
+  expect(drainReconciliation({ store, now: () => NOW })).toBe(1)
+  expect(count(raw, 'logical_items_v2')).toBe(1)
+  repo.close()
+})
+
+test('a WRONG secret against a converted row is still a silent 202 that ingests nothing', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  seedLocal(raw)
+  seedRemote(raw)
+  seedFollow(raw, 'l1', 'u1')
+  seedPush(raw, { callback_token: 'legacy-token', secret: 'legacy-secret', topic: 'https://a.test/feed.xml' })
+  convert(raw)
+
+  const db = createDatabaseContext(raw)
+  const fetchFn = (async () => { throw new Error('unexpected fetch') }) as unknown as typeof fetch
+  const acquisition = createAcquisition({ db, fetchFn, lookupFn: async () => [{ address: '93.184.216.34' }], now: () => NOW })
+  const push = createLogicalPush({
+    db, store: createLogicalStore(db), acquisition, fetchFn, lookupFn: async () => [{ address: '93.184.216.34' }],
+    config: loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test' }),
+  })
+  const body = `<?xml version="1.0"?><rss version="2.0"><channel><title>A</title><item><guid>g9</guid><title>t</title><description>d</description></item></channel></rss>`
+  expect(await push.websubDeliver('legacy-token', body, `sha256=${createHmac('sha256', 'wrong').update(body).digest('hex')}`)).toBe(202)
+  expect(count(raw, 'deliveries_v2')).toBe(0)
+  repo.close()
+})
+
+// ── the findings contract (spec §3.6) ───────────────────────────────────
+// Counts ARE the operator report: WP2 deleted the findings relation and the
+// report route, so a miscount is the only signal an operator would ever get
+// that something did not survive.
+
+const ALL_KINDS: ConversionFindingKind[] = [
+  'default_person', 'default_webfeed', 'instance_quarantined', 'manifest_approved',
+  'attribution_conflict', 'unresolved_reference', 'permalink_collision', 'guid_collision',
+  'push_preserved', 'push_expired', 'push_invalid', 'over_cap_grandfathered',
+]
+
+test('runConversion returns the COMPLETE per-kind counts, and every count emitted its log lines', async () => {
+  const raw = await fresh()
+  raw.prepare(`UPDATE instance_settings SET value = '1' WHERE key = 'max_subs_per_user'`).run()
+  seedLocal(raw)
+  seedRemote(raw) // default_webfeed
+  seedRemote(raw, { id: 'u2', handle: 'bob', feed_url: 'https://b.test/f.xml', feed_type: 'person' }) // default_person
+  seedRemote(raw, { id: 'u3', handle: 'inst', feed_url: 'https://c.test/f.xml', feed_type: 'instance' }) // instance_quarantined
+  seedRemote(raw, { id: 'u4', handle: 'appr', feed_url: 'https://d.test/f.xml', feed_type: 'instance' }) // manifest_approved + attribution_conflict
+  for (const id of ['u1', 'u2', 'u3']) seedFollow(raw, 'l1', id) // over_cap_grandfathered
+  seedPost(raw, { source_feed_url: 'https://elsewhere.test/f.xml' }) // attribution_conflict (bound source)
+  seedPost(raw, { id: 'p2', guid: 'g2', url: 'https://a.test/post/1' }) // permalink_collision with p1
+  seedPost(raw, { id: 'p3', guid: 'g3', url: 'https://a.test/post/3', in_reply_to: 'https://gone.test/x' }) // unresolved_reference
+  seedPush(raw) // push_preserved
+  seedPush(raw, { user_id: 'u2', expires_at: LAPSED_AT }) // push_expired
+  seedPush(raw, { user_id: 'u3', endpoint: 'http://127.0.0.1/hub' }) // push_invalid
+
+  const counts = convert(raw, manifest([{ sourceId: 'u4', feedUrl: 'https://d.test/f.xml', attributionMode: 'single_publisher' }]))
+
+  // complete: exactly the declared kinds, no more, no fewer
+  expect(new Set(Object.keys(counts))).toEqual(new Set(ALL_KINDS))
+  // every non-aborting finding emitted exactly one log line per occurrence
+  for (const kind of ALL_KINDS) expect(kindLines(kind).length, kind).toBe(counts[kind])
+  // and every kind this scenario triggers is actually counted
+  for (const kind of ALL_KINDS) {
+    if (kind === 'guid_collision') continue // structurally unreachable (plan Task 6 correction)
+    expect(counts[kind], kind).toBeGreaterThan(0)
+  }
+  expect(counts.guid_collision).toBe(0)
+})
+
+test('there is NO findings relation — the returned counts and the log lines are the whole report', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  seedPush(raw, { expires_at: LAPSED_AT })
+  convert(raw)
+  const tables = all(raw, `SELECT name FROM sqlite_master WHERE type = 'table'`).map((r) => r.name as string)
+  // acquisition_findings_v2 is V2's per-RUN acquisition findings and predates
+  // this vertical; nothing else finding-shaped exists, and nothing conversion
+  // writes lands in it.
+  expect(tables.filter((n) => /finding|report/i.test(n))).toEqual(['acquisition_findings_v2'])
+  expect(count(raw, 'acquisition_findings_v2')).toBe(0)
 })
