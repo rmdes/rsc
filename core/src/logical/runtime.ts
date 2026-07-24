@@ -16,6 +16,10 @@ import { drainReconciliation, drainReconciliationAsync } from './reconcile.ts'
 import { createVerificationRunner } from './verification.ts'
 import { projectItem } from './projector.ts'
 import { materializeLocalPost } from './local.ts'
+import { loadManifest, runPreflight } from '../migration/preflight.ts'
+import type { Manifest } from '../migration/preflight.ts'
+import { runConversion } from '../migration/convert.ts'
+import type { ConversionCounts } from '../migration/convert.ts'
 
 // Startup activation and worker composition (spec §7.1-7.2). This is the module
 // that REPLACES Task 2's temporary fail-closed guard: with RSC_SOURCE_MODEL_V2 on
@@ -178,11 +182,17 @@ export function createStreamSource(db: DatabaseContext): LogicalStreamSource {
 
 // ---- activation (spec §7.1) -------------------------------------------------
 
-function readActivation(tx: ReadTx): SourceModelV2Activation {
+// The activation state and the conversion marker are read TOGETHER (V4 §4.1 step
+// 2) — one row, one query, inside the one transaction; the pair is what the
+// branch below decides on, and reading them apart is what would let a
+// hand-repaired database slip through between the two reads.
+type ActivationRow = SourceModelV2Activation & { convertedAt: string | null }
+
+function readActivation(tx: ReadTx): ActivationRow {
   const row = tx.prepare(
-    `SELECT schema_version, state, last_activated_at, last_reconciled_at FROM logical_activation_v2 WHERE singleton = 1`,
-  ).get() as { schema_version: 1; state: SourceModelV2Activation['state']; last_activated_at: string | null; last_reconciled_at: string | null }
-  return { schemaVersion: row.schema_version, state: row.state, lastActivatedAt: row.last_activated_at, lastReconciledAt: row.last_reconciled_at }
+    `SELECT schema_version, state, last_activated_at, last_reconciled_at, converted_at FROM logical_activation_v2 WHERE singleton = 1`,
+  ).get() as { schema_version: 1; state: SourceModelV2Activation['state']; last_activated_at: string | null; last_reconciled_at: string | null; converted_at: string | null }
+  return { schemaVersion: row.schema_version, state: row.state, lastActivatedAt: row.last_activated_at, lastReconciledAt: row.last_reconciled_at, convertedAt: row.converted_at }
 }
 
 // Materialize every pre-existing local post's bridge row so no UNMATERIALIZED
@@ -215,18 +225,101 @@ function writeActivation(tx: WriteTx, state: SourceModelV2Activation['state'], l
     .run(state, lastActivatedAt, lastReconciledAt)
 }
 
-// The ONE pre-listen activation transaction (spec §7.1). Local-state read,
-// materialization, journal initialization, one reset, timestamps, and the
-// transition to `active` all commit together — no application mutation intervenes.
-export function activateLogicalV2(db: DatabaseContext, now: string): void {
+// ---- the cutover (V4 spec §4.1, §4.3) ---------------------------------------
+
+// Both startup tripwires fail LOUD, in the shape of the existing
+// `database is newer than this build` guard (storage/sqlite.ts:1442): a thrown
+// startup error naming the supported recovery. They are mutually exclusive and
+// together make the activation/marker pair self-verifying in both directions
+// (spec §4.3) — neither is ever a silent skip.
+export const CONVERTED_REQUIRES_V2 =
+  'converted database requires RSC_SOURCE_MODEL_V2=on — the legacy branch cannot run beside converted v2 state; to run it again, restore the pre-flip backup'
+export const ACTIVE_WITHOUT_MARKER =
+  'activation active without conversion marker — this database was activated without the legacy conversion (hand-repaired or partially restored); restore the pre-flip backup and restart the migration'
+export const PREFLIGHT_FAILED = 'migration preflight failed'
+
+// The v1-branch tripwire (spec §4.3): after the conversion marker is committed,
+// starting with RSC_SOURCE_MODEL_V2=off would resume legacy polling and legacy
+// push writes beside live v2 state. One read, no write — the ONLY V4 code the
+// flag-off path runs, and deliberately so: the guard exists precisely for that
+// branch. server.ts calls this before anything else in its disabled branch.
+export function assertLegacyStartupAllowed(raw: ReadTx): void {
+  const row = raw.prepare(`SELECT converted_at FROM logical_activation_v2 WHERE singleton = 1`).get() as { converted_at: string | null } | undefined
+  if (row?.converted_at) throw new Error(CONVERTED_REQUIRES_V2)
+}
+
+export interface CutoverInput {
+  // RSC_MIGRATION_MANIFEST, or null. Presence only is validated by config; the
+  // file is read (and its shape diagnosed) here, in the fail-startup path.
+  manifestPath?: string | null
+  // Conversion's non-aborting findings (spec §3.6) — log lines beside the
+  // per-kind counts sealed into the marker. Production writes them to stdout.
+  log?: (line: string) => void
+  // Fault-injection seam (V2 Appendix D pattern), called after each step of the
+  // ONE transaction. Production passes nothing; a test throws from it to prove a
+  // crash anywhere before commit leaves a legacy-intact database.
+  // ponytail: one optional callback instead of a mock database.
+  step?: (phase: 'conversion' | 'journal' | 'marker' | 'activation') => void
+}
+
+// Preflight + conversion, inside the caller's write transaction. runPreflight is
+// read-only by construction, so running it here costs nothing and guarantees the
+// checks see exactly the rows conversion will convert; any abort throws, and the
+// whole transaction — schema and legacy data alike — rolls back untouched.
+function convertLegacy(tx: WriteTx, now: string, cutover: CutoverInput): ConversionCounts {
+  let manifest: Manifest | null
+  try {
+    manifest = loadManifest(cutover.manifestPath ?? null)
+  } catch (err) {
+    // loadManifest THROWS its named diagnostics (unreadable file, bad JSON, wrong
+    // schemaVersion, invalid attributionMode) where runPreflight RETURNS findings.
+    // Both are aborting preflight problems (spec §2.1), so both fail startup the
+    // same way and the named diagnostic is SURFACED — an unhandled throw would
+    // reject `ready` just as safely but leave the operator with no diagnosis.
+    throw new Error(`${PREFLIGHT_FAILED}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  const findings = runPreflight(tx, manifest)
+  if (findings.length > 0) {
+    throw new Error(`${PREFLIGHT_FAILED}: ${findings.map((f) => `${f.kind}: ${f.detail}`).join('; ')}`)
+  }
+  return runConversion(tx, { manifest, now, log: cutover.log ?? ((line) => console.log(line)) })
+}
+
+// The ONE pre-listen activation transaction (spec V2 §7.1, extended by V4 §4.1 —
+// never a second barrier). Local-state read, materialization, legacy conversion,
+// journal initialization, one reset, the conversion marker, timestamps, and the
+// transition to `active` all commit together — no application mutation
+// intervenes, and a throw anywhere before commit converts nothing.
+//
+// NOTHING here does network I/O: preflight and conversion are pure SQL by
+// contract, so the pre-listen barrier server.ts awaits stays free of awaited
+// network I/O exactly as the V3 I1 fix left it.
+export function activateLogicalV2(db: DatabaseContext, now: string, cutover: CutoverInput = {}): void {
   db.write((tx) => {
     const act = readActivation(tx)
+    // Tripwire: v2 was activated against UNCONVERTED data. Spec §4.1 step 2 names
+    // the `active` case; `reconciliation_required` is the same anomaly one
+    // flag-off restart later (markReconciliationRequiredIfActive moves an
+    // unmarked active database there), and letting it through would silently skip
+    // conversion — the dual-model state WC3 forbids. Both fail loud.
+    if (act.state !== 'never_activated' && !act.convertedAt) throw new Error(ACTIVE_WITHOUT_MARKER)
     if (act.state === 'active') return // continuous-v2 restart: preserve generation + timestamps, append no reset
     materializePreexistingLocalPosts(tx)
     if (act.state === 'never_activated') {
-      // First activation creates the reset generation + first reset atomically.
+      // The clean pre-conversion state: preflight, then convert. A marker here
+      // (conversion committed, activation cleared by hand) skips conversion —
+      // it runs AT MOST ONCE, guarded by the marker alone.
+      const counts = act.convertedAt ? null : convertLegacy(tx, now, cutover)
+      cutover.step?.('conversion')
+      // First activation creates the reset generation + the cutover reset atomically.
       reconstructJournal(tx, now)
+      cutover.step?.('journal')
+      if (counts) {
+        tx.prepare(`UPDATE logical_activation_v2 SET converted_at = ?, conversion_findings_json = ? WHERE singleton = 1`).run(now, JSON.stringify(counts))
+      }
+      cutover.step?.('marker')
       writeActivation(tx, 'active', now, act.lastReconciledAt)
+      cutover.step?.('activation')
     } else {
       // Reactivation (reconciliation_required): preserve the generation, append one
       // barrier reset, refresh timestamps.
@@ -350,7 +443,10 @@ export function createLogicalRuntime(input: {
   trace('orphan')
 
   const ready = (async (): Promise<void> => {
-    activateLogicalV2(db, now())
+    // The ONE pre-listen transaction — now also the cutover (V4 §4.1). Both
+    // tripwires and the legacy conversion live inside it; the manifest path is
+    // read off the same Config the push lifecycle above uses.
+    activateLogicalV2(db, now(), { manifestPath: config.migrationManifestPath })
     trace('activate')
     // Startup drain: pick up pending/retrying jobs and pending orphan work a crash
     // may have left, then start the serial poll loop. NOTHING here awaits network

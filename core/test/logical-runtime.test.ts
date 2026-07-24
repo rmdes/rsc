@@ -81,6 +81,23 @@ test('first activation creates generation 1 + one reset and transitions to activ
   await runtime.stop()
 })
 
+// The runtime-wiring canary for V4's cutover (Task 8): the conversion rides the
+// SAME pre-listen `ready` barrier as activation — drop the manifest/cutover
+// argument at this call site and the marker below stays null. The cutover's own
+// decision table, tripwires and fault injection live in migration-cutover.test.ts.
+test('the ready barrier runs the cutover: a legacy source converts and the marker is sealed', async () => {
+  const deps = await setup()
+  deps.repo.raw.prepare(
+    `INSERT INTO users (id, kind, handle, display_name, feed_url, created_at, feed_type) VALUES ('u1','remote','alice','Alice','https://a.test/f.xml',?,'webfeed')`,
+  ).run(NOW)
+
+  const runtime = mkRuntime(deps); await runtime.ready; await runtime.stop()
+
+  expect(deps.repo.raw.prepare(`SELECT id, provenance FROM remote_sources_v2`).get()).toEqual({ id: 'u1', provenance: 'migration' })
+  expect(deps.repo.raw.prepare(`SELECT converted_at FROM logical_activation_v2 WHERE singleton = 1`).get()).toEqual({ converted_at: NOW })
+  expect(activation(deps.store).state).toBe('active')
+})
+
 test('reactivation preserves the generation and appends exactly one reset', async () => {
   const deps = await setup()
   const rt1 = mkRuntime(deps); await rt1.ready; await rt1.stop()

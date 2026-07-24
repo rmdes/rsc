@@ -6,6 +6,7 @@ import type { LogicalStreamSource } from '../logical/runtime.ts'
 import { fingerprintRequest } from '../domain/source-repository.ts'
 import { decodeCursor } from '../domain/cursor.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import type { ReadTx } from '../logical/database.ts'
 import type { AcquisitionEngine } from '../logical/acquisition.ts'
 import type { CommandEnvelope, AuditCategory } from '../domain/types.ts'
 import type { RunCursor, JobCursor, AdminRunProjection, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult } from '../logical/types.ts'
@@ -488,6 +489,30 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     let xml = renderCommentsFeed(logicalToFeedEntry(data.item), data.replies.map(logicalToFeedEntry), feeds)
     xml = injectComments(xml, data.replies)
     return c.body(xml, 200, XML)
+  })
+}
+
+// =============================================================================
+// v2 reserved-handle lookup (V4 spec §3.5) — Task 8
+// =============================================================================
+// Mounted by server.ts beside the stream route (both need composition pieces
+// app.ts does not carry), so it exists only under v2 — with the flag off the
+// path is an ordinary 404 and /u/:handle behaves exactly as today.
+//
+// Web asks this before rendering /u/:handle: every legacy remote handle is
+// permanently reserved at conversion and redirects to its publisher page. The
+// reservation relation has NO foreign keys and outlives source removal and purge
+// (schema.ts), so a hit here does NOT promise the publisher still exists —
+// after a purge the redirect still fires and /p/:publisherId 404s through the
+// ordinary not-found path (spec WP5). No post-purge branch exists, here or in web.
+export function mountLogicalHandleRoute(app: Hono, deps: { raw: ReadTx }): void {
+  app.get('/handles/:handle', (c) => {
+    const handle = (c.req.param('handle') ?? '').toLowerCase()
+    // ponytail: one indexed primary-key lookup — no snapshot needed for a single
+    // statement, and the reservation is immutable once written.
+    const row = deps.raw.prepare(`SELECT publisher_id FROM handle_reservations_v2 WHERE handle = ?`).get(handle) as { publisher_id: string } | undefined
+    if (!row) return c.json({ error: 'not found' }, 404)
+    return c.json({ model: MODEL, handle, reserved: true, publisherId: row.publisher_id })
   })
 }
 

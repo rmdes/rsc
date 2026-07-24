@@ -6,7 +6,7 @@ import { createSqliteRepository } from './storage/sqlite.ts'
 import { createEventBus } from './domain/bus.ts'
 import { createService } from './domain/service.ts'
 import { createApp } from './api/app.ts'
-import { mountLogicalStreamRoute } from './api/logical-routes.ts'
+import { mountLogicalStreamRoute, mountLogicalHandleRoute } from './api/logical-routes.ts'
 import { createAuth } from './auth.ts'
 import { createMailer } from './mail.ts'
 import { hubLinkUrl } from './domain/feed.ts'
@@ -59,6 +59,14 @@ if (config.sourceModelV2) {
   await runtime.ready
   workers = compose({ sourceModelV2: true, runtime })
 } else {
+  // The V4 §4.3 tripwire, BEFORE anything else in this branch: a converted
+  // database may never run the legacy branch (dual-model corruption), so this
+  // throws a startup error naming the backup-restore procedure. It is the one
+  // piece of V4 the disabled path runs, and deliberately so — a guard that only
+  // fires under v2 would never fire at all. Read-only: no V4 route, worker, or
+  // write path is active here.
+  const { assertLegacyStartupAllowed } = await import('./logical/runtime.ts')
+  assertLegacyStartupAllowed(repo.raw)
   // spec §7.1: a disabled process marks reconciliation_required when v2 was
   // previously active — a no-op (and no write) on a never-activated instance, so
   // flag-off keeps its byte-identical legacy behavior. The inline SQL avoids
@@ -130,6 +138,8 @@ const app = createApp({
 // a v2-only path, so it never collides with the v1 /timeline/stream.
 if (runtime && logicalStore) {
   const store = logicalStore
+  // The reserved-handle lookup web's /u/:handle asks before rendering (V4 §3.5).
+  mountLogicalHandleRoute(app, { raw: repo.raw })
   mountLogicalStreamRoute(app, {
     source: runtime.streamSource,
     bus,
