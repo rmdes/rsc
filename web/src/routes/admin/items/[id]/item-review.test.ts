@@ -12,10 +12,10 @@ import { readFileSync } from 'node:fs'
 const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 
-const loadEvent = (fetch: ReturnType<typeof vi.fn>, id = 'li1') => ({
+const loadEvent = (fetch: ReturnType<typeof vi.fn>, id = 'li1', search = '') => ({
 	fetch,
 	params: { id },
-	url: new URL(`http://x/admin/items/${id}`),
+	url: new URL(`http://x/admin/items/${id}${search}`),
 	cookies
 })
 
@@ -69,10 +69,10 @@ const auditPage = (over: Record<string, unknown> = {}) => ({
 
 type LoadResult = Record<string, unknown>
 
-async function loadItem(fetch: ReturnType<typeof vi.fn>, id = 'li1'): Promise<LoadResult> {
+async function loadItem(fetch: ReturnType<typeof vi.fn>, id = 'li1', search = ''): Promise<LoadResult> {
 	vi.resetModules()
 	const { load } = await import('./+page.server.ts')
-	return (await load(loadEvent(fetch, id) as never)) as LoadResult
+	return (await load(loadEvent(fetch, id, search) as never)) as LoadResult
 }
 
 async function itemAction(action: 'hide' | 'restore', fetch: ReturnType<typeof vi.fn>, fields: Record<string, string>) {
@@ -116,6 +116,20 @@ test('the item-review load reads the detail + first audit page and mints stable 
 	expect(result.hideCommandId).toMatch(/^[0-9a-f]{8}-/)
 	expect(result.restoreCommandId).toMatch(/^[0-9a-f]{8}-/)
 	expect(result.hideCommandId).not.toBe(result.restoreCommandId)
+})
+
+test('the item-review load paginates the audit trail with ?before= and returns the SECOND page', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
+		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage({ items: [{ id: 'a2', logicalItemId: 'li1', commandId: 'cmd-a2', actorId: 'admin', actorKind: 'administrator', action: 'restore', category: 'false_positive', note: 'y', resultJson: '{}', createdAt: '2026-07-19T00:00:00Z' }], nextCursor: null })), { status: 200 })
+		return new Response(JSON.stringify(detail()), { status: 200 })
+	})
+	const result = await loadItem(fetch, 'li1', '?before=auditNext')
+	// the cursor from the "Older audit" link is passed through to core, not dropped
+	expect(urlsOf(fetch).some((u) => u.includes('/admin/items/li1/audit?before=auditNext'))).toBe(true)
+	// and the SECOND page's rows come back — not page 1
+	expect((result.audit as { id: string }[])[0].id).toBe('a2')
+	expect(result.auditNextCursor).toBe(null)
 })
 
 test('bounded sections keep their TRUE totals in counts while the inline rows are capped', async () => {

@@ -18,7 +18,9 @@ export const load: PageServerLoad = async ({ fetch, params, url, cookies }) => {
 	if (!cap.sourceModelV2) throw error(404, 'Not found')
 	const detail = await getAdminItemDetail(f, params.id)
 	if (!detail) throw error(404, 'Not found') // neutral not-found (no evidence leak)
-	const audit = await listItemAudit(f, params.id)
+	// Paginate the audit trail: the ?before cursor from the "Older audit" link (an
+	// absent cursor is null → first page). Mirrors the source-detail items load.
+	const audit = await listItemAudit(f, params.id, url.searchParams.get('before'))
 	return {
 		id: params.id,
 		detail,
