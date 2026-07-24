@@ -593,6 +593,45 @@ composition).
 - [ ] **Step 3:** Run `npm test -w core -- migration-convert`; expect FAIL. Implement.
 - [ ] **Step 4:** Run `npm test -w core -- migration-convert && npm run typecheck -w core`; expect PASS. Commit per Appendix C.
 
+> **Correction 2026-07-24 (recorded during Task 7 execution) — endpoint
+> revalidation is `checkCallbackUrl`'s SYNCHRONOUS PREFIX, not
+> `checkCallbackUrl`.** Step 1 reads "URL parse + `checkCallbackUrl` on the
+> endpoint — no network". Those two halves cannot both hold:
+> `checkCallbackUrl` (`push-guard.ts:56-79`) is `async` precisely because it
+> resolves DNS for any non-IP-literal host, and `runConversion` is
+> synchronous, runs inside the caller's `better-sqlite3` write transaction,
+> and is pinned network-free. Task 7 therefore applies `checkCallbackUrl`'s
+> synchronous prefix — URL parse, `http(s)` only, reject `localhost`/
+> `*.localhost`, reject an IP-LITERAL private host (`isIP`-guarded, exactly
+> as `checkCallbackUrl` guards it) — which is the same narrowing, for the
+> same reason, that `verification.ts`'s `normalizeVerificationUrl`
+> (`verification.ts:30-47`) already makes for a gate that runs inside a write
+> transaction.
+>
+> The DNS half is deferred, not dropped: every legacy row passed the FULL
+> gate at v1 registration (`push-in.ts:114`), and re-resolution drift after
+> that point is already the accepted, ledgered rebinding residual
+> (`push-guard.ts:54-55`) — v1's own renewal sweep does not re-resolve
+> either, so conversion adds no exposure v1 did not already carry.
+>
+> **Two further Task 7 clarifications, same date.** (a) The spec's §1.2
+> lease-continuity citation of `push-in.ts:272` is inaccurate: that line is
+> `repo.purgeExpiredSubscriptions`, which deletes from the OUTBOUND
+> `subscriptions` table (`sqlite.ts:602-604`) and never touched
+> `push_subscriptions`. Under v1, inbound push rows survived forever and R1
+> token/secret reuse was therefore permanent; §1.2's mandated purge of v2
+> push rows is a real, intended DIVERGENCE from v1, not a preservation of
+> it. Consequently exact preservation is scoped to leases that are LIVE at
+> conversion — after a lapse and purge, re-registration mints fresh
+> token/secret, and a hub verification arriving more than `PENDING_TTL_MS`
+> (10 min) after registration 404s and self-heals on the next poll pass.
+> (b) Step 2's "every non-aborting finding also emitted one log line" made
+> `default_person`/`default_webfeed` log lines mandatory — spec §3.6 lists
+> them among the findings, but Task 5 shipped them count-only. Task 7 adds
+> the two lines, so the invariant now holds uniformly for all twelve kinds
+> and is asserted as such (`lines starting with "<kind>: " === counts[kind]`,
+> for every kind).
+
 ### Task 8: Cutover — activation extension, both tripwires, reserved-handle redirect
 
 **Files:** Modify `core/src/logical/runtime.ts`, `core/src/server.ts`,
