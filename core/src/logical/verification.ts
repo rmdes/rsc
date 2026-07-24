@@ -228,7 +228,11 @@ async function fetchAndParse(url: string, fetchFn: typeof fetch, lookupFn: Looku
 
 const ANON_VIEWER: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
 // A valid empty AdminAcquisitionCounters JSON for the synthetic verification run.
-const EMPTY_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false })
+// Exported (Task 6 review, narrow exception to "no live-path edits" — same
+// exception taken in Task 0 for the canary): migration/convert.ts's synthetic
+// run row needs the identical shape and shares this definition instead of a
+// byte-copy, so the two can never drift apart.
+export const EMPTY_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false })
 
 export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerificationInput): void {
   const { claim, outcome, now } = input

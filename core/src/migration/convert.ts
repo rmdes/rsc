@@ -4,6 +4,7 @@ import { insertAudit } from '../storage/sqlite.ts'
 import { normalizePermalink } from '../logical/reconcile.ts'
 import { normalizeUtc, presentationFingerprint } from '../logical/projector.ts'
 import { materializeLocalPost } from '../logical/local.ts'
+import { EMPTY_COUNTERS } from '../logical/verification.ts'
 import type { WriteTx } from '../logical/database.ts'
 import type { AttributionMode } from '../domain/types.ts'
 import type { Manifest } from './preflight.ts'
@@ -109,7 +110,6 @@ interface LegacyPost {
 // `run_id = 'migration'` is per-source `migration:<sourceId>`: still marked,
 // still recognizable, and now JOIN-able. See the dated plan-correction note.
 const SYNTHETIC = 'migration'
-const MIGRATION_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false })
 
 export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; now: string; log: (line: string) => void }): ConversionCounts {
   const { manifest, now, log } = input
@@ -329,7 +329,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     convertedItems.add(post.id)
 
     const runId = `${SYNTHETIC}:${post.author_id}`
-    if (!runs.has(runId)) { insertRun.run(runId, post.author_id, now, now, now, MIGRATION_COUNTERS); runs.add(runId) }
+    if (!runs.has(runId)) { insertRun.run(runId, post.author_id, now, now, now, EMPTY_COUNTERS); runs.add(runId) }
 
     // The legacy UNIQUE(author_id, guid) tuple IS the v2 delivery key: the guid
     // was V1's opaque dedup identifier, so it converts as key_kind 'opaque' —
@@ -426,8 +426,15 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
   }
 
   // Ancestry (spec §3.2): a resolved legacy edge copies AS-IS — V2 §4.1 permits
-  // preserving it without recreating the retired global-uniqueness fallback, and
-  // legacy edges always pointed at a real post, so no depth/cycle re-derivation.
+  // preserving it without recreating the retired global-uniqueness fallback, so
+  // no depth/cycle re-derivation is done here. Only a direct self-edge (pid ===
+  // post.id) is guarded below; V1's adoptOrphans (sqlite.ts:465-494) can also
+  // leave a longer cycle in place (p1 orphan-references p2's URL, p2 resolves
+  // onto p1, then adopts p1) that conversion copies verbatim. Nothing hangs —
+  // logicalDepth/deriveRoot/remoteThreadRoot/projectThread are all
+  // walk-bounded — but logicalDepth then returns the walk bound, so a NEW
+  // reply posted under such an item resolves permanently as
+  // ambiguous('excessive_depth'). Rare, bounded, and out of scope to detect.
   // Everything else — a reference legacy ingest never resolved, a parent since
   // deleted, a self-edge — converts to `missing` with its bounded asserted
   // context (canonical_material.inReplyTo, which the projector renders as the
