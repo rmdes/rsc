@@ -188,7 +188,7 @@ test('a scheduled poll acquires an observation, reconciliation converges it, the
     inFlight: (id) => engine.inFlight(id),
     async acquireSource(id, reason, sig) { const r = await engine.acquireSource(id, reason, sig); if (!('kind' in r)) drainReconciliation({ store: deps.store, now: () => NOW }); return r },
   }
-  const sched = createScheduler({ store: deps.store, acquisition: wrapped, config: { pollSeconds: 60 }, now: () => NOW })
+  const sched = createScheduler({ store: deps.store, acquisition: wrapped, config: { pollSeconds: 60 }, now: () => NOW, drainVerification: undefined })
   const upsertsBefore = count(deps.raw, 'logical_journal_v2', "WHERE kind = 'upsert'")
 
   expect(await sched.pollDue(NOW)).toBe(1)

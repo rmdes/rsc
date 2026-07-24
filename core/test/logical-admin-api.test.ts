@@ -179,7 +179,7 @@ test('a manual refresh records durable health so the scheduler skips the source 
     acquireSource: async () => { throw new Error('scheduler should have skipped s1 — manual refresh health was not recorded') },
     inFlight: () => false,
   }
-  const sched = createScheduler({ store, acquisition: throwingEngine, config: { pollSeconds: 60 } })
+  const sched = createScheduler({ store, acquisition: throwingEngine, config: { pollSeconds: 60 }, drainVerification: undefined })
   expect(await sched.pollDue(NOW)).toBe(0)
   repo.close()
 })

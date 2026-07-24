@@ -544,8 +544,9 @@ export async function drainReconciliationAsync(deps: {
         // A verification batch throw (a data collision, a parse/DB error) is
         // recorded exactly like an observation failure instead of escaping: an
         // escaped throw would strand the job at 'processing' — blocking every
-        // future job for that batch key — and reject the runtime's `ready` promise
-        // (i.e. fail process startup), for a single bad origin response.
+        // future job for that batch key — for a single bad origin response. (It no
+        // longer reaches startup: this drain rides the scheduler tick, whose catch
+        // would log and swallow it; the strand is the reason to record it here.)
         try { await deps.runVerificationBatch({ claim, now: now() }) }
         catch (err) { recordDrainFailure(store, claim.jobId, err, now) }
         continue

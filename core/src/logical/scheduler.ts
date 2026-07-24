@@ -21,7 +21,12 @@ export interface SchedulerDeps {
   // rides THIS loop — there is no second timer — which is what keeps it off the
   // pre-listen startup path and off every request path. Its I/O therefore delays
   // the next poll; that is the accepted trade for one loop.
-  drainVerification?: () => Promise<void>
+  // REQUIRED, never optional: an optional one can be forgotten at the runtime call
+  // site and verification then silently never runs with a fully green suite. A
+  // caller that genuinely has none passes an explicit `undefined` — the same
+  // deliberate posture as createSourcePlane's required logicalStore. Do not
+  // "clean up" the `| undefined` back into a `?`.
+  drainVerification: (() => Promise<void>) | undefined
 }
 
 export interface LogicalScheduler {

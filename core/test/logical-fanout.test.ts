@@ -235,3 +235,25 @@ test('the sync drain reaches fan-out and a later observation job while a verific
   // (3) the verification job is preserved for the async drain — still pending, not spun to terminal.
   expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE id = ?`).get(verJobId) as { status: string }).status).toBe('pending')
 })
+
+// The test above runs on a FROZEN clock, so the drain never re-reaches the job it
+// deferred (deferVerification bumps next_attempt_at by +1 ms) and the cycled-back
+// branch is never taken — it passes with or without the strand fix. Under a MOVING
+// clock the branch IS taken: the job is re-CLAIMED (status 'processing') and then
+// dropped, so it must be un-claimed on that path too or it strands at 'processing',
+// a status neither drain can ever claim again.
+test('a cycled-back verification job is un-claimed, never left at processing (moving clock)', async () => {
+  const { raw, store } = await fresh()
+  const verJobId = randomUUID()
+  raw.prepare(
+    `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
+     VALUES (?, 'verification', NULL, NULL, ?, 'pending', 0, ?, NULL, NULL, ?)`,
+  ).run(verJobId, 'https://origin.test/feed.xml', NOW, NOW)
+
+  // A clock that advances 1 ms per read — the smallest faithful stand-in for a real
+  // one, and enough for the drain to re-reach the +1 ms deferral it just wrote.
+  let t = Date.parse(NOW)
+  expect(drainReconciliation({ store, now: () => new Date(t++).toISOString() })).toBe(0)
+
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE id = ?`).get(verJobId) as { status: string }).status).toBe('pending')
+})
