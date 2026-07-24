@@ -164,7 +164,7 @@ RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `RSC_AUTH_SECRET` | yes | — | better-auth session/cookie signing secret. Generate with `openssl rand -hex 32`. |
-| `RSC_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke), also usable there in place of a registered session. |
+| `RSC_TOKEN` | yes | — | Ops bearer token. No longer needed for user actions — its one remaining job is `POST /users` (feed seeding/smoke, also usable there in place of a registered session) **until cutover**; once `RSC_SOURCE_MODEL_V2=on`, that job becomes `POST /ops/sources/federation` (see "Source model v2" below). The token reaches that one route and nothing else: on every `/admin/*` route a bearer-only request has no session and gets 401. |
 | `RSC_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
 | `RSC_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
 | `RSC_ADMIN_EMAIL` | no | — | Comma-separated admin email(s). An account whose **verified** email matches becomes an instance admin (`isAdmin` on `/me`; unlocks admin-only routes like `GET /admin/status`). Unset = no admin (admin routes 403 for everyone). |
@@ -173,7 +173,8 @@ RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | `RSC_DB` | no | `./data/rsc.db` | SQLite file path, or `:memory:`. |
 | `RSC_PORT` | no | `8787` | HTTP port core listens on. |
 | `RSC_POLL_SECONDS` | no | `60` | How often remote feeds are polled. |
-| `RSC_SOURCE_MODEL_V2` | no | `off` | v2 source registry — **development only**, `on`/`off` (anything else refuses to boot). See "Source model v2" below before touching it. |
+| `RSC_SOURCE_MODEL_V2` | no | `off` | v2 source registry, `on`/`off` (anything else refuses to boot). Flipping it to `on` is the **one-way migration cutover** — read "Source model v2" below and follow the runbook before touching it. |
+| `RSC_MIGRATION_MANIFEST` | no | — | Path to the optional cutover manifest (JSON) naming which legacy `instance` feeds are pre-approved. Read by preflight and by the conversion; every other legacy row needs no manifest. Schema under "Source model v2" below. |
 
 `web/.env`:
 
@@ -520,30 +521,191 @@ feed item as `<source:comments count="N" feedUrl="…"/>`, pointing at:
 | `PATCH` | `/posts/<id>` | Edit your own local post (session auth required, owner + source=`local` gate). No-op on unchanged content; records edit with prior version retained. |
 | `GET` | `/posts/<id>/revisions` | Edit history for `<id>`; returns `{ post, revisions }` (prior versions oldest→newest, then the current post). Public; 404 if unknown. |
 
-## Source model v2 (`RSC_SOURCE_MODEL_V2`) — development only
+## Source model v2 (`RSC_SOURCE_MODEL_V2`) — the migration cutover
 
 A second, governance-aware source registry lives behind
-`RSC_SOURCE_MODEL_V2`. It defaults to `off`, it is `off` on every live
-instance, and **it should stay off until the migration ships**. Core refuses to
-boot on any value other than `on` or `off`.
+`RSC_SOURCE_MODEL_V2`. It defaults to `off` and is `off` on every live instance
+until an operator flips it. Core refuses to boot on any value other than `on` or
+`off`, and the value is read once at startup.
 
 **What `on` actually does — read this before flipping it:**
 
-- **Development only.** There is no migration yet. Nothing converts today's
-  follows/remote-user rows into the v2 tables.
-- **It uses the EMPTY v2 tables.** `remote_sources_v2`,
-  `source_subscriptions_v2`, `federation_relationships_v2`, `source_audit_v2`
-  and `command_ledger_v2` start empty and stay empty until you subscribe *under
-  the flag*. On an instance with real data, every following surface will simply
-  look empty.
-- **It does NOT mirror legacy writes.** Turning it on does not copy anything in,
-  and anything you create while it is on is not copied back out when you turn it
-  off. The two models coexist without syncing.
+- **It runs the migration.** Before the process listens, a configured-v2 core
+  runs preflight and then, in ONE write transaction, converts the legacy data
+  into the v2 model: every remote `users` row becomes a source with the **same
+  id**, every remote post becomes a logical item with the **same id** (so every
+  `/post/<id>` permalink survives), follows become subscriptions, and unexpired
+  push leases are preserved byte-for-byte so a hub keeps delivering across the
+  flip. It then writes a durable conversion marker and activates.
+- **Conversion runs at most once**, guarded by that marker, and it sends **no
+  network requests**. A preflight failure or any crash before the commit
+  converts nothing and leaves the legacy database byte-intact — restart with
+  the flag off, fix the data, try again.
+- **After the marker is committed, `off` is a startup error.** Running the v1
+  branch beside converted v2 state would corrupt both, so core refuses with a
+  message naming the backup-restore procedure. See "Rollback posture" below.
 - **Web has no flag of its own.** It discovers the state per request from core's
   `GET /capabilities` (`{"sourceModelV2": true|false}`) and switches the home,
   following and `/admin/feeds` surfaces accordingly. Do not add a web-side
   environment variable — a second switch could disagree with the routes core
   actually serves.
+- **`POST /users` becomes inert under v2.** The route is still registered (the
+  legacy branch is deleted only in the retirement release), but the legacy
+  remote-user row it writes is never converted — conversion runs once — and no
+  v2 reader serves it. Operator scripts that seeded peers with
+  `Authorization: Bearer $RSC_TOKEN` move to `POST /ops/sources/federation`
+  (curl cheat sheet below), which is the only route that token reaches.
+
+### The per-instance cutover runbook
+
+> ### ⚠ TAKE THE CLOUDRON BACKUP BEFORE YOU FLIP THE FLAG
+>
+> **There is no downgrade path.** No reverse migration, no v1
+> re-materialization from v2 state, no version matrix. The pre-flip Cloudron
+> app backup (step 4) is the **only** way back if a cutover goes wrong — and it
+> only exists if you took it. An operator who flips without it has no recovery
+> mechanism at all, only forward fixes. Step 4 is not one entry in a sequence;
+> it is the load-bearing step the whole rollback posture rests on.
+
+Three independent single-node instances, one shared image, per-instance env
+flags, forward-only migrations on live SQLite. The runbook is per-instance and
+deliberately boring — **stagger it (alice → bob → main) so production flips
+last**, and finish one instance before starting the next.
+
+1. **Gate.** The full completion gate is green on `main`. Build and publish the
+   image.
+2. **Deploy dark.** Update all three instances to the new image with
+   `RSC_SOURCE_MODEL_V2` unset or `off`. Verify: the app is healthy,
+   `/capabilities` reports `{"sourceModelV2": false}`, and legacy behaviour is
+   unchanged (spot-check the timeline and one feed).
+3. **Preflight.** `cloudron exec` into the instance and run the read-only
+   check against the live database:
+
+   ```bash
+   cloudron exec --app <instance> -- npm run preflight -w core
+   ```
+
+   It exits non-zero and prints one line per finding (unnormalizable or
+   colliding feed URLs, manifest problems, handle-reservation collisions).
+   Correct the identified legacy rows and rerun until it prints
+   `preflight: clean`. If any legacy `feed_type = 'instance'` row should be
+   pre-approved rather than quarantined, stage the manifest file now (below)
+   and rerun preflight with `RSC_MIGRATION_MANIFEST` set.
+4. **Backup — do not skip this, and do not flip without it.** Take the Cloudron
+   app backup now:
+
+   ```bash
+   cloudron backup create --app <instance>
+   ```
+
+   **This backup is THE restore point and the only recovery mechanism that
+   exists.** There is no downgrade path (see "Rollback posture" below), so
+   restoring it is the only way to undo a committed conversion; everything
+   written after the flip is lost with the restore, which is acceptable and
+   stated for these instances. Confirm the backup completed before continuing —
+   an operator who reaches step 5 without one has no way back.
+5. **Flip.** Set `RSC_SOURCE_MODEL_V2=on` for the app and restart. Startup runs
+   preflight again and then conversion + activation, all before the process
+   listens. A failure here committed nothing: unset the flag, restart (back on
+   legacy), and investigate with the printed diagnostics.
+6. **Verify.** Restart web too (it memoizes the first successful capability
+   read), then walk this list:
+   - `/capabilities` reports the enabled shape
+     (`{"sourceModelV2":true,"model":"logical-v2",...}`);
+   - the SSR timeline renders converted items;
+   - a pre-cutover `/post/<id>` permalink still resolves;
+   - a reserved `/u/<handle>` redirects to its publisher page;
+   - the conversion log lines are sane — they are printed to stdout during the
+     flip restart, so read them with `cloudron logs --app <instance>`; the same
+     per-kind counts are sealed into the marker
+     (`SELECT conversion_findings_json FROM logical_activation_v2`);
+   - the admin source page shows the preserved push state;
+   - post locally and see it arrive live over SSE;
+   - if a peer hub holds a lease, confirm the next fat ping ingests (or trigger
+     a peer post).
+7. **Repeat** steps 3–6 on the next instance.
+8. **Retire.** After all three have soaked, the legacy v1 branch is removed in a
+   separate release shipped as an ordinary image update. It is **not** part of
+   the flip.
+
+### Known cutover artifacts — expected, not failures
+
+Three things will look wrong on the first post-cutover poll and are not. Do not
+roll back a healthy migration over them.
+
+1. **Enclosure drift: every podcast/audio item still in the feed window reads
+   as "updated at cutover".** The legacy `posts` table stores no enclosures, so
+   converted items start with none; the first post-cutover poll of that feed
+   sees the enclosures on the wire, treats the item as changed, and records one
+   spurious history revision. It is not fixable — the data does not exist in
+   `posts` to convert — and it self-corrects: the item is correct from that poll
+   onward, and the next genuine content change is recorded normally.
+2. **Display names fall back to the feed hostname** (`a.test` instead of
+   `Alice's Blog`) until the first post-cutover poll of each source. Publisher
+   name evidence is not converted, so the real name lands with the first
+   reconcile. Self-healing; nothing to do.
+3. **A DEV database that was activated under v2 before the migration shipped
+   fails startup** with `v2 activation present without conversion marker`. That
+   tripwire is working as designed: such a database carries v2 activation over
+   unconverted legacy data. The remedy on a dev box is to **delete the dev
+   data** and start clean — not to debug the tripwire, and not to hand-edit
+   `logical_activation_v2`. It cannot occur on a live instance that was never
+   flipped.
+
+### Rollback posture — the honest version
+
+There is **no downgrade path**: no reverse migration, no v1 re-materialization
+from v2 state, no version matrix. What exists instead:
+
+- **The restore point is the pre-flip Cloudron backup** (runbook step 4).
+  Restoring it returns the instance to its exact pre-conversion state — schema,
+  data, leases, sessions. Everything written after the flip is lost with it.
+- **An aborted conversion needs no rollback.** Preflight failures and any
+  pre-commit crash leave the old schema and data intact by construction;
+  restart with the flag off and correct the data.
+- **Post-cutover problems are fixed forward.** Migrations are append-only, and
+  the moderation tools exist precisely so a bad conversion outcome is
+  correctable in place: re-review a quarantined instance, hide an item, purge a
+  source.
+- **`off` on a converted database is refused at startup**, with the message
+  naming the backup. That is deliberate: the alternative is discovering the
+  dual-model corruption later.
+
+### `RSC_MIGRATION_MANIFEST` and the manifest schema
+
+Optional. Without it, every legacy `feed_type = 'instance'` row converts to the
+safe default — `aggregate`, **quarantined**, federation `pending` — and an
+administrator reviews it afterwards through the ordinary quarantine queue.
+Person and webfeed rows never need a manifest.
+
+The manifest pre-approves instance rows, keyed by **exact legacy source id plus
+exact legacy feed URL** (the value in `users.feed_url`, not its normalized
+form). Anything unknown, duplicated, mismatched or malformed aborts preflight:
+
+```json
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "sourceId": "u_7f3c…",
+      "feedUrl": "https://peer.example.com/feed.xml",
+      "attributionMode": "aggregate",
+      "note": "reviewed peer, operator approved 2026-07-24"
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `schemaVersion` | Must be `1`. Any other value aborts. |
+| `entries[].sourceId` | Exact `users.id` of a legacy **remote** row with `feed_type = 'instance'`. |
+| `entries[].feedUrl` | Exact `users.feed_url` of that same row. A mismatch aborts. |
+| `entries[].attributionMode` | `single_publisher` or `aggregate`. |
+| `entries[].note` | Free text; stored as the source's provenance note. |
+
+Approved entries convert to `allowed` + federation `approved`; every unlisted
+instance row still takes the quarantined default.
 
 ### Deploy ordering (core first, always)
 
@@ -652,7 +814,7 @@ curl http://localhost:8787/me -b cookies.txt
 
 Add a remote user (a new feed) — anonymous sessions are 403'd, since each
 feed is a standing polling cost; the ops bearer token still works here (its
-one remaining job, alongside a registered session):
+one remaining job before cutover, alongside a registered session):
 
 ```bash
 curl -i -X POST http://localhost:8787/users \
@@ -664,5 +826,22 @@ curl -X POST http://localhost:8787/users \
   -H "Authorization: Bearer $RSC_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"handle":"bob-remote","displayName":"Bob","feedUrl":"https://example.com/feed.xml"}'
+# → 201
+```
+
+**After cutover** (`RSC_SOURCE_MODEL_V2=on`) that row is inert. The token's one
+remaining job is the compatibility route — the same domain transition the admin
+route performs, with the token's non-secret fingerprint as the audit actor.
+`commandId` travels in the body and makes the call idempotent; replaying the
+same id with a different URL or mode is a 409. It is called internally, exactly
+as `POST /users` is, and is not part of the public Caddy exposure set:
+
+```bash
+curl -i -X POST http://localhost:8787/ops/sources/federation \
+  -H "Authorization: Bearer $RSC_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/feed.xml","attributionMode":"aggregate",
+       "category":"operator_policy","note":"configured peer",
+       "commandId":"'"$(uuidgen)"'"}'
 # → 201
 ```
