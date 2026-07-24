@@ -1092,3 +1092,57 @@ Consequences for later tasks:
 - Recorded on the spec as a dated amendment beneath §3.2, and in
   `docs/superpowers/ideas.md` as the migrate-existing-rows obligation the
   §2.4 fix inherits.
+
+## Plan correction (2026-07-24, Task 8 execution)
+
+Five places where the shipped cutover diverges from this plan's text. Each was
+verified against the code, not inferred from the document.
+
+1. **The reserved-handle lookup is a NEW route, not an existing response
+   gaining a shape.** Task 8's Interfaces paragraph says the redirect goes
+   "via the v2 handle lookup (the lookup response gains a
+   `{reserved: true, publisherId}` shape)". There was no handle lookup:
+   `web/src/routes/u/[handle]/+page.server.ts` only fetched
+   `/timeline?author=<handle>`, which 404s for a reserved handle and would
+   degrade the page to `coreDown`. Shipped as `GET /handles/:handle`
+   (`mountLogicalHandleRoute` in `core/src/api/logical-routes.ts`), mounted
+   from `server.ts` beside the stream route — so it exists only under v2 and
+   the flag-off path answers an ordinary 404. Reserved → `200 {model, handle,
+   reserved: true, publisherId}`; unreserved → the neutral 404.
+
+2. **Tripwire (b) is widened from `active` to every non-`never_activated`
+   state.** Spec §4.1 step 2 and Task 8 Step 2 both name activation `active`
+   without the marker. But `markReconciliationRequiredIfActive` moves exactly
+   that database to `reconciliation_required` on the first flag-off restart,
+   and reactivating from there would silently skip conversion — the dual-model
+   state WC3 forbids. `activateLogicalV2` therefore throws
+   `ACTIVE_WITHOUT_MARKER` for `active` AND `reconciliation_required` without a
+   marker; both directions are tested.
+
+3. **Conversion already writes the claims — no post-cutover reconcile is
+   needed for the §3.5 redirect to resolve.** The carried note that conversion
+   writes no claims (so `resolvePublisher` 404s until a reconcile mints one)
+   predates Task 6: `runConversion` inserts one `publisher_claims_v2` row per
+   converted post (`convert.ts`, the `insertClaim` call). RIDER 3's end-to-end
+   200 therefore needs exactly two fixture facts, both ordinary: the source
+   must be `allowed` (an unconfirmed instance is quarantined, and
+   `resolvePublisher` only serves a publisher claimed on an ALLOWED source) —
+   a manifest approval gives that — and it must carry at least one legacy
+   post. `core/test/migration-cutover.test.ts` proves
+   `/handles/alice → /timeline?publisher=<id>` returns 200 with the publisher
+   lens and the converted item.
+
+4. **The §4.3 tripwire runs ON the flag-off path, by design.** `server.ts`'s
+   disabled branch dynamically imports `assertLegacyStartupAllowed` from
+   `logical/runtime.ts`, which statically imports the migration modules. That
+   is intended: a guard that only fires under v2 would never fire at all.
+   Task 10 Step 1's off-flag gate must therefore assert routing/behavior only
+   (as V3 execution handoff item 3 already requires) — "no V4 module is loaded
+   by the composition path" is not a true property of the v1 branch and must
+   not be asserted.
+
+5. **`core/src/migration/convert.ts` is an Appendix C Task 8 staged path that
+   needed no change.** Task 5 fixed conversion's contract (it writes neither
+   the marker nor the reset — the runtime owns both, in the same transaction),
+   and Tasks 6-7 completed it; Task 8 only calls it. It is absent from the
+   Task 8 commit for that reason, not by oversight.
