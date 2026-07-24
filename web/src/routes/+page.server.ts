@@ -43,6 +43,9 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 		v1P?.catch(() => {})
 		// followIds feed the live lens only, and the live stream mounts on the first page only.
 		const followingP = tab === 'personal' && isFirstPage && me ? getFollowing(fetch, me.user.handle) : Promise.resolve(null)
+		// Same cold-pod hazard as v1P: if an await between here and `await followingP`
+		// throws, this rejection must already be handled or the process dies.
+		followingP.catch(() => {})
 		const cap = await getCapabilities(fetch)
 		let timeline, nextCursor
 		// The snapshot cursor the live stream reconnects from (v2 only); the client

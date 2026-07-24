@@ -46,6 +46,9 @@ export const load: PageServerLoad = async ({ fetch, params, url, parent, cookies
 		// otherwise an unhandledRejection crash loop (see the home load).
 		v1TP?.catch(() => {})
 		const followingP = getFollowing(fetch, handle)
+		// Same cold-pod hazard as v1TP: handled-at-creation or a throw in the
+		// awaits below leaves this rejection unhandled and kills the process.
+		followingP.catch(() => {})
 		const cap = await getCapabilities(fetch)
 		let timeline, nextCursor
 		if (cap.sourceModelV2) {
