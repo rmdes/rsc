@@ -20,8 +20,9 @@ import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult 
 import type { WriteTx } from './database.ts'
 import { encodeCursor } from '../domain/cursor.ts'
 import { clampLimit } from '../domain/source-repository.ts'
-import { rowToItemAuditEvent } from './moderation.ts'
+import { rowToItemAuditEvent, hideItem, restoreItem } from './moderation.ts'
 import type { ItemAuditRow } from './moderation.ts'
+import type { ModerationCommandInput, ItemModerationResult } from './types.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -331,6 +332,16 @@ export function createLogicalStore(db: DatabaseContext) {
         const nextCursor = rows.length > limit && last ? encodeCursor(1, [last.created_at, last.id]) : null
         return { model: 'logical-v2', items: page.map((r) => ({ jobId: r.id, createdAt: r.created_at, status: r.status, attempts: r.attempts, nextAttemptAt: r.next_attempt_at, failureCategory: r.failure_category, diagnostic: r.diagnostic })), nextCursor }
       })
+    },
+
+    // --- hidden moderation (Task 2, spec §1.1) ----------------------------
+    // Each is ONE ledger-backed BEGIN IMMEDIATE write: state change + one audit
+    // record + inline single-item hint recompute + the §6 journal effect atomic.
+    hideItem(input: ModerationCommandInput): ItemModerationResult {
+      return db.write((tx) => hideItem(tx, input))
+    },
+    restoreItem(input: ModerationCommandInput): ItemModerationResult {
+      return db.write((tx) => restoreItem(tx, input))
     },
 
     // --- item audit reads (Task 1, spec §1.2) -----------------------------

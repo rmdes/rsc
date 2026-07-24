@@ -276,6 +276,20 @@ export interface ItemAuditEvent {
   createdAt: string
 }
 
+// hide/restore command shapes (Task 2, spec §1.1). Both share the input; the
+// action distinguishes them at the store method. Category is required and enters
+// the route fingerprint; the note is free text and does NOT (spec §7.1).
+export interface ModerationCommandInput {
+  command: CommandEnvelope
+  logicalItemId: string
+  category: AuditCategory
+  note: string | null
+  now: string
+}
+export type ItemModerationResult =
+  | { kind: 'applied'; logicalItemId: string; hiddenAt: string | null }
+  | { kind: 'unknown' | 'local_origin' | 'not_applicable' | 'conflict' }
+
 // --- Pagination cursors (spec §6.3) --------------------------------------
 // Decoded forms; the shared opaque codec lives in ../domain/cursor.ts.
 

@@ -270,7 +270,21 @@ interface ItemRow {
   id: string; origin: 'local' | 'remote'; timeline_sort_at: string
   parent_state: LogicalItemDto['parentResolutionState']; parent_logical_item_id: string | null
   selected_delivery_id: string | null; selected_publisher_id: string | null
+  hidden_at: string | null; structural_tombstone: number
 }
+
+// THE ONE item-level ordinary-visibility gate (spec §1.3). Hidden moderation
+// (Task 2) and structural tombstones (Task 6 — inert until then, always 0) join
+// here and NOWHERE else: every surface — river, single-item, thread, publisher,
+// feeds, SSE — composes projectItem/projectTimeline, so a hidden/tombstoned item
+// vanishes from all of them with no per-surface copy. The SQL fragment (on the
+// `li` alias) gates the timeline WHERE before ORDER/LIMIT so a hidden row never
+// shorts a page; the JS twin gates projectItem. They must stay in lockstep.
+const ORDINARY_ITEM_VISIBLE_SQL = `li.hidden_at IS NULL AND li.structural_tombstone = 0`
+function ordinaryItemVisible(row: { hidden_at: string | null; structural_tombstone: number }): boolean {
+  return row.hidden_at == null && row.structural_tombstone === 0
+}
+const ITEM_COLUMNS = `id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, hidden_at, structural_tombstone`
 interface PostRow {
   id: string; author_id: string; title: string | null; content: string; content_markdown: string | null
   url: string | null; published_at: string; edited_at: string | null
@@ -557,8 +571,9 @@ export function projectItem(tx: ReadTx, id: string, viewer: ProjectionViewer): L
      FROM posts WHERE id = ? AND source = 'local'`,
   ).get(id) as PostRow | undefined
   if (post) return projectLocal(tx, post, viewer)
-  const li = tx.prepare(`SELECT id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id FROM logical_items_v2 WHERE id = ?`).get(id) as ItemRow | undefined
+  const li = tx.prepare(`SELECT ${ITEM_COLUMNS} FROM logical_items_v2 WHERE id = ?`).get(id) as ItemRow | undefined
   if (!li || li.origin !== 'remote') return undefined
+  if (!ordinaryItemVisible(li)) return undefined // hidden/tombstoned ⇒ not ordinary-visible (spec §1.3)
   return projectRemote(tx, li, viewer)
 }
 
@@ -618,7 +633,7 @@ export function projectTimeline(tx: ReadTx, query: TimelineQuery): LogicalTimeli
     parts.push(`SELECT p.id AS id, p.published_at AS sort_at FROM posts p WHERE ${w}`)
   }
   if (wantsRemote) {
-    let w = `li.origin = 'remote' AND ${REMOTE_VISIBLE}`
+    let w = `li.origin = 'remote' AND ${ORDINARY_ITEM_VISIBLE_SQL} AND ${REMOTE_VISIBLE}`
     if (river) w += ` AND li.parent_state IN ('none','missing','ambiguous')`
     if (lens.kind === 'personal') { w += ` AND ${REMOTE_SUBSCRIBED}`; params.push(lens.account.id) }
     if (lens.kind === 'federated') { w += ` AND ${REMOTE_FEDERATED}` }
@@ -676,7 +691,7 @@ export function projectHistory(tx: ReadTx, id: string, viewer: ProjectionViewer)
       journalCursor: snapshotJournalCursor(tx),
     }
   }
-  const li = tx.prepare(`SELECT id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id FROM logical_items_v2 WHERE id = ?`).get(id) as ItemRow | undefined
+  const li = tx.prepare(`SELECT ${ITEM_COLUMNS} FROM logical_items_v2 WHERE id = ?`).get(id) as ItemRow | undefined
   if (!li) return undefined
   const display = selectedDeliveryFor(tx, li)
   if (!display) return undefined
