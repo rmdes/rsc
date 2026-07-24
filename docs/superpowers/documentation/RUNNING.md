@@ -578,6 +578,14 @@ flags, forward-only migrations on live SQLite. The runbook is per-instance and
 deliberately boring — **stagger it (alice → bob → main) so production flips
 last**, and finish one instance before starting the next.
 
+Throughout, `<instance>` in a `cloudron … --app <instance>` command is the
+app's **domain** (e.g. `alice.rmdes.be`), not its UUID. `cloudron --app` accepts
+either, but the domain is the form proven in production by `scripts/federation-demo.mjs`,
+which drives all three live instances this way; `cloudron list` shows both if
+you need to look one up. The `cloudron exec --app <domain> -- …` shape itself is
+production-verified by that script; only the working directory and `PATH` seen by
+a *new* process it spawns (step 3) remain unverified against a live instance.
+
 1. **Gate.** The full completion gate is green on `main`. Build and publish the
    image.
 2. **Deploy dark.** Update all three instances to the new image with
