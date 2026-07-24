@@ -878,6 +878,21 @@ from V3's history.
    rollback watermark). **Contract this plan inherits: pre-listen startup
    performs NO network I/O.** V4's conversion transaction extends the
    activation barrier — do not reintroduce an awaited network drain there.
+
+   **Clarification (2026-07-24, from the I1 fix review — read the sentence
+   above as this):** the binding contract is **no AWAITED network I/O before
+   the process listens.** `runtime.ready` performs local DB work only and is
+   awaited by `server.ts` before `listen`; nothing it awaits does network I/O.
+   It is NOT true that zero network activity begins pre-listen: `ready` ends
+   with `scheduler.start()`, which fires `void tick()` synchronously, so the
+   poll loop's own acquisition fetches BEGIN (unawaited) inside
+   `createLogicalRuntime()`. That is pre-existing, unchanged by I1, and does
+   not delay listening — startup stays fast and deterministic because nothing
+   awaited blocks the barrier. Verification specifically is off BOTH the
+   startup and the request paths: it rides the scheduler tick only
+   (`SchedulerDeps.drainVerification`, required since `6024d47`). V4 keeps the
+   awaited half empty of network I/O; it need not keep the background loop
+   from starting.
 2. **The sync-drain regression canary must stay meaningful.**
    `core/test/logical-v3-vertical.test.ts` asserts that a runtime regressed
    to the synchronous drain leaves verification checks `pending`. After the
