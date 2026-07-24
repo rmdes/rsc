@@ -957,3 +957,16 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   false-reject the `fdhub.example` case a test already pins (domain names
   starting with `fd`/`fc`/`fe8` are not IPv6 private prefixes). Home: Task 11.
   Status: backlog.
+
+- **User-renameable subscriptions** — let a subscriber override a followed
+  source's display name with a personal label (a per-user alias shown in
+  their timeline/following views; the publisher's own name evidence stays
+  untouched and admin surfaces keep showing it). Mechanism: nullable
+  `display_override` on the per-user follow/subscription row + an edit
+  affordance in the following list; ordinary reads prefer the override for
+  that viewer only. Why: feeds self-title badly ("A Node on the Web" vs the
+  rmendes.net the user thinks of; 2026-07-24 naming bug showed how load-
+  bearing the name is), and readers conventionally offer rename. Grounding:
+  per-user-feeds SP1-3 already scope follows per user; the projector's
+  displayName is a single seam. Tradeoff: one more per-viewer divergence in
+  ordinary reads (cache/test surface). Status: backlog.
