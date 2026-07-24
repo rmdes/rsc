@@ -1,3 +1,6 @@
+import type { ReadTx } from './database.ts'
+import { HandleTakenError } from '../domain/types.ts'
+
 // Additive logical-v2 schema (spec §7.1, plan Appendix A). ONE migration entry,
 // appended strictly at the TAIL of the MIGRATIONS array in sqlite.ts — mid-array
 // insertion would renumber applied migrations and corrupt user_version on the
@@ -308,3 +311,26 @@ export const LOGICAL_V4_SCHEMA: string[] = [
   `ALTER TABLE logical_activation_v2 ADD COLUMN conversion_findings_json TEXT`,
   `ALTER TABLE acquisition_runs_v2 ADD COLUMN delivery_mechanism TEXT`,
 ]
+
+// The permanent legacy-handle reservation guard (V4 §3.5): a handle converted
+// from a legacy remote feed can never be claimed again, even after the source
+// row is removed or purged (the table has no FKs precisely so the reservation
+// outlives its source — see above). It raises the EXISTING collision-shaped
+// error, so a reserved handle is indistinguishable from a taken one: no
+// reserved-vs-taken oracle, and the same 409 from PATCH /me either way.
+// Empty (and so inert) until conversion runs.
+//
+// It lives HERE, next to the table it protects, because BOTH handle-claiming
+// implementations must call it and neither owns the other: the v1 repository
+// (sqlite.ts insertUser + updateUserProfile) and the v2 logical store
+// (store.ts updateUserProfile, the path taken whenever RSC_SOURCE_MODEL_V2 is
+// on — which is the only state in which reservations exist at all). A guard
+// defined inside one of them is invisible to the other; a new handle-claiming
+// path anywhere must import this one function. `tx` is a plain better-sqlite3
+// database (ReadTx/WriteTx are aliases of it), so v2 callers can run the check
+// inside their own write transaction.
+export function assertHandleUnreserved(tx: ReadTx, handle: string): void {
+  if (tx.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE handle = ?`).get(handle)) {
+    throw new HandleTakenError('handle already taken')
+  }
+}

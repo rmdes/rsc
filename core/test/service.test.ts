@@ -2,6 +2,10 @@ import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createApp } from '../src/api/app.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { makeAuth, anonSession } from './auth-helper.ts'
 import { DomainError, HandleTakenError } from '../src/domain/types.ts'
 import type { Repository } from '../src/domain/repository.ts'
 
@@ -145,4 +149,60 @@ test('an unreserved handle is unaffected by the guard', async () => {
   reserve(repo, 'alice')
   const user = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
   expect(user.handle).toBe('bob')
+})
+
+// ── the guard on the path production actually takes ───────────────────────────
+// Reservations only EXIST once conversion has run, i.e. with RSC_SOURCE_MODEL_V2
+// on — and with the flag on service.updateUserProfile routes to the LOGICAL
+// store, not the repository. So the rename guard has to hold there too, with the
+// identical error (and therefore the identical 409) whichever implementation runs.
+
+// Same composition service.ts sees at runtime: `logical` present ⇔ flag on.
+async function renameApp(v2: boolean) {
+  const repo = await createSqliteRepository(':memory:')
+  const bus = createEventBus()
+  const service = createService(repo, bus, null, v2 ? createLogicalStore(createDatabaseContext(repo.raw)) : undefined)
+  return { repo, app: createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo }), service }
+}
+
+const patchMe = (app: Awaited<ReturnType<typeof renameApp>>['app'], cookie: string, body: unknown) =>
+  app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) })
+
+test.each([false, true])('PATCH /me refuses a reserved handle after the converted source row is removed (v2=%s)', async (v2) => {
+  const { repo, app } = await renameApp(v2)
+  // A converted legacy remote feed: conversion reserves its handle …
+  const converted = await repo.createRemoteUser({ handle: 'newsbot', displayName: 'Newsbot', feedUrl: 'https://ex.com/n.xml' })
+  reserve(repo, 'newsbot')
+  // … and an admin then hard-removes the row (DELETE /admin/users/:handle).
+  repo.deleteUserCascade(converted.id)
+  expect(await repo.getUserByHandle('newsbot')).toBeUndefined() // users.UNIQUE no longer blocks it
+  // The reservation has NO foreign keys, so it outlives the source (foundation §12).
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM handle_reservations_v2 WHERE handle = 'newsbot'`).get()).toEqual({ n: 1 })
+
+  const cookie = await anonSession(app)
+  const res = await patchMe(app, cookie, { handle: 'newsbot' })
+  expect(res.status).toBe(409)
+  expect(await res.json()).toEqual({ error: 'handle already taken' })
+  expect(await repo.getUserByHandle('newsbot')).toBeUndefined() // nothing was renamed
+})
+
+test.each([false, true])('an ordinary rename still succeeds — the guard does not over-block (v2=%s)', async (v2) => {
+  const { repo, app } = await renameApp(v2)
+  reserve(repo, 'newsbot')
+  const cookie = await anonSession(app)
+  const res = await patchMe(app, cookie, { handle: 'freehandle', displayName: 'Free' })
+  expect(res.status).toBe(200)
+  expect((await res.json()).user).toMatchObject({ handle: 'freehandle', displayName: 'Free' })
+  expect((await repo.getUserByHandle('freehandle'))?.displayName).toBe('Free')
+})
+
+test('with v2 ON the logical store raises the same HandleTakenError as the repository', async () => {
+  const { repo, service } = await renameApp(true)
+  reserve(repo, 'newsbot')
+  const user = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+  // The v2 implementation is synchronous, so it THROWS where v1 rejects; the
+  // route awaits inside one try/catch, which is why both still answer 409.
+  await expect((async () => service.updateUserProfile(user.id, { handle: 'newsbot' }))()).rejects.toThrow(HandleTakenError)
+  // a display-name-only patch never consults the reservations
+  expect((await service.updateUserProfile(user.id, { displayName: 'Alice B' })).handle).toBe('alice')
 })

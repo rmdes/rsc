@@ -10,6 +10,7 @@ import type { User, CommandEnvelope, PushProtocol } from '../domain/types.ts'
 import type { PushRowV2 } from './push.ts'
 import { getJournalMetadata, snapshotJournalCursor, appendJournal } from './journal.ts'
 import { HandleTakenError } from '../domain/types.ts'
+import { assertHandleUnreserved } from './schema.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure, deferVerification } from './reconcile.ts'
@@ -387,11 +388,15 @@ export function createLogicalStore(db: DatabaseContext) {
         if (r.changes > 0) appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, input.now)
       })
     },
-    // Mirrors SqliteRepository.updateUserProfile (RETURNING + HandleTakenError on a
-    // UNIQUE collision), plus the reset. Column-named UPDATE; the caller has
-    // already normalized handle/displayName.
+    // Mirrors SqliteRepository.updateUserProfile (the SHARED reservation guard +
+    // RETURNING + HandleTakenError on a UNIQUE collision), plus the reset.
+    // Column-named UPDATE; the caller has already normalized handle/displayName.
+    // This is the rename service.ts takes whenever v2 is on — i.e. the only state
+    // in which handle_reservations_v2 is non-empty — so the guard MUST run here;
+    // it runs inside this write, so check and rename are one transaction.
     updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }): User {
       return db.write((tx) => {
+        if (patch.handle !== undefined) assertHandleUnreserved(tx, patch.handle)
         const sets: string[] = []
         const args: unknown[] = []
         if (patch.handle !== undefined) { sets.push('handle = ?'); args.push(patch.handle) }

@@ -8,7 +8,7 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
-import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA } from '../logical/schema.ts'
+import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 
@@ -151,19 +151,11 @@ export function insertAudit(tx: Db, a: {
   return rowToSourceAuditV2(row)
 }
 
-// The permanent legacy-handle reservation (V4 §3.5): a handle converted from a
-// legacy remote feed can never be registered again — the impersonation guard.
-// ONE check, in the one place every handle-claiming caller routes through
-// (insertUser backs createLocalUser/createRemoteUser, which in turn back
-// service ensureLocalUser and auth's guest allocation; updateUserProfile is the
-// only rename). It raises the EXISTING collision-shaped error, so a reserved
-// handle is indistinguishable from a taken one — no reserved-vs-taken oracle.
-// Empty (and so inert) until conversion runs.
-function assertHandleUnreserved(tx: Db, handle: string): void {
-  if (tx.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE handle = ?`).get(handle)) {
-    throw new HandleTakenError('handle already taken')
-  }
-}
+// The permanent legacy-handle reservation guard (V4 §3.5) is defined ONCE in
+// logical/schema.ts, next to the table it protects, because the v2 logical store
+// must call the same function on its own rename path. Here it covers insertUser
+// (which backs createLocalUser/createRemoteUser, and through them service
+// ensureLocalUser and auth's guest allocation) and the v1 rename.
 
 // Ordinary pending subscriptions become active only once the source is BOTH
 // allowed and single_publisher. pending_review never activates automatically
