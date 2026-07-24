@@ -395,14 +395,17 @@ test('h-cite reply persists context and threads onto an existing parent', async 
 // test.fails() INVERTS when that lands: this starts passing, the assertion on
 // the failure starts failing, and you are forced to flip it back to test().
 //
-// STATUS (Vertical 2, flag-OFF by default): STILL expected-fail. V2 adds the
-// logical model behind RSC_SOURCE_MODEL_V2 but does NOT yet replace the v1
-// ingestion path this test exercises — that replacement is the V4 cutover, when
-// this marker flips from test.fails() to test(). The POSITIVE proof that the v2
-// logical model already fixes this exact dual-path scenario (one item via two
+// STATUS (all four verticals implemented, flag-OFF by default): STILL
+// expected-fail. This test calls the v1 `ingestItems` path DIRECTLY, so the bug
+// stays reproducible for as long as that path exists. The V4 Task 8 cutover only
+// flips RSC_SOURCE_MODEL_V2 so LIVE ingestion runs through the v2 model — it does
+// NOT remove the v1 code this test invokes. The true flip point is therefore V4
+// Task 11 (legacy v1 retirement), which deletes the v1 ingestion path; that is a
+// separate post-soak release and is NOT yet executed. The POSITIVE proof that the
+// v2 logical model already fixes this exact dual-path scenario (one item via two
 // source paths → ONE logical item that still resolves as a parent) lives in
 // core/test/logical-vertical.test.ts ("v2 fix: one item reached by TWO source
-// paths…"); that assertion is what becomes the live guarantee at V4.
+// paths…"); that assertion is already the live guarantee behind the flag.
 test.fails('KNOWN BUG: one post reached by two subscription paths is stored twice and stops resolving as a parent', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
