@@ -8,6 +8,7 @@ import { createLogicalStore } from '../src/logical/store.ts'
 import { createLogicalPush } from '../src/logical/push.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { projectItem, projectHistory, projectTimeline } from '../src/logical/projector.ts'
+import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import { loadConfig } from '../src/config.ts'
 import { runConversion, type ConversionCounts, type ConversionFindingKind } from '../src/migration/convert.ts'
 import type { Manifest, ManifestEntry } from '../src/migration/preflight.ts'
@@ -770,6 +771,82 @@ test('a post-cutover explicit update starts the watermark FRESH above the legacy
   expect(count(raw, 'logical_items_v2')).toBe(1)
   const top = one(raw, `SELECT sequence, effective_updated_at, provenance FROM presentation_entries_v2 ORDER BY sequence DESC LIMIT 1`)!
   expect(top).toMatchObject({ sequence: 2, provenance: 'explicit', effective_updated_at: '2026-02-05T00:00:00.000Z' })
+})
+
+// ── the delivery key V1's THREE-branch guid actually implies ─────────────
+// V1 stored `posts.guid = guid ?? url ?? fallbackGuid(title, content, rawDate)`
+// (ingest.ts toParsedItem) — a three-branch chain — while v2 acquisition derives
+// three DIFFERENT delivery kinds from the same wire item (acquisition.ts
+// parseCandidates: opaque id → normalized permalink → fallback hash). Converting
+// every post as 'opaque' therefore only matched the FIRST branch: the url branch
+// forked a second delivery, and the fallback branch — for which reconcile finds
+// no identity key at all (no opaque guid, no permalink) — forked a second
+// logical ITEM that never self-heals.
+//
+// Each test derives the legacy row from the REAL v1 parser and then polls the
+// SAME document through the REAL acquisition + reconcile, so it fails if either
+// derivation ever drifts.
+
+async function legacyRowFor(feed: string): Promise<Record<string, string | null>> {
+  const [item] = (await parseFeedWithMeta(feed)).items
+  return { guid: item.guid, title: item.title, content: item.content, url: item.url, published_at: item.publishedAt }
+}
+
+async function pollAfterCutover(raw: Raw, feed: string): Promise<{ items: number; deliveries: number }> {
+  const db = createDatabaseContext(raw)
+  const eng = createAcquisition({
+    db,
+    fetchFn: (async () => new Response(feed, { status: 200 })) as unknown as typeof fetch,
+    lookupFn: async () => [{ address: '93.184.216.34' }],
+    now: () => NOW,
+  })
+  await eng.acquireSource('u1', { kind: 'scheduled' }, undefined)
+  drainReconciliation({ store: createLogicalStore(db), now: () => NOW })
+  return { items: count(raw, 'logical_items_v2'), deliveries: count(raw, 'deliveries_v2') }
+}
+
+const RSS = (item: string) => `<?xml version="1.0"?><rss version="2.0"><channel><title>A</title><item>${item}</item></channel></rss>`
+
+test('guid branch: a legacy item carrying a real guid converges on the SAME delivery', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  const feed = RSS(`<guid isPermaLink="false">g1</guid><link>https://a.test/post/1</link><title>t</title><description>d</description>`)
+  seedPost(raw, await legacyRowFor(feed))
+  convert(raw)
+  expect(one(raw, `SELECT key_kind, key FROM deliveries_v2`)).toEqual({ key_kind: 'opaque', key: 'g1' })
+
+  expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 1 })
+})
+
+test('url branch: a guid-less but link-bearing legacy item converges on the SAME delivery', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  const feed = RSS(`<link>https://a.test/post/1</link><title>t</title><description>d</description>`)
+  const row = await legacyRowFor(feed)
+  expect(row.guid).toBe('https://a.test/post/1') // V1 branch 2: the guid IS the url
+  seedPost(raw, row)
+  convert(raw)
+  expect(one(raw, `SELECT key_kind, key FROM deliveries_v2`)).toEqual({ key_kind: 'permalink', key: 'https://a.test/post/1' })
+
+  expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 1 })
+})
+
+test('fallback branch: a guid-less AND link-less legacy item converges on the SAME delivery', async () => {
+  const raw = await fresh()
+  seedRemote(raw)
+  // The raw date is an RFC-822 pubDate, so published_at ('2026-02-02T...') is NOT
+  // the string V1 hashed — the fallback guid can never be recomputed from the row.
+  const feed = RSS(`<title>t</title><description>d</description><pubDate>Mon, 02 Feb 2026 00:00:00 GMT</pubDate>`)
+  const row = await legacyRowFor(feed)
+  expect(row.url).toBeNull()
+  expect(row.guid).toMatch(/^[0-9a-f]{64}$/) // V1 branch 3: the sha256 fallback
+  seedPost(raw, row)
+  convert(raw)
+  expect(one(raw, `SELECT key_kind, key FROM deliveries_v2`)).toEqual({ key_kind: 'fallback', key: `fallback:${row.guid}` })
+
+  // Without this the poll writes a SECOND delivery reconcile can attach to no
+  // existing item — a permanent duplicate, not a self-healing one.
+  expect(await pollAfterCutover(raw, feed)).toEqual({ items: 1, deliveries: 1 })
 })
 
 // ── zero rows ───────────────────────────────────────────────────────────

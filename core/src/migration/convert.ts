@@ -103,6 +103,50 @@ interface LegacyPost {
   reply_context_author: string | null; reply_context_snippet: string | null
 }
 
+// THE DELIVERY KEY A CONVERTED POST MUST CARRY
+// ============================================================================
+// V1 stored ONE identifier per item, `posts.guid`, derived by a three-branch
+// chain (ingest.ts toParsedItem): `guid ?? url ?? fallbackGuid(title, content,
+// rawDate)`. v2 acquisition derives THREE kinds from the same wire item
+// (acquisition.ts parseCandidates): the exact opaque id, else the normalized
+// permalink, else `'fallback:' + sha256(title \0 content \0 rawDate)`. Since a
+// delivery is looked up by (source_id, key_kind, key), conversion has to write
+// the pair the FIRST post-cutover poll re-derives, per branch — keying
+// everything 'opaque' forked a second delivery on the url branch and, because
+// reconcile gives a fallback delivery no identity key at all (no opaque guid, no
+// permalink), a second and permanent logical ITEM on the fallback branch.
+//
+// Two of the three branches are decided exactly by the stored row:
+//  - `url` non-null and `guid !== url` — the url branch stores the raw url in
+//    BOTH columns (posts.url is httpOnly(url), which for an http(s) url is the
+//    same string), so an inequality proves the guid came from the feed.
+//  - `url` non-null and `guid === url` — the url branch, whose v2 key is the
+//    normalized permalink. V1's fallback hash can never be a url, so the only
+//    other producer is a real <guid> that equals <link>.
+//  - `url` null — the fallback branch, whose v2 key is 'fallback:' + the SAME
+//    hash (v1 fallbackGuid and v2 fallbackKey hash identical material, so the
+//    stored guid IS the hash and nothing needs recomputing). V1 hashed the RAW
+//    wire date, which `published_at` (an ISO normalization of it) does not
+//    preserve, so recomputation could not decide this branch anyway; the 64-hex
+//    shape does, up to a real guid that is itself 64 lowercase hex digits.
+//
+// THE RESIDUAL, AND WHY IT IS BOUNDED. Both ambiguous cases can only mistake a
+// real guid for the other branch, and conversion ALSO claims
+// `opaque:publisher:<publisherId>` = the guid (below), so a poll deriving
+// `opaque:<guid>` still resolves onto the converted item through that key: the
+// cost is one extra delivery, never a second item. The reverse — the mistake
+// this code replaces — is a duplicate item that never self-heals.
+const FALLBACK_HASH = /^[0-9a-f]{64}$/
+
+function deliveryKeyFor(post: LegacyPost): { kind: 'opaque' | 'permalink' | 'fallback'; key: string } {
+  if (post.url !== null && post.guid === post.url) {
+    const permalink = normalizePermalink(post.url)
+    if (permalink) return { kind: 'permalink', key: permalink }
+  }
+  if (post.url === null && FALLBACK_HASH.test(post.guid)) return { kind: 'fallback', key: `fallback:${post.guid}` }
+  return { kind: 'opaque', key: post.guid }
+}
+
 // ============================================================================
 // THE SYNTHETIC OBSERVATION EVIDENCE CONTRACT (spec §3.2, adjudication FC2)
 // ============================================================================
@@ -377,7 +421,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
   )
   const insertDelivery = tx.prepare(
     `INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count)
-     VALUES (?, ?, 'opaque', ?, ?, ?, ?, 1)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
   )
   const insertItem = tx.prepare(
     `INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at)
@@ -429,13 +473,13 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     const runId = `${SYNTHETIC}:${post.author_id}`
     if (!runs.has(runId)) { insertRun.run(runId, post.author_id, now, now, now, EMPTY_COUNTERS); runs.add(runId) }
 
-    // The legacy UNIQUE(author_id, guid) tuple IS the v2 delivery key: the guid
-    // was V1's opaque dedup identifier, so it converts as key_kind 'opaque' —
-    // the same classification acquisition gives an item carrying a guid, which
-    // is what lets the first post-cutover poll FIND this delivery instead of
-    // forking a second one beside it.
+    // The delivery key the first post-cutover poll will re-derive for this same
+    // wire item — per V1 branch, see THE DELIVERY KEY A CONVERTED POST MUST
+    // CARRY above. Getting it right is what lets that poll FIND this delivery
+    // instead of forking a second one beside it.
+    const deliveryKey = deliveryKeyFor(post)
     const deliveryId = randomUUID()
-    insertDelivery.run(deliveryId, post.author_id, post.guid, post.created_at, now, runId)
+    insertDelivery.run(deliveryId, post.author_id, deliveryKey.kind, deliveryKey.key, post.created_at, now, runId)
 
     // timeline_sort_at preserves the legacy publication instant exactly (spec
     // §3.2): V1 already ordered the timeline by it, so preserving it is what
@@ -478,7 +522,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
     const seenFingerprints = new Set<string>()
     for (const step of steps) {
       const material = {
-        synthetic: SYNTHETIC, v: 1, keyKind: 'opaque', key: post.guid,
+        synthetic: SYNTHETIC, v: 1, keyKind: deliveryKey.kind, key: deliveryKey.key,
         title: step.title, content: step.content, link: post.url,
         published: post.published_at, updated: step.updated, inReplyTo: post.in_reply_to, enclosures: [],
       }
@@ -490,7 +534,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
       seenFingerprints.add(fingerprint)
 
       const normalized = {
-        synthetic: SYNTHETIC, keyKind: 'opaque', key: post.guid,
+        synthetic: SYNTHETIC, keyKind: deliveryKey.kind, key: deliveryKey.key,
         permalink, inReplyTo: post.in_reply_to, enclosures: [], originFeedUrl: perItemUrl,
         // Retained legacy detail the v2 remote projection has no field for yet
         // (contentMarkdown is remote-null in V2, reply context is URL-only) —
