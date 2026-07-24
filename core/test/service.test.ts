@@ -2,7 +2,7 @@ import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
-import { DomainError } from '../src/domain/types.ts'
+import { DomainError, HandleTakenError } from '../src/domain/types.ts'
 import type { Repository } from '../src/domain/repository.ts'
 
 async function setup() {
@@ -101,4 +101,48 @@ test('replies to permalinked posts reference the permalink, not the guid', async
   const reply = await service.createLocalPostAs('bob', 'Bob', 'reply', parentPost!)
   expect(reply.inReplyTo).toBe(`https://tc.example/post/${parent.id}`)
   expect(reply.threadRootId).toBe(parent.id)
+})
+
+// ── permanent handle reservation (V4 Task 5) ─────────────────────────────
+// A converted legacy remote handle can never be registered again — the
+// impersonation guard (cutover spec §3.5). ONE check in the repository, where
+// every caller routes: service ensureLocalUser, the direct createLocalUser, and
+// auth's guest allocation. It surfaces as the EXISTING collision-shaped error
+// (HandleTakenError) so no reserved-vs-taken oracle leaks.
+
+function reserve(repo: Awaited<ReturnType<typeof createSqliteRepository>>, handle: string): void {
+  repo.raw.prepare(
+    `INSERT INTO handle_reservations_v2 (handle, source_id, publisher_id, created_at) VALUES (?, 's1', 'p1', '2026-07-24T00:00:00.000Z')`,
+  ).run(handle)
+}
+
+test('createLocalUser refuses a reserved handle with the collision-shaped error', async () => {
+  const { repo } = await setup()
+  reserve(repo, 'alice')
+  await expect(repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })).rejects.toThrow(HandleTakenError)
+  expect(await repo.getUserByHandle('alice')).toBeUndefined()
+})
+
+test('ensureLocalUser (first post) refuses a reserved handle through the same guard', async () => {
+  const { svc, repo } = await setup()
+  reserve(repo, 'alice')
+  await expect(svc.createLocalPostAs('Alice', 'Alice', 'hello')).rejects.toThrow(HandleTakenError)
+})
+
+test('a handle-changing updateUserProfile refuses a reserved handle', async () => {
+  const { repo } = await setup()
+  reserve(repo, 'taken')
+  const user = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+  await expect(repo.updateUserProfile(user.id, { handle: 'taken' })).rejects.toThrow(HandleTakenError)
+  // a display-name-only patch never consults the reservations
+  const renamed = await repo.updateUserProfile(user.id, { displayName: 'Alice B' })
+  expect(renamed.handle).toBe('alice')
+  expect(renamed.displayName).toBe('Alice B')
+})
+
+test('an unreserved handle is unaffected by the guard', async () => {
+  const { repo } = await setup()
+  reserve(repo, 'alice')
+  const user = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
+  expect(user.handle).toBe('bob')
 })

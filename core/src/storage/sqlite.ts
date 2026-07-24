@@ -131,8 +131,12 @@ type Db = InstanceType<typeof Database>
 // Every audited mutation (Task 6) writes exactly one of these, inside the same
 // transaction as its effect. result_json is the outcome of THIS command, never
 // the envelope that carries the audit event itself.
-function insertAudit(tx: Db, a: {
-  sourceId: string; command: CommandEnvelope; actorKind: SourceAuditEvent['actorKind']
+// `command` is structurally the two fields actually read, not the full
+// CommandEnvelope: the V4 legacy conversion (migration/convert.ts) audits under
+// a synthetic command id with NO actor — every existing CommandEnvelope caller
+// still satisfies this shape unchanged.
+export function insertAudit(tx: Db, a: {
+  sourceId: string; command: { commandId: string; actorId: string | null }; actorKind: SourceAuditEvent['actorKind']
   action: string; category: AuditCategory | null; note: string | null; result: unknown; now: string
 }): SourceAuditEvent {
   const row: SourceAuditV2Row = {
@@ -145,6 +149,20 @@ function insertAudit(tx: Db, a: {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(row.id, row.source_id, row.command_id, row.actor_id, row.actor_kind, row.action, row.category, row.note, row.result_json, row.created_at)
   return rowToSourceAuditV2(row)
+}
+
+// The permanent legacy-handle reservation (V4 §3.5): a handle converted from a
+// legacy remote feed can never be registered again — the impersonation guard.
+// ONE check, in the one place every handle-claiming caller routes through
+// (insertUser backs createLocalUser/createRemoteUser, which in turn back
+// service ensureLocalUser and auth's guest allocation; updateUserProfile is the
+// only rename). It raises the EXISTING collision-shaped error, so a reserved
+// handle is indistinguishable from a taken one — no reserved-vs-taken oracle.
+// Empty (and so inert) until conversion runs.
+function assertHandleUnreserved(tx: Db, handle: string): void {
+  if (tx.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE handle = ?`).get(handle)) {
+    throw new HandleTakenError('handle already taken')
+  }
 }
 
 // Ordinary pending subscriptions become active only once the source is BOTH
@@ -212,6 +230,7 @@ export class SqliteRepository implements Repository, SourceRepository {
   }
 
   private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null, authUserId: string | null, feedType: FeedType | null): Promise<User> {
+    assertHandleUnreserved(this.sqlite, handle)
     const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString(), auth_user_id: authUserId, feed_type: feedType }
     try {
       await this.db.insertInto('users').values(row).execute()
@@ -254,6 +273,7 @@ export class SqliteRepository implements Repository, SourceRepository {
     await this.db.updateTable('users').set({ auth_user_id: authUserId }).where('id', '=', userId).execute()
   }
   async updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }) {
+    if (patch.handle !== undefined) assertHandleUnreserved(this.sqlite, patch.handle)
     try {
       const r = await this.db
         .updateTable('users')
