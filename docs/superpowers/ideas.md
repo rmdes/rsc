@@ -1031,4 +1031,6 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   bearing; bulk subscriptions are many and routine — the default ordering
   optimizes for the wrong one. Grounding: SourceSummary already carries
   federationStatus; the web page already badges it. Tradeoff: one more
-  query param on an admin route. Status: backlog.
+  query param on an admin route. Status: DONE 2026-07-25 (`1065197`) —
+  shipped as a live-defect fix, not UX polish: the section was page-scoped
+  and showed 'None.' on page 1 while three approved federations existed.
