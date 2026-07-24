@@ -28,3 +28,59 @@ test('empty content → fail(400), no fetch', async () => {
 	expect(await actions.edit(sessionedEvent({}, fetch) as never)).toMatchObject({ status: 400 })
 	expect(fetch).not.toHaveBeenCalled()
 })
+
+// --- v2: the edit load must branch on capabilities like the post page ---------
+
+import { load } from './+page.server.ts'
+
+const localDto = (id: string) => ({
+	kind: 'logical_item',
+	id,
+	origin: 'local',
+	parentResolutionState: 'none',
+	parentLogicalItemId: null,
+	threadRootId: null,
+	selectedAuthor: { kind: 'local', id: 'u1', handle: 'rick', displayName: 'Rick' },
+	title: null,
+	content: '<p>hi</p>',
+	contentMarkdown: 'hi',
+	permalink: 'http://x/post/' + id,
+	sourceLink: null,
+	replyContext: null,
+	enclosures: [],
+	publishedAt: '2026-07-20T00:00:00.000Z',
+	updatedAt: null,
+	updatedAtProvenance: null,
+	directReplyCount: 0,
+	conversationReplyCount: 0,
+	classification: { personal: true, federated: false }
+})
+
+test('under v2 the edit load finds the OWN local post through the logical thread envelope (500 regression)', async () => {
+	const fetch = vi.fn(async (input: unknown) => {
+		const url = String(input)
+		if (url.includes('/capabilities'))
+			return new Response(
+				JSON.stringify({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }),
+				{ status: 200 }
+			)
+		return new Response(
+			JSON.stringify({
+				model: 'logical-v2',
+				requestedLogicalItemId: 'p1',
+				rootId: 'p1',
+				nodes: [{ kind: 'item', item: localDto('p1') }],
+				truncated: { depth: false, nodes: false, cycle: false },
+				journalCursor: 'x'
+			}),
+			{ status: 200 }
+		)
+	})
+	const result = (await load({
+		fetch,
+		params: { id: 'p1' },
+		parent: async () => ({ me: { user: { id: 'u1', handle: 'rick' } } })
+	} as never)) as { post: { id: string; source: string } }
+	expect(result.post.id).toBe('p1')
+	expect(result.post.source).toBe('local')
+})
