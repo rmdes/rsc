@@ -5,7 +5,7 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
-import { drainReconciliation, drainReconciliationAsync } from '../src/logical/reconcile.ts'
+import { drainReconciliation, drainReconciliationAsync, MAX_OPERATIONAL_ATTEMPTS } from '../src/logical/reconcile.ts'
 import {
   scheduleVerification, createVerificationRunner,
   VERIFICATION_MAX_NEW_PER_RESPONSE, VERIFICATION_MAX_PENDING_PER_PUBLISHER,
@@ -459,4 +459,78 @@ test('a throwing verification batch records a failure and leaves the job claimab
   expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-1'`).get() as { state: string }).state).toBe('pending')
   // still claimable once the backoff elapses
   expect(store.claimReconciliation(job.next_attempt_at)?.jobId).toBe(jobId)
+})
+
+// ---- exhaustion through the drain's CATCH path (not the outcome path) --------
+
+type Store = Awaited<ReturnType<typeof fresh>>['store']
+
+// Drain repeatedly, following the job's own backoff, until it terminalizes or the
+// attempt ceiling is spent. `throwFor` decides which batch key the batch throws on;
+// every other verification job is a no-op (left claimed, its checks still pending).
+// Returns the clock the LAST failure was recorded at.
+async function drainToExhaustion(raw: Raw, store: Store, batchKey: string, throwFor = (k: string) => k === batchKey, limit = MAX_OPERATIONAL_ATTEMPTS): Promise<string> {
+  let clock = NOW
+  for (let i = 0; i < limit; i++) {
+    await drainReconciliationAsync({
+      store, now: () => clock,
+      runVerificationBatch: async ({ claim }) => { if (throwFor(claim.batchKey)) throw new Error('boom') },
+    })
+    const j = raw.prepare(`SELECT status, next_attempt_at FROM reconciliation_jobs_v2 WHERE kind = 'verification' AND verification_batch_key = ?`).get(batchKey) as { status: string; next_attempt_at: string }
+    if (j.status === 'failed') break
+    clock = j.next_attempt_at
+  }
+  return clock
+}
+
+test('a verification job exhausting through the drain catch path terminalizes its still-pending checks', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  seedVerificationJob(raw, ORIGIN, 's_agg', ['li-1', 'li-2'])
+
+  const at = await drainToExhaustion(raw, store, ORIGIN)
+
+  const job = raw.prepare(`SELECT status, attempts, failure_category FROM reconciliation_jobs_v2 WHERE kind = 'verification'`).get() as { status: string; attempts: number; failure_category: string | null }
+  expect(job).toMatchObject({ status: 'failed', attempts: MAX_OPERATIONAL_ATTEMPTS, failure_category: 'operational_exhausted' })
+  // the checks must NOT be left pending: pending rows consume the scheduling caps forever
+  const checks = raw.prepare(`SELECT state, resolved_at FROM verification_checks_v2 WHERE batch_key = ?`).all(ORIGIN) as { state: string; resolved_at: string | null }[]
+  expect(checks).toHaveLength(2)
+  for (const c of checks) expect(c).toEqual({ state: 'unverified', resolved_at: at })
+})
+
+test('checks of an exhausted verification job release the per-source distinct-URL cap', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  // exactly at the distinct-URL cap: 25 pending URLs for this source
+  for (let i = 0; i < VERIFICATION_MAX_NEW_PER_RESPONSE; i++) {
+    seedItem(raw, `li-${i}`)
+    db.write((tx) => scheduleVerification(tx, { logicalItemId: `li-${i}`, sourceId: 's_agg', publisherFeedUrl: `https://origin${i}.test/f`, now: NOW }))
+  }
+  const extra = `https://origin${VERIFICATION_MAX_NEW_PER_RESPONSE}.test/f`
+  seedItem(raw, 'li-extra')
+  db.write((tx) => scheduleVerification(tx, { logicalItemId: 'li-extra', sourceId: 's_agg', publisherFeedUrl: extra, now: NOW }))
+  expect(count(raw, 'verification_checks_v2', 'WHERE publisher_feed_url = ?', extra)).toBe(0) // cap boundary: dropped
+
+  // exhaust ONE batch key through the drain's catch path
+  const victim = 'https://origin0.test/f'
+  await drainToExhaustion(raw, store, victim)
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE verification_batch_key = ?`).get(victim) as { status: string }).status).toBe('failed')
+
+  // one distinct URL freed → the previously-capped URL is schedulable again
+  expect((raw.prepare(`SELECT COUNT(DISTINCT publisher_feed_url) AS n FROM verification_checks_v2 WHERE source_id = 's_agg' AND state = 'pending'`).get() as { n: number }).n).toBe(VERIFICATION_MAX_NEW_PER_RESPONSE - 1)
+  db.write((tx) => scheduleVerification(tx, { logicalItemId: 'li-extra', sourceId: 's_agg', publisherFeedUrl: extra, now: NOW }))
+  expect(count(raw, 'verification_checks_v2', 'WHERE publisher_feed_url = ?', extra)).toBe(1)
+})
+
+test('a NON-exhausting verification failure leaves its checks pending for the retry', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  seedVerificationJob(raw, ORIGIN, 's_agg', ['li-1'])
+
+  await drainToExhaustion(raw, store, ORIGIN, undefined, MAX_OPERATIONAL_ATTEMPTS - 1) // one short of the ceiling
+
+  const job = raw.prepare(`SELECT status, attempts FROM reconciliation_jobs_v2 WHERE kind = 'verification'`).get() as { status: string; attempts: number }
+  expect(job).toMatchObject({ status: 'retrying', attempts: MAX_OPERATIONAL_ATTEMPTS - 1 })
+  // terminalizing here would silently kill a verification the retry could still resolve
+  expect(raw.prepare(`SELECT state, resolved_at FROM verification_checks_v2 WHERE batch_key = ?`).get(ORIGIN)).toEqual({ state: 'pending', resolved_at: null })
 })

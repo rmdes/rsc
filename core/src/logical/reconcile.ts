@@ -137,6 +137,18 @@ export function recordReconciliationFailure(tx: WriteTx, input: RecordJobFailure
   if (input.category === 'invariant_or_data_failure' || next >= MAX_OPERATIONAL_ATTEMPTS) {
     tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'failed', attempts = ?, next_attempt_at = ?, failure_category = ?, diagnostic = ? WHERE id = ?`)
       .run(next, input.now, input.category, input.diagnostic, input.jobId)
+    // A terminally-failed VERIFICATION job must never strand its checks 'pending':
+    // scheduling counts pending rows (spec §7.1 caps), so 25 stranded distinct URLs
+    // block verification for that source forever. Terminalize here — the ONE point
+    // every exhaustion path converges on (the outcome handler AND the drain's
+    // catch), so no caller can reintroduce the strand. The subquery yields NULL for
+    // an observation job (no batch key), which matches no row; scoping to
+    // state = 'pending' keeps it idempotent with any earlier terminalisation.
+    tx.prepare(
+      `UPDATE verification_checks_v2 SET state = 'unverified', resolved_at = ?
+       WHERE state = 'pending'
+         AND batch_key = (SELECT verification_batch_key FROM reconciliation_jobs_v2 WHERE id = ? AND kind = 'verification')`,
+    ).run(input.now, input.jobId)
     return
   }
   const at = input.retryAt ?? new Date(Date.parse(input.now) + retryDelayMs(next)).toISOString()

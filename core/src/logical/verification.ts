@@ -235,11 +235,10 @@ export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerification
   const batchKey = claim.batchKey
 
   if (outcome.kind === 'operational_failure') {
-    // Shared drain backoff + eight-attempt exhaustion (reused verbatim). On
-    // exhaustion the job fails and every still-pending check terminalises unverified.
+    // Shared drain backoff + eight-attempt exhaustion (reused verbatim). Terminalising
+    // the still-pending checks on exhaustion lives INSIDE recordReconciliationFailure —
+    // the one point every exhaustion path converges on, including the drain's catch.
     recordReconciliationFailure(tx, { jobId: claim.jobId, now, category: 'operational_exhausted', diagnostic: outcome.diagnostic, retryAt: null })
-    const job = tx.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE id = ?`).get(claim.jobId) as { status: string } | undefined
-    if (job && job.status === 'failed') terminalizePending(tx, batchKey, now)
     return
   }
 
@@ -269,10 +268,6 @@ export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerification
   if (anyVerified && outcome.publisherRedirect) writePublisherFeedAlias(tx, outcome.publisherRedirect, originPublisherId!, now)
 
   tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'reconciled' WHERE id = ?`).run(claim.jobId)
-}
-
-function terminalizePending(tx: WriteTx, batchKey: string, now: string): void {
-  tx.prepare(`UPDATE verification_checks_v2 SET state = 'unverified', resolved_at = ? WHERE batch_key = ? AND state = 'pending'`).run(now, batchKey)
 }
 
 // Containment holds ONLY by the two convergence keys (spec §4.2): exact normalized
