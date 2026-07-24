@@ -418,3 +418,45 @@ test('an alias collision records a conflict and merges nothing', async () => {
   expect((raw.prepare(`SELECT publisher_id FROM publisher_feed_aliases_v2 WHERE url = ?`).get(to) as { publisher_id: string }).publisher_id).toBe('p_other')
   expect(count(raw, 'logical_conflicts_v2', "WHERE kind = 'publisher_alias_collision'")).toBe(1)
 })
+
+// ---- convergence on ONE origin delivery + drain resilience ------------------
+
+test('two logical items matching the SAME origin entry converge on ONE delivery — no UNIQUE collision', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  // Two aggregators carry the same guid-only item and name the same origin feed.
+  // Opaque scope is per-publisher, so they are two DISTINCT logical items — and
+  // matchContainment's pooled `opaque:%` lookup matches BOTH to the SAME parsed
+  // origin entry, i.e. the same (origin source, 'opaque', 'g1') delivery key.
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_a' })
+  seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_b' }) // its own job row stays inert
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
+
+  expect((raw.prepare(`SELECT COUNT(*) AS n FROM verification_checks_v2 WHERE state = 'verified'`).get() as { n: number }).n).toBe(2)
+  expect(count(raw, 'deliveries_v2')).toBe(1) // ONE origin delivery, not two
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+  expect(count(raw, 'publisher_claims_v2', "WHERE evidence_level = 'verified_origin'")).toBe(2) // one per item
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE id = ?`).get(jobId) as { status: string }).status).toBe('reconciled')
+})
+
+test('a throwing verification batch records a failure and leaves the job claimable — never stranded at processing', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1' })
+  raw.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending' WHERE id = ?`).run(jobId)
+
+  // ANY throw out of the batch (collision, parse, DB) must not escape the drain:
+  // a job stranded at 'processing' can never be re-claimed AND blocks every future
+  // job for that batch key (scheduleVerification's active-job dedup).
+  const done = await drainReconciliationAsync({
+    store, now: () => NOW,
+    runVerificationBatch: async () => { throw new Error('boom') },
+  })
+  expect(done).toBe(0)
+  const job = raw.prepare(`SELECT status, attempts, next_attempt_at FROM reconciliation_jobs_v2 WHERE id = ?`).get(jobId) as { status: string; attempts: number; next_attempt_at: string }
+  expect(job).toMatchObject({ status: 'retrying', attempts: 1 })
+  expect(Date.parse(job.next_attempt_at)).toBeGreaterThan(Date.parse(NOW))
+  expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-1'`).get() as { state: string }).state).toBe('pending')
+  // still claimable once the backoff elapses
+  expect(store.claimReconciliation(job.next_attempt_at)?.jobId).toBe(jobId)
+})

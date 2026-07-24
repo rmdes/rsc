@@ -64,6 +64,20 @@ export interface SourceService {
   }): Promise<SourceTransitionResult>
 }
 
+// The ONE production composition of the v2 source-control plane (server.ts).
+// `logicalStore` is REQUIRED (never optional) so a caller cannot silently drop the
+// tombstone guard the way server.ts once did — omitting it is a type error, and
+// logical-tombstones.test.ts pins the wiring, not just the seam. Pass undefined
+// when RSC_SOURCE_MODEL_V2 is off: no store, no tombstone consultation, no new
+// query — byte-identical to the V1 path.
+export function createSourcePlane(
+  repo: Repository & SourceRepository,
+  publicUrl: string | null,
+  logicalStore: { isTombstoned(url: string): boolean } | undefined,
+): { service: SourceService; repo: Repository & SourceRepository } {
+  return { service: createSourceService(repo, publicUrl, undefined, logicalStore && ((url) => logicalStore.isTombstoned(url))), repo }
+}
+
 // SourceService.subscribeByUrl owns the raw-URL dispatch (Task 3, design §4
 // "Transactional find-or-resolve"): canonical local-account feed URLs resolve
 // first and route to followLocalAccount; everything else normalizes,

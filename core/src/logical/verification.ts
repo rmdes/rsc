@@ -323,35 +323,54 @@ function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, now: string): s
 function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: string; publisherId: string; match: VerificationFeedItem; commandId: string; batchKey: string; now: string }): void {
   const { itemId, sourceId, publisherId, match, commandId, batchKey, now } = a
   const ev = match.evidence
-  const runId = randomUUID()
-  tx.prepare(
-    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
-     VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL)`,
-  ).run(runId, sourceId, now, now, now, EMPTY_COUNTERS)
-
-  const deliveryId = ev.deliveryId
   const keyKind = match.opaqueId ? 'opaque' : 'permalink'
-  const key = match.opaqueId ?? match.normalizedPermalink ?? deliveryId
-  tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(deliveryId, sourceId, keyKind, key, now, now, runId)
+  const key = match.opaqueId ?? match.normalizedPermalink ?? ev.deliveryId
 
-  const versionId = ev.id
-  tx.prepare(
-    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-  ).run(versionId, deliveryId, ev.fingerprintVersion, ev.fingerprint, Buffer.from(ev.canonicalMaterial), now, runId, ev.wireOrdinal, now, runId, ev.rawEvidenceJson, ev.normalizedJson)
+  // Resolve-or-create the delivery + its version (mirrors acquisition's §2.2
+  // classification). TWO logical items can match the SAME parsed origin entry —
+  // matchContainment pools `opaque:%` across publisher scopes, which is what makes
+  // an origin match possible at all — and a later batch can re-verify an entry
+  // already persisted. Both must converge on the ONE row UNIQUE(source_id,
+  // key_kind, key) allows: a second INSERT rolls the whole batch back and strands
+  // its job at 'processing' (never re-claimable, and it blocks every future job for
+  // that batch key). An already-present version is reused as-is; only genuinely new
+  // origin material creates a run, a version, and a presentation entry.
+  const existingDelivery = tx.prepare(`SELECT id FROM deliveries_v2 WHERE source_id = ? AND key_kind = ? AND key = ?`).get(sourceId, keyKind, key) as { id: string } | undefined
+  const deliveryId = existingDelivery?.id ?? ev.deliveryId
+  const existingVersion = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ? AND fingerprint_version = ? AND fingerprint = ?`).get(deliveryId, ev.fingerprintVersion, ev.fingerprint) as { id: string } | undefined
+  const versionId = existingVersion?.id ?? ev.id
 
-  // reconciled observation job → the version is ordinary-eligible immediately.
-  tx.prepare(
-    `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
-     VALUES (?, 'observation', ?, ?, NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
-  ).run(randomUUID(), runId, versionId, now, now)
+  if (!existingVersion) {
+    const runId = randomUUID()
+    tx.prepare(
+      `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+       VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL)`,
+    ).run(runId, sourceId, now, now, now, EMPTY_COUNTERS)
 
-  // link the delivery to the logical item + a baseline presentation entry.
+    if (existingDelivery) tx.prepare(`UPDATE deliveries_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`).run(now, runId, deliveryId)
+    else tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(deliveryId, sourceId, keyKind, key, now, now, runId)
+
+    tx.prepare(
+      `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    ).run(versionId, deliveryId, ev.fingerprintVersion, ev.fingerprint, Buffer.from(ev.canonicalMaterial), now, runId, ev.wireOrdinal, now, runId, ev.rawEvidenceJson, ev.normalizedJson)
+
+    // reconciled observation job → the version is ordinary-eligible immediately.
+    tx.prepare(
+      `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
+       VALUES (?, 'observation', ?, ?, NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
+    ).run(randomUUID(), runId, versionId, now, now)
+
+    // a baseline presentation entry at the delivery's next sequence.
+    const top = tx.prepare(`SELECT MAX(sequence) AS s FROM presentation_entries_v2 WHERE delivery_id = ?`).get(deliveryId) as { s: number | null }
+    const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; inReplyTo: string | null }
+    const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[]; inReplyTo: string | null }
+    const fp = presentationFingerprint({ title: mat.title, content: mat.content, contentMarkdown: null, permalink: norm.permalink, sourceLink: mat.link, enclosures: (norm.enclosures ?? []) as never, inReplyTo: mat.inReplyTo })
+    tx.prepare(`INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, ?, ?, NULL, NULL, ?)`).run(deliveryId, top.s === null ? 0 : top.s + 1, versionId, fp)
+  }
+
+  // link the delivery to the logical item (the first matching item owns the key).
   tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(deliveryId, itemId)
-  const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; inReplyTo: string | null }
-  const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[]; inReplyTo: string | null }
-  const fp = presentationFingerprint({ title: mat.title, content: mat.content, contentMarkdown: null, permalink: norm.permalink, sourceLink: mat.link, enclosures: (norm.enclosures ?? []) as never, inReplyTo: mat.inReplyTo })
-  tx.prepare(`INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, 0, ?, NULL, NULL, ?)`).run(deliveryId, versionId, fp)
 
   // the verified_origin author claim — the new strongest rung (spec §4.3).
   tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, 'verified_origin', ?)`).run(randomUUID(), itemId, publisherId, sourceId, versionId, now)

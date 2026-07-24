@@ -29,7 +29,11 @@ const bus = createEventBus()
 // `await runtime.ready` BEFORE this process serves any request; a failed
 // activation rejects that promise and fails startup (never serves v1). When off,
 // a previously-active instance is marked reconciliation_required (a never-activated
-// one is left byte-identically untouched). The v2 modules load only when needed.
+// one is left byte-identically untouched). The v2 modules are imported dynamically
+// here for locality, not isolation: domain/source-repository.ts already imports
+// logical/tombstones.ts + logical/journal.ts statically, so the logical module
+// graph is loaded either way. Those modules are side-effect-free and only ever
+// called from a v2 code path, so flag-off behavior is unaffected.
 let runtime: LogicalRuntime | null = null
 let logicalStore: LogicalStore | undefined
 // Fail-closed + v1/v2 worker isolation (spec §5.6/§7.4): enabled installs NEITHER
@@ -57,8 +61,9 @@ if (config.sourceModelV2) {
 } else {
   // spec §7.1: a disabled process marks reconciliation_required when v2 was
   // previously active — a no-op (and no write) on a never-activated instance, so
-  // flag-off keeps its byte-identical legacy behavior. Inline SQL keeps the v2
-  // runtime module from even loading while off.
+  // flag-off keeps its byte-identical legacy behavior. The inline SQL avoids
+  // constructing the v2 runtime/store while off (the modules themselves are already
+  // in the graph via domain/source-repository.ts, and are inert unless called).
   const act = repo.raw.prepare(`SELECT state FROM logical_activation_v2 WHERE singleton = 1`).get() as { state: string } | undefined
   if (act?.state === 'active') repo.raw.prepare(`UPDATE logical_activation_v2 SET state = 'reconciliation_required' WHERE singleton = 1`).run()
   workers = { legacyPoll: true, legacyPushIn: true }
@@ -70,9 +75,13 @@ const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecr
 const push = createPush({ repo, config })
 const pushIn = createPushIn({ repo, config })
 if (config.pushIn && !config.publicUrl) console.log('push-in inactive: no public URL')
-// v2 source-control plane: built ONLY when RSC_SOURCE_MODEL_V2 is on.
+// v2 source-control plane: built ONLY when RSC_SOURCE_MODEL_V2 is on, through the
+// ONE composition helper — it takes the logical store (V3 Task 7) as a REQUIRED
+// argument, so the tombstone guard cannot be silently dropped from subscribe/OPML/
+// establishFederation again. `logicalStore` is undefined only when the flag is off,
+// and this whole branch is skipped then.
 const sources = config.sourceModelV2
-  ? { service: (await import('./domain/source-service.ts')).createSourceService(repo, config.publicUrl), repo }
+  ? (await import('./domain/source-service.ts')).createSourcePlane(repo, config.publicUrl, logicalStore)
   : undefined
 const app = createApp({
   service,

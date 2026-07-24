@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import { randomUUID, createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
-import { createSourceService } from '../src/domain/source-service.ts'
+import { createSourceService, createSourcePlane } from '../src/domain/source-service.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
@@ -212,5 +212,32 @@ test('unblock of an unknown tombstone is ledgered idempotently', async () => {
   const r2 = db.write((tx) => unblockTombstone(tx, { command: env('u1', fp(['tombstone-unblock', missing, ADMIN, 'remediated'])), tombstoneId: missing, category: 'remediated', note: null, now: NOW }))
   expect(r2).toEqual({ kind: 'unknown' })
   expect(count(raw, 'command_ledger_v2')).toBe(1)
+  repo.close()
+})
+
+// ---- the PRODUCTION wiring, not just the seam -------------------------------
+// Every other test here hands `store.isTombstoned` to createSourceService BY HAND,
+// which proves the seam and NOT that server.ts wires it (it did not: the 4th
+// argument was omitted, so subscribe/OPML/federation never consulted a tombstone
+// on any live instance). server.ts now composes through createSourcePlane — this
+// guard fails if that composition stops passing the store.
+test('createSourcePlane wires the tombstone guard from the logical store; with v2 off it consults nothing', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const store = createLogicalStore(createDatabaseContext(raw))
+  const owner = await repo.createLocalUser({ handle: 'owner', displayName: 'Owner' }) as User
+  // an IP-literal public host: checkCallbackUrl passes it without any DNS, so the
+  // ONLY thing that can make this URL unavailable is the tombstone guard.
+  const tombstoned = 'https://93.184.216.34/feed'
+  seedTombstone(raw, tombstoned, ['https://93.184.216.35/feed'])
+
+  const on = createSourcePlane(repo, PUBLIC_URL, store)
+  expect(on.repo).toBe(repo)
+  expect(await on.service.subscribeByUrl(owner, tombstoned, 's1')).toEqual({ kind: 'unavailable' })
+  expect(await on.service.subscribeByUrl(owner, 'https://93.184.216.35/feed', 's2')).toEqual({ kind: 'unavailable' })
+
+  // flag OFF (no logical store): the same URL subscribes exactly as it does today.
+  const off = createSourcePlane(repo, PUBLIC_URL, undefined)
+  expect((await off.service.subscribeByUrl(owner, tombstoned, 's3')).kind).not.toBe('unavailable')
   repo.close()
 })

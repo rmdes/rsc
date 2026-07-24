@@ -464,11 +464,18 @@ function handleObservationClaim(store: Reconciler, claim: ReconciliationClaim, n
     const result = store.reconcileClaim({ claim, now: now() })
     return result.kind !== 'superseded'
   } catch (err) {
-    const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
-    const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
-    store.recordReconciliationFailure({ jobId: claim.jobId, now: now(), category, diagnostic, retryAt: null })
+    recordDrainFailure(store, claim.jobId, err, now)
     return false
   }
+}
+
+// The ONE way a drained job's throw is recorded: a data error fails it terminally,
+// anything else backs it off and leaves it claimable. No throw may escape a drain —
+// a job left at 'processing' can never be re-claimed.
+function recordDrainFailure(store: Reconciler, jobId: string, err: unknown, now: () => string): void {
+  const category = err instanceof ReconcileDataError ? 'invariant_or_data_failure' : 'operational_exhausted'
+  const diagnostic = (err instanceof Error ? err.message : 'reconcile failed').slice(0, 500)
+  store.recordReconciliationFailure({ jobId, now: now(), category, diagnostic, retryAt: null })
 }
 
 // Drain the whole eligible queue serially, one job at a time (spec §2.3). This
@@ -529,7 +536,13 @@ export async function drainReconciliationAsync(deps: {
     const claim = store.claimReconciliation(now())
     if (claim) {
       if (claim.kind === 'verification') {
-        await deps.runVerificationBatch({ claim, now: now() })
+        // A verification batch throw (a data collision, a parse/DB error) is
+        // recorded exactly like an observation failure instead of escaping: an
+        // escaped throw would strand the job at 'processing' — blocking every
+        // future job for that batch key — and reject the runtime's `ready` promise
+        // (i.e. fail process startup), for a single bad origin response.
+        try { await deps.runVerificationBatch({ claim, now: now() }) }
+        catch (err) { recordDrainFailure(store, claim.jobId, err, now) }
         continue
       }
       if (handleObservationClaim(store, claim, now)) done++
