@@ -23,7 +23,10 @@ const coreFetch = (on: boolean) =>
 		const u = String(url)
 		const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
 		if (isCap(u)) return ok({ sourceModelV2: on })
-		if (u.includes('/timeline')) return ok({ timeline: [], nextCursor: null })
+		// Under v2 the home/following rivers read the logical envelope on the SAME
+		// /timeline path and now VALIDATE it (fail closed on a bad shape); legacy
+		// gets the v1 shape. A malformed v2 body would correctly down the page.
+		if (u.includes('/timeline')) return ok(on ? { model: 'logical-v2', lens: { kind: 'public' }, timeline: [], nextCursor: null, journalCursor: 'jc' } : { timeline: [], nextCursor: null })
 		if (u.includes('/peers')) return ok({ peers: [] })
 		if (u.includes('/me/following'))
 			return ok({

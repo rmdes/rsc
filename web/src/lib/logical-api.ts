@@ -45,12 +45,14 @@ export async function getLogicalTimeline(f: typeof fetch, opts: V2Lens & { befor
 	return { lens: env.lens, entries: env.timeline.map(logicalToEntry), nextCursor: env.nextCursor, journalCursor: env.journalCursor }
 }
 
-// A SECONDARY river (author page, follows-management page): a v2 contract
-// violation discards the river to empty — the malformed payload is NOT rendered
-// and NEVER cast to v1 — while the rest of the page, built from an independently
-// valid envelope, still renders. A network failure (non-200) still propagates so
-// the page can degrade to coreDown. The PRIMARY home river fails the whole page
-// closed instead (spec §5.6 carve 2; tested in page.load.test.ts).
+// SECONDARY rivers ONLY — the /u author page and the /following follows-management
+// page, where an independently-valid rest-of-page must still render. A v2 contract
+// violation discards the river to empty (the malformed payload is NOT rendered and
+// NEVER cast to v1); a network failure (non-200) still propagates so the page can
+// degrade to coreDown. The PRIMARY home river does NOT use this: it calls
+// getLogicalTimeline directly (the throwing variant) so a contract violation THROWS
+// and fails the whole page closed to coreDown, rather than rendering a misleading
+// empty v2 timeline (spec §5.6 carve 2; tested in page.load.test.ts).
 export async function getLogicalRiverOrEmpty(f: typeof fetch, opts: V2Lens & { before?: string }): Promise<{ entries: RenderEntry[]; nextCursor: string | null; journalCursor: string | null }> {
 	try {
 		const page = await getLogicalTimeline(f, opts)

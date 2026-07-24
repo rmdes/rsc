@@ -167,7 +167,7 @@
 				{/if}
 			</li>
 		{:else}
-			<li class="timeline-empty">@{data.handle} hasn't posted anything yet.</li>
+			<li class="timeline-empty">Nothing to show — @{data.handle} hasn't posted yet, or the timeline couldn't load.</li>
 		{/each}
 	</ul>
 

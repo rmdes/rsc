@@ -224,10 +224,11 @@ test('with the capability on, home renders mapped logical items from the v2 enve
 })
 
 // Carve 2 (spec §5.6): a valid v2 capability THEN a malformed envelope FAILS
-// CLOSED — the river is DISCARDED to empty with no snapshot cursor, never cast
-// to a v1 timeline; the page still reports v2 (a broken core must not down the
-// compose/follows surfaces), and the live stream stays closed (no journalCursor).
-test('with the capability on, a malformed v2 timeline envelope fails closed (discard to empty, never v1)', async () => {
+// CLOSED on the PRIMARY home river — the LogicalContractError propagates to the
+// load's catch and yields coreDown (the same "can't load this page" notice a core
+// outage shows). It is NEVER rendered as an empty v2 river (that would present a
+// validation failure as "no posts"), and NEVER cast to a v1 timeline.
+test('with the capability on, a malformed v2 timeline envelope fails the home river CLOSED to coreDown (never an empty v2 river, never v1)', async () => {
 	vi.resetModules()
 	const { load } = await import('./+page.server.ts')
 	const fetch = vi.fn(async (url: string | URL) =>
@@ -242,9 +243,8 @@ test('with the capability on, a malformed v2 timeline envelope fails closed (dis
 		nextCursor: string | null
 		timeline: unknown[]
 	}
-	expect(result.coreDown).toBeUndefined()
-	expect(result.sourceModelV2).toBe(true)
-	expect(result.timeline).toEqual([]) // discarded, never a v1 cast
+	expect(result.coreDown).toBe(true) // fail closed, not a misleading empty timeline
+	expect(result.sourceModelV2).toBeUndefined() // the coreDown branch never reports v2
+	expect(result.timeline).toEqual([]) // never a v1 cast
 	expect(result.nextCursor).toBeNull()
-	expect(result.journalCursor).toBeNull() // live stream stays closed
 })

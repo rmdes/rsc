@@ -1,7 +1,7 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
 import { getTimeline, getPeers, getFollowing, createPost, subscribeToFeed, deletePost, getCapabilities, peekCapabilities, subscribeToSource } from '$lib/api'
-import { getLogicalRiverOrEmpty, type V2Lens } from '$lib/logical-api'
+import { getLogicalTimeline, type V2Lens } from '$lib/logical-api'
 import type { PublicFollowingEntry } from '$lib/types'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
@@ -44,12 +44,14 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 		// of forcing a reset (an empty cursor would loop reset↔refetch).
 		let journalCursor: string | null | undefined
 		if (cap.sourceModelV2) {
-			// Discard the legacy result; validate + map the v2 envelope. A malformed
-			// envelope FAILS CLOSED (spec §5.6 carve 2): the river is discarded to
-			// empty with no snapshot cursor — never a v1 cast — while the page stays
-			// v2 (a broken core does not down follows/compose surfaces).
+			// Discard the legacy result; validate + map the v2 envelope. On the PRIMARY
+			// home river a malformed envelope FAILS CLOSED (spec §5.6 carve 2) by
+			// throwing LogicalContractError, which the load's catch below turns into
+			// coreDown — the same "can't load this page" notice a core outage shows. It
+			// is NEVER rendered as an empty v2 river (that would present a validation
+			// failure as "no posts") and NEVER cast to v1.
 			v1P?.catch(() => {})
-			;({ entries: timeline, nextCursor, journalCursor } = await getLogicalRiverOrEmpty(fetch, { before, ...tabLens(tab, me?.user.handle) }))
+			;({ entries: timeline, nextCursor, journalCursor } = await getLogicalTimeline(fetch, { before, ...tabLens(tab, me?.user.handle) }))
 		} else {
 			;({ timeline, nextCursor } = await v1P!)
 		}

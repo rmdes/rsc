@@ -223,7 +223,7 @@
 					{/if}
 				</li>
 			{:else}
-				<li class="timeline-empty">Nothing here yet — posts from the people you follow will appear as they arrive.</li>
+				<li class="timeline-empty">Nothing to show — posts from the people you follow will appear as they arrive, or the timeline couldn't load.</li>
 			{/each}
 		</ul>
 
