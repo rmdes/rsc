@@ -216,6 +216,8 @@ RSC stands on ideas and standards it did not invent:
 
 RSC's job is to make these work together, credited, in one place.
 
+![Alt](https://repobeats.axiom.co/api/embed/99fbb2c4ea3c4c4dd2475e42953a4c1379d1a0f8.svg "Repobeats analytics image")
+
 ## License
 
 [MIT](LICENSE).
