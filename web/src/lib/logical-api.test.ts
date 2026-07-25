@@ -213,13 +213,19 @@ describe('getLogicalItem / getLogicalThread', () => {
 		const f = vi.fn(async () => new Response(JSON.stringify({ item: dto() }), { status: 200 }))
 		await expect(getLogicalItem(f as never, 'i1')).rejects.toBeInstanceOf(LogicalContractError)
 	})
-	test('getLogicalThread returns null on 404 and maps item nodes otherwise', async () => {
+	test('getLogicalThread returns null on 404 and passes placeholders through as connective markers (D11)', async () => {
 		const f404 = vi.fn(async () => new Response('nope', { status: 404 }))
 		expect(await getLogicalThread(f404 as never, 'x')).toBeNull()
-		const body = { model: 'logical-v2', requestedLogicalItemId: 'i1', rootId: 'i1', nodes: [{ kind: 'item', item: dto() }, { kind: 'placeholder', logicalItemId: 'gap', parentLogicalItemId: null, timelineSortAt: 't', placeholderKind: 'unavailable' }], truncated: { depth: false, nodes: false, cycle: false }, journalCursor: 'x' }
+		const body = { model: 'logical-v2', requestedLogicalItemId: 'i1', rootId: 'i1', nodes: [{ kind: 'item', item: dto() }, { kind: 'placeholder', logicalItemId: 'gap', parentLogicalItemId: 'i1', timelineSortAt: 't', placeholderKind: 'unavailable' }], truncated: { depth: false, nodes: false, cycle: false }, journalCursor: 'x' }
 		const f = vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }))
 		const r = await getLogicalThread(f as never, 'i1')
 		expect(r?.rootId).toBe('i1')
-		expect(r?.entries.map((e) => e.id)).toEqual(['i1']) // placeholders are connective, not rendered cards
+		// The placeholder is no longer dropped: it flows through as a marker entry
+		// keyed off its parent id so the flat tree can nest its reply subtree (D11).
+		expect(r?.entries.map((e) => e.id)).toEqual(['i1', 'gap'])
+		const ph = r?.entries.find((e) => e.id === 'gap')
+		expect(ph?.placeholder).toBe(true)
+		expect(ph?.inReplyToPostId).toBe('i1')
+		expect(ph?.publishedAt).toBe('t')
 	})
 })

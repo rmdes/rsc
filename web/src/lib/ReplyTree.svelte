@@ -6,6 +6,7 @@
 	import ReplyTree from './ReplyTree.svelte'
 	import ReplyToggle from './ReplyToggle.svelte'
 	import EditedMarker from './EditedMarker.svelte'
+	import ThreadPlaceholder from './ThreadPlaceholder.svelte'
 
 	let {
 		thread,
@@ -25,6 +26,13 @@
 
 <ul class="replies">
 	{#each kids as reply (reply.id)}
+		{#if reply.placeholder}
+			<!-- D11: an unavailable ancestor — a neutral marker, then its subtree -->
+			<li class="post placeholder">
+				<ThreadPlaceholder />
+				<ReplyTree {thread} parentId={reply.id} {openAll} {highlightId} />
+			</li>
+		{:else}
 		<li class="post" class:remote={reply.source === 'remote'} class:highlight={reply.id === highlightId}>
 			<div class="byline">
 				<Avatar author={reply.author} sourceName={reply.sourceName} />
@@ -56,5 +64,6 @@
 				<ReplyTree {thread} parentId={reply.id} {openAll} {highlightId} />
 			{/if}
 		</li>
+		{/if}
 	{/each}
 </ul>

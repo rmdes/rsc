@@ -13,7 +13,9 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
 		const cap = await getCapabilities(fetch)
 		if (cap.sourceModelV2) {
 			const t = await getLogicalThread(fetch, params.id)
-			// Placeholders are dropped (connective, not cards); item nodes render.
+			// Placeholder (unavailable-ancestor) nodes ride through as neutral marker
+			// entries; item nodes render as cards (D11). enrichEntries adds contentHtml
+			// — a marker's content is '' so it never gets an {@html}.
 			return { postId: params.id, thread: enrichEntries(t?.entries ?? []), rootId: t?.rootId ?? params.id, sourceModelV2: true }
 		}
 		const thread = await getThread(fetch, params.id)

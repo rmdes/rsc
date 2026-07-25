@@ -5,6 +5,7 @@
 	import Avatar from '$lib/Avatar.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
+	import ThreadPlaceholder from '$lib/ThreadPlaceholder.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import MarkdownComposer from '$lib/MarkdownComposer.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
@@ -95,7 +96,14 @@
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 	<ul class="timeline">
-		{#if root}
+		{#if root?.placeholder}
+			<!-- D11: the conversation's root is an unavailable ancestor — render a
+			     neutral marker and its live replies, never "No such conversation." -->
+			<li class="post placeholder">
+				<ThreadPlaceholder />
+				<ReplyTree thread={posts} parentId={root.id} openAll={true} highlightId={data.postId} />
+			</li>
+		{:else if root}
 			<li class="post" class:remote={root.source === 'remote'} class:highlight={root.id === data.postId}>
 				<div class="byline">
 					<Avatar author={root.author} sourceName={root.sourceName} />
@@ -123,7 +131,8 @@
 				{/if}
 				<ReplyTree thread={posts} parentId={root.id} openAll={true} highlightId={data.postId} />
 			</li>
-		{:else}
+		{:else if posts.length === 0}
+			<!-- Genuinely empty: no item AND no placeholder node (D11) -->
 			<li class="timeline-empty">No such conversation.</li>
 		{/if}
 	</ul>

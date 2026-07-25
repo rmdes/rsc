@@ -4,7 +4,7 @@
 // on any mismatch — it never falls back to or casts a v1 shape (spec §5.6 carve 2).
 
 import { env } from '$env/dynamic/private'
-import { asLogicalTimeline, asLogicalSingleItem, asLogicalThread, asLogicalHistory, logicalToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
+import { asLogicalTimeline, asLogicalSingleItem, asLogicalThread, asLogicalHistory, logicalToEntry, placeholderToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
@@ -87,10 +87,12 @@ export async function getLogicalThread(f: typeof fetch, id: string): Promise<V2T
 	if (res.status === 404) return null
 	if (!res.ok) throw new Error(`thread ${res.status}`)
 	const env = asLogicalThread(await res.json())
-	// Placeholders are neutral connective markers (an unavailable ancestor), not
-	// rendered cards; the flat ReplyTree keys off parent ids and tolerates a
-	// missing link. ponytail: render only item nodes.
-	const entries = env.nodes.flatMap((n) => (n.kind === 'item' ? [logicalToEntry(n.item)] : []))
+	// Placeholders are neutral connective markers (an unavailable ancestor): each
+	// flows through as a marker entry keyed off its parent id, so the flat
+	// ReplyTree nests its reply subtree under it and renders "post unavailable"
+	// instead of a card (D11). Dropping them here orphaned every reply below a
+	// gap and made a placeholder-rooted thread falsely empty.
+	const entries = env.nodes.map((n) => (n.kind === 'item' ? logicalToEntry(n.item) : placeholderToEntry(n)))
 	return { rootId: env.rootId, entries, truncated: env.truncated }
 }
 

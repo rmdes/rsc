@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest'
 import { render } from 'svelte/server'
 import ReplyTree from './ReplyTree.svelte'
-import { logicalToEntry, type LogicalItemDto, type SelectedAuthor } from './logical-types.ts'
+import { logicalToEntry, placeholderToEntry, type LogicalItemDto, type SelectedAuthor } from './logical-types.ts'
 
 // A resolved reply whose author is <over> — logicalToEntry gives it
 // inReplyToPostId='root', so ReplyTree(parentId='root') renders it as a child.
@@ -43,4 +43,28 @@ test('a local-account reply node still renders the /u/:handle byline', () => {
 	const { body } = render(ReplyTree, { props: { thread: [reply], parentId: 'root' } })
 	expect(body).toContain('href="/u/alice"')
 	expect(body).not.toContain('href="/p/')
+})
+
+// D11: an unavailable ancestor mid-thread must render as a neutral connective
+// marker with its reply subtree nested underneath it — not be dropped, which
+// would make the whole subtree unreachable.
+test('a placeholder mid-thread renders a neutral marker and its reply subtree still renders', () => {
+	const gap = placeholderToEntry({ kind: 'placeholder', logicalItemId: 'gap', parentLogicalItemId: 'root', timelineSortAt: '2026-07-19T00:00:00.000Z', placeholderKind: 'unavailable' })
+	// the reply hangs off the placeholder, not off root
+	const reply = { ...replyBy({ kind: 'local', id: 'u1', handle: 'alice', displayName: 'Alice' }), inReplyToPostId: 'gap' }
+	const { body } = render(ReplyTree, { props: { thread: [gap, reply], parentId: 'root', openAll: true } })
+	expect(body).toContain('Post unavailable') // the marker
+	expect(body).toContain('a reply') // the subtree under the placeholder renders
+	expect(body).toContain('href="/u/alice"') // the descendant reply is a full card
+})
+
+// The marker is a neutral node, NOT a card: no byline/avatar/PostBody/reply-action
+// and no {@html} chokepoint of its own.
+test('a placeholder node is a neutral marker, not a card', () => {
+	const gap = placeholderToEntry({ kind: 'placeholder', logicalItemId: 'gap', parentLogicalItemId: 'root', timelineSortAt: '2026-07-19T00:00:00.000Z', placeholderKind: 'unavailable' })
+	const { body } = render(ReplyTree, { props: { thread: [gap], parentId: 'root', openAll: true } })
+	expect(body).toContain('Post unavailable')
+	expect(body).not.toContain('class="byline"') // no byline
+	expect(body).not.toContain('href="/u/') // no author handle link
+	expect(body).not.toContain('>Reply<') // no reply action
 })

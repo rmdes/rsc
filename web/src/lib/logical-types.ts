@@ -238,3 +238,25 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 		enclosures: dto.enclosures
 	}
 }
+
+// A placeholder thread node (an unavailable/tombstoned ancestor, spec §3.6) →
+// a neutral marker entry (D11). It carries only what the flat tree needs: its
+// own id, its parent id (so it nests under its parent / is found as the root),
+// and the sort key. `placeholder: true` tells ReplyTree / the thread page to
+// render a connective marker, never a card — so there is no author, content,
+// or {@html} on it. Dropping these (the old bug) made every reply below an
+// unavailable ancestor unreachable, and a placeholder ROOT falsely empty.
+export function placeholderToEntry(node: Extract<ThreadNode, { kind: 'placeholder' }>): RenderEntry {
+	return {
+		id: node.logicalItemId,
+		title: null,
+		content: '',
+		url: null,
+		publishedAt: node.timelineSortAt,
+		source: 'remote',
+		author: { id: '', handle: '', displayName: '', kind: 'remote' },
+		inReplyToPostId: node.parentLogicalItemId,
+		threadRootId: null,
+		placeholder: true
+	}
+}
