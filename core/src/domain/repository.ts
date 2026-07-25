@@ -54,4 +54,5 @@ export interface Repository {
   findPushSubscription(filter: { token?: string; userId?: string; mode?: PushProtocol; topic?: string }, opts?: { unexpiredAt?: string; state?: 'pending' | 'active' }): Promise<PushSubscription | undefined>
   listRenewablePushSubscriptions(before: string): Promise<PushSubscription[]>
   deletePushSubscription(id: string): Promise<void>
+  sweepAnonymousUsers(ttlDays: number): { swept: number }
 }

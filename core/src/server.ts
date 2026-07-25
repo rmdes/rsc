@@ -13,6 +13,7 @@ import { hubLinkUrl } from './domain/feed.ts'
 import { createPush, handleWebSubRequest, handleRssCloudRequest } from './domain/push.ts'
 import { createPushIn, runPollCycle, pushInEffective } from './domain/push-in.ts'
 import { createShutdown } from './shutdown.ts'
+import { sweepHousekeeping } from './housekeeping.ts'
 import type { LogicalRuntime } from './logical/runtime.ts'
 import type { LogicalStore } from './logical/store.ts'
 
@@ -177,10 +178,10 @@ if (workers.legacyPoll) pollTimer = setTimeout(loop, config.pollSeconds * 1000)
 let sweepTimer: NodeJS.Timeout
 async function sweepLoop() {
   try {
-    const { swept } = repo.sweepAnonymousUsers(config.anonTtlDays)
-    if (swept > 0) console.log(`swept ${swept} abandoned anonymous account(s)`)
+    const { anonSwept } = await sweepHousekeeping(repo, config)
+    if (anonSwept > 0) console.log(`swept ${anonSwept} abandoned anonymous account(s)`)
   } catch (err) {
-    console.error('anon sweep failed:', err instanceof Error ? err.message : err)
+    console.error('housekeeping sweep failed:', err instanceof Error ? err.message : err)
   }
   sweepTimer = setTimeout(sweepLoop, 3600_000) // ponytail: fixed hourly cadence; config knob only if an operator ever asks
 }

@@ -1,0 +1,25 @@
+import { test, expect } from 'vitest'
+import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { loadConfig } from '../src/config.ts'
+import { sweepHousekeeping } from '../src/housekeeping.ts'
+
+test('sweepHousekeeping purges expired outbound subscriptions', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const now = new Date()
+  const expired = new Date(now.getTime() - 1000).toISOString()
+  const future = new Date(now.getTime() + 3600_000).toISOString()
+  await repo.upsertSubscription({
+    id: 'sub-expired', protocol: 'websub', topic: 'https://a.example/feed.xml',
+    callback: 'https://hub.example/cb1', callbackHost: 'hub.example',
+    secret: null, expiresAt: expired, createdAt: now.toISOString(),
+  })
+  await repo.upsertSubscription({
+    id: 'sub-live', protocol: 'websub', topic: 'https://b.example/feed.xml',
+    callback: 'https://hub.example/cb2', callbackHost: 'hub.example',
+    secret: null, expiresAt: future, createdAt: now.toISOString(),
+  })
+  const config = loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: undefined })
+  await sweepHousekeeping(repo, config)
+  const liveCount = await repo.countActiveSubscriptions({}, new Date().toISOString())
+  expect(liveCount).toBe(1) // only sub-live remains reachable via the active-count query
+})
