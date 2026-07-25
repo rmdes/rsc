@@ -190,7 +190,7 @@
 						<strong>{post.sourceName ?? post.author.displayName}</strong>
 						{#if post.publisherId}
 							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
-						{:else}
+						{:else if post.author.handle}
 							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						{/if}
 						<span class="kind">{post.source}</span>

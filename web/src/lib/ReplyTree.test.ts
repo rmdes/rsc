@@ -38,6 +38,18 @@ test('a v2 remote-publisher reply node renders a /p/:id byline, never /u/', () =
 	expect(body).not.toContain('href="/u/"') // the empty-handle 404 this fix removes
 })
 
+// D1: a non-navigable remote publisher has no /p page (profileAvailable=false ⇒
+// publisherId undefined) AND an empty handle — the old /u/{handle} fallback made
+// a dead <a href="/u/">@</a>. The byline must name it in plain text instead.
+test('a non-navigable remote reply node names its author in plain text, never a dead /u/ link or bare @', () => {
+	const reply = replyBy({ kind: 'remote_publisher', id: 'p2', displayName: 'Fallback Pub', canonicalFeedUrl: null, profileAvailable: false, attributionLevel: 'source_scoped_fallback' })
+	const { body } = render(ReplyTree, { props: { thread: [reply], parentId: 'root' } })
+	expect(body).toContain('Fallback Pub') // the display name still shows
+	expect(body).not.toContain('href="/u/"') // no dead empty-handle link
+	expect(body).not.toContain('href="/p/') // no /p link (it would 404)
+	expect(body).not.toMatch(/>@</) // no bare @
+})
+
 test('a local-account reply node still renders the /u/:handle byline', () => {
 	const reply = replyBy({ kind: 'local', id: 'u1', handle: 'alice', displayName: 'Alice' })
 	const { body } = render(ReplyTree, { props: { thread: [reply], parentId: 'root' } })

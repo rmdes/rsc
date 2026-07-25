@@ -40,7 +40,7 @@
 				{#if reply.publisherId}
 					<!-- v2 remote publisher: /p, not /u (which stays local-account only) -->
 					<a class="handle" id="rt-by-{reply.id}" href="/p/{encodeURIComponent(reply.publisherId)}">{reply.author.displayName}</a>
-				{:else}
+				{:else if reply.author.handle}
 					<a class="handle" id="rt-by-{reply.id}" href="/u/{reply.author.handle}">@{reply.author.handle}</a>
 				{/if}
 				<a class="permalink" href="/post/{reply.id}"><time datetime={reply.publishedAt}>{reply.publishedAt.slice(0, 10)}</time></a>

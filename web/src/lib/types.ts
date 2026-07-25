@@ -29,6 +29,12 @@ export interface TimelineEntry {
 	// v2 only: set for a navigable remote publisher so bylines link /p/:id instead
 	// of /u (which stays local-account only). Undefined on every v1 entry.
 	publisherId?: string
+	// v2 only: the server-computed tab membership (spec §3.4). The live lens keys
+	// off this because a v2 upsert never populates the v1 fields it used to filter
+	// on (author.feedType is null; a followed remote publisher carries no local
+	// user id in followIds). Undefined on every v1 entry, which keeps the v1 field
+	// fallback in keepEvent byte-identical.
+	classification?: { personal: boolean; federated: boolean }
 	// v2 thread-read only: an unavailable/tombstoned ancestor, carried through the
 	// flat tree as a neutral connective marker (D11) — id + inReplyToPostId let the
 	// tree nest its reply subtree; the renderer shows a marker, never a card.

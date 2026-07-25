@@ -235,6 +235,9 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 		sourceFeedUrl: a.kind === 'remote_publisher' ? a.canonicalFeedUrl : null,
 		editedAt: dto.updatedAt,
 		publisherId: a.kind === 'remote_publisher' && a.profileAvailable ? a.id : undefined,
+		// Carried through for the live lens (D2/D3): the federated/personal tabs
+		// filter on this, since a v2 upsert never sets the v1 fields they keyed off.
+		classification: dto.classification,
 		enclosures: dto.enclosures
 	}
 }

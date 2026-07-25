@@ -206,7 +206,7 @@
 						{#if post.publisherId}
 							<!-- v2 remote publisher: /p, not /u (which stays local-account only) -->
 							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
-						{:else}
+						{:else if post.author.handle}
 							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						{/if}
 						<span class="kind">{post.source}</span>

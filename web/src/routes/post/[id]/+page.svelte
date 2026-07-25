@@ -110,7 +110,7 @@
 					<strong>{root.sourceName ?? root.author.displayName}</strong>
 					{#if root.publisherId}
 						<a class="handle" href="/p/{encodeURIComponent(root.publisherId)}">{root.author.displayName}</a>
-					{:else}
+					{:else if root.author.handle}
 						<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
 					{/if}
 					<span class="kind">{root.source}</span>

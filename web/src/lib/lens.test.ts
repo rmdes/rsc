@@ -33,3 +33,24 @@ test('feedType lens keeps only instance authors', () => {
   expect(keepEvent(e, { kind: 'feedType', feedType: 'instance' })).toBe(true)
   expect(keepEvent(entry('b'), { kind: 'feedType', feedType: 'instance' })).toBe(false) // feedType absent → dropped
 })
+
+// D2: a v2 upsert never sets author.feedType — the federated tab must key off the
+// server-computed classification.federated instead, or every live remote item drops.
+test('feedType lens keeps a v2 entry by classification.federated, ignoring the null feedType', () => {
+  const e = { ...entry('a'), classification: { personal: false, federated: true } }
+  expect(e.author.feedType).toBeUndefined() // the field the v1 path keyed off is absent
+  expect(keepEvent(e, { kind: 'feedType', feedType: 'instance' })).toBe(true)
+  const notFed = { ...entry('a'), classification: { personal: true, federated: false } }
+  expect(keepEvent(notFed, { kind: 'feedType', feedType: 'instance' })).toBe(false)
+})
+
+// D3: a followed remote publisher carries no local user id in followIds — the
+// personal tab must key off classification.personal or the item drops live.
+test('followed lens keeps a v2 entry by classification.personal even when its id is not in followIds', () => {
+  const lens = { kind: 'followed' as const, followIds: new Set(['someone-else']) }
+  const e = { ...entry('remote-pub'), classification: { personal: true, federated: false } }
+  expect(lens.followIds.has(e.author.id)).toBe(false) // the v1 path would drop it
+  expect(keepEvent(e, lens)).toBe(true)
+  const notPersonal = { ...entry('remote-pub'), classification: { personal: false, federated: true } }
+  expect(keepEvent(notPersonal, lens)).toBe(false)
+})
