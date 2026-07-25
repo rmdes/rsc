@@ -7,7 +7,7 @@ import {
   encodeJournalCursor, decodeJournalCursor, isServeableCursor,
 } from './journal.ts'
 import { createScheduler } from './scheduler.ts'
-import type { LogicalScheduler } from './scheduler.ts'
+import type { LogicalScheduler, Breather } from './scheduler.ts'
 import { createLogicalPush } from './push.ts'
 import type { LogicalPush } from './push.ts'
 import type { Config } from '../config.ts'
@@ -448,7 +448,17 @@ export function createLogicalRuntime(input: {
   // and asserts a lease row is written, so dropping this argument goes red.
   const push = createLogicalPush({ db, store, config, acquisition: wrapped, fetchFn: input.fetchFn, lookupFn: input.lookupFn })
 
-  const scheduler = createScheduler({ store, acquisition: wrapped, config, now, drainVerification, push })
+  // The poll tick runs post-listen (server.ts fires it via scheduler.start after it
+  // awaits `ready`, and each subsequent tick is a background timer), so yielding a
+  // macrotask between per-source acquisitions lets pending HTTP callbacks — SSR /,
+  // real clients — run instead of starving behind the burst. setImmediate targets
+  // the check phase, where socket-read/HTTP callbacks are queued; a microtask yield
+  // (queueMicrotask/await Promise.resolve) would NOT let them in, which is exactly
+  // why the awaited fetches alone did not prevent the starvation. The pre-listen
+  // drainSync path takes no breather and stays synchronous (I1: nothing awaited does
+  // network I/O), so this is the ONE place a real breather is wired.
+  const breather: Breather = () => new Promise((resolve) => { setImmediate(resolve) })
+  const scheduler = createScheduler({ store, acquisition: wrapped, config, now, drainVerification, push, breather })
   trace('scheduler')
   trace('reconcile')
   trace('orphan')

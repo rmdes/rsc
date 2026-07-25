@@ -13,11 +13,27 @@ import type { PushLifecycle } from './push.ts'
 // feed misbehaves or the feed count grows (the consecutive-failure counter is
 // already durable, so backoff needs no schema change).
 
+// An event-loop "breather": one awaited macrotask yield, inserted BETWEEN
+// per-source acquisitions so pending HTTP callbacks interleave with a poll burst.
+export type Breather = () => Promise<void>
+
 export interface SchedulerDeps {
   store: LogicalStore
   acquisition: AcquisitionEngine
   config: { pollSeconds: number }
   now?: () => string
+  // The poll-tick breather (perf fix): every ~10th tick polls 100+ sources
+  // back-to-back, and each source's synchronous parse+commit+drainSync slice
+  // starves the event loop, so SSR / and real clients time out for the whole
+  // burst. A real breather awaits a macrotask yield between per-source
+  // acquisitions and lets those HTTP callbacks run. REQUIRED and never optional,
+  // for drainVerification's reason (below): an optional `?` could be silently
+  // dropped at a call site and the interleave would never happen with a fully
+  // green suite. A caller with nothing to interleave — the pre-listen path, a
+  // sync-harness test — passes an explicit `undefined`, and the pass then runs
+  // exactly as today (byte-identical, no extra yield). Do not "clean up" the
+  // `| undefined` into a `?`.
+  breather: Breather | undefined
   // Background work that does NETWORK I/O (origin verification, spec §7.1). It
   // rides THIS loop — there is no second timer — which is what keeps it off the
   // pre-listen startup path and off every request path. Its I/O therefore delays
@@ -86,6 +102,15 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
         if (SUCCESS_OUTCOMES.has(run.outcome) && deps.push) await deps.push.maybeRegister(sourceId, deps.push.latestClaim(sourceId))
       }
       // an 'unavailable' result (e.g. the source paused since listing) is skipped
+      // Breathe HERE — between per-source acquisitions, never mid-transaction.
+      // Each acquisition (its claim/commit/fail, the wrapped drainSync, recordHealth
+      // and maybeRegister) is its own set of transactions and all have committed and
+      // returned by this point, so the yield holds no SQLite lock. Yielding INSIDE an
+      // open transaction would trade event-loop starvation for lock-holding, which is
+      // strictly worse (it stalls every other writer, not just the loop). The
+      // cheap skips above (skip-if-recent, in-flight) `continue` past this — they did
+      // no blocking work, so there is nothing to interleave with.
+      if (deps.breather) await deps.breather()
     }
     // v1's runPollCycle tail (push-in.ts:271-272) rebuilt over sources.
     await deps.push?.renewDue()
