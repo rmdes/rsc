@@ -504,6 +504,11 @@ button:hover {
 	border-top: 2px solid var(--color-primary);
 }
 
+.history .title {
+	font-size: 1.25rem;
+	margin: 0 0 var(--space-sm);
+}
+
 .following-list {
 	list-style: none;
 	margin: 0;

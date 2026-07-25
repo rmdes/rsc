@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types'
 import { error } from '@sveltejs/kit'
 import { getRevisions, getCapabilities } from '$lib/api'
 import { getLogicalHistory } from '$lib/logical-api'
+import type { EnclosureDto } from '$lib/logical-types'
 import { renderPostHtml } from '$lib/server/render'
 
 export const load: PageServerLoad = async ({ fetch, params }) => {
@@ -23,8 +24,15 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
 		const versions = h.entries
 			.filter((e) => !e.current)
 			.sort((a, b) => a.sequence - b.sequence) // oldest-first
-			.map((e) => ({ key: e.sequence, seenAt: e.updatedAt ?? '', html: render(e) }))
-		return { postId: params.id, editedAt: current?.updatedAt ?? null, currentHtml: current ? render(current) : '', versions }
+			.map((e) => ({ key: e.sequence, seenAt: e.updatedAt ?? '', title: e.title ?? '', enclosures: e.enclosures, html: render(e) }))
+		return {
+			postId: params.id,
+			editedAt: current?.updatedAt ?? null,
+			currentHtml: current ? render(current) : '',
+			currentTitle: current?.title ?? '',
+			currentEnclosures: current?.enclosures ?? [],
+			versions
+		}
 	}
 
 	let data
@@ -35,9 +43,20 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
 	}
 	const source = data.post.source
 	const currentHtml = renderPostHtml({ content: data.post.content, contentMarkdown: data.post.contentMarkdown, source })
+	// v1 local posts store no enclosures — an empty list here is faithful, not a
+	// fallback. Revision/post titles are carried as-is (Revision.title exists).
 	const versions = data.revisions.map((r) => ({
 		seenAt: r.seenAt,
+		title: r.title ?? '',
+		enclosures: [] as EnclosureDto[],
 		html: renderPostHtml({ content: r.content, contentMarkdown: r.contentMarkdown, source })
 	}))
-	return { postId: params.id, editedAt: data.post.editedAt ?? null, currentHtml, versions }
+	return {
+		postId: params.id,
+		editedAt: data.post.editedAt ?? null,
+		currentHtml,
+		currentTitle: data.post.title ?? '',
+		currentEnclosures: [] as EnclosureDto[],
+		versions
+	}
 }

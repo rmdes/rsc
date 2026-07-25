@@ -17,12 +17,14 @@
 				{:else}
 					<span class="badge-kind">{i === 0 ? 'created' : 'earlier version'}</span>
 				{/if}
-				<PostBody post={{ content: '', contentHtml: v.html }} />
+				{#if v.title}<h2 class="title">{v.title}</h2>{/if}
+				<PostBody post={{ content: '', contentHtml: v.html, enclosures: v.enclosures }} />
 			</li>
 		{/each}
 		<li class="current">
 			<span class="badge-kind">current{#if data.editedAt} · edited {data.editedAt.slice(0, 16).replace('T', ' ')}{/if}</span>
-			<PostBody post={{ content: '', contentHtml: data.currentHtml }} />
+			{#if data.currentTitle}<h2 class="title">{data.currentTitle}</h2>{/if}
+			<PostBody post={{ content: '', contentHtml: data.currentHtml, enclosures: data.currentEnclosures }} />
 		</li>
 	</ol>
 </div>

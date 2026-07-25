@@ -77,14 +77,19 @@ test('unfollow deletes the target via the core with the session cookie', async (
 })
 
 test('import NEVER mints a session — registered-only, core 403s anonymous', async () => {
-	const fetch = vi.fn(async (..._args: unknown[]) => new Response(JSON.stringify({ error: 'not authenticated' }), { status: 401 }))
+	vi.resetModules()
+	const { actions } = await import('./+page.server.ts')
+	const fetch = vi.fn(async (url: string | URL, ..._rest: unknown[]) =>
+		String(url).includes('/capabilities')
+			? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 })
+			: new Response(JSON.stringify({ error: 'not authenticated' }), { status: 401 })
+	)
 	const event = anonymousEvent(importRequest('<opml/>'), fetch)
 	const res = await actions.import(event as never)
 	expect(fetch.mock.calls.some((c) => String(c[0]).includes('/sign-in/anonymous'))).toBe(false) // no mint call ever
-	expect(fetch).toHaveBeenCalledTimes(1)
-	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
-	expect(url).toContain('/me/follows/opml')
-	const headers = new Headers(init.headers)
+	const importCall = fetch.mock.calls.find((c) => String(c[0]).includes('/me/follows/opml')) as [string, RequestInit]
+	expect(importCall).toBeDefined()
+	const headers = new Headers(importCall[1].headers)
 	expect(headers.get('cookie')).toBeNull() // no session to forward
 	expect(headers.get('origin')).toBe('http://x')
 	expect(res).toMatchObject({ status: 400 })
@@ -223,16 +228,44 @@ test('unsubscribe removes by stable source id and carries the form command id', 
 	expect(new Headers(init.headers).get('cookie')).toBe('rsc.session_token=s1')
 })
 
+// W5: the load's coreDown catch can drop `commandIds` from the rendered form
+// (a core blip mid-load) — the action must decide v1-vs-v2 from capabilities,
+// not from whether the form happens to carry a commandId, or a v2 core 400s
+// the legacy-shaped POST.
+test('import with NO commandId on a v2-capable instance still calls the v2 import path (post-blip load)', async () => {
+	vi.resetModules()
+	const { actions } = await import('./+page.server.ts')
+	const counts = { localFollowed: 1, active: 1, pending: 0, unavailable: 0, notSubscribable: 0, capSkipped: 0 }
+	const fetch = vi.fn(async (url: string | URL, ..._rest: unknown[]) =>
+		isCap(url) ? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 }) : new Response(JSON.stringify(counts), { status: 200 })
+	)
+	const body = new FormData()
+	body.set('opml', new File(['<opml/>'], 'feed.opml'))
+	// no commandId field at all
+	const event = sessionedEvent(new Request('http://x/?/import', { method: 'POST', body }), fetch)
+	const res = await actions.import(event as never)
+	expect(res).toEqual({ ok: true, result: counts })
+	const importCall = fetch.mock.calls.find((c) => String(c[0]).includes('/me/follows/opml')) as [string, RequestInit]
+	expect(importCall).toBeDefined()
+	// v2 path used (header-borne command id), never the legacy body-only POST
+	const commandId = new Headers(importCall[1].headers).get('x-rsc-command-id')
+	expect(commandId).toMatch(/^[0-9a-f]{8}-/) // minted in the action, mirrors unsubscribe's `|| crypto.randomUUID()`
+})
+
 test('import carries the form command id as a header and returns the v2 counts', async () => {
+	vi.resetModules()
+	const { actions } = await import('./+page.server.ts')
 	const counts = { localFollowed: 1, active: 2, pending: 1, unavailable: 0, notSubscribable: 0, capSkipped: 0 }
-	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify(counts), { status: 200 }))
+	const fetch = vi.fn(async (url: string | URL, ..._rest: unknown[]) =>
+		String(url).includes('/capabilities') ? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 }) : new Response(JSON.stringify(counts), { status: 200 })
+	)
 	const body = new FormData()
 	body.set('opml', new File(['<opml/>'], 'feed.opml'))
 	body.set('commandId', 'cmd-7')
 	const event = sessionedEvent(new Request('http://x/?/import', { method: 'POST', body }), fetch)
 	expect(await actions.import(event as never)).toEqual({ ok: true, result: counts })
-	expect(fetch).toHaveBeenCalledTimes(1)
-	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
-	expect(url).toContain('/me/follows/opml')
-	expect(new Headers(init.headers).get('x-rsc-command-id')).toBe('cmd-7')
+	const importCall = fetch.mock.calls.find((c) => String(c[0]).includes('/me/follows/opml')) as [string, RequestInit]
+	expect(importCall).toBeDefined()
+	// the form's own commandId is honored, not overwritten by a freshly minted one
+	expect(new Headers(importCall[1].headers).get('x-rsc-command-id')).toBe('cmd-7')
 })

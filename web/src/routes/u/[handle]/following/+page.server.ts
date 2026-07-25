@@ -122,17 +122,19 @@ export const actions = {
 		const form = await event.request.formData()
 		const file = form.get('opml')
 		if (!(file instanceof File)) return fail(400, { error: 'choose an OPML file' })
-		// ponytail: the rendered form's command id IS the capability answer here —
-		// the loader already resolved it, and probing again would put a second round
-		// trip in front of every upload. A legacy form carries none and stays legacy.
-		// Ceiling: a page cached across a flag flip posts the wrong shape once and
-		// gets core's 400; reload recovers. Probe here if the flag ever flips in prod.
-		const commandId = String(form.get('commandId') ?? '')
 		try {
 			// no mint: OPML import is registered-only; a sessionless POST gets core's 401/403
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 			const opml = await file.text()
-			const result = commandId ? await importOpmlV2(f, opml, commandId) : await importOpml(f, opml)
+			// v1-vs-v2 is a CAPABILITY reading, not a form field — the load's coreDown
+			// catch can drop `commandIds` from the rendered form (a core blip mid-load),
+			// so trusting the form would wrongly take the legacy branch against a v2
+			// core and get its correct 400 ("commandId invalid"). Mint here (mirrors
+			// unsubscribe above) when the form carries none.
+			const cap = await getCapabilities(event.fetch)
+			const result = cap.sourceModelV2
+				? await importOpmlV2(f, opml, String(form.get('commandId') ?? '') || crypto.randomUUID())
+				: await importOpml(f, opml)
 			return { ok: true, result }
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'import failed' })

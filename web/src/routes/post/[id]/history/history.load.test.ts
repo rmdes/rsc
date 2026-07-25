@@ -107,3 +107,64 @@ test('v2: local revisions carry a unique key even when every updatedAt is null',
 	expect(new Set(keys).size).toBe(keys.length) // yet the keys are all distinct
 	expect(keys).toEqual([0, 1]) // oldest-first sequence
 })
+
+// D15/D16: core's envelope already carries per-version title + enclosures
+// (projectHistory); the load must not drop them on the floor.
+test('v2: each version and the current entry carry their own title and enclosures — not dropped', async () => {
+	vi.resetModules()
+	const { load } = await import('./+page.server.ts')
+	const enc = { url: 'https://ex.com/a.mp3', mimeType: 'audio/mpeg', title: 'Episode 1', sizeBytes: null, durationSeconds: 90 }
+	const entry = (over: object) => ({ sequence: 0, title: null, content: 'x', markdown: null, permalink: null, enclosures: [], updatedAt: 'x', updatedAtProvenance: null, current: false, ...over })
+	const f = vi.fn(async (u: string | URL) =>
+		isCap(u)
+			? capOn()
+			: new Response(
+					JSON.stringify({
+						model: 'logical-v2',
+						logicalItemId: 'p1',
+						origin: 'remote',
+						currentSequence: 1,
+						journalCursor: 'jc',
+						entries: [
+							entry({ sequence: 1, title: 'New title', enclosures: [enc], current: true }),
+							entry({ sequence: 0, title: 'Old title', enclosures: [], updatedAt: '1' })
+						]
+					}),
+					{ status: 200 }
+				)
+	)
+	const out = (await load({ fetch: f, params: { id: 'p1' } } as never)) as {
+		currentTitle: string
+		currentEnclosures: { url: string }[]
+		versions: { title: string; enclosures: { url: string }[] }[]
+	}
+	expect(out.currentTitle).toBe('New title')
+	expect(out.currentEnclosures).toEqual([enc])
+	expect(out.versions[0].title).toBe('Old title')
+	expect(out.versions[0].enclosures).toEqual([])
+})
+
+// v1: getRevisions' Revision carries `title`; local posts never carry
+// enclosures (there are none to fabricate), so the v1 branch faithfully maps
+// title when present and always an empty enclosure list.
+test('v1: title is carried from the revision/post; enclosures are the faithful empty list (v1 local posts have none)', async () => {
+	const f = vi.fn(
+		async () =>
+			new Response(
+				JSON.stringify({
+					post: { content: 'now', source: 'local', editedAt: 'x', title: 'Current title' },
+					revisions: [{ content: 'first', seenAt: '1', title: 'First title' }]
+				}),
+				{ status: 200 }
+			)
+	)
+	const out = (await load({ fetch: f, params: { id: 'p1' } } as never)) as {
+		currentTitle: string
+		currentEnclosures: unknown[]
+		versions: { title: string; enclosures: unknown[] }[]
+	}
+	expect(out.currentTitle).toBe('Current title')
+	expect(out.currentEnclosures).toEqual([])
+	expect(out.versions[0].title).toBe('First title')
+	expect(out.versions[0].enclosures).toEqual([])
+})
