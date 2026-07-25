@@ -1504,3 +1504,18 @@ signature. Scoping anchors to the single-post view keeps the sanitizer delta
 right first cut. The permanent cost either way is that the XSS gate now allows one
 user-controlled attribute value, so the twins' policy comment must say why `id` is
 safe where `class` is not.
+
+- **Establish-time feed validation + instance auto-discovery** — the admin
+  establish-federation command accepts any http(s) URL unfetched, so a root
+  domain (https://rsschat.andysylvester.com/) becomes a "source" that can
+  only fail at poll time; cleanup today is revoke→block→purge, moderation
+  UX for a typo (found live 2026-07-25). Mechanism: establish probes the
+  URL once before creating anything — parses as a feed → proceed; HTML →
+  resolve via the existing discoverFeed machinery + the rss.chat firehose
+  convention (/users/rss.xml), and echo the resolved feed URL back on the
+  form for confirmation. Why: makes the wrong-URL state unrepresentable and
+  lets operators paste a bare domain. Grounding: discoverFeed +
+  normalizeSourceUrl + the subscribe flow's resolve pattern all exist;
+  establish just skips them. Tradeoff: establish gains a network fetch
+  (bounded, SSRF-gated like acquisition) and a discovery-failure error
+  path. Status: backlog — promote via brainstorm→spec.
