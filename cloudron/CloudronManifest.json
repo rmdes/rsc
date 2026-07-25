@@ -2,10 +2,10 @@
   "id": "net.textcaster.app",
   "title": "RSC",
   "author": "Ricardo Mendes",
-  "description": "RSC — Really Simple Conversations. A feeds-native social timeline — posts, replies, and conversations travel as RSS.",
+  "description": "RSC \u2014 Really Simple Conversations. A feeds-native social timeline \u2014 posts, replies, and conversations travel as RSS.",
   "tagline": "Really Simple Conversations",
   "version": "0.1.0",
-  "healthCheckPath": "/",
+  "healthCheckPath": "/healthz",
   "httpPort": 8000,
   "addons": {
     "localstorage": {},
@@ -17,5 +17,10 @@
   "website": "https://github.com/rmdes/rsc",
   "contactEmail": "hello@rmendes.net",
   "icon": "file://logo.png",
-  "tags": ["rss", "indieweb", "social", "feeds"]
+  "tags": [
+    "rss",
+    "indieweb",
+    "social",
+    "feeds"
+  ]
 }

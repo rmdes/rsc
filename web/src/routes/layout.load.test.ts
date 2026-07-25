@@ -34,3 +34,10 @@ test('load degrades to me: null, mailEnabled: false when the core is unreachable
 	const result = await load({ fetch, cookies, url: new URL('http://x/') } as never)
 	expect(result).toEqual({ me: null, mailEnabled: false })
 })
+
+test('healthz is a trivial liveness answer that never touches core', async () => {
+	const { GET } = await import('./healthz/+server.ts')
+	const res = GET({} as never) as Response
+	expect(res.status).toBe(200)
+	expect(await res.text()).toBe('ok')
+})
