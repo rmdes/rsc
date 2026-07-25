@@ -60,6 +60,13 @@
 		// avoiding a reset↔refetch loop against a broken core.
 		if (!data.sourceModelV2 || !data.isFirstPage || !data.journalCursor) return
 		const es = new EventSource(`/stream?v2=1&last=${encodeURIComponent(data.journalCursor)}`)
+		// A barrier reset (governance/moderation/reconciliation changed ordinary
+		// visibility) closes the stream and forces a fresh snapshot. Coalesce a
+		// burst of resets onto ONE cooled-down refetch: otherwise each reset fires
+		// an immediate full invalidateAll, and a cluster (e.g. approving several
+		// federation sources, or a reconciliation pass) storms the page with
+		// back-to-back reloads that also serialize with the user's own navigation.
+		let resetCooldown: ReturnType<typeof setTimeout> | null = null
 		const onFrame = (kind: 'upsert' | 'remove') => (e: Event) => {
 			const msg = e as MessageEvent
 			try {
@@ -84,9 +91,19 @@
 			live = []
 			edited = {}
 			removed = new Set()
-			invalidateAll()
+			// Coalesce: if a refetch is already scheduled, let it stand; otherwise
+			// schedule one after a short cooldown. Bounds reloads to ~1/s under a
+			// reset burst instead of one per reset.
+			if (resetCooldown) return
+			resetCooldown = setTimeout(() => {
+				resetCooldown = null
+				invalidateAll()
+			}, 1000)
 		})
-		return () => es.close()
+		return () => {
+			if (resetCooldown) clearTimeout(resetCooldown)
+			es.close()
+		}
 	})
 
 	// Group Textcasting peers by instance host: "which Textcasting authors is this instance hosting..."
