@@ -22,8 +22,9 @@ admin UI indistinguishably from deliberately-subscribed feeds.
    time; nothing later propagates instance-level decisions to members.
 2. **No membership representation, and the web page ignores provenance.**
    The admin DTO already carries `provenance` over the wire
-   (`types.ts:123`); the web page drops it deliberately. The UI fix is two
-   lines of web mapping — no DTO change.
+   (`types.ts:123`); the web page drops it deliberately. The provenance half
+   of the UI fix is two lines of web mapping; `overridden` is the one new
+   DTO field (see §Admin UI).
 
 ## Decided model
 
