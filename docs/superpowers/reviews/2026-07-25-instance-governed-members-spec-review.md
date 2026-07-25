@@ -109,3 +109,34 @@ one cascade loop inside `transition()`, one web `groupOf` branch — and the
 testing set shrinks to: cascade-through-matrix (incl. blocked-member skip),
 activate-pending on cascade, block/unblock round-trip, mint-during-block,
 and the journey-checklist federate row.
+
+---
+
+# Appendix (orchestrator session): correctness pass over rev 1 (15 findings)
+
+Ran against rev 1 (`8502879`) in parallel with the dual pass above; recorded
+here because several findings survive WHICHEVER mechanism wins:
+
+- **Cascade-on-approve gap (HIGH, survives all branches):** `approve` rarely
+  CHANGES governance (`source-repository.ts:78-81`; the pending path forces
+  `allowed` at `sqlite.ts:1175-1183`) — and under cascade-through-the-matrix
+  the member evaluation of `approve` hits a null cell (members have no
+  federation axis). Any fold must cascade the IMPLIED governance ('allow')
+  on federation approval, or newly-federated instances with echo-minted
+  quarantined members reproduce the marathon.
+- **Roll-up counts cannot ride a widened `?filter=governance`** (page-capped
+  50/100) — grouped-count read + lazy member expansion, or per-load derive.
+- **Member exclusion must cover the `review` group** (else quarantined
+  members flood it).
+- **"Federated instance" pins `f.status='approved'`** in any membership
+  predicate.
+- Predicate blast-radius map (adopt / MUST-NOT lists incl. `reconcile.ts:86`
+  which would invert the fix; `projector.ts:663` REMOTE_VISIBLE was omitted
+  by rev 1) — applies ONLY if the read-layer branch survives.
+- Plan-level: line-ref rot (`sqlite.ts:1238/:1250/:1516`),
+  `migrations.test.ts` pins `user_version` in four places, SSE one-reset
+  sufficiency CONFIRMED (first-page river only; publisher-page assertions
+  are navigation, not live), replay idempotency CONFIRMED clean, composite
+  EXISTS plan assertion if any read gate ships.
+
+*developed with the help of AI tools*
