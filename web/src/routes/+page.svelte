@@ -290,8 +290,8 @@
 		{#if peerHosts.length}
 			<details class="panel" open>
 				<summary>Connected instances</summary>
-				<!-- Textcasting peers only: remote feeds whose items carry
-				     source:markdown — instances that thread and interop with us. -->
+				<!-- Approved federation instances only (v2 governance plane) —
+				     instances that thread and interop with us. -->
 				<ul class="peer-list">
 					{#each peerHosts as p (p.host)}
 						<li>

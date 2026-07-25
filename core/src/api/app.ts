@@ -561,9 +561,26 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ following: await service.listFollowing(user.id) })
   })
 
-  // Textcasting peers: remote feeds whose items have carried source:markdown —
-  // the instances this one is verifiably interop-connected to. Public read.
+  // Connected instances: v2 (sources !== undefined) serves approved federation
+  // instances from the governance plane — legacy markdown-post authorship
+  // (v1's listTextcastingPeers) both wrongly includes plain markdown webfeeds
+  // and wrongly excludes federation peers with no legacy posts. v1 is
+  // unchanged. Public read.
   app.get('/peers', async (c) => {
+    if (sources !== undefined) {
+      const feds = await sources.repo.listApprovedFederationSources()
+      const peers: { handle: string; displayName: string; feedUrl: string }[] = []
+      for (const f of feds) {
+        let host: string
+        try {
+          host = new URL(f.canonicalUrl).host
+        } catch {
+          continue
+        }
+        peers.push({ handle: host, displayName: host, feedUrl: f.canonicalUrl })
+      }
+      return c.json({ peers })
+    }
     const peers = await service.listTextcastingPeers()
     return c.json({ peers: peers.map((u) => ({ handle: u.handle, displayName: u.displayName, feedUrl: u.feedUrl })) })
   })

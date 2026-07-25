@@ -775,6 +775,20 @@ export class SqliteRepository implements Repository, SourceRepository {
     return { items, nextCursor }
   }
 
+  // The v2 "Connected instances" read: approved federation instances only —
+  // legacy markdown-webfeed authorship (listTextcastingPeers above) neither
+  // includes nor excludes correctly post-cutover. See app.ts's /peers route.
+  async listApprovedFederationSources(): Promise<{ canonicalUrl: string }[]> {
+    const rows = this.raw.prepare(
+      `SELECT canonical_url FROM remote_sources_v2 s
+       WHERE s.governance = 'allowed'
+         AND EXISTS (SELECT 1 FROM federation_relationships_v2 f
+                     WHERE f.source_id = s.id AND f.status = 'approved')
+       ORDER BY canonical_url`,
+    ).all() as { canonical_url: string }[]
+    return rows.map((r) => ({ canonicalUrl: r.canonical_url }))
+  }
+
   async getSourceDetail(id: string): Promise<SourceDetail | undefined> {
     const row = this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(id) as RemoteSourceV2Row | undefined
     if (!row) return undefined
