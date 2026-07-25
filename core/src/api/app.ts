@@ -475,7 +475,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   }
 
   app.get('/admin/overview', (c) => c.json({
-    counts: service.instanceStats(),
+    counts: service.instanceStats(sources !== undefined),
     federation: { websub: websubMode, rssCloud: feeds.rssCloud, pushIn: pushInEnabled, publicUrl: feeds.publicUrl },
     mailEnabled,
     adminEmails: [...adminEmails],

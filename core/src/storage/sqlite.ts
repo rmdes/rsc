@@ -680,12 +680,25 @@ export class SqliteRepository implements Repository, SourceRepository {
     })()
   }
 
-  instanceStats(): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number } {
+  // Under RSC_SOURCE_MODEL_V2, remote feeds and remote items live in the v2
+  // tables (remote_sources_v2, logical_items_v2), not users/posts — a plain
+  // union would double-count a converted DB that still has rows in both. So
+  // this branches on the flag rather than unioning; the v1 query stays the
+  // untouched original.
+  instanceStats(v2: boolean): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number } {
+    if (!v2) {
+      return this.raw.prepare(
+        `SELECT (SELECT COUNT(*) FROM user WHERE isAnonymous = 0 OR isAnonymous IS NULL) AS registeredUsers,
+                (SELECT COUNT(*) FROM user WHERE isAnonymous = 1) AS guests,
+                (SELECT COUNT(*) FROM users WHERE kind = 'remote') AS remoteFeeds,
+                (SELECT COUNT(*) FROM posts) AS posts`,
+      ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
+    }
     return this.raw.prepare(
       `SELECT (SELECT COUNT(*) FROM user WHERE isAnonymous = 0 OR isAnonymous IS NULL) AS registeredUsers,
               (SELECT COUNT(*) FROM user WHERE isAnonymous = 1) AS guests,
-              (SELECT COUNT(*) FROM users WHERE kind = 'remote') AS remoteFeeds,
-              (SELECT COUNT(*) FROM posts) AS posts`,
+              (SELECT COUNT(*) FROM remote_sources_v2) AS remoteFeeds,
+              (SELECT COUNT(*) FROM posts) + (SELECT COUNT(*) FROM logical_items_v2 WHERE origin = 'remote') AS posts`,
     ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   }
 

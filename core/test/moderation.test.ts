@@ -23,7 +23,7 @@ test('deleteLocalAccount removes the core user + posts + better-auth rows', asyn
 
   expect(await service.deleteLocalAccount(handle)).toEqual({ ok: true })
   expect(await repo.getUserByHandle(handle)).toBeUndefined()                                    // core user gone
-  expect(repo.instanceStats().posts).toBe(0)                                                    // their post cascaded away
+  expect(repo.instanceStats(false).posts).toBe(0)                                                    // their post cascaded away
   expect(repo.raw.prepare('SELECT id FROM user WHERE id = ?').get(authRow.id)).toBeUndefined()  // better-auth user gone
   expect(repo.raw.prepare('SELECT id FROM session WHERE userId = ?').get(authRow.id)).toBeUndefined()
   expect(repo.raw.prepare('SELECT id FROM account WHERE userId = ?').get(authRow.id)).toBeUndefined()
@@ -119,6 +119,6 @@ test('deleteLocalAccount removes an account whose post was edited (clears post_r
 
   expect(await service.deleteLocalAccount(handle)).toEqual({ ok: true })
   expect(await repo.getUserByHandle(handle)).toBeUndefined()
-  expect(repo.instanceStats().posts).toBe(0)
+  expect(repo.instanceStats(false).posts).toBe(0)
   expect(await repo.getRevisions(created.post.id)).toEqual([]) // revisions cascaded away
 })
