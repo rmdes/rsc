@@ -92,6 +92,43 @@ test('v2 local reply to a REMOTE parent emits the remote absolute URL as source:
   expect(xml).toContain(`<source:inReplyTo>${remoteUrl}</source:inReplyTo>`)
 })
 
+test('v2 local reply to an OPAQUE-ONLY remote parent emits the opaque guid as source:inReplyTo (v1 replyTo.guid parity)', async () => {
+  const { repo, service, db, app } = await v2app(PUB)
+  const remoteId = 'rem-op'
+  const wireGuid = 'opaque-wire-guid-123' // the parent's raw <guid>, no permalink
+  // A remote logical item whose ONLY identity key is an opaque publisher-scoped
+  // guid (as reconcile mints for a permalink-less ingested item: kind is scoped,
+  // key IS the bare wire guid — reconcile.ts:284/322). No permalink key exists.
+  repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'none', NULL, NULL, NULL, ?)`).run(remoteId, NOW, NOW)
+  repo.raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('opaque:publisher:pub-1', ?, ?)`).run(wireGuid, remoteId)
+
+  repo.raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at) VALUES ('u-bob','local','bob','Bob',NULL,?)`).run(NOW)
+  const bob = (await service.getUserByHandle('bob'))!
+  db.write((tx) => createLocalPost({ tx, author: bob, content: 'REPLYOPAQUE', replyToId: remoteId, now: NOW, publicUrl: PUB }))
+
+  const xml = await (await app.request('/users/bob/feed.xml')).text()
+  // The opaque guid is a non-URL ref ⇒ isPermaLink="false"; byte-matches v1's
+  // replyTo.guid fallback, so a peer can reassemble the thread on the parent's guid.
+  expect(xml).toContain(`<source:inReplyTo isPermaLink="false">${wireGuid}</source:inReplyTo>`)
+})
+
+test('precedence: a remote parent with BOTH a permalink AND an opaque key emits the permalink (permalink wins over guid)', async () => {
+  const { repo, service, db, app } = await v2app(PUB)
+  const remoteId = 'rem-both'
+  const remoteUrl = 'https://a.example/post/orig'
+  repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'none', NULL, NULL, NULL, ?)`).run(remoteId, NOW, NOW)
+  repo.raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('permalink', ?, ?)`).run(remoteUrl, remoteId)
+  repo.raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('opaque:publisher:pub-1', 'opaque-loser', ?)`).run(remoteId)
+
+  repo.raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at) VALUES ('u-bob','local','bob','Bob',NULL,?)`).run(NOW)
+  const bob = (await service.getUserByHandle('bob'))!
+  db.write((tx) => createLocalPost({ tx, author: bob, content: 'REPLYBOTH', replyToId: remoteId, now: NOW, publicUrl: PUB }))
+
+  const xml = await (await app.request('/users/bob/feed.xml')).text()
+  expect(xml).toContain(`<source:inReplyTo>${remoteUrl}</source:inReplyTo>`)
+  expect(xml).not.toContain('opaque-loser')
+})
+
 test('O2 archive: a v1-era reply (absolute in_reply_to) still emits source:inReplyTo after v2 projection', async () => {
   const { repo, app } = await v2app(PUB)
   const parentUrl = `${PUB}/post/root`

@@ -50,10 +50,14 @@ function loadPost(tx: WriteTx, id: string): PostRow | undefined {
 function parentReplyRef(tx: WriteTx, parentId: string): string | null {
   const local = tx.prepare(`SELECT url FROM posts WHERE id = ? AND source = 'local'`).get(parentId) as { url: string | null } | undefined
   if (local) return local.url ?? parentId
-  // ponytail: opaque-only remote parents have no permalink key ⇒ null (no cross-
-  // instance permalink ref); local ancestry still holds via parent_logical_item_id.
+  // Precedence mirrors v1's `replyTo.url ?? replyTo.guid`: permalink first, then
+  // the opaque guid. reconcile stores the opaque key with a publisher-scoped kind
+  // but its `key` column IS the bare wire guid (reconcile.ts:322 claims key=v.key),
+  // so a peer string-matches it against the parent's own <guid> exactly as under v1.
   const k = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'permalink' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
-  return k ? k.key : null
+  if (k) return k.key
+  const o = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
+  return o ? o.key : null
 }
 
 // The derived root of the chain that ends at `parentId` (inclusive) — the topmost
