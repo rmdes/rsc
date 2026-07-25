@@ -295,6 +295,37 @@ test('a remote reply to an unknown parent is missing, stays in the river, and ex
   expect(env.timeline.map((d) => d.id)).toContain(id) // river includes unresolved replies
 })
 
+// D4 (V2 seam): an h-cite in-reply-to carrying author + snippet must survive
+// acquisition → reconcile → projection, exactly as v1 ingest captures it. Drives
+// the REAL h-feed acquisition path (extractHfeed → parseInReplyTo).
+const HFEED_HCITE = `<html><body><div class="h-feed"><div class="h-entry">` +
+  `<div class="u-in-reply-to h-cite"><a class="u-url" href="https://other.test/parent">p</a>` +
+  `<span class="p-author h-card"><span class="p-name">Dave</span></span>` +
+  `<p class="e-content">the original message here</p></div>` +
+  `<p class="e-content">my indie reply</p><a class="u-url" href="https://indie.test/n1">l</a>` +
+  `</div></div></body></html>`
+
+test('D4: a remote reply with an h-cite parent projects the asserted author + snippet', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  await acquire(db, 's1', 'https://feed.test/f', HFEED_HCITE)
+  drain(store)
+  const id = oneRemoteId(raw)
+  const dto = db.read((tx) => projectItem(tx, id, ANON))!
+  expect(dto.parentResolutionState).toBe('missing')
+  expect(dto.replyContext).toEqual({ kind: 'asserted_external', authorLabel: 'Dave', snippet: 'the original message here', url: 'https://other.test/parent' })
+})
+
+test('D4: a remote reply whose parent ref carries no author/snippet keeps url only', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  seedJob(raw, { sourceId: 's1', deliveryKey: { kind: 'opaque', key: 'g1' }, material: { content: 'reply body', inReplyTo: 'https://other.test/parent' } })
+  drain(store)
+  const id = oneRemoteId(raw)
+  const dto = db.read((tx) => projectItem(tx, id, ANON))!
+  expect(dto.replyContext).toEqual({ kind: 'asserted_external', authorLabel: null, snippet: null, url: 'https://other.test/parent' })
+})
+
 // ---- blocked source removes ordinary visibility (spec §3.1-3.2) -------------
 
 test('an item whose only source is blocked has no ordinary-eligible delivery and does not project', async () => {

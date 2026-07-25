@@ -475,11 +475,11 @@ function federatedRemote(tx: ReadTx, itemId: string): boolean {
 interface RemoteMaterial {
   title: string | null; content: string | null; link: string | null; inReplyTo: string | null
 }
-function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; normalized: { permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null } } | null {
+function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; normalized: { permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null } } | null {
   const v = tx.prepare(`SELECT canonical_material, normalized_json FROM observation_versions_v2 WHERE id = ?`).get(versionId) as { canonical_material: Buffer; normalized_json: string } | undefined
   if (!v) return null
   const material = JSON.parse(v.canonical_material.toString('utf8')) as RemoteMaterial
-  const normalized = JSON.parse(v.normalized_json) as { permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null }
+  const normalized = JSON.parse(v.normalized_json) as { permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }
   return { material, normalized }
 }
 
@@ -574,7 +574,9 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
   let replyContext: LogicalItemDto['replyContext'] = null
   if (state === 'missing' || state === 'ambiguous') {
     const url = safeUrl(mat.material.inReplyTo)
-    if (url) replyContext = { kind: 'asserted_external', authorLabel: null, snippet: null, url }
+    // D4: fill the asserted author/snippet from the observation's normalizedJson
+    // (an h-cite in-reply-to carries them; a bare ref leaves them null).
+    if (url) replyContext = { kind: 'asserted_external', authorLabel: mat.normalized.replyContextAuthor ?? null, snippet: mat.normalized.replyContextSnippet ?? null, url }
   }
   return {
     kind: 'logical_item',

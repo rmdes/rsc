@@ -141,6 +141,11 @@ interface RawItem {
   // undefined. Its URL is what V3 origin-verification fetches (spec §7). The
   // legacy ingest path captures the same field (ingest.ts sourceFeedUrl).
   sourceFeedUrl?: string | null
+  // D4: an h-cite in-reply-to's asserted author + snippet (microformats path only;
+  // RSS/Atom/JSON in-reply-to are bare refs). Extracted by v1's parseInReplyTo via
+  // discoverFeed; rides the observation's normalizedJson blob, not the fingerprint.
+  replyContextAuthor?: string | null
+  replyContextSnippet?: string | null
   enclosures: EnclosureDto[]
   // Optional stable identity seed for the fallback delivery key. The feed adapters
   // leave it undefined (their rawDate is already the RAW value — empty when absent —
@@ -177,6 +182,10 @@ function extractHfeed(html: string, pageUrl: string): RawItem[] {
     updatedAt: e.updatedAt,
     inReplyTo: e.inReplyTo,
     sourceName: e.sourceName,
+    // D4: discoverFeed already ran parseInReplyTo on the h-cite; carry its author +
+    // snippet through instead of dropping them (v1 ingest.ts:79-80 keeps the same pair).
+    replyContextAuthor: e.replyContextAuthor,
+    replyContextSnippet: e.replyContextSnippet,
     enclosures: [],
     identitySeed: e.guid,
   }))
@@ -325,7 +334,7 @@ export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'
     // originFeedUrl (spec §7): the item's claimed origin feed (RSS <source url>),
     // http(s) only — reconcile schedules verification from it on aggregate claims.
     const originFeedUrl = it.sourceFeedUrl && /^https?:\/\//i.test(it.sourceFeedUrl) ? it.sourceFeedUrl : null
-    const normalized = { keyKind, key, permalink: it.link ? normalizePermalink(it.link) : null, inReplyTo: it.inReplyTo, enclosures: it.enclosures, originFeedUrl }
+    const normalized = { keyKind, key, permalink: it.link ? normalizePermalink(it.link) : null, inReplyTo: it.inReplyTo, enclosures: it.enclosures, originFeedUrl, replyContextAuthor: it.replyContextAuthor ?? null, replyContextSnippet: it.replyContextSnippet ?? null }
     candidates.push({ wireOrdinal: ordinal, keyKind, key, fingerprint, canonicalMaterial, rawEvidenceJson: JSON.stringify(rawEvidence), normalizedJson: JSON.stringify(normalized), enclosures: it.enclosures })
   }
   return { adapter, candidates, findings, candidateCount, examined, omitted, itemsTruncated: omitted > 0 }
