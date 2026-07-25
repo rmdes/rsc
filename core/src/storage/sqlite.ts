@@ -1523,12 +1523,25 @@ export async function createSqliteRepository(filename: string): Promise<SqliteRe
   const sqlite = new Database(filename)
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
+  // Cap the WAL file so a big write burst can't leave a giant file behind. Without
+  // this (default -1 = unbounded) the WAL grows during a burst and NEVER shrinks:
+  // the only TRUNCATE was at close() and it's busy-blocked while the app holds
+  // readers, so a heavy-federation instance grew a 2.1GB WAL (main's is 11MB) whose
+  // per-op scans/checkpoints stalled the synchronous event loop for seconds.
+  // journal_size_limit truncates the WAL back to this cap after each checkpoint.
+  sqlite.pragma('journal_size_limit = 67108864') // 64MB
   // Cheap read-path wins (v2 read model): memory-map the DB, a bigger page cache,
   // and temp tables in RAM. Additive — plans/latency only, never results.
   sqlite.pragma('mmap_size = 268435456') // 256MB memory-mapped I/O
   sqlite.pragma('cache_size = -65536') // 64MB page cache (negative = KiB)
   sqlite.pragma('temp_store = MEMORY')
   migrate(sqlite)
+  // One-time reclamation of an already-bloated WAL. Runs HERE — after migrate,
+  // before the server/streams/poll open any second reader — so this connection is
+  // EXCLUSIVE and TRUNCATE is never busy-blocked (the running-app checkpoint always
+  // is). On a healthy DB it is a fast no-op; on the 2.1GB-WAL instance it shrinks
+  // the file to zero on the next boot. journal_size_limit keeps it capped after.
+  sqlite.pragma('wal_checkpoint(TRUNCATE)')
   // SQLite-recommended self-tuning ANALYZE on open; cheap, refreshes stat plans.
   sqlite.pragma('optimize')
   const db = new Kysely<DB>({ dialect: new SqliteDialect({ database: sqlite }) })

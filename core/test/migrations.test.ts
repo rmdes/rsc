@@ -20,6 +20,19 @@ test('a fresh database migrates to the current version and works', async () => {
   raw.close()
 })
 
+test('the WAL is size-capped so a write burst cannot leave a giant file behind', async () => {
+  // Regression: with no journal_size_limit (default -1) the WAL grows unbounded and
+  // never shrinks while the app holds readers — a heavy instance grew a 2.1GB WAL
+  // that stalled the event loop. A file DB uses WAL; assert the cap is applied.
+  const file = tempDb()
+  const repo = await createSqliteRepository(file)
+  // journal_mode is persisted in the DB header; journal_size_limit is per-connection,
+  // so it must be read on the repo's OWN connection, not a fresh one.
+  expect(repo.raw.pragma('journal_mode', { simple: true })).toBe('wal')
+  expect(repo.raw.pragma('journal_size_limit', { simple: true })).toBe(67108864)
+  repo.close()
+})
+
 test('reopening an already-current database is a no-op', async () => {
   const file = tempDb()
   const first = await createSqliteRepository(file)
