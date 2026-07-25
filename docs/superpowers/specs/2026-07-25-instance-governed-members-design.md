@@ -1,7 +1,8 @@
 # Instance-governed members — design
 
 **Date:** 2026-07-25
-**Status:** brainstormed with the maintainer; approved section-by-section; ready for plan
+**Status:** rev 1 — folds the clean-context ponytail review (12 findings, all
+accepted; two written decisions below). Ready for maintainer spec review.
 **Trigger:** live-operations find on rsc.rmdes.be — federating one rss.chat
 instance minted dozens of per-author `origin_verification` sources that (a)
 required one-by-one manual approval after the migration and (b) render in the
@@ -14,9 +15,12 @@ admin UI indistinguishably from deliberately-subscribed feeds.
    time*; approving the instance later does not lift already-minted members.
    That is the approval-marathon mechanism.
 2. **No membership representation.** The minted source row
-   (`verification.ts:300`) carries no link to its instance; `provenance` is
-   deliberately excluded from the admin DTO (pinned by test), so the UI
-   *cannot* distinguish a member from a subscription.
+   (`verification.ts:300`) carries no link to its instance. The admin DTO
+   ALREADY carries `provenance` over the wire (`types.ts:123`,
+   `source-ops-api.test.ts:75`) — the web page deliberately ignores it
+   (`admin/feeds/+page.server.ts`); the "no provenance" pin is on the PUBLIC
+   following DTO (`source-following.test.ts`), a different surface. So the UI
+   fix is two lines of web mapping, not a DTO supersession.
 
 ## Decided model
 
@@ -35,48 +39,83 @@ Two tail-append columns on `remote_sources_v2`:
   `<source>` is a user on instance B), so any mint-time parent column would be
   actively wrong; the host is truthy by construction and membership self-heals
   when federation is established later.
-- **`governed_by`** (TEXT CHECK `('instance','explicit')`). Mints
-  (`origin_verification`) start `'instance'`. Any DIRECT admin transition on a
-  member flips it to `'explicit'`, permanently. Subscriptions, established
-  federations, and migrated rows are `'explicit'` (deliberate acts).
+- **`overridden`** (INTEGER NOT NULL DEFAULT 0 CHECK `(overridden IN (0,1))`
+  — the house bit pattern, e.g. `admin_retained`; a two-value TEXT enum would
+  violate the wide-CHECK rule and need a rebuild to widen). Mints
+  (`origin_verification`) start 0 (instance-governed). Any DIRECT admin
+  transition on a member sets 1, permanently. All non-member rows are 1
+  (deliberate acts). Recorded so it is not relitigated: a zero-column
+  alternative (derive overridden from administrator audit rows) is defeated
+  ONLY by the heal's decision to erase the marathon hand-approvals.
+
+  **Host rule (pinned, one implementation twice):** lowercase; strip port,
+  userinfo, and trailing dot; `www.` is NOT stripped (distinct origins).
+  Because migrations are SQL-only (`MIGRATIONS` exec'd verbatim,
+  `sqlite.ts:1301`), the backfill implements this rule in SQL and the write
+  path uses one exported JS helper; the fixture test feeds a mixed-case and a
+  ported URL to both and asserts they agree.
 
 ## Mechanics
 
-**Ordinary instance transitions cascade in the same transaction.**
-`approve`/`allow`/`quarantine` on a federated aggregate also updates every
-same-host source where `governed_by = 'instance'` to the instance's new
-governance — one ledgered command (the instance transition), one system-actor
-`source_audit_v2` row per moved member (`action: 'instance_cascade'`, the
-command id shared), member count in the command result. No new command kinds,
-no fingerprint changes.
+**Ordinary instance transitions cascade in the same transaction.** Whenever
+a federated aggregate's transition CHANGES its governance to anything except
+`'blocked'` (condition-based — the `sqlite.ts:1251` comparison — not an
+action list, so `unblock`'s blocked→quarantined cascades too and members can
+never end up more permissive than their instance), the same transaction
+updates every same-host `origin_verification` source with `overridden = 0`,
+routing each member through the SAME machinery the direct path uses:
+`advancePolicyGeneration` + fan-out row, and `activatePendingSubscriptions`
+on allow/approve (`sqlite.ts:32-39,163-166,1240`) — a bare governance UPDATE
+would strand stale policy generations. One system-actor `source_audit_v2`
+row per moved member (`action: 'instance_cascade'`, shared command id); ONE
+`journalPolicyReset` (the instance's). No new command kinds, no fingerprint
+changes, no widening of `SourceTransitionResult` (the member count is
+readable from the shared-command-id audit rows).
 
 **Instance block is enforced at the read layer, not by cascade.** Blocking an
-aggregate rewrites NO member rows. The two read gates gain one indexed
-`EXISTS`:
+aggregate rewrites NO member rows. The projector and repo filter
+`governance = 'allowed'` verbatim at EIGHT sites (`eligibleDeliveries`,
+`eligibleAuthorClaims` :359, `publisherName` :376, `itemAssertedName` :528,
+`resolvePublisher` :650, the publisher lens :696, and the drains) — those
+collapse into ONE exported "governance-effective" SQL fragment + JS
+predicate, and the instance-block clause is added there once:
 
-- scheduler eligibility (`store.ts:689` `listSchedulableSources`): a source is
-  not schedulable if a blocked federated aggregate exists on its
-  `canonical_host`;
-- delivery eligibility (projector `eligibleDeliveries` /`REMOTE_VISIBLE`
-  governance join): a delivery is ineligible under the same condition.
+> a source is governance-effective iff its own governance is `allowed` AND
+> NOT (it is an `origin_verification` row whose `canonical_host` carries a
+> BLOCKED federated aggregate).
 
-Consequences, all intended: the block silences members minted AFTER the
-block; unblock is lossless (nothing was overwritten — explicit overrides and
-instance-governed states resume as-is); no pre-block bookkeeping exists to
-get wrong. Mint-time inheritance is kept (a new member of a quarantined
-instance starts quarantined) but ceases to matter for tedium —
-`governed_by='instance'` means the next cascade picks the member up.
+This makes "absolute" true everywhere — without it, an item visible on other
+evidence would still take its byline/publisher from a blocked instance's
+member (the attribution leak). Two scoping decisions, recorded:
+
+- **Members only:** the clause keys on `provenance = 'origin_verification'`.
+  A feed the operator DELIBERATELY subscribed to on the same host is a
+  top-level explicit act and survives an instance block (also prevents
+  collateral on multi-tenant hosts — substack.com et al.). Blocking it is
+  its own one-click decision.
+- **No scheduler gate.** Members carry no subscription or federation rows,
+  so `listSchedulableSources` (`store.ts:686-692`) never schedules them —
+  their deliveries arrive through verification batches, which already stop
+  when the aggregate is blocked. A host clause there would be dead code for
+  members and could ONLY silence deliberate subscriptions: cut.
+
+Unblock is lossless (nothing was overwritten); members minted DURING a block
+are dark by the same read clause. Mint-time inheritance is kept but ceases
+to matter — `overridden = 0` means the next cascade picks the member up.
 
 ## Migration + one-time heal (tail-append, next user_version)
 
-Backfill `canonical_host` for every source. Set `governed_by`: `'instance'`
-for ALL `origin_verification` rows — **including members the operator
-hand-approved during the marathon** (deliberate call: those were workarounds
-for the propagation hole, not per-member judgments; freezing them as
-overrides would exclude them from future cascades — a real judgment is one
-click to re-establish) — `'explicit'` for everything else. Then re-sync:
-every instance-governed member adopts its same-host federated instance's
-current governance. Flag-off byte-identical; v2 tables only.
+One ordered migration entry: (1) backfill `canonical_host` (SQL host rule
+above); (2) `overridden = 0` for ALL `origin_verification` rows —
+**including members the operator hand-approved during the marathon**
+(deliberate call: workarounds for the propagation hole, not per-member
+judgments; a real judgment is one click to re-establish) — `1` for
+everything else; (3) re-sync: every instance-governed member adopts its
+same-host federated instance's current governance, **excluding blocked
+instances** (`AND i.governance != 'blocked'` — writing `blocked` onto member
+rows would violate the block-rewrites-nothing invariant on day one), with a
+deterministic pick when several federated aggregates share a host (earliest
+`created_at`, then id). Flag-off byte-identical; v2 tables only.
 
 ## Admin UI
 
@@ -87,10 +126,13 @@ current governance. Flag-off byte-identical; v2 tables only.
   — it finally lists only deliberate subscriptions.
 - Members of non-federated hosts stay in the general list with a small
   `via verification` hint (no instance row exists to nest under).
-- DTO: `SourceSummary` gains `governedBy` and
-  `memberOfInstance: { sourceId, host } | null` (null when no federated
-  aggregate shares the host) — a DECLARED supersession of the "no
-  provenance-adjacent DTO fields" pin; raw `provenance` remains unexposed.
+- Wire: the admin DTO already carries `provenance`; the web page maps it
+  (two lines) plus the new `overridden`. Membership/host derive client-side
+  from `canonicalUrl` — no `memberOfInstance` field, no DTO supersession.
+- The page's governance fetch (`?filter=governance`, added 2026-07-25)
+  widens with one OR — rows whose `canonical_host` matches a federated
+  aggregate's — so the roll-up counts and member expansion are complete on
+  every page (the paginated page fetch alone cannot supply them).
 
 ## Edges
 
@@ -108,15 +150,19 @@ current governance. Flag-off byte-identical; v2 tables only.
 1. Cascade-in-one-transaction: approve instance → every instance-governed
    member flips in the same tx; explicit members untouched; audit rows +
    count present.
-2. Block-absolute: an overridden-allowed member goes dark at both read gates;
-   a member minted DURING the block is dark; unblock restores overrides
-   losslessly.
+2. Block-absolute through the ONE governance-effective predicate: an
+   overridden-allowed member goes dark on timeline, byline, publisher name,
+   AND publisher page; a member minted DURING the block is dark; a
+   deliberate same-host subscription stays visible; unblock restores
+   overrides losslessly.
 3. Sticky flip: a direct member transition sets `explicit` and survives the
    next instance cascade.
 4. The heal migration on a marathon-shaped fixture (quarantined-minted +
    hand-approved members → all instance-governed, synced to the instance).
-5. Guardrail: `canonical_host` index covered by the reflective FK/index test;
-   both `EXISTS` gates proven SEARCH-not-SCAN.
+5. The `canonical_host` index is proven by an `EXPLAIN QUERY PLAN`
+   SEARCH-not-SCAN assertion in the existing hot-lookup test (NOT by the
+   reflective FK guardrail — `canonical_host` is not a foreign key, and that
+   test's value is being exception-free).
 6. Journey checklist gains: "federate an instance; moderate one member;
    block the instance; unblock it" with expected states at each step.
 
