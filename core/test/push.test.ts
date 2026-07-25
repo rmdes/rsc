@@ -1,4 +1,5 @@
 import { test, expect, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
@@ -163,6 +164,23 @@ test('self mode fat ping advertises source:comments for a post with a reply', as
   const topic = 'https://cast.example.com/users/alice/feed.xml'
   await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   await service.createLocalPostAs('bob', 'Bob', 'a reply', root)
+  const bodies: string[] = []
+  const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(String(init?.body)); return new Response('', { status: 200 }) })
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(root)
+  expect(bodies[0]).toContain(`<source:comments count="1" feedUrl="https://cast.example.com/post/${root.id}/comments.xml"/>`)
+})
+
+test('O5: self mode fat ping counts a REMOTE logical reply (v2) so the push body matches the pull', async () => {
+  const { repo, service, config } = await setup(SELF_ENV)
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post')
+  const topic = 'https://cast.example.com/users/alice/feed.xml'
+  await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  // A v2 remote reply lives in logical_items_v2, NOT posts. countRepliesByPostIds
+  // must union it in — the projector's directReplyCount (the PULL body) does.
+  const NOW = '2026-07-25T00:00:00.000Z'
+  repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'local', ?, 'none', NULL, NULL, NULL, ?)`).run(root.id, NOW, NOW)
+  repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'resolved', ?, NULL, NULL, ?)`).run(randomUUID(), NOW, root.id, NOW)
   const bodies: string[] = []
   const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(String(init?.body)); return new Response('', { status: 200 }) })
   const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })

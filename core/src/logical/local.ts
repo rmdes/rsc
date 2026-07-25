@@ -159,6 +159,7 @@ function buildDto(
     content: post.content,
     contentMarkdown: post.contentMarkdown,
     permalink: post.permalink,
+    originGuid: null, // local items derive their guid from permalink/id (localGuid)
     inReplyToRef: post.inReplyToRef,
     sourceLink: null,
     replyContext: null,

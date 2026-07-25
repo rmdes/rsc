@@ -320,7 +320,7 @@ function dto(id: string, parent: string | null): LogicalItemDto {
     kind: 'logical_item', id, origin: 'remote', parentResolutionState: parent ? 'resolved' : 'none',
     parentLogicalItemId: parent, threadRootId: null,
     selectedAuthor: { kind: 'remote_publisher', id: 'p', displayName: 'P', canonicalFeedUrl: null, profileAvailable: false, attributionLevel: 'source_scoped_fallback' },
-    title: null, content: 'x', contentMarkdown: 'x', permalink: null, inReplyToRef: null, sourceLink: null, replyContext: null,
+    title: null, content: 'x', contentMarkdown: 'x', permalink: null, originGuid: null, inReplyToRef: null, sourceLink: null, replyContext: null,
     enclosures: [], publishedAt: NOW, updatedAt: null, updatedAtProvenance: null,
     directReplyCount: 0, conversationReplyCount: 0, classification: { personal: false, federated: true },
   }

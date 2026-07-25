@@ -62,6 +62,11 @@ export type LogicalItemDto = {
   content: string | null
   contentMarkdown: string | null
   permalink: string | null
+  // The origin wire <guid> a REMOTE item re-emits (v1 parity: posts.guid = the
+  // ingested guid) — its delivery key: an opaque delivery's bare wire guid, or a
+  // permalink delivery's normalized permalink (guid == permalink, rss.chat). Null
+  // for a local item (its guid is derived from permalink/id by localGuid).
+  originGuid: string | null
   // The stored reply-parent wire reference (posts.in_reply_to for a local item):
   // an absolute permalink/guid the outbound feed re-emits as <source:inReplyTo>.
   // Null for a top-level item and (for now) for remote items. Distinct from

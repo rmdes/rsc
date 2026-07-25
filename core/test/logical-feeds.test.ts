@@ -111,3 +111,46 @@ test('the comments feed of a childless post is a valid empty feed with no placeh
   expect(xml).toContain('<rss')
   expect(xml).not.toContain('placeholder')
 })
+
+// A remote reply resolvable to a LOCAL post: full delivery/observation/job rows so
+// drain reconciles it, resolves the parent by the local permalink key, and makes it
+// ordinary-visible (governance allowed). deliveryKey.kind ∈ opaque|permalink is what
+// becomes the item's emitted origin <guid>.
+function seedRemoteReply(raw: Raw, opts: { sourceId: string; deliveryKey: { kind: string; key: string }; permalink: string | null; inReplyTo: string; content: string }): void {
+  raw.prepare(`INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at) VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`).run(opts.sourceId, `https://feed.test/${opts.sourceId}`, NOW)
+  const runId = randomUUID(); const deliveryId = randomUUID(); const versionId = randomUUID(); const jobId = randomUUID()
+  const material = { v: 1, keyKind: opts.deliveryKey.kind, key: opts.deliveryKey.key, title: 't', content: opts.content, link: opts.permalink, published: '', updated: null, inReplyTo: opts.inReplyTo, enclosures: [] }
+  const canonical = Buffer.from(JSON.stringify(material), 'utf8')
+  const fingerprint = createHash('sha256').update(canonical).digest('hex')
+  const normalized = JSON.stringify({ keyKind: opts.deliveryKey.kind, key: opts.deliveryKey.key, permalink: opts.permalink, inReplyTo: opts.inReplyTo, enclosures: [] })
+  const rawEvidence = JSON.stringify({ title: 't', sourceName: 'Feed', link: opts.permalink, published: '', updated: null, enclosureCount: 0 })
+  raw.prepare(`INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json) VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', '{}', NULL, NULL, NULL)`).run(runId, opts.sourceId, NOW, NOW, NOW)
+  raw.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(deliveryId, opts.sourceId, opts.deliveryKey.kind, opts.deliveryKey.key, NOW, NOW, runId)
+  raw.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?, ?, 1, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?)`).run(versionId, deliveryId, fingerprint, canonical, NOW, runId, NOW, runId, rawEvidence, normalized)
+  raw.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`).run(jobId, runId, versionId, NOW, NOW)
+}
+
+const remoteIdForSource = (raw: Raw, sourceId: string): string =>
+  (raw.prepare(`SELECT ik.logical_item_id AS id FROM logical_identity_keys_v2 ik JOIN deliveries_v2 d ON d.id = ik.key WHERE ik.kind = 'delivery' AND d.source_id = ?`).get(sourceId) as { id: string }).id
+
+test('O4: comments.xml emits a remote reply ORIGIN guid (permalink + opaque wire guid), never our internal UUID', async () => {
+  const { app, repo, store, materialize } = await makeApp()
+  seedUser(repo.raw, 'u1', 'alice')
+  seedPost(repo.raw, { id: 'root', author: 'u1', content: 'ROOTBODY', url: 'https://rsc.test/post/root' })
+  materialize('root') // mint root's permalink identity key so remote replies resolve to it
+  seedRemoteReply(repo.raw, { sourceId: 'sA', deliveryKey: { kind: 'permalink', key: 'https://origin.test/reply-a' }, permalink: 'https://origin.test/reply-a', inReplyTo: 'https://rsc.test/post/root', content: 'REPLYA' })
+  seedRemoteReply(repo.raw, { sourceId: 'sB', deliveryKey: { kind: 'opaque', key: 'opaque-guid-b' }, permalink: null, inReplyTo: 'https://rsc.test/post/root', content: 'REPLYB' })
+  drain(store)
+  const idA = remoteIdForSource(repo.raw, 'sA')
+  const idB = remoteIdForSource(repo.raw, 'sB')
+  const xml = await (await app.request('/post/root/comments.xml')).text()
+  expect(xml).toContain('REPLYA') // both replies are serialized
+  expect(xml).toContain('REPLYB')
+  // The emitted <guid> is the ORIGIN wire guid (v1 re-emitted posts.guid) — the
+  // permalink for a permalink delivery, the bare wire guid for an opaque one.
+  expect(xml).toContain('<guid isPermaLink="false">https://origin.test/reply-a</guid>')
+  expect(xml).toContain('<guid isPermaLink="false">opaque-guid-b</guid>')
+  // NOT our internal UUID (the defect: the origin instance can't dedupe its own item).
+  expect(xml).not.toContain(idA)
+  expect(xml).not.toContain(idB)
+})

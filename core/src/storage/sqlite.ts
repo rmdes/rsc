@@ -548,7 +548,24 @@ export class SqliteRepository implements Repository, SourceRepository {
       .where('in_reply_to_post_id', 'in', ids)
       .groupBy('in_reply_to_post_id')
       .execute()
-    return new Map(rows.map((r) => [r.in_reply_to_post_id as string, Number(r.n)]))
+    const counts = new Map(rows.map((r) => [r.in_reply_to_post_id as string, Number(r.n)]))
+    // Union the v2 remote logical replies (they live in logical_items_v2, NOT posts),
+    // mirroring the projector's childIds remote arm EXACTLY (projector.ts childIds:
+    // origin='remote' AND parent_state='resolved' AND parent_logical_item_id = ?) so
+    // the fat-ping source:comments count matches the pull body's directReplyCount.
+    // Flag-OFF: v1 writes remote replies to `posts`, never here, so this adds +0 and
+    // never double-counts (a remote reply is in EITHER posts OR logical_items_v2).
+    // ponytail: counts resolved children without re-checking ordinary-visibility (the
+    // projector also gates on eligible deliveries); a resolved child is visible in
+    // practice — tighten to an eligibility join only if a divergence is observed.
+    const ph = ids.map(() => '?').join(',')
+    const remote = this.raw.prepare(
+      `SELECT parent_logical_item_id AS pid, COUNT(*) AS n FROM logical_items_v2
+       WHERE origin = 'remote' AND parent_state = 'resolved' AND parent_logical_item_id IN (${ph})
+       GROUP BY parent_logical_item_id`,
+    ).all(...ids) as { pid: string; n: number }[]
+    for (const r of remote) counts.set(r.pid, (counts.get(r.pid) ?? 0) + Number(r.n))
+    return counts
   }
 
   async countThreadRepliesByRootIds(rootIds: string[]): Promise<Map<string, number>> {

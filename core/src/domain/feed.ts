@@ -26,7 +26,11 @@ export function logicalToFeedEntry(dto: LogicalItemDto): TimelineEntry {
     id: dto.id,
     authorId: a.id,
     source: dto.origin,
-    guid: dto.id,
+    // A remote re-emission carries the ORIGIN wire guid (v1 parity: posts.guid),
+    // not our internal UUID, so the peer dedupes its own item back. emittedGuid +
+    // renderCommentsFeed already emit `guid` verbatim for a remote item. Local items
+    // keep the UUID here; localGuid derives their emitted guid from the permalink.
+    guid: dto.origin === 'remote' && dto.originGuid !== null ? dto.originGuid : dto.id,
     title: dto.title,
     content: dto.content ?? '',
     url: dto.permalink,

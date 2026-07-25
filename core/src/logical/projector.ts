@@ -475,11 +475,11 @@ function federatedRemote(tx: ReadTx, itemId: string): boolean {
 interface RemoteMaterial {
   title: string | null; content: string | null; link: string | null; inReplyTo: string | null
 }
-function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; normalized: { permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null } } | null {
+function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; normalized: { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null } } | null {
   const v = tx.prepare(`SELECT canonical_material, normalized_json FROM observation_versions_v2 WHERE id = ?`).get(versionId) as { canonical_material: Buffer; normalized_json: string } | undefined
   if (!v) return null
   const material = JSON.parse(v.canonical_material.toString('utf8')) as RemoteMaterial
-  const normalized = JSON.parse(v.normalized_json) as { permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }
+  const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }
   return { material, normalized }
 }
 
@@ -549,6 +549,7 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
     content: post.content,
     contentMarkdown: post.content_markdown,
     permalink: safeUrl(post.url),
+    originGuid: null, // local items derive their guid from permalink/id (localGuid)
     inReplyToRef: post.in_reply_to, // the stored absolute wire ref, re-emitted as <source:inReplyTo>
     sourceLink: null,
     replyContext: null,
@@ -590,6 +591,11 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     content: mat.material.content,
     contentMarkdown: null,
     permalink: safeUrl(mat.normalized.permalink ?? mat.material.link),
+    // The delivery key IS the origin wire guid (v1 re-emitted posts.guid): the bare
+    // <guid> for an opaque delivery, the normalized permalink for a permalink one
+    // (both === normalized.key). Outbound re-emission (feed.ts) uses it so a peer
+    // dedupes its own item back on the guid it minted.
+    originGuid: mat.normalized.key,
     inReplyToRef: null, // remote items keep the current firehose/comments behavior (no source:inReplyTo re-emit)
     sourceLink: safeUrl(mat.material.link),
     replyContext,
