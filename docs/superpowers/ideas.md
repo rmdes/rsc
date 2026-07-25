@@ -1034,3 +1034,473 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   query param on an admin route. Status: DONE 2026-07-25 (`1065197`) —
   shipped as a live-defect fix, not UX polish: the section was page-scoped
   and showed 'None.' on page 1 while three approved federations existed.
+
+---
+
+## The card is the identity surface — remote *people*, profiles, and web actions  *(DRAFT — brainstorm required)*
+
+**Status:** ⭐ draft (maintainer, 2026-07-25) — **not vetted, not specced.** Recorded
+verbatim-in-substance so it isn't lost; the brainstorm may redefine it entirely.
+
+**The itch (as observed).** An item authored by `pzingg` on rss.chat renders as a
+*publisher* — `/p/00a565db-…`, a UUID URL with a feed-derived display name — while
+only local users get a person-shaped identity at `/u/rick`. Within an **approved,
+connected instance** the per-person origin is known, so those people should
+plausibly be *remote users* with their real names (`@pzingg`), not anonymous
+publisher rows. V1 carried local-vs-remote badges; that legibility is worth
+keeping in some form.
+
+**What the code actually does today (checked 2026-07-25, before any brainstorm).**
+- **The name is rendered three times and the domain zero times.** A federated
+  remote card reads `P pzingg pzingg remote 2026-07-24`, because one string feeds
+  three slots: `Avatar.svelte:12` (`sourceName ?? author.displayName` → the letter
+  `P`), `+page.svelte:205` (`<strong>{post.sourceName ?? post.author.displayName}</strong>`),
+  and `:208` (the publisher link's `{post.author.displayName}`). The `<strong>` +
+  link pair was V1's *feed-name + author-handle* shape; under v2 both slots resolve
+  to the same publisher name, so it degenerates into a stutter. The **instance
+  identity that would disambiguate is absent from the byline entirely** — the host
+  survives only as the trailing `.source` chip (`:237`) and `FeedIcon` (`:215`).
+- The `@` marker **already exists and already means the opposite**:
+  `web/src/routes/+page.svelte:208` renders a publisher as a bare `displayName`
+  linking to `/p/:publisherId`, `:210` renders a local author as `@{handle}`
+  linking to `/u/:handle`. So "keep `@` for remote users" **inverts** the current
+  convention — that inversion (or picking a different marker) is a brainstorm
+  question, not a detail.
+- The local/remote distinction **is** still rendered structurally:
+  `:202` `class:remote={post.source === 'remote'}` plus the `.source` hostname
+  chip at `:237`. What V1 had as a *badge* now lives as a class + a host chip.
+- A handle→publisher seam **already exists but is reservation-only**:
+  `handle_reservations_v2` + `GET /handles/:handle`
+  (`core/src/api/logical-routes.ts:508-517`) resolve a handle to a publisher id,
+  written **only by conversion** (`migration/convert.ts:306`) so legacy remote
+  handles stay permanently reserved and redirect. Nothing mints a handle for a
+  *newly discovered* remote person.
+- Publisher identity is **feed-anchored by construction**: every publisher row is
+  `identity_level = 'feed_anchored'` keyed on `canonical_feed_url`
+  (`reconcile.ts:211`, `verification.ts:311`, `convert.ts:293`), and a publisher
+  page is granted **only** to feed-anchored publishers (`projector.ts:637`). A
+  per-person identity *inside* an instance feed has no row shape today — which is
+  exactly the V4 §2.4 attribution debt already logged above (and its data-migration
+  consequence).
+
+**Open questions for the brainstorm (the actual work).**
+1. Is a "remote user" a **new identity level** (`person_anchored`?) beside
+   `feed_anchored`/`source_scoped_fallback`, or a *display projection* over the
+   existing publisher row? The former is schema + migration; the latter may be a
+   projector seam.
+2. What **evidence** promotes a per-item author to a named person — federation
+   approval alone, or per-item `verified_origin` evidence
+   (`publisher_claims_v2.evidence_level`)? Trust posture must be deliberate:
+   an instance-scoped `@handle` is spoofable by the relaying instance, which is
+   the same seam [[Verified bylines]] names.
+3. **Namespace collision:** `@pzingg` on rss.chat vs a local `pzingg` vs `@pzingg`
+   on a second federated instance. Qualified (`@pzingg@rss.chat`) or per-instance
+   scoped route? `handle_reservations_v2.handle` is a bare PK today — a
+   qualification decision touches it.
+4. **URL shape:** keep `/p/:publisherId` and change only the label; or route
+   people at `/u/:handle` (collides with local) / `/@handle` / `/u/:handle@:host`.
+   Handle-history durability applies ([[Handle history]]).
+5. **Legibility:** re-introduce an explicit local/remote badge, or let the marker
+   (`@`, host chip) carry it? UI decision → MASTER.md + `ui-ux-pro-max`.
+
+**"Check better-auth and hono capabilities" — scoping note.** Both were named in
+the draft; the honest prior before the brainstorm confirms it:
+- **better-auth owns *local* identity only** — it authenticates principals that
+  hold credentials on *this* instance (`core/src/auth.ts`: emailAndPassword,
+  magicLink, anonymous). A remote person on rss.chat is not authenticable here, so
+  better-auth is the wrong layer *unless* the idea grows a claiming story — in
+  which case the relevant surface is roadmapped **IndieAuth** (domain-ownership
+  claim) landing on the better-auth foundation, plus the existing
+  `publisher_claims_v2` evidence table. Verify with the `better-auth` MCP during
+  the brainstorm, not from memory.
+- **Hono is a routing/middleware layer**, not an identity capability — the
+  question it answers is route *shape* (param patterns for `/@handle` or
+  `/u/:handle@:host`, redirect semantics beside the existing `/handles/:handle`).
+  Invoke the `hono` skill when the route shape is decided.
+
+### Why this is one theme and not three (maintainer, 2026-07-25)
+
+Identity presentation, profile/h-card, and web actions are separate *features* but
+**one surface**: they all manifest on the timeline card and on the post-detail
+footer. Defining that surface once — a **card contract** — is what lets each land
+independently later instead of three passes re-cutting the same component. Named
+sub-tracks, each its own spec when picked up:
+
+- **CS-1 — Identity presentation (dedupe name + domain).** Stop rendering one
+  string three times: decide what the byline asserts (person? publisher? feed?)
+  and give the **originating instance/domain a first-class slot** rather than a
+  trailing chip. This is the concrete, shippable core of the draft, and it is a
+  *defect fix* as much as a feature — the stutter is visible on every federated
+  card today.
+- **CS-2 — Profile definition → h-card hover.** Promote the byline's identity into
+  a **defined profile object** (name · domain · avatar · canonical URL · claim
+  evidence) that the card renders inline and, later, a **hover card** expands.
+  Deliberately shaped so IndieWeb **A ("emit mf2")** slots in: the same object is
+  what an `h-card` marks up, so the popup is a *rendering* of the profile, not a
+  second identity model. Pairs with [[Confirmed elsewhere]] (rel=me) for what the
+  hover card can honestly display as verified. **No-JS constraint is load-bearing:**
+  a hover card is an enhancement — the profile must be a plain link to
+  `/p/:id` (or the person route CS-1 picks) without JS.
+- **CS-3 — Web actions on the card (configurable).** A toggleable action row
+  (favorite / bookmark / like) rendered on the card and in the post-detail footer,
+  off by default and switchable per instance (and possibly per user). The value of
+  specifying it *with* CS-1/CS-2 is that the card gains **one defined slot for
+  actions** instead of ad-hoc buttons accreting beside the existing `Reply` /
+  `Edit` / `Remove` links (`+page.svelte:230,239,244`).
+- **CS-4 — Repost.** A local user re-emits any timeline item (local or remote)
+  into their own feed, triggered from the card or the post-detail footer.
+  **Genuinely absent today:** `grep -niE "repost|u-repost-of|bookmark|favou?rite|u-like-of"`
+  over `core/src` + `web/src` returns **zero** concept hits. Cross-cuts
+  [[Linkblog posts]] (a post whose payload is a reference to another URL — same
+  "post that points at something" shape) and [[River feeds]]/`resolveFeedUser`'s
+  deliberate *"pass-through, not republishing"* line (`app.ts:239`): a repost of a
+  **remote** item is the instance emitting someone else's content under its own
+  feed, which is exactly the boundary that rule draws. Scoping that is the spec's
+  first job. IndieWeb-native form: `u-repost-of` (+ `u-like-of`/`u-bookmark-of`
+  for CS-3), which federate via **Webmention (C)** — so CS-3/CS-4 have an mf2
+  vocabulary already waiting rather than a bespoke one.
+
+**Tradeoffs (corrected 2026-07-25 — the earlier "trust upgrade" framing was wrong).**
+The card does **not** currently show an honest, anonymous, feed-derived label; it
+shows the person's actual name, three times, with the instance omitted. So naming
+remote people is not the change — *disambiguating* them is. The real tradeoffs:
+
+1. **Spoofability is inherited, not introduced** — the name already displayed comes
+   from the relaying instance's say-so. Adding `@handle`+domain makes that claim
+   *legible*, which is an improvement, but the honest label depends on evidence
+   (`publisher_claims_v2.evidence_level`), so display must not imply verification.
+   Same seam as [[Verified bylines]].
+2. **Identity-row multiplication** — a person-anchored identity is one row per
+   person per instance instead of one per feed, reopening the feed-anchored
+   uniformity V4 cutover deliberately chose (see the §2.4 data-migration
+   consequence above). A *display-only* first cut (CS-1 as a projector/presentation
+   change, no new identity level) avoids this entirely — probably the right first
+   rung, and the brainstorm should test it before any schema move.
+3. **Web actions add per-viewer state** — likes/bookmarks/reposts are the first
+   *interaction* storage RSC would carry, and reposts additionally cross the
+   republishing line. Each is a real feature; bundling them here is about the
+   **card contract**, not about shipping them together.
+
+**Brainstorm must invoke:** `ui-ux-pro-max` + `design-system/rsc/MASTER.md` (the
+card is UI and MASTER.md is source of truth), the `hono` skill once route shape is
+decided, and the `better-auth` MCP only if claiming enters scope.
+
+---
+
+## Paste an image into the composer — the plugin is 5% of it; hosting the bytes is the feature
+
+**Status:** candidate (2026-07-25) — the *ask* is small and concrete; the
+investigation below found the cost sits almost entirely server-side. Scope
+decision belongs in a brainstorm, but the picture is now grounded, not guessed.
+
+**Mechanism (what the ask needs).** Copy/paste (and drag-drop) an image into the
+markdown composer and have it appear in the post. Upstream **does** have a plugin:
+`@cartamd/plugin-attachment@4.2.0` (peer `carta-md ^4.0.0`, our installed version
+is `4.11.2` — compatible). Read of its actual source (packed + unpacked, not
+installed): it ships `attachment({ upload, supportedMimeTypes?, disableIcon?,
+dropOverlay?, loadingOverlay? })` plus a drop overlay, loading overlay, attach
+icon and CSS. Its default mime allowlist is
+`['image/png','image/jpeg','image/gif','image/svg+xml','image/webp','image/avif']`.
+**Its entire contract with us is one required callback:**
+`upload: (file: File) => Promise<string | null>` — "return the url of the uploaded
+file… This function does **not** handle errors." So the plugin supplies the
+paste/drop capture, the placeholder dance and the spinner; **we** supply the URL,
+which means we supply everything hard.
+
+**What already works today (checked 2026-07-25 — the first ladder rung is done).**
+A markdown image pointing at an **external** URL already renders end to end: the
+sanitizer twins allow `img` with `src` + `loading` over `http`/`https`
+(`core/src/domain/markdown.ts:19-20`, `:26`, plus the `simpleTransform('img',
+{ loading: 'lazy' })` at `:30`). So `![alt](https://host/x.png)` is *already* a
+working image post. **The gap is not rendering — it is hosting your own bytes.**
+
+**What is missing (all of it server-side).**
+- **No upload path anywhere.** `grep -niE "multipart|formData\(\)|upload"` over
+  `core/src` = zero. Every write is JSON under `jsonWrite` /
+  `bodyLimit({ maxSize: MAX_JSON_BYTES })` (`core/src/api/app.ts:5,124`). There is
+  no multipart parsing, no binary body handling, no static-file serving.
+- **No blob storage and no serving route.** Nothing in core writes files; the only
+  writable location the deployed package has is Cloudron's `localstorage` volume —
+  `/app/data`, where `start.sh:21,35` already put `config/` and
+  `RSC_DB=/app/data/textcaster.db`. That is the natural home for an
+  `/app/data/media` tree, and it is also the thing that then needs backup/quota
+  thought (Cloudron backs the volume up, so images inflate every backup).
+- **Local posts carry no enclosures, and feeds emit none.** `logical/local.ts:166`
+  hardcodes `enclosures: []` for every local item, and `grep enclosure
+  core/src/domain/feed.ts` = **zero** — no `<enclosure>` is ever written. Inbound
+  is the built half (`EnclosureDto`, `projectEnclosures`, `BOUNDS.maxEnclosures: 32`
+  in `logical/acquisition.ts:37`, rendered by `web/src/lib/PostBody.svelte`). So a
+  pasted image would show on our own page and be invisible-as-media to every
+  subscriber unless the feed learns to emit — which is the roadmapped
+  **"Media / enclosures"** stub, i.e. this idea's true parent.
+- **No-JS constraint.** Paste capture is inherently JS. `MarkdownComposer.svelte`
+  is deliberately built so the plain `<textarea>` **is** the composer when the
+  dynamic import never resolves — so the attachment plugin joins the existing
+  `slash`/`emoji` dynamic-import block (an easy, already-proven slot), and a
+  no-JS fallback (a plain `<input type="file">` posting to a form action) is a
+  *separate* decision, not free.
+
+**Why it fits / what it costs.** The editor-side change is genuinely small and
+follows a proven local pattern; the feature is the **trust boundary and the
+lifecycle** behind it: mime sniffing (not trusting the browser's `type` — the
+plugin's default list includes `image/svg+xml`, which is an **XSS vector when
+served inline**; SVG must be rejected or served `Content-Disposition: attachment`
+with a strict CSP, never rendered inline from our origin), a byte cap (reuse
+`bodyLimit`, the existing house pattern), per-user quota, and GC — an image whose
+post is edited away or deleted must not leak, which collides with the
+`post_revisions` history (a revision may still reference a blob the current body
+dropped) and with SP3 hard removal (`deletePost`/`deleteUserCascade` would need to
+sweep media). None of that is optional and none of it is in the plugin.
+
+**Cheapest honest cuts (for the brainstorm to choose between).**
+1. **Do nothing / document it** — external image URLs already render; paste of a
+   *URL* already works. Zero code. Fails the actual ask (pasting a screenshot from
+   the clipboard has no URL).
+2. **Paste-to-upload with a local blob store** — the plugin + one `POST /media`
+   route (`bodyLimit` + mime sniff + uuid name) + serving from `/app/data/media`,
+   `<img>` in markdown only, **no** feed enclosure. Smallest thing that satisfies
+   the ask; consciously defers federation of the media.
+3. **Full media/enclosures milestone** — 2 plus `<enclosure>` emission, quota, GC
+   tied into revisions + hard removal, and the enclosure display path for local
+   items. This is the roadmap stub, a milestone, not a plugin add.
+
+**Dependency note (CLAUDE.md).** This *does* propose a new dependency
+(`@cartamd/plugin-attachment`), and the honest justification is narrow: it is a
+first-party carta plugin from the same `4.x` family we already run two of
+(`plugin-slash`, `plugin-emoji`), and it buys the paste/drop capture + overlay UX
+we would otherwise hand-roll against carta's textarea `listeners` seam. That seam
+is real and documented — an extension may pass
+`listeners: [['paste', handler]]` (`carta-md/dist/internal/carta.d.ts:23-29`,
+attached to the textarea at `internal/carta.js:102,235`) and insert text via
+`InputEnhancer.insertAt` (`internal/input.d.ts:60`) — **so option 2 is also
+achievable with no new dependency at all**, at the cost of writing the overlay/
+placeholder UX ourselves. Decide that trade in the spec; do not add the dep by
+reflex.
+
+**Grounding index.** `web/src/lib/MarkdownComposer.svelte` (the dynamic-import
+extension block + the no-JS textarea fallback) · `web/package.json:30-32`
+(`carta-md ^4.11.2`, `plugin-slash 4.2.0`, `plugin-emoji 4.3.0`) ·
+`@cartamd/plugin-attachment@4.2.0` `dist/index.d.ts` (the `upload` contract) ·
+`core/src/domain/markdown.ts:19-30` (img already allowed) · `core/src/api/app.ts:5,124`
+(`bodyLimit` house pattern) · `core/src/logical/local.ts:166` +
+`core/src/domain/feed.ts` (no local enclosures, none emitted) ·
+`core/src/logical/acquisition.ts:37` (inbound enclosure bounds) ·
+`cloudron/start.sh:21,35` (`/app/data` = the only writable volume) ·
+roadmap stub **"Media / enclosures"** above (this idea's parent).
+
+**Tradeoff.** Accepting uploaded bytes turns RSC from a text service into a
+**file host** — that is the whole cost, and it never gets smaller: disk growth in
+every Cloudron backup, an untrusted-binary trust boundary (SVG/mime sniffing),
+per-user quota, and a deletion story that must satisfy both revision history and
+hard removal. Against that, images are the single most-requested thing text-first
+timelines lack, and RSS has carried `<enclosure>` since 2.0 — media is on-vision,
+just not free.
+
+---
+
+## `@mentions` — the linkifier is ~25 lines of remark; the namespace is the hard part
+
+**Status:** candidate (2026-07-25). Listed on the maintainer's roadmap since the
+[[Follow the source]] entry ("proper follow/unfollow + @mentions") but never
+written up. **Zero mention code exists:** `grep -niE "mention"` over `core/src` +
+`web/src`, excluding `webmention`, returns nothing.
+
+**Mechanism.** Two independent halves, and only the first is required:
+- **Render half (required).** `@handle` in post markdown becomes a link. This is a
+  **remark plugin**, so it drops into both sanitizer twins at the same point in
+  the same pipeline — `core/src/domain/markdown.ts:72-79` and its hand-duplicate
+  `web/src/lib/server/render.ts`. Carta takes arbitrary remark/rehype plugins via
+  an extension's `transformers`, which `MarkdownComposer.svelte` already uses for
+  `remark-breaks` + `rehype-highlight`, so the **live preview gets the identical
+  transform with no extra machinery**. No `@cartamd/plugin-mention` exists (npm
+  404; the family is slash/emoji/code/math/tikz/anchor/component/attachment) —
+  and none is needed, because this belongs in remark, not in the editor.
+- **Autocomplete half (optional UX).** A caret-bound `@` popup. `@cartamd/plugin-slash`
+  is the copyable pattern — but its trigger is **hardcoded** (`Slash.svelte:73`,
+  `e.key === '/'`), so it cannot be configured into an `@` menu; the mechanism to
+  mirror is ~130 lines (a `parent: 'input'` extension component + textarea
+  keydown/keyup listeners + a filter string sliced between trigger and caret +
+  `input.removeAt`/`insertAt`). Ship the render half first; this is separable.
+
+**On `remark-mentions` (read, v1.1.0, not installed).** It works and is genuinely
+tiny — `findAndReplace(tree, [[mentionRegex, replaceMention]])` producing a
+`link` node wrapping `strong`, with a `usernameLink: (username) => string` option
+that leaves the URL policy to us. Two concrete reasons to **copy the mechanism
+instead of adding the dep** (CLAUDE.md: never add a package for what a few lines
+can do):
+1. **Its regex is not our namespace.** It matches `[\da-z][-\da-z_]{0,38}` —
+   allows `_`, caps at **39 chars**. RSC's own rule is
+   `HANDLE_RE = /^[a-z0-9-]{1,64}$/` (`core/src/domain/service.ts:9`): no
+   underscore, up to **64**. So a 40–64-char handle would be **silently truncated
+   mid-mention** into a link to a different (likely nonexistent) handle, and `_`
+   would match something that can never be a valid RSC handle. The regex must be
+   ours either way — which is most of what the package is.
+2. **It would pull a second `unified`.** `remark-mentions@1.1.0` declares
+   `unified: ^10.1.2` as a **runtime dependency** (not a peer); both our
+   workspaces pin `unified 11.0.5`. Meanwhile its real workhorse,
+   `mdast-util-find-and-replace@3.0.2`, is **already in the tree** (transitively,
+   via `remark-gfm`). So the local version is: import a util we already have,
+   apply our own `HANDLE_RE`, emit the same link node — roughly 25 lines, in both
+   twins, covered by the existing twin drift canary
+   (`web/src/lib/server/render.test.ts:63,88` — "If you change either side, change
+   both").
+
+**The hard part is not the linkifier — it is deciding what `@handle` can name.**
+- **Only local users have handles.** `/u/:handle` is local-account-only; remote
+  people are UUID publishers at `/p/:publisherId` with no handle at all (except
+  `handle_reservations_v2`, which conversion writes for *legacy* handles only).
+  So today `@user` can honestly resolve to **local users and nothing else** —
+  which makes this idea a **direct dependent of [[The card is the identity
+  surface]] CS-1**: whatever handle namespace that brainstorm defines for remote
+  people is the namespace mentions can address. Shipping mentions first locks in
+  local-only semantics.
+- **A bare `@handle` does not survive federation.** Posts travel as RSS; `@rick`
+  on our instance means nothing on a peer, where it may name a different person.
+  The feeds-native form of a mention is therefore an **absolute link to the
+  mentioned person's profile URL** (`usernameLink` must mint an absolute URL for
+  the wire, even if the local render prefers a relative one) — at which point the
+  notification half **is roadmapped Webmention (C)**: link + Webmention *is* how
+  the IndieWeb does a cross-site mention. Do not invent a bespoke mention protocol.
+- **There is no notification system at all.** `grep -niE "notification|notify|unread|inbox"`
+  over both workspaces returns only email-inbox prose and the SSE sequence hint.
+  "You were mentioned" implies per-user notification state — new storage, a read
+  model, and a UI surface. That is a feature behind the feature; mentions can ship
+  as pure linkification without it, and should.
+- **Autocomplete needs a user directory we do not expose.** The only listing is
+  `GET /admin/users` → `service.listUsers()` (`core/src/api/app.ts:484`),
+  admin-gated. An `@` popup needs a searchable handle endpoint, and since guests
+  can post (`anonymous` plugin), an unauthenticated one would be an **account
+  enumeration oracle**. Scope it: authed-only, prefix-match, capped, handles and
+  display names only.
+- **It amplifies an already-logged defect.** A mention of a nonexistent handle
+  links to `/u/:handle`, which today renders a **blank profile instead of a 404**
+  (open item in the debt section above). Mentions make that reachable from any
+  post body.
+
+**Grounding index.** `core/src/domain/service.ts:9` (`HANDLE_RE`) ·
+`core/src/domain/markdown.ts:72-79` + `web/src/lib/server/render.ts` (the twin
+pipelines; insertion point is beside `remarkEmoji`) ·
+`web/src/lib/server/render.test.ts:63,88` (twin drift canary) ·
+`web/src/lib/MarkdownComposer.svelte` (carta `transformers` already carry
+`remark-breaks`/`rehype-highlight` — the preview path) ·
+`@cartamd/plugin-slash/dist/Slash.svelte:29-39,73,85-89,126-129` (the caret-popup
+pattern, `/` hardcoded) · `mdast-util-find-and-replace@3.0.2` present in tree ·
+`core/src/api/app.ts:484` (admin-only user listing) · sanitizer already allows
+`a[href][rel]` (`markdown.ts:20`), so no sanitizer change is needed.
+
+**Tradeoff.** Linkification is cheap and reversible; **the namespace decision is
+neither.** Ship `@handle` → `/u/handle` now and it becomes wire-visible in
+published feeds, and every later attempt to extend mentions to remote people
+(`@user@instance`, or whatever CS-1 picks) has to stay backward-compatible with
+posts already federated under the local-only reading. The honest sequencing is
+CS-1 first, or ship mentions explicitly scoped as *local-only* with that
+limitation stated in the spec — not discovered later.
+
+---
+
+## Anchor links in headings — two rehype plugins, one sanitizer decision, one id-collision problem
+
+**Status:** candidate (2026-07-25). Small feature, but it lands **on the XSS gate**,
+so it is not a config toggle.
+
+**Context (confirmed in code).** The no-title-field design holds: `Post.title`
+exists in the model (`core/src/domain/types.ts:25,52`) but local posts hardcode
+`title: null` (`core/src/domain/service.ts:72`) — titles arrive only from ingested
+RSS `<title>`. So a local post's structure *is* its markdown headings, which is
+exactly why heading anchors are the right affordance rather than a title field.
+
+**Mechanism.** `@cartamd/plugin-anchor@2.2.0` is — read in full — a **12-line
+wrapper** with zero logic of its own: it calls
+`processor.use(rehypeSlug, opts?.slug).use(rehypeAutolinkHeadings, opts?.autolink)`
+and re-exports a stylesheet. Two consequences:
+- **Adding the carta plugin alone would be a bug**, not a feature: carta renders
+  the **preview**, while all display HTML comes from the server twins
+  (`core/src/domain/markdown.ts` / `web/src/lib/server/render.ts`). Anchors would
+  appear while composing and vanish on the real page — preview/render drift, the
+  precise thing the twin contract exists to prevent.
+- **The honest change is `.use(rehypeSlug).use(rehypeAutolinkHeadings)` in both
+  twins**, plus the same pair in `MarkdownComposer.svelte`'s existing
+  `transformers` array (where `remark-breaks` and `rehype-highlight` already ride)
+  so the preview matches. The carta plugin wrapper buys nothing over that.
+- **Ordering is load-bearing:** `rehype-autolink-headings` only acts on headings
+  that *already* carry `properties.id` (`lib/index.js:134`), so `rehype-slug`
+  must run first — and both must sit after `remarkRehype`, before
+  `rehypeStringify`.
+
+**The sanitizer decision (the crux — CLAUDE.md invariant).** Today
+`allowedAttributes: { a: ['href','rel'], img: ['src','loading'] }`
+(`markdown.ts:20`) permits **no attributes at all on `h1`–`h4`**, so
+`rehype-slug`'s ids are stripped and the injected `<a href="#slug">` would point
+at nothing. Shipping this **requires editing the XSS gate in both twins**:
+- add `id` to headings — the actual policy change, and the one to think about;
+- with the plugin's default `behavior: 'prepend'`, the injected link also carries
+  `{ariaHidden: 'true', tabIndex: -1}` (`lib/index.js:119-120`), so `aria-hidden`
+  + `tabindex` must be allowed on `a`, **or** pass `properties: {}` and style the
+  link instead;
+- if an icon anchor is wanted, the config's own rule stands — "`class` must never
+  join `allowedAttributes`" (`markdown.ts:22-24`) — but `allowedClasses` **is** the
+  sanctioned mechanism and already scopes classes per tag, so
+  `allowedClasses: { a: ['anchor'] }` is the correct extension point, not
+  `allowedAttributes`.
+
+**The id-collision problem (the real design question).** Ids from user content are
+not per-document here:
+- **The timeline renders many posts on one page, each through a *separate*
+  pipeline run** (`enrichEntries` maps `renderPostHtml` over entries,
+  `web/src/lib/server/render.ts:90`). `github-slugger`'s dedup counter is
+  per-invocation, so it **cannot see across posts**: two posts each containing
+  `## Notes` both emit `id="notes"` on the same page — duplicate ids, ambiguous
+  fragment navigation, and an a11y violation.
+- **User ids share a namespace with app ids.** The timeline already uses real ids
+  it depends on — `id="by-{post.id}"` referenced by
+  `aria-describedby="by-{post.id}"` (`web/src/routes/+page.svelte:208,225`). A
+  heading crafted to slugify onto one of ours (remote content is fully
+  attacker-controlled) redirects that relationship. Not memory-unsafe, but it is
+  user input reaching a DOM identifier, which deserves a deliberate answer.
+- **Available fix:** `rehype-slug` takes a `prefix` option, so ids can be
+  namespaced per post (`prefix: \`p-\${post.id}-\`` or similar). But
+  `renderLocalHtml(markdown)` (`markdown.ts:81`) takes only a string and
+  `renderPostHtml({content, contentMarkdown, source})` doesn't receive the post id
+  — **both signatures would have to widen**, which is the largest structural piece
+  of this otherwise-small change. Alternative: anchors only on the single-post
+  page (`/post/:id`), never in the timeline — much smaller, and arguably where
+  deep links are actually useful.
+
+**Feed output is affected too.** `renderLocalHtml` also feeds the wire —
+RSS `<description>` (`core/src/domain/feed.ts:116`) and JSON Feed `content_html`
+(`:284`). A bare `#slug` fragment resolves against **the reader's** page, not
+ours, so anchors in feed HTML are meaningless or wrong off-site. If anchors go on
+the wire they should be absolute (`https://<instance>/post/<id>#slug`); the lazier
+call is to keep the feed HTML anchor-free and add ids only on our own pages.
+
+**Dependency note (CLAUDE.md).** This one genuinely needs new packages:
+`rehype-slug@6` and `rehype-autolink-headings@7` — **neither is installed today**
+(nor is `github-slugger`, which rehype-slug pulls). Both are official
+rehype/unified plugins from the same family we already run five of
+(`remark-parse/gfm/breaks/emoji`, `remark-rehype`, `rehype-highlight`,
+`rehype-stringify`), added to **both** workspaces to keep the twins identical.
+Hand-rolling is the wrong call here — correct slugging (unicode, punctuation,
+dedup counters) is exactly the "two options, pick the one that's right on edge
+cases" rung. **`@cartamd/plugin-anchor` itself should NOT be added** — it is a
+12-line re-export that would only touch the preview.
+
+**Grounding index.** `@cartamd/plugin-anchor@2.2.0` `dist/index.js` (the whole
+wrapper) · `rehype-autolink-headings` `lib/index.js:104,119-120,134` (default
+`prepend`, default `{ariaHidden, tabIndex}`, requires a pre-existing `id`) ·
+`core/src/domain/markdown.ts:19-31` + `web/src/lib/server/render.ts:18-22` (the
+twin sanitizer configs) · `web/src/lib/server/render.test.ts:63,88` (drift canary
+— both must change together) · `web/src/lib/server/render.ts:84,90`
+(`renderPostHtml` / `enrichEntries`, the per-post pipeline) ·
+`web/src/routes/+page.svelte:208,225` (existing `by-*` ids and their
+`aria-describedby`) · `core/src/domain/feed.ts:116,284` (anchors would reach the
+wire) · `core/src/domain/service.ts:72` (`title: null` — why headings carry the
+structure).
+
+**Tradeoff.** The feature is worth little on the timeline (deep-linking a heading
+inside a card nobody scrolled to) and most on `/post/:id`, yet the cost is
+concentrated in the timeline case: cross-post id uniqueness and a widened render
+signature. Scoping anchors to the single-post view keeps the sanitizer delta
+(`id` on headings) but sidesteps collisions entirely — and that is probably the
+right first cut. The permanent cost either way is that the XSS gate now allows one
+user-controlled attribute value, so the twins' policy comment must say why `id` is
+safe where `class` is not.
