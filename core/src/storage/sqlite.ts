@@ -8,7 +8,7 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
-import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, assertHandleUnreserved } from '../logical/schema.ts'
+import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 
@@ -1491,6 +1491,12 @@ const MIGRATIONS: string[][] = [
   // (logical_item_id): the read path scanned that 32k-row table per item, ~2s
   // timelines + 100% CPU on the main instance. Defined in logical/schema.ts.
   LOGICAL_PERF_INDEXES,
+  // Read-path performance indexes, round 2 (migration #17). Appended at the TAIL,
+  // AFTER LOGICAL_PERF_INDEXES — mid-array insertion corrupts user_version on live
+  // databases. Pure additive CREATE INDEX on the 19 remaining un-indexed v2 FK
+  // columns (13 tables) that SQLite left as full SCANs; results unchanged, plans
+  // only. Kept exhaustive by the FK-coverage guardrail. Defined in logical/schema.ts.
+  LOGICAL_PERF_INDEXES_2,
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
@@ -1517,7 +1523,14 @@ export async function createSqliteRepository(filename: string): Promise<SqliteRe
   const sqlite = new Database(filename)
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
+  // Cheap read-path wins (v2 read model): memory-map the DB, a bigger page cache,
+  // and temp tables in RAM. Additive — plans/latency only, never results.
+  sqlite.pragma('mmap_size = 268435456') // 256MB memory-mapped I/O
+  sqlite.pragma('cache_size = -65536') // 64MB page cache (negative = KiB)
+  sqlite.pragma('temp_store = MEMORY')
   migrate(sqlite)
+  // SQLite-recommended self-tuning ANALYZE on open; cheap, refreshes stat plans.
+  sqlite.pragma('optimize')
   const db = new Kysely<DB>({ dialect: new SqliteDialect({ database: sqlite }) })
   return new SqliteRepository(db, sqlite)
 }

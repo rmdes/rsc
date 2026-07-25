@@ -331,6 +331,44 @@ export const LOGICAL_PERF_INDEXES: string[] = [
   `CREATE INDEX logical_identity_keys_v2_item ON logical_identity_keys_v2(logical_item_id)`,
 ]
 
+// Read-path performance indexes, round 2 (post-V4 hotfix, migration #17). ONE
+// migration entry, appended strictly at the TAIL of MIGRATIONS in sqlite.ts,
+// AFTER LOGICAL_PERF_INDEXES — mid-array insertion renumbers applied migrations
+// and corrupts user_version on live databases. Pure additive: CREATE INDEX only,
+// no table rebuilt, no query RESULTS change (plans only).
+//
+// SQLite does not auto-index foreign keys, so every FK column not otherwise
+// covered by a PK/UNIQUE autoindex prefix was a full table SCAN — both on the
+// projector's per-item lookups AND on every FK-integrity/cascade child check.
+// An exhaustive foreign_key_list audit found 19 such columns across 13 tables
+// (everything NOT already covered: deliveries_v2.source_id and
+// observation_versions_v2.delivery_id sit under UNIQUE prefixes, and
+// reconciliation_jobs_v2.observation_version_id under a UNIQUE, so none are
+// re-indexed here). Single-column indexes on the FK column satisfy both the
+// per-item seek and the cascade child scan. The FK-coverage guardrail test
+// (logical-fk-indexes.test.ts) keeps this list exhaustive forever.
+export const LOGICAL_PERF_INDEXES_2: string[] = [
+  `CREATE INDEX publisher_names_v2_publisher ON publisher_names_v2(publisher_id)`,
+  `CREATE INDEX publisher_names_v2_source ON publisher_names_v2(source_id)`,
+  `CREATE INDEX logical_items_v2_parent ON logical_items_v2(parent_logical_item_id)`,
+  `CREATE INDEX logical_items_v2_selected_publisher ON logical_items_v2(selected_publisher_id)`,
+  `CREATE INDEX publisher_claims_v2_logical_item ON publisher_claims_v2(logical_item_id)`,
+  `CREATE INDEX publisher_claims_v2_publisher ON publisher_claims_v2(publisher_id)`,
+  `CREATE INDEX publisher_claims_v2_source ON publisher_claims_v2(source_id)`,
+  `CREATE INDEX publisher_claims_v2_observation_version ON publisher_claims_v2(observation_version_id)`,
+  `CREATE INDEX logical_conflicts_v2_logical_item ON logical_conflicts_v2(logical_item_id)`,
+  `CREATE INDEX logical_conflicts_v2_observation_version ON logical_conflicts_v2(observation_version_id)`,
+  `CREATE INDEX acquisition_runs_v2_source ON acquisition_runs_v2(source_id)`,
+  `CREATE INDEX acquisition_commands_v2_run ON acquisition_commands_v2(run_id)`,
+  `CREATE INDEX source_aliases_v2_source ON source_aliases_v2(source_id)`,
+  `CREATE INDEX redirect_observations_v2_run ON redirect_observations_v2(run_id)`,
+  `CREATE INDEX acquisition_findings_v2_run ON acquisition_findings_v2(run_id)`,
+  `CREATE INDEX reconciliation_jobs_v2_run ON reconciliation_jobs_v2(run_id)`,
+  `CREATE INDEX verification_checks_v2_source ON verification_checks_v2(source_id)`,
+  `CREATE INDEX publisher_feed_aliases_v2_publisher ON publisher_feed_aliases_v2(publisher_id)`,
+  `CREATE INDEX tombstone_aliases_v2_tombstone ON tombstone_aliases_v2(tombstone_id)`,
+]
+
 // The permanent legacy-handle reservation guard (V4 §3.5): a handle converted
 // from a legacy remote feed can never be claimed again, even after the source
 // row is removed or purged (the table has no FKs precisely so the reservation
