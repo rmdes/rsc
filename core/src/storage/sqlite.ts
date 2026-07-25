@@ -8,7 +8,7 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
-import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, assertHandleUnreserved } from '../logical/schema.ts'
+import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 
@@ -1485,6 +1485,12 @@ const MIGRATIONS: string[][] = [
   // insertion corrupts user_version on live databases. Pure additive
   // CREATE/ALTER. Defined in logical/schema.ts; see the V4 plan Appendix A.
   LOGICAL_V4_SCHEMA,
+  // Read-path performance index (post-V4 hotfix). Appended at the TAIL, AFTER
+  // LOGICAL_V4_SCHEMA — mid-array insertion corrupts user_version on live
+  // databases. Pure additive CREATE INDEX on logical_identity_keys_v2
+  // (logical_item_id): the read path scanned that 32k-row table per item, ~2s
+  // timelines + 100% CPU on the main instance. Defined in logical/schema.ts.
+  LOGICAL_PERF_INDEXES,
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

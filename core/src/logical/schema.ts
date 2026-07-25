@@ -312,6 +312,25 @@ export const LOGICAL_V4_SCHEMA: string[] = [
   `ALTER TABLE acquisition_runs_v2 ADD COLUMN delivery_mechanism TEXT`,
 ]
 
+// Read-path performance index (post-V4 hotfix). ONE migration entry, appended
+// strictly at the TAIL of MIGRATIONS in sqlite.ts, AFTER LOGICAL_V4_SCHEMA —
+// mid-array insertion renumbers applied migrations and corrupts user_version on
+// live databases. Pure additive: ONE CREATE INDEX, no table rebuilt.
+//
+// logical_identity_keys_v2 carries only its (kind,key) PRIMARY KEY, but the whole
+// read path looks it up per item by logical_item_id — eligibleDeliveries
+// (projector.ts:327), the REMOTE_VISIBLE ordinary-visibility gate
+// (projector.ts:663, evaluated per timeline row), reply materialization
+// (reconcile.ts:430), tombstone checks, and threading deletes. With no index on
+// logical_item_id every such lookup SCANNED the table (32k rows on the main
+// instance), so a 50-item timeline did hundreds of full scans (~2s), and live
+// federation ran the same scans in the background, pinning core at 100% CPU. This
+// index turns the scans into seeks — measured 478x on a copy of the live DB
+// (50 per-item opaque+delivery lookups: 478ms → 1ms; CREATE takes ~18ms).
+export const LOGICAL_PERF_INDEXES: string[] = [
+  `CREATE INDEX logical_identity_keys_v2_item ON logical_identity_keys_v2(logical_item_id)`,
+]
+
 // The permanent legacy-handle reservation guard (V4 §3.5): a handle converted
 // from a legacy remote feed can never be claimed again, even after the source
 // row is removed or purged (the table has no FKs precisely so the reservation

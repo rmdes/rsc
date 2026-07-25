@@ -35,6 +35,18 @@ test('the migration creates every logical-v2 table', async () => {
   for (const t of V2_TABLES) expect(names, `missing table ${t}`).toContain(t)
 })
 
+test('the read-path index on logical_identity_keys_v2(logical_item_id) exists and is used', async () => {
+  // Regression: without this index the per-item identity-key lookups (eligible
+  // deliveries, REMOTE_VISIBLE, reply counts) SCAN the whole table — ~2s
+  // timelines + 100% CPU on the main instance. The index turns scans into seeks.
+  const repo = await createSqliteRepository(':memory:')
+  expect(indexNames(repo.raw)).toContain('logical_identity_keys_v2_item')
+  const plan = repo.raw
+    .prepare(`EXPLAIN QUERY PLAN SELECT key FROM logical_identity_keys_v2 WHERE logical_item_id = ? AND kind LIKE 'opaque:%'`)
+    .all('x') as { detail: string }[]
+  expect(plan[0].detail).toContain('USING INDEX logical_identity_keys_v2_item')
+})
+
 test('activation is the inactive singleton and no journal row exists', async () => {
   const repo = await createSqliteRepository(':memory:')
   const store = createLogicalStore(createDatabaseContext(repo.raw))
