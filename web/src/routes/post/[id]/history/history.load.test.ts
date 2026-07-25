@@ -73,3 +73,37 @@ test('v2: remote history content is rendered through the sanitize twin (script s
 	expect(out.currentHtml).not.toContain('script') // remote path still sanitized
 	expect(out.versions[0].html).not.toContain('onerror')
 })
+
+// The crash root cause (D14): the projector gives EVERY non-current local revision
+// updatedAt: null, so two revisions collapse to seenAt '' — a duplicate {#each} key.
+// The loader must carry a genuinely unique key (the sequence) so the render never
+// keys two rows on the same value.
+test('v2: local revisions carry a unique key even when every updatedAt is null', async () => {
+	vi.resetModules()
+	const { load } = await import('./+page.server.ts')
+	const entry = (over: object) => ({ sequence: 0, title: null, content: null, markdown: null, permalink: null, enclosures: [], updatedAt: null, updatedAtProvenance: null, current: false, ...over })
+	const f = vi.fn(async (u: string | URL) =>
+		isCap(u)
+			? capOn()
+			: new Response(
+					JSON.stringify({
+						model: 'logical-v2',
+						logicalItemId: 'p1',
+						origin: 'local',
+						currentSequence: 2,
+						journalCursor: 'jc',
+						entries: [
+							entry({ sequence: 2, content: 'now', current: true, updatedAt: 'x' }),
+							entry({ sequence: 1, content: 'second' }),
+							entry({ sequence: 0, content: 'first' })
+						]
+					}),
+					{ status: 200 }
+				)
+	)
+	const out = (await load({ fetch: f, params: { id: 'p1' } } as never)) as { versions: { key: number; seenAt: string }[] }
+	expect(out.versions.map((v) => v.seenAt)).toEqual(['', '']) // both untimed — the collision source
+	const keys = out.versions.map((v) => v.key)
+	expect(new Set(keys).size).toBe(keys.length) // yet the keys are all distinct
+	expect(keys).toEqual([0, 1]) // oldest-first sequence
+})

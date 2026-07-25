@@ -23,7 +23,7 @@ export const load: PageServerLoad = async ({ fetch, params }) => {
 		const versions = h.entries
 			.filter((e) => !e.current)
 			.sort((a, b) => a.sequence - b.sequence) // oldest-first
-			.map((e) => ({ seenAt: e.updatedAt ?? '', html: render(e) }))
+			.map((e) => ({ key: e.sequence, seenAt: e.updatedAt ?? '', html: render(e) }))
 		return { postId: params.id, editedAt: current?.updatedAt ?? null, currentHtml: current ? render(current) : '', versions }
 	}
 

@@ -10,9 +10,13 @@
 	<h1>Edit history</h1>
 	<p><a href="/post/{data.postId}">← back to the post</a></p>
 	<ol class="history">
-		{#each data.versions as v (v.seenAt)}
+		{#each data.versions as v ('key' in v ? v.key : v.seenAt)}
 			<li>
-				<time datetime={v.seenAt}>{v.seenAt.slice(0, 16).replace('T', ' ')}</time>
+				{#if v.seenAt}
+					<time datetime={v.seenAt}>{v.seenAt.slice(0, 16).replace('T', ' ')}</time>
+				{:else}
+					<span class="badge-kind">earlier version</span>
+				{/if}
 				<PostBody post={{ content: '', contentHtml: v.html }} />
 			</li>
 		{/each}
