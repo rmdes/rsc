@@ -19,7 +19,12 @@ test('sweepHousekeeping purges expired outbound subscriptions', async () => {
     secret: null, expiresAt: future, createdAt: now.toISOString(),
   })
   const config = loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: undefined })
+  // Cutoff far in the past: expires_at > cutoff is true for every realistic row,
+  // so this counts rows actually present in the table, irrespective of expiry.
+  const epoch = '1970-01-01T00:00:00.000Z'
+  const beforeCount = await repo.countActiveSubscriptions({}, epoch)
+  expect(beforeCount).toBe(2)
   await sweepHousekeeping(repo, config)
-  const liveCount = await repo.countActiveSubscriptions({}, new Date().toISOString())
-  expect(liveCount).toBe(1) // only sub-live remains reachable via the active-count query
+  const afterCount = await repo.countActiveSubscriptions({}, epoch)
+  expect(afterCount).toBe(1) // sub-expired was actually deleted by purgeExpiredSubscriptions
 })
