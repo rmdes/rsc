@@ -4,6 +4,7 @@ import type { LogicalItemDto } from './types.ts'
 import type { User } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
+import { reapSourceIfOrphaned } from '../domain/source-repository.ts'
 
 export { resolveInitialParent }
 
@@ -271,12 +272,21 @@ export function deleteLocalAccount(input: { tx: WriteTx; accountId: string; acto
   const posts = tx.prepare(`SELECT id FROM posts WHERE author_id = ?`).all(accountId) as { id: string }[]
   for (const p of posts) terminallyDelete(tx, p.id, now)
 
+  // The account's v2 source subscriptions go with it via source_subscriptions_v2's
+  // own ON DELETE CASCADE on owner_id — read the subscribed source ids first, so
+  // they can be re-evaluated for retention after the user row is gone (the cascade
+  // removes the subscription row but can't tell whether the source itself is still
+  // wanted by anyone else). Empty while RSC_SOURCE_MODEL_V2 is off, since nothing
+  // writes the v2 tables then.
+  const sourceIds = (tx.prepare(`SELECT source_id FROM source_subscriptions_v2 WHERE owner_id = ?`).all(accountId) as { source_id: string }[]).map((r) => r.source_id)
+
   // Clear the account's edges before removing the user row (posts/follows/push all
   // hold RESTRICT references). The logical markers carry no FK on the account, so
   // they survive its removal (spec §2.6).
   tx.prepare(`DELETE FROM follows WHERE follower_id = ? OR followed_id = ?`).run(accountId, accountId)
   tx.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(accountId)
   tx.prepare(`DELETE FROM users WHERE id = ?`).run(accountId)
+  for (const sourceId of sourceIds) reapSourceIfOrphaned(tx, sourceId, now)
 
   // ONE reset barrier for the whole account, not one journal effect per post.
   appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, now)
