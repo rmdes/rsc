@@ -9,11 +9,11 @@ enumerated **user journeys under flag-on**, and none had an **outbound-mirror**
 column (what a remote peer sees).
 
 **How to use it.** Before any vertical or milestone claims completion, walk
-every journey below through the front door **with `RSC_SOURCE_MODEL_V2=on`**,
-and for each, check BOTH columns: the in-app result AND the outbound mirror
-(fetch the actual feed a peer would poll and read the bytes). A journey isn't
-done until its outbound mirror is correct. This is a checklist to *exercise*,
-not a doc to read — the value is in actually doing each row on a v2 instance.
+every journey below through the front door, and for each, check BOTH columns:
+the in-app result AND the outbound mirror (fetch the actual feed a peer would
+poll and read the bytes). A journey isn't done until its outbound mirror is
+correct. This is a checklist to *exercise*, not a doc to read — the value is
+in actually doing each row against a live instance.
 
 The **Would have caught** column maps each check back to the sweep finding it
 would have surfaced at V2's gate — evidence the column earns its place.
@@ -142,9 +142,8 @@ sees. **Outbound mirror** = fetch the feed a peer polls and assert on the bytes.
 - The in-process bridge harness (`core/test/federation-live.test.ts`,
   `makeInstance`/`makeBridge`) — the real WebSub loop end to end, and the
   place to assert fat-ping-equals-pull.
-- Flip the flag: run each row with `RSC_SOURCE_MODEL_V2=on` AND confirm the
-  same feed bytes with it `off` where v1 parity is required (flag-off
-  byte-identical is a standing pin).
+- There is no flag anymore — v2 is the only model, on every instance. No
+  legacy `off` comparison to maintain.
 
 ---
 

@@ -19,7 +19,7 @@ adding a route — match them, don't invent a parallel style.
 | Concern | RSC does | Do NOT reach for |
 |---|---|---|
 | Errors | `return c.json({ error: '…' }, status)`; domain errors bubble to `app.onError` (`DomainError → 400`) | `HTTPException` / `throw` in handlers |
-| Validation | hand-rolled guards (`isString`, `isValidFeedUrl`, `readJsonBody`) | `@hono/zod-validator`, adding `zod` |
+| Validation | hand-rolled guards (`isString`, `readJsonBody`), plus domain normalizers that signal invalid input by throwing (`normalizeSourceUrl`) | `@hono/zod-validator`, adding `zod` |
 | Typed context | global `declare module 'hono' { interface ContextVariableMap … }` | per-instance `new Hono<{ Variables }>()` generics |
 | Middleware | factory fns returning `MiddlewareHandler` (`sessionAuth`, `requireAdmin`…) | inline `app.use` closures for auth |
 | Web↔core | plain `fetch` + the `/api/auth` proxy | Hono RPC / `hc` client / `AppType` export |
@@ -56,11 +56,29 @@ are typed everywhere with no per-route generics.
 export function requireAdmin(): MiddlewareHandler {
   return async (c, next) => {
     if (!c.get('isAdmin')) return c.json({ error: 'admin only' }, 403)
-    return next()   // NOTE: `return next()` — adminOrToken composes middleware
-  }                 //       manually and needs the returned Response to propagate
+    return next()
+  }
 }
 ```
-Compose them positionally: `app.post('/x', authed, requireAdmin(), handler)`.
+Compose them positionally, or gate a whole prefix with `app.use` (`api/app.ts`):
+```ts
+// One gate for the whole admin surface — every /admin/* route is admin-only
+// by construction, so a new one can't ship ungated by forgetting the guard.
+app.use('/admin/*', authed, requireAdmin())
+```
+The ops bearer token is a **separate, single-route** grant, never merged into
+the session/admin gate (there is no `adminOrToken`-style combinator in the
+current API — a bearer header gets no admin reach at all):
+```ts
+app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) =>
+  establishFederation(c, opsActorId, 'operator_token'),
+)
+```
+`bearerAuth` 401s anything without the exact token; a request with a
+better-auth session but no bearer header still 401s here (this route doesn't
+look at sessions), and a bearer header sent to any `/admin/*` route 401s there
+too (`sessionAuth` runs first and finds no session) — the two grants never
+overlap.
 
 **Central error handler** (`app.ts`) — the only place internal errors are shaped:
 ```ts
@@ -75,14 +93,34 @@ app.onError((err, c) => {
 app.post('/hub', bodyLimit({ maxSize: MAX_FORM_BYTES, onError: rejectOversized }), handler)
 ```
 
-**SSE** — the live timeline (`hono/streaming`, `app.ts:/timeline/stream`):
+**SSE** — the live timeline (`hono/streaming`, `api/logical-routes.ts:mountLogicalStreamRoute`, mounted as `GET /stream`):
 ```ts
-return streamSSE(c, async (stream) => {
-  const off = bus.onNewPost((e) => stream.writeSSE({ event: 'post', data: JSON.stringify(e) }))
-  stream.onAbort(off)                     // cleanup on client drop — required
-  while (!stream.aborted) { await stream.writeSSE({ event: 'ping', data: '' }); await stream.sleep(15000) }
-})
+app.get('/stream', (c) =>
+  streamSSE(c, async (stream) => {
+    const viewer = await resolveViewer(c)
+
+    // Register the wake-up listener BEFORE replay: a live effect landing
+    // during replay must not be lost. The hint is coalesced (highest sequence
+    // wins) and is only a wake — the pump re-reads the durable journal.
+    let hintHigh = 0
+    const off = bus.onSequenceHint((s) => { hintHigh = Math.max(hintHigh, s) })
+    stream.onAbort(off)                     // cleanup on client drop — required
+
+    // Last-Event-ID (browser sets it on auto-reconnect) takes precedence over
+    // the initial `?last=` query. Missing/empty is invalid → reset.
+    const cursor = c.req.header('Last-Event-ID') ?? c.req.query('last') ?? null
+    const start = source.start(cursor && cursor.length > 0 ? cursor : null)
+    if (start.kind === 'reset') {
+      await stream.writeSSE({ event: 'reset', data: RESET_DATA })
+      return
+    }
+    // ...drain the durable journal from start.afterSequence, writeSSE per event
+  }),
+)
 ```
+The event source of truth is the durable journal, not the in-memory `bus` — the
+bus only supplies coalesced wake-up hints; every frame is re-projected from the
+journal. See `core/test/logical-sse.test.ts` (`app.request('/stream', { headers: { 'Last-Event-ID': cursor } })`) for the test shape.
 
 **Mounting better-auth** — core delegates the whole `/api/auth/*` surface to the
 better-auth handler with the raw request (`app.ts`):
