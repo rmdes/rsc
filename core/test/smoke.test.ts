@@ -28,5 +28,5 @@ test('smoke: anonymous sign-in, post, /me, and ops-token federation seeding all 
   // 'approved' directly, so the new source is immediately visible here — the
   // same method GET /peers' v2 arm uses (app.ts).
   const approved = await repo.listApprovedFederationSources()
-  expect(approved.some((s) => s.canonicalUrl === 'https://203.0.113.90/feed.xml')).toBe(true)
+  expect(approved.some((s) => s.canonicalUrl === 'https://203.0.113.199/feed.xml')).toBe(true)
 })
