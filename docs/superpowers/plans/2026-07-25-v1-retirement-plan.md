@@ -218,11 +218,23 @@ test('sweepHousekeeping purges expired outbound subscriptions', async () => {
     secret: null, expiresAt: future, createdAt: now.toISOString(),
   })
   const config = loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: undefined })
+  // Count with a cutoff far in the PAST so `expires_at > cutoff` is true for every
+  // row — this counts rows ACTUALLY PRESENT, independent of expiry. Using
+  // `new Date().toISOString()` here would be a FALSE GREEN: countActiveSubscriptions
+  // (sqlite.ts:612-618) applies `WHERE expires_at > now` itself, so it excludes the
+  // expired row whether or not the purge ever deleted it — the test would pass even
+  // with the purge call removed. (Caught in review, 2026-07-26.)
+  const EPOCH = '1970-01-01T00:00:00.000Z'
+  expect(await repo.countActiveSubscriptions({}, EPOCH)).toBe(2) // both rows present
   await sweepHousekeeping(repo, config)
-  const liveCount = await repo.countActiveSubscriptions({}, new Date().toISOString())
-  expect(liveCount).toBe(1) // only sub-live remains reachable via the active-count query
+  expect(await repo.countActiveSubscriptions({}, EPOCH)).toBe(1) // sub-expired physically deleted
 })
 ```
+
+**This test MUST fail if the `purgeExpiredSubscriptions` call is removed from
+`housekeeping.ts`.** Verify that explicitly (comment the call out, watch it go
+red, restore it) — a test that cannot fail is not a test, and this one exists
+solely to guard a call whose only other caller a later task deletes.
 
 - [ ] **Step 2: Run test to verify it fails**
 
