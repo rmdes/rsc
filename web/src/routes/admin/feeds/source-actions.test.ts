@@ -35,46 +35,17 @@ const summary = (
 
 type Row = { id: string; url: string; governance: string; operation: string; federationStatus: string; actions: Array<{ action: string; commandId: string }> }
 type Group = { key: string; title: string; blurb: string; rows: Row[] }
-type LoadResult = { mode: string; feeds?: Array<{ handle: string }>; groups?: Group[]; cursor?: string | null; nextCursor?: string | null; establishCommandId?: string }
+type LoadResult = { mode: string; groups?: Group[]; cursor?: string | null; nextCursor?: string | null; establishCommandId?: string }
 
-// The capability reading is memoized per module instance, so every load case
-// takes a FRESH +page.server.ts rather than adding a production reset hook.
+// Every load case takes a FRESH +page.server.ts import (vi.resetModules) purely
+// for isolation between cases — the load itself has no memoized state.
 async function loadAdminWith(fetch: ReturnType<typeof vi.fn>, search = ''): Promise<LoadResult> {
 	vi.resetModules()
 	const { load } = await import('./+page.server.ts')
 	return (await load(loadEvent(fetch, search) as never)) as LoadResult
 }
 
-// --- capability off: today's page, byte for byte ------------------------------
-
-test('with the capability off the admin load stays legacy and never touches /admin/sources', async () => {
-	const fetch = vi.fn(async (url: string | URL) =>
-		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 })
-			: new Response(JSON.stringify({ feeds: [{ handle: 'w', displayName: 'W', feedUrl: 'https://ex.test/f.xml' }] }), { status: 200 })
-	)
-	const result = await loadAdminWith(fetch)
-	expect(result).toMatchObject({ mode: 'legacy' })
-	expect(result.feeds?.map((f) => f.handle)).toEqual(['w'])
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/feeds'))).toBe(true)
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources'))).toBe(false)
-})
-
-test('the legacy add and remove actions still work and make no v2 request', async () => {
-	const fetch = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 201 }))
-	expect(await actions.add(formEvent('add', { handle: 'w', displayName: 'W', feedUrl: 'https://ex.test/f.xml' }, fetch) as never)).toEqual({ added: true })
-	const [addUrl, addInit] = fetch.mock.calls[0] as [string, RequestInit]
-	expect(addUrl).toContain('/users')
-	expect(JSON.parse(String(addInit.body))).toEqual({ handle: 'w', displayName: 'W', feedUrl: 'https://ex.test/f.xml' })
-
-	expect(await actions.remove(formEvent('remove', { handle: 'w' }, fetch) as never)).toEqual({ removed: true })
-	const [rmUrl, rmInit] = fetch.mock.calls[1] as [string, RequestInit]
-	expect(rmUrl).toContain('/users/w')
-	expect(rmInit.method).toBe('DELETE')
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources') || isCap(u))).toBe(false)
-})
-
-// --- capability on: the v2 source console -------------------------------------
+// --- the source console --------------------------------------------------------
 
 test('with the capability on the admin load reads /admin/sources and groups the four buckets', async () => {
 	const fetch = vi.fn(async (url: string | URL) =>
@@ -321,30 +292,8 @@ test("a tombstone unblock that core answers 409 'not blocked' reaches the admin 
 	expect(res.data.commandId).toBe('dup')
 })
 
-// --- capability failure: legacy, and NEVER a silently empty admin page --------
-
-test('a capability failure degrades the admin load to legacy and is retried next request', async () => {
-	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) throw new Error('no /capabilities on this core')
-		return new Response(JSON.stringify({ feeds: [{ handle: 'w', displayName: 'W', feedUrl: null }] }), { status: 200 })
-	})
-	vi.resetModules()
-	const { load } = await import('./+page.server.ts')
-	const first = (await load(loadEvent(fetch) as never)) as LoadResult
-	expect(first).toMatchObject({ mode: 'legacy' })
-	expect(first.feeds?.map((f) => f.handle)).toEqual(['w']) // the legacy rows really are served
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources'))).toBe(false)
-	const capCalls = () => fetch.mock.calls.filter((c) => isCap(c[0])).length
-	expect(capCalls()).toBe(1)
-	await load(loadEvent(fetch) as never)
-	expect(capCalls()).toBe(2) // a failure is never cached as sticky state
-})
-
-test('a capability failure with core down still throws to the error page — never an empty admin list', async () => {
-	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) throw new Error('no /capabilities on this core')
-		return new Response('gateway down', { status: 502 })
-	})
+test('a core outage still throws to the error page — never an empty admin list', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response('gateway down', { status: 502 }))
 	await expect(loadAdminWith(fetch)).rejects.toThrow()
 })
 

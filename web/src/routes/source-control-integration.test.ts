@@ -1,9 +1,9 @@
 import { test, expect, vi } from 'vitest'
 
-// The whole-vertical gate (Task 10), web half. Each earlier task proved its own
-// page; this file drives all three CHANGED surfaces — home, following, admin
-// feeds — from ONE capability reading, the way a single web process sees them,
-// in both feature states.
+// The whole-vertical gate (Task 10), web half, now V1-retired (Task 11e): each
+// earlier task proved its own page; this file drives all three CHANGED
+// surfaces — home, following, admin feeds — from one shared core mock, the
+// way a single web process sees them. Only the v2 state exists any more.
 
 // Field names that exist only on the administrative projections. No ordinary
 // page payload may carry any of them, asserted against the serialized payload.
@@ -16,17 +16,14 @@ const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 const me = { user: { id: 'me1', handle: 'alice', displayName: 'Alice', kind: 'local' as const }, isAnonymous: false }
 
-// One core, answering every route each of the three pages can call. The single
-// `on` switch is the only difference between the two states.
-const coreFetch = (on: boolean) =>
+// One core, answering every route each of the three pages can call.
+const coreFetch = () =>
 	vi.fn(async (url: string | URL) => {
 		const u = String(url)
 		const ok = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
-		if (isCap(u)) return ok({ sourceModelV2: on })
-		// Under v2 the home/following rivers read the logical envelope on the SAME
-		// /timeline path and now VALIDATE it (fail closed on a bad shape); legacy
-		// gets the v1 shape. A malformed v2 body would correctly down the page.
-		if (u.includes('/timeline')) return ok(on ? { model: 'logical-v2', lens: { kind: 'public' }, timeline: [], nextCursor: null, journalCursor: 'jc' } : { timeline: [], nextCursor: null })
+		// The home/following rivers read the logical envelope on the /timeline path
+		// and VALIDATE it (fail closed on a bad shape).
+		if (u.includes('/timeline')) return ok({ model: 'logical-v2', lens: { kind: 'public' }, timeline: [], nextCursor: null, journalCursor: 'jc' })
 		if (u.includes('/peers')) return ok({ peers: [] })
 		if (u.includes('/me/following'))
 			return ok({
@@ -36,14 +33,9 @@ const coreFetch = (on: boolean) =>
 					{ sourceId: 's2', url: 'https://203.0.113.91/f.xml', attributionMode: 'single_publisher', subscriptionState: 'pending', availability: 'awaiting_review' }
 				]
 			})
-		if (u.includes('/me/subscriptions')) return on ? ok({ subscription: { sourceId: 's1', url: 'https://203.0.113.90/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' } }, 201) : ok({ user: { id: 'r1', handle: 'w', displayName: 'W', kind: 'remote', feedType: 'webfeed' }, followed: true }, 201)
-		if (u.includes('/me/follows/opml')) return on ? ok({ localFollowed: 0, active: 1, pending: 0, unavailable: 0, notSubscribable: 0, capSkipped: 0 }) : ok({ followed: 1, created: 1, skipped: 0 })
-		if (u.includes('/follows'))
-			return ok({
-				following: on
-					? [{ kind: 'source', sourceId: 's1', url: 'https://203.0.113.90/f.xml', displayName: 'Ex Blog' }]
-					: [{ id: 'f1', handle: 'w', displayName: 'W', kind: 'remote', feedType: 'webfeed' }]
-			})
+		if (u.includes('/me/subscriptions')) return ok({ subscription: { sourceId: 's1', url: 'https://203.0.113.90/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' } }, 201)
+		if (u.includes('/me/follows/opml')) return ok({ localFollowed: 0, active: 1, pending: 0, unavailable: 0, notSubscribable: 0, capSkipped: 0 })
+		if (u.includes('/follows')) return ok({ following: [{ kind: 'source', sourceId: 's1', url: 'https://203.0.113.90/f.xml', displayName: 'Ex Blog' }] })
 		if (u.includes('/admin/sources'))
 			return ok({
 				items: [
@@ -51,7 +43,6 @@ const coreFetch = (on: boolean) =>
 				],
 				nextCursor: null
 			})
-		if (u.includes('/admin/feeds')) return ok({ feeds: [{ handle: 'w', displayName: 'W', feedUrl: 'https://203.0.113.90/f.xml' }] })
 		return ok({})
 	})
 
@@ -69,8 +60,7 @@ const formEvent = (action: string, fields: Record<string, string>, fetch: Return
 	cookies
 })
 
-// One reset per state = one memoized capability reading shared by all three
-// page modules, exactly like one running web process.
+// A fresh import per test, exactly like one running web process.
 async function pages() {
 	vi.resetModules()
 	return {
@@ -80,50 +70,11 @@ async function pages() {
 	}
 }
 
-test('with the capability off every changed page stays legacy and /admin/sources is never requested', async () => {
-	const fetch = coreFetch(false)
+test('all three pages switch together: subscribe, owner projection, unsubscribe, source console', async () => {
+	const fetch = coreFetch()
 	const { home, following, admin } = await pages()
 
-	const homeData = (await home.load(homeEvent(fetch) as never)) as { sourceModelV2?: boolean; subscribeCommandId?: string; coreDown?: boolean; followIds?: string[] }
-	expect(homeData.sourceModelV2).toBeUndefined()
-	expect(homeData.subscribeCommandId).toBeUndefined()
-	expect(homeData.coreDown).toBeUndefined()
-	expect(homeData.followIds).toEqual(['me1', 'f1'])
-
-	const followingData = (await following.load(followingEvent(fetch, 'alice') as never)) as { rows?: unknown; following: Array<{ handle: string }>; coreDown?: boolean }
-	expect(followingData.rows).toBeUndefined()
-	expect(followingData.following.map((u) => u.handle)).toEqual(['w'])
-	expect(followingData.coreDown).toBeUndefined()
-
-	const adminData = (await admin.load(adminEvent(fetch) as never)) as { mode: string; feeds?: Array<{ handle: string }> }
-	expect(adminData).toMatchObject({ mode: 'legacy' })
-	expect(adminData.feeds?.map((f) => f.handle)).toEqual(['w'])
-
-	// Legacy subscribe still posts {url,type} — no commandId anywhere.
-	await expect(home.actions.subscribe(formEvent('subscribe', { url: 'https://203.0.113.90/f.xml', type: 'webfeed' }, fetch) as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=w' })
-	expect(bodyOf(fetch, '/me/subscriptions')).toEqual({ url: 'https://203.0.113.90/f.xml', type: 'webfeed' })
-
-	// Legacy OPML import carries no x-rsc-command-id header.
-	const opml = new FormData()
-	opml.set('opml', new File(['<opml/>'], 'feed.opml'))
-	expect(await following.actions.import({ ...formEvent('import', {}, fetch), request: new Request('http://x/?/import', { method: 'POST', body: opml }) } as never)).toEqual({ ok: true, result: { followed: 1, created: 1, skipped: 0 } })
-	const opmlCall = fetch.mock.calls.find((c) => String(c[0]).includes('/me/follows/opml')) as unknown as [string, RequestInit]
-	expect(new Headers(opmlCall[1].headers).get('x-rsc-command-id')).toBeNull()
-
-	// The v2-only core routes are never touched from any of the three pages.
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources'))).toBe(false)
-	expect(urlsOf(fetch).some((u) => u.includes('/me/following'))).toBe(false)
-	expect(urlsOf(fetch).filter(isCap)).toHaveLength(1) // one probe per web process, memoized on its 200
-
-	expectNoAdminFields([homeData, followingData])
-})
-
-test('with the capability on all three pages switch together: subscribe, owner projection, unsubscribe, source console', async () => {
-	const fetch = coreFetch(true)
-	const { home, following, admin } = await pages()
-
-	const homeData = (await home.load(homeEvent(fetch) as never)) as { sourceModelV2?: boolean; subscribeCommandId?: string; followIds?: string[] }
-	expect(homeData.sourceModelV2).toBe(true)
+	const homeData = (await home.load(homeEvent(fetch) as never)) as { subscribeCommandId?: string; followIds?: string[] }
 	expect(homeData.subscribeCommandId).toMatch(/^[0-9a-f]{8}-/)
 	expect(homeData.followIds).toEqual(['me1']) // a v2 source carries no local user id
 
@@ -160,7 +111,8 @@ test('with the capability on all three pages switch together: subscribe, owner p
 		['blocked', []]
 	])
 	expect(urlsOf(fetch).some((u) => u.includes('/admin/feeds'))).toBe(false)
-	expect(urlsOf(fetch).filter(isCap)).toHaveLength(1)
+	// No page probes /capabilities any more — v2 is the only model, unconditionally.
+	expect(urlsOf(fetch).filter(isCap)).toHaveLength(0)
 
 	// Ordinary payloads only — the admin console legitimately carries these.
 	expectNoAdminFields([homeData, ownerData, visitorData])

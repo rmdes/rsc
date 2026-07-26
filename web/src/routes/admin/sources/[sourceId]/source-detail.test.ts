@@ -1,8 +1,7 @@
 import { test, expect, vi } from 'vitest'
 
 // The admin acquisition console (spec §6.2-6.3): the source-detail page (refresh
-// action + status panel) and the runs/jobs history page. The runs/+page.server.ts
-// capability guard is untouched here (Task 11e territory); every load case takes
+// action + status panel) and the runs/jobs history page. Every load case takes
 // a FRESH +page.server.ts import so module-level memoization never bleeds
 // between cases.
 
@@ -73,14 +72,7 @@ async function loadRuns(fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search
 	return (await load(loadEvent(fetch, sourceId, search) as never)) as LoadResult
 }
 
-// --- capability off: the runs/jobs history page (Task 11e territory, untouched) -
-
-test('with the capability off the runs load is also 404', async () => {
-	const fetch = vi.fn(async (url: string | URL) => (isCap(url) ? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 }) : new Response('{}', { status: 200 })))
-	await expect(loadRuns(fetch)).rejects.toMatchObject({ status: 404 })
-})
-
-// --- capability on: the source-detail status panel ----------------------------
+// --- the source-detail status panel --------------------------------------------
 
 test('the v2 source-detail load reads governance + the latest run and mints a stable refresh command id', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {

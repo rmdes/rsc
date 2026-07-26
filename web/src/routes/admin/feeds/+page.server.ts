@@ -1,7 +1,6 @@
 import { fail } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { authedFetch, cookieHeader } from '$lib/server/session'
-import { listAdminFeeds, addRemoteUser, removeRemoteFeed, getCapabilities } from '$lib/api'
 import { listTombstones, unblockTombstone } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
@@ -101,12 +100,6 @@ async function listSources(f: typeof fetch, cursor: string | null, filter?: 'gov
 
 export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
-	// getCapabilities NEVER rejects: a probe failure reads as legacy, which is
-	// exactly what the flag being off is. What it must never do is swallow a
-	// core outage — both reads below still throw to the error page rather than
-	// render a silently empty admin list.
-	const cap = await getCapabilities(fetch)
-	if (!cap.sourceModelV2) return { mode: 'legacy' as const, feeds: await listAdminFeeds(f) }
 	const cursor = url.searchParams.get('cursor')
 	// The federation/review sections must not depend on WHICH page of the
 	// created_at pagination is being viewed (a bulk OPML import buried three
@@ -138,32 +131,6 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 }
 
 export const actions: Actions = {
-	add: async (event) => {
-		const form = await event.request.formData()
-		const feedUrl = String(form.get('feedUrl') ?? '').trim()
-		const handle = String(form.get('handle') ?? '').trim()
-		const displayName = String(form.get('displayName') ?? '').trim()
-		if (!handle || !feedUrl) return fail(400, { error: 'handle and feedUrl are required' })
-		try {
-			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
-			await addRemoteUser(f, { handle, displayName: displayName || handle, feedUrl })
-		} catch (err) {
-			return fail(400, { error: err instanceof Error ? err.message : 'add failed' })
-		}
-		return { added: true }
-	},
-	remove: async (event) => {
-		const form = await event.request.formData()
-		const handle = String(form.get('handle') ?? '').trim()
-		if (!handle) return fail(400, { error: 'handle required' })
-		try {
-			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
-			await removeRemoteFeed(f, handle)
-		} catch (err) {
-			return fail(400, { error: err instanceof Error ? err.message : 'remove failed' })
-		}
-		return { removed: true }
-	},
 	// v2-only: the markup that renders these two forms exists only while the
 	// flag is on and always carries its own command id — no capability probe
 	// needed (same carve as the following page's unsubscribe).

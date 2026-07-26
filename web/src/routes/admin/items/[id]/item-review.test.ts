@@ -1,13 +1,12 @@
 import { test, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 
-// V3 item-review surface (spec §7.3): the bounded evidence-review page behind
+// The item-review surface (spec §7.3): the bounded evidence-review page behind
 // GET /admin/items/:id + its first audit page, plus the hide/restore moderation
-// forms. Same v2-only capability carve as the acquisition console: cap OFF → 404.
-// Server-only test harness (no component renderer here) — the loader/actions are
-// exercised directly; the no-{@html}/no-second-sanitize invariant is asserted by
-// reading the .svelte source. The capability reading is memoized per module
-// instance, so every load case takes a FRESH +page.server.ts.
+// forms. Server-only test harness (no component renderer here) — the
+// loader/actions are exercised directly; the no-{@html}/no-second-sanitize
+// invariant is asserted by reading the .svelte source. Every load case takes a
+// FRESH +page.server.ts import for isolation between cases.
 
 const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
@@ -81,13 +80,7 @@ async function itemAction(action: 'hide' | 'restore', fetch: ReturnType<typeof v
 	return actions[action](formEvent(action, fields, fetch) as never)
 }
 
-// --- capability off / unknown item: hidden as 404 -----------------------------
-
-test('with the capability off the item-review load is 404 and never touches /admin/items', async () => {
-	const fetch = vi.fn(async (url: string | URL) => (isCap(url) ? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 }) : new Response('{}', { status: 200 })))
-	await expect(loadItem(fetch)).rejects.toMatchObject({ status: 404 })
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/items/'))).toBe(false)
-})
+// --- unknown item: hidden as 404 -----------------------------------------------
 
 test('an unknown item (neutral 404 from core) is hidden as 404', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {

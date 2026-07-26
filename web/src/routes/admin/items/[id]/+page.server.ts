@@ -1,21 +1,17 @@
 import { error, fail } from '@sveltejs/kit'
 import { authedFetch, cookieHeader } from '$lib/server/session'
-import { getCapabilities } from '$lib/api'
 import { getAdminItemDetail, listItemAudit, hideItem, restoreItem } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
 
-// The v2-only item-review surface (spec §7.3): the bounded evidence-review page
-// behind GET /admin/items/:id + its first audit page, with hide/restore moderation
-// forms. Same capability carve as the acquisition console — v2 off → 404 (there is
-// no v1 evidence surface to fall back to). Raw evidence reaches the page as bounded
-// escaped text (Web escapes at render via `{expr}`, NEVER {@html}, never routed
-// through the sanitizer): no second sanitize path is introduced here.
+// The item-review surface (spec §7.3): the bounded evidence-review page behind
+// GET /admin/items/:id + its first audit page, with hide/restore moderation
+// forms. Raw evidence reaches the page as bounded escaped text (Web escapes at
+// render via `{expr}`, NEVER {@html}, never routed through the sanitizer): no
+// second sanitize path is introduced here.
 
 export const load: PageServerLoad = async ({ fetch, params, url, cookies }) => {
 	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
-	const cap = await getCapabilities(fetch)
-	if (!cap.sourceModelV2) throw error(404, 'Not found')
 	const detail = await getAdminItemDetail(f, params.id)
 	if (!detail) throw error(404, 'Not found') // neutral not-found (no evidence leak)
 	// Paginate the audit trail: the ?before cursor from the "Older audit" link (an
