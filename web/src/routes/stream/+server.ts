@@ -8,17 +8,14 @@ const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 const RESET_FRAME = 'event: reset\ndata: {"model":"logical-v2","kind":"reset"}\n\n'
 
 export const GET: RequestHandler = async ({ request }) => {
-	// The client already knows the model from its capability-checked SSR load, so
-	// it opens /stream?v2=1 for the logical-v2 journal. No capability probe here:
-	// trusting the client's own SSR reading avoids a second round trip AND keeps
-	// the v1 path (no ?v2) byte-identical.
+	// Always core's logical-v2 journal. A legacy ?v2=1 from a client rendered
+	// before this change is tolerated (and ignored) rather than rejected.
 	const url = new URL(request.url)
-	const v2 = url.searchParams.get('v2') === '1'
 	// EventSource sends Last-Event-ID on auto-reconnect; forwarding it lets core
 	// replay missed events. A FRESH EventSource cannot set that header, so ?last=
 	// is the query-param fallback — the header wins when both exist.
 	const lastEventId = request.headers.get('last-event-id') ?? url.searchParams.get('last')
-	const upstreamUrl = `${base()}${v2 ? '/stream' : '/timeline/stream'}`
+	const upstreamUrl = `${base()}/stream`
 	let upstream: Response
 	try {
 		upstream = await fetch(upstreamUrl, {
@@ -44,30 +41,11 @@ export const GET: RequestHandler = async ({ request }) => {
 	const encoder = new TextEncoder()
 	let buffer = ''
 
-	// V1: only `event: post` data: JSON is enriched with contentHtml; anything
-	// unparseable forwards untouched (the client falls back to plaintext).
-	const enrichV1 = (frame: string): string => {
-		if (!/^event: post$/m.test(frame)) return frame
-		return frame
-			.split('\n')
-			.map((line) => {
-				if (!line.startsWith('data: ')) return line
-				try {
-					const entry = JSON.parse(line.slice(6))
-					if (typeof entry !== 'object' || entry === null) return line
-					return `data: ${JSON.stringify({ ...entry, contentHtml: renderPostHtml(entry) })}`
-				} catch {
-					return line
-				}
-			})
-			.join('\n')
-	}
-
-	// V2: translate a LogicalV2StreamEvent frame into the render-shape event the
+	// Translate a LogicalV2StreamEvent frame into the render-shape event the
 	// client reconciler consumes. upsert → enriched entry through the ONE server
 	// sanitizer; remove → {id, overlay}; reset passes through. A malformed frame
-	// FAILS CLOSED (spec §5.6 carve 2): a reset replaces it — never a v1 cast.
-	const enrichV2 = (frame: string): string => {
+	// FAILS CLOSED (spec §5.6 carve 2): a reset replaces it.
+	const enrichFrame = (frame: string): string => {
 		if (frame.startsWith(':') || !/^event: /m.test(frame)) return frame // heartbeat / stray
 		if (/^event: reset$/m.test(frame)) return frame
 		const idLine = frame.split('\n').find((l) => l.startsWith('id: '))
@@ -92,7 +70,6 @@ export const GET: RequestHandler = async ({ request }) => {
 		}
 	}
 
-	const enrichFrame = v2 ? enrichV2 : enrichV1
 	const transformed = upstream.body!.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
 			transform(chunk, controller) {

@@ -7,10 +7,10 @@ afterEach(() => {
 	global.fetch = originalFetch
 })
 
-test('GET proxies the core SSE stream with the right headers', async () => {
+test('GET proxies the core journal stream with the right headers', async () => {
 	const body = new ReadableStream({
 		start(controller) {
-			controller.enqueue(new TextEncoder().encode('event: post\ndata: {}\n\n'))
+			controller.enqueue(new TextEncoder().encode('event: reset\ndata: {"model":"logical-v2","kind":"reset"}\n\n'))
 			controller.close()
 		}
 	})
@@ -20,15 +20,12 @@ test('GET proxies the core SSE stream with the right headers', async () => {
 	const request = new Request('http://x/stream')
 	const res = await GET({ request } as never)
 
-	expect(fetchMock).toHaveBeenCalledWith(
-		'http://localhost:8787/timeline/stream',
-		expect.objectContaining({ signal: request.signal })
-	)
+	expect(fetchMock).toHaveBeenCalledWith('http://localhost:8787/stream', expect.objectContaining({ signal: request.signal }))
 	expect(res.headers.get('content-type')).toBe('text/event-stream')
 	expect(res.headers.get('cache-control')).toBe('no-cache')
 
 	const text = await res.text()
-	expect(text).toContain('event: post')
+	expect(text).toContain('event: reset')
 })
 
 test('GET forwards upstream error status', async () => {
@@ -120,73 +117,10 @@ test('GET keeps the upstream content-type on error responses', async () => {
 	expect(res.headers.get('content-type')).toBe('application/json')
 })
 
-test('post events gain contentHtml; id and event lines are byte-verbatim (replay contract)', async () => {
-	const frame = `event: post\nid: p-1\ndata: ${JSON.stringify({ id: 'p-1', content: '<script>x</script><p>hi</p>', source: 'remote', author: {} })}\n\n`
-	const body = new ReadableStream({
-		start(controller) {
-			const b = new TextEncoder().encode(frame)
-			// split mid-frame to prove chunk buffering works
-			controller.enqueue(b.slice(0, 25))
-			controller.enqueue(b.slice(25))
-			controller.close()
-		}
-	})
-	global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
-	const res = await GET({ request: new Request('http://x/stream') } as never)
-	const text = await res.text()
-	expect(text).toContain('event: post\n')
-	expect(text).toContain('id: p-1\n')
-	const data = JSON.parse(text.split('data: ')[1].split('\n')[0])
-	expect(data.contentHtml).toContain('<p>hi</p>')
-	expect(data.contentHtml).not.toContain('script')
-})
-
-test('a resolved-reply frame carrying rootReplyCount retains it after contentHtml enrichment', async () => {
-	const frame = `event: post\nid: p-4\ndata: ${JSON.stringify({ id: 'p-4', content: 'a reply', source: 'local', author: {}, inReplyToPostId: 'root-1', threadRootId: 'root-1', rootReplyCount: 3 })}\n\n`
-	const body = new ReadableStream({
-		start(controller) {
-			controller.enqueue(new TextEncoder().encode(frame))
-			controller.close()
-		}
-	})
-	global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
-	const res = await GET({ request: new Request('http://x/stream') } as never)
-	const text = await res.text()
-	const data = JSON.parse(text.split('data: ')[1].split('\n')[0])
-	expect(data.contentHtml).toBeDefined()
-	expect(data.rootReplyCount).toBe(3)
-})
-
-test('an unparseable frame forwards untouched', async () => {
-	const frame = 'event: post\nid: p-2\ndata: not-json\n\n'
-	const body = new ReadableStream({
-		start(controller) {
-			controller.enqueue(new TextEncoder().encode(frame))
-			controller.close()
-		}
-	})
-	global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
-	const res = await GET({ request: new Request('http://x/stream') } as never)
-	expect(await res.text()).toContain('data: not-json\n')
-})
-
-test('a parseable-but-non-object data payload forwards byte-identical', async () => {
-	const frame = 'event: post\nid: p-3\ndata: 123\n\n'
-	const body = new ReadableStream({
-		start(controller) {
-			controller.enqueue(new TextEncoder().encode(frame))
-			controller.close()
-		}
-	})
-	global.fetch = vi.fn(async () => new Response(body, { status: 200 })) as unknown as typeof fetch
-	const res = await GET({ request: new Request('http://x/stream') } as never)
-	expect(await res.text()).toContain('data: 123\n')
-})
-
-// --- logical-v2 stream (?v2=1) ------------------------------------------------
-// The client, already knowing the model from its SSR load, opens /stream?v2=1;
-// the proxy branches to core's /stream and translates LogicalV2StreamEvent frames
-// into the render-shape events the client reconciler consumes.
+// --- logical-v2 frame translation --------------------------------------------
+// The proxy always reads core's /stream journal and translates
+// LogicalV2StreamEvent frames into the render-shape events the client
+// reconciler consumes.
 
 const v2item = (over = {}) => ({
 	kind: 'logical_item',
@@ -214,17 +148,18 @@ const v2item = (over = {}) => ({
 const streamOf = (frame: string, status = 200) =>
 	(global.fetch = vi.fn(async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(frame)); c.close() } }), { status })) as unknown as typeof fetch)
 
-test('v2: proxies core /stream (not /timeline/stream) and forwards Last-Event-ID', async () => {
+// A page rendered before ?v2=1 stopped being sent keeps working: the param is
+// ignored, never rejected, and the upstream is the journal either way.
+test('a stale ?v2=1 is tolerated — still core /stream, Last-Event-ID still forwarded', async () => {
 	const fetchMock = streamOf('event: reset\ndata: {"model":"logical-v2","kind":"reset"}\n\n')
 	await GET({ request: new Request('http://x/stream?v2=1', { headers: { 'Last-Event-ID': 'jc-9' } }) } as never)
-	expect(String((fetchMock as any).mock.calls[0][0])).toContain('/stream')
-	expect(String((fetchMock as any).mock.calls[0][0])).not.toContain('/timeline/stream')
+	expect(String((fetchMock as any).mock.calls[0][0])).toBe('http://localhost:8787/stream')
 	expect(new Headers(((fetchMock as any).mock.calls[0][1] as RequestInit).headers).get('Last-Event-ID')).toBe('jc-9')
 })
 
 test('v2: an upsert frame becomes event: upsert with an enriched, sanitized entry; id byte-verbatim', async () => {
 	streamOf(`event: upsert\nid: jc-1\ndata: ${JSON.stringify({ model: 'logical-v2', kind: 'upsert', logicalItemId: 'i1', item: v2item() })}\n\n`)
-	const res = await GET({ request: new Request('http://x/stream?v2=1') } as never)
+	const res = await GET({ request: new Request('http://x/stream') } as never)
 	const text = await res.text()
 	expect(text).toContain('event: upsert\n')
 	expect(text).toContain('id: jc-1\n')
@@ -238,7 +173,7 @@ test('v2: an upsert frame becomes event: upsert with an enriched, sanitized entr
 test('v2: an upsert of a resolved reply carries the replyCounts overlay (rootReplyCount + threadRootId)', async () => {
 	const reply = v2item({ id: 'rep', parentResolutionState: 'resolved', parentLogicalItemId: 'root', threadRootId: 'root' })
 	streamOf(`event: upsert\nid: jc-2\ndata: ${JSON.stringify({ model: 'logical-v2', kind: 'upsert', logicalItemId: 'rep', item: reply, replyCounts: { rootLogicalItemId: 'root', rootConversationReplyCount: 4 } })}\n\n`)
-	const res = await GET({ request: new Request('http://x/stream?v2=1') } as never)
+	const res = await GET({ request: new Request('http://x/stream') } as never)
 	const data = JSON.parse((await res.text()).split('data: ')[1].split('\n')[0])
 	expect(data.rootReplyCount).toBe(4)
 	expect(data.threadRootId).toBe('root')
@@ -246,7 +181,7 @@ test('v2: an upsert of a resolved reply carries the replyCounts overlay (rootRep
 
 test('v2: a remove frame becomes event: remove carrying the id (+ overlay when present)', async () => {
 	streamOf(`event: remove\nid: jc-3\ndata: ${JSON.stringify({ model: 'logical-v2', kind: 'remove', logicalItemId: 'gone', replyCounts: { rootLogicalItemId: 'root', rootConversationReplyCount: 2 } })}\n\n`)
-	const res = await GET({ request: new Request('http://x/stream?v2=1') } as never)
+	const res = await GET({ request: new Request('http://x/stream') } as never)
 	const text = await res.text()
 	expect(text).toContain('event: remove\n')
 	const data = JSON.parse(text.split('data: ')[1].split('\n')[0])
@@ -257,13 +192,13 @@ test('v2: a remove frame becomes event: remove carrying the id (+ overlay when p
 
 test('v2: a reset frame passes through unchanged', async () => {
 	streamOf('event: reset\ndata: {"model":"logical-v2","kind":"reset"}\n\n')
-	const res = await GET({ request: new Request('http://x/stream?v2=1') } as never)
+	const res = await GET({ request: new Request('http://x/stream') } as never)
 	expect(await res.text()).toContain('event: reset\n')
 })
 
 test('v2: a malformed upsert data fails closed — a reset frame replaces it, never a v1 cast', async () => {
 	streamOf('event: upsert\nid: jc-4\ndata: {"model":"logical-v2","kind":"upsert","logicalItemId":"i1","item":{"broken":true}}\n\n')
-	const res = await GET({ request: new Request('http://x/stream?v2=1') } as never)
+	const res = await GET({ request: new Request('http://x/stream') } as never)
 	const text = await res.text()
 	expect(text).toContain('event: reset\n')
 	expect(text).not.toContain('event: upsert')
