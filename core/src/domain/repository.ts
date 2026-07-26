@@ -1,4 +1,4 @@
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushSubscription, PushProtocol, PostRevision } from './types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushProtocol, PostRevision } from './types.ts'
 
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
@@ -11,7 +11,6 @@ export interface Repository {
   setAuthUserId(userId: string, authUserId: string): Promise<void>
   updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }): Promise<User>
   listRemoteUsers(): Promise<User[]>
-  listTextcastingPeers(): Promise<User[]>
   getRemoteUserByFeedUrl(url: string): Promise<User | undefined>
   countRemoteSubscriptions(userId: string): Promise<number>
   countFollowers(userId: string): Promise<number>
@@ -50,9 +49,5 @@ export interface Repository {
   listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]>
   countActiveSubscriptions(filter: { callbackHost?: string; topic?: string }, now: string): Promise<number>
   purgeExpiredSubscriptions(now: string): Promise<void>
-  upsertPushSubscription(s: PushSubscription): Promise<void>
-  findPushSubscription(filter: { token?: string; userId?: string; mode?: PushProtocol; topic?: string }, opts?: { unexpiredAt?: string; state?: 'pending' | 'active' }): Promise<PushSubscription | undefined>
-  listRenewablePushSubscriptions(before: string): Promise<PushSubscription[]>
-  deletePushSubscription(id: string): Promise<void>
   sweepAnonymousUsers(ttlDays: number): { swept: number }
 }

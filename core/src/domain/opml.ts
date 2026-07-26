@@ -1,9 +1,6 @@
-import { generateOpml, parseOpml } from 'feedsmith'
+import { generateOpml } from 'feedsmith'
 import { feedUrls } from './feed.ts'
-import { HandleTakenError } from './types.ts'
-import type { User, NewRemoteUser } from './types.ts'
-import { slugBase } from './subscribe.ts'
-import { checkCallbackUrl } from './push-guard.ts'
+import type { User } from './types.ts'
 
 export function buildFollowingOpml(displayName: string, following: User[], publicUrl: string | null): string {
   const outlines: Array<{ type: 'rss'; text: string; xmlUrl: string }> = []
@@ -30,42 +27,6 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-const MAX_OUTLINES = 1000 // H5: bound user creation per import
-const MAX_HANDLE_ATTEMPTS = 50
-
-interface Outline { text?: string; title?: string; xmlUrl?: string; outlines?: Outline[] }
-
-// Import calls the service directly, which does NOT validate the URL scheme
-// (that guard lives only in the POST /users route). Without this check a
-// non-http(s) xmlUrl would create a permanent user the poller can never fetch
-// (new URL() throws every cycle, forever) — P1.
-function isHttpUrl(u: string): boolean {
-  try {
-    const p = new URL(u).protocol
-    return p === 'http:' || p === 'https:'
-  } catch {
-    return false
-  }
-}
-
-function flatten(outlines: Outline[] | undefined, out: Outline[]): void {
-  for (const o of outlines ?? []) {
-    if (typeof o.xmlUrl === 'string') out.push(o)
-    if (o.outlines) flatten(o.outlines, out) // folders are structure, not feeds (H1)
-  }
-}
-
-export interface ImportDeps {
-  listRemoteUsers: () => Promise<User[]>
-  getUserByHandle: (h: string) => Promise<User | undefined>
-  addRemoteUser: (i: NewRemoteUser) => Promise<User>
-  addFollow: (follower: User, target: User) => Promise<boolean>
-  getSetting: (key: string) => Promise<string | undefined>
-  countRemoteSubscriptions: (userId: string) => Promise<number>
-  getRemoteUserByFeedUrl: (url: string) => Promise<User | undefined>
-  publicUrl: string | null
-}
-
 // Parse an "our own feed" URL → the local handle it points at, else null (H2: both minted URLs).
 export function localHandleForUrl(url: string, publicUrl: string | null): string | null {
   if (!publicUrl) return null
@@ -74,85 +35,4 @@ export function localHandleForUrl(url: string, publicUrl: string | null): string
   const rest = url.slice(prefix.length) // "<handle>/feed.xml" | "<handle>/feed.json"
   const m = /^([^/]+)\/feed\.(xml|json)$/.exec(rest)
   return m ? m[1] : null
-}
-
-export async function importFollowingOpml(deps: ImportDeps, follower: User, body: string): Promise<{ followed: number; created: number; skipped: number }> {
-  const parsed = parseOpml(body)
-  const flat: Outline[] = []
-  flatten(parsed.body?.outlines as Outline[] | undefined, flat)
-
-  const byFeedUrl = new Map((await deps.listRemoteUsers()).map((u) => [u.feedUrl as string, u]))
-  const seenUrls = new Set<string>()
-  const assignedHandles = new Set<string>()
-  const capped = flat.slice(0, MAX_OUTLINES)
-  let followed = 0, created = 0, skipped = flat.length - capped.length // H5: over-cap outlines count as skipped
-
-  // Addendum A: bound the follower's total person/webfeed subscriptions, same
-  // limit + counting rule as service.subscribeByUrl. Only follows that grow
-  // the count (Case 1 existing-remote, Case 3 create+follow) are gated —
-  // Case 2 (local) is unlimited, matching countRemoteSubscriptions itself.
-  const subCap = Number((await deps.getSetting('max_subs_per_user')) ?? '500')
-  let subCount = await deps.countRemoteSubscriptions(follower.id)
-
-  for (const o of capped) {
-    const xmlUrl = o.xmlUrl as string
-    if (seenUrls.has(xmlUrl)) { skipped++; continue } // duplicate xmlUrl in file
-    seenUrls.add(xmlUrl)
-    if (!isHttpUrl(xmlUrl)) { skipped++; continue } // P1: non-http(s) → skip, never create
-    try {
-      // Case 1: a remote user already has this feedUrl.
-      const existing = byFeedUrl.get(xmlUrl)
-      if (existing) {
-        if (subCount >= subCap) { skipped++; continue }
-        if (await deps.addFollow(follower, existing)) { followed++; subCount++ } else skipped++
-        continue
-      }
-      // Case 2: one of our own minted local feed URLs (H2).
-      const localHandle = localHandleForUrl(xmlUrl, deps.publicUrl)
-      if (localHandle) {
-        const localUser = await deps.getUserByHandle(localHandle)
-        if (localUser && localUser.kind === 'local') {
-          if (await deps.addFollow(follower, localUser)) followed++; else skipped++
-          continue
-        }
-      }
-      // Case 3: create a remote user, then follow — gated by the cap, and by
-      // the SSRF guard (Addendum A) since this is the only case that mints a
-      // NEW remote row the poller will fetch on a schedule.
-      if (subCount >= subCap) { skipped++; continue }
-      if (!(await checkCallbackUrl(xmlUrl)).ok) { skipped++; continue }
-      const displayName = (o.text ?? o.title ?? '').trim() || xmlUrl
-      const base = slugBase(o.text ?? o.title ?? '')
-      let handleUser: User | undefined
-      for (let n = 1; n <= MAX_HANDLE_ATTEMPTS; n++) {
-        const candidate = n === 1 ? base : `${base}-${n}`
-        if (assignedHandles.has(candidate)) continue // same-slug collision within this file (H3)
-        try {
-          handleUser = await deps.addRemoteUser({ handle: candidate, displayName, feedUrl: xmlUrl, feedType: 'webfeed' })
-          assignedHandles.add(candidate)
-          break
-        } catch (err) {
-          if (err instanceof HandleTakenError) continue // collision in DB — try next suffix
-          throw err // invalid feedUrl scheme etc. → outer catch skips
-        }
-      }
-      if (!handleUser) {
-        // Mint exhausted — a concurrent create may have won the feed_url race
-        // (HandleTakenError is a UNIQUE collision on either column). Re-resolve
-        // and follow the winner instead of skipping (mirrors subscribeByUrl).
-        const raced = await deps.getRemoteUserByFeedUrl(xmlUrl)
-        if (raced) {
-          byFeedUrl.set(xmlUrl, raced)
-          if (await deps.addFollow(follower, raced)) { followed++; subCount++ } else skipped++
-        } else skipped++
-        continue
-      }
-      byFeedUrl.set(xmlUrl, handleUser)
-      await deps.addFollow(follower, handleUser)
-      created++; followed++; subCount++
-    } catch {
-      skipped++ // create/follow errored (e.g. non-http(s) xmlUrl) — keep going
-    }
-  }
-  return { followed, created, skipped }
 }

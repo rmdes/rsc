@@ -34,10 +34,10 @@ test('external mode publishes a ping per topic on a local post, including the fi
 })
 
 test('remote posts and websub-off both produce no pings', async () => {
-  const { repo, service, config } = await setup(EXT_ENV)
+  const { repo, config } = await setup(EXT_ENV)
   const fetchFn = vi.fn(async () => new Response('ok'))
   const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  const remote = await service.addRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://news.example.com/f.xml' })
+  const remote = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://news.example.com/f.xml' })
   await push.onLocalPost({ id: 'x', authorId: remote.id, source: 'remote', guid: 'g', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', author: remote })
   expect(fetchFn).not.toHaveBeenCalled()
 

@@ -56,22 +56,3 @@ test('GET /peers (v2): only allowed sources with an approved federation relation
 
   repo.close()
 })
-
-test('GET /peers (v1, sources undefined): unchanged, matches service.listTextcastingPeers', async () => {
-  const repo = await createSqliteRepository(':memory:')
-  const bus = createEventBus()
-  const service = createService(repo, bus, null)
-  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo })
-
-  const peer = await repo.createRemoteUser({ handle: 'rsschat', displayName: 'rss.chat', feedUrl: 'https://rss.chat/users/rss.xml' })
-  const plain = await repo.createRemoteUser({ handle: 'scripting', displayName: 'Scripting News', feedUrl: 'https://scripting.com/rss.xml' })
-  await repo.insertPost({ id: 'pp', authorId: peer.id, guid: 'pp', source: 'remote', title: null, content: 'md', contentMarkdown: '**md**', url: null, publishedAt: T, createdAt: T })
-  await repo.insertPost({ id: 'ps', authorId: plain.id, guid: 'ps', source: 'remote', title: null, content: 'plain', url: null, publishedAt: T, createdAt: T })
-
-  const res = await app.request('/peers')
-  expect(res.status).toBe(200)
-  const body = await res.json()
-  expect(body.peers).toEqual([{ handle: 'rsschat', displayName: 'rss.chat', feedUrl: 'https://rss.chat/users/rss.xml' }])
-
-  repo.close()
-})

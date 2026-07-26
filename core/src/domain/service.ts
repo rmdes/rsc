@@ -2,8 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
-import type { NewRemoteUser, NewLocalUser, TimelineEntry, TimelineCursor, TimelineFilter, User, Post } from './types.ts'
-import { slugBase, mintRemoteUser } from './subscribe.ts'
+import type { NewLocalUser, TimelineEntry, TimelineCursor, TimelineFilter, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
@@ -46,9 +45,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
   }
 
   return {
-    async addRemoteUser(input: NewRemoteUser) {
-      return repo.createRemoteUser({ ...input, handle: normalizeHandle(input.handle) })
-    },
     async createLocalPostAs(handle: string, displayName: string, content: string, replyTo?: Post): Promise<TimelineEntry> {
       const author = await ensureLocalUser(handle, displayName)
       if (logical) {
@@ -182,9 +178,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
     listFollowing(userId: string) {
       return repo.listFollowing(userId)
     },
-    listTextcastingPeers() {
-      return repo.listTextcastingPeers()
-    },
     listRemoteUsers() {
       return repo.listRemoteUsers()
     },
@@ -223,27 +216,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl?: strin
       }
       await repo.deletePost(id)
       return { ok: true }
-    },
-    async subscribeByUrl(user: User, url: string, type: 'person' | 'webfeed'): Promise<{ user: User; followed: boolean; created: boolean } | { error: 'cap' }> {
-      const existing = await repo.getRemoteUserByFeedUrl(url)
-      // caller is a registered LOCAL user → addFollow's local-follower guard is satisfied by construction; call the shared helper directly (service methods close over `repo`, not `this`).
-      if (existing) return { user: existing, followed: await followUnlessExcluded(repo, user.id, existing), created: false }
-      const cap = Number(await repo.getSetting('max_subs_per_user') ?? '500')
-      if (await repo.countRemoteSubscriptions(user.id) >= cap) return { error: 'cap' }
-      const base = slugBase(new URL(url).host)
-      const target = await mintRemoteUser((i) => repo.createRemoteUser(i), base, url, url, type)
-      if (!target) {
-        // mintRemoteUser exhausts on HandleTakenError, which insertUser also
-        // throws for a UNIQUE(feed_url) collision (indistinguishable from a
-        // handle collision) — i.e. this also fires when a concurrent create
-        // won the feed_url race while we were retrying. Re-resolve instead of
-        // 500ing: the race loser follows the winner.
-        const raced = await repo.getRemoteUserByFeedUrl(url)
-        if (raced) return { user: raced, followed: await followUnlessExcluded(repo, user.id, raced), created: false }
-        throw new DomainError('could not allocate a handle')
-      }
-      await repo.addFollow(user.id, target.id) // fresh person/webfeed row — never excluded
-      return { user: target, followed: true, created: true }
     },
     getSetting(key: string) { return repo.getSetting(key) },
     setSetting(key: string, value: string) { return repo.setSetting(key, value) },

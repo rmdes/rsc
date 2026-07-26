@@ -2,7 +2,7 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID, createHash } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushSubscription, PushProtocol, FeedType } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
@@ -41,11 +41,10 @@ function advancePolicyGeneration(raw: Database.Database, sourceId: string, now: 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
 interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
-interface PushSubscriptionsTable { id: string; user_id: string; mode: 'websub' | 'rsscloud'; endpoint: string; topic: string; callback_token: string; secret: string | null; state: 'pending' | 'active'; expires_at: string; created_at: string }
 interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
 interface PostRevisionsTable { id: string; post_id: string; title: string | null; content: string; content_markdown: string | null; seen_at: string }
 interface InstanceSettingsTable { key: string; value: string }
-interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; push_subscriptions: PushSubscriptionsTable; follows: FollowsTable; post_revisions: PostRevisionsTable; instance_settings: InstanceSettingsTable }
+interface DB { users: UsersTable; posts: PostsTable; subscriptions: SubscriptionsTable; follows: FollowsTable; post_revisions: PostRevisionsTable; instance_settings: InstanceSettingsTable }
 
 function rowToUser(r: UsersTable): User {
   return { id: r.id, kind: r.kind, handle: r.handle, displayName: r.display_name, feedUrl: r.feed_url, createdAt: r.created_at, authUserId: r.auth_user_id, feedType: r.feed_type }
@@ -57,10 +56,6 @@ function rowToPost(r: PostsTable): Post {
 
 function rowToSubscription(r: SubscriptionsTable): Subscription {
   return { id: r.id, protocol: r.protocol, topic: r.topic, callback: r.callback, callbackHost: r.callback_host, secret: r.secret, expiresAt: r.expires_at, createdAt: r.created_at }
-}
-
-function rowToPushSubscription(r: PushSubscriptionsTable): PushSubscription {
-  return { id: r.id, userId: r.user_id, mode: r.mode, endpoint: r.endpoint, topic: r.topic, callbackToken: r.callback_token, secret: r.secret, state: r.state, expiresAt: r.expires_at, createdAt: r.created_at }
 }
 
 // v2 source-control plane row shapes (RSC_SOURCE_MODEL_V2, dormant) — read-only
@@ -281,21 +276,6 @@ export class SqliteRepository implements Repository, SourceRepository {
   }
   async listRemoteUsers() {
     const rs = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').execute()
-    return rs.map(rowToUser)
-  }
-  // Textcasting peers: remote feeds whose ingested items have carried
-  // source:markdown — the marker every Textcasting item bears (inReplyTo/
-  // comments/account only appear situationally, so requiring them would
-  // exclude quiet peers).
-  async listTextcastingPeers() {
-    const rs = await this.db
-      .selectFrom('users')
-      .selectAll()
-      .where('kind', '=', 'remote')
-      .where(({ exists, selectFrom }) =>
-        exists(selectFrom('posts').select('posts.id').whereRef('posts.author_id', '=', 'users.id').where('posts.content_markdown', 'is not', null)))
-      .orderBy('handle', 'asc')
-      .execute()
     return rs.map(rowToUser)
   }
   async getRemoteUserByFeedUrl(url: string) {
@@ -620,33 +600,6 @@ export class SqliteRepository implements Repository, SourceRepository {
     await this.db.deleteFrom('subscriptions').where('expires_at', '<=', now).execute()
   }
 
-  async upsertPushSubscription(s: PushSubscription) {
-    await this.db
-      .insertInto('push_subscriptions')
-      .values({ id: s.id, user_id: s.userId, mode: s.mode, endpoint: s.endpoint, topic: s.topic, callback_token: s.callbackToken, secret: s.secret, state: s.state, expires_at: s.expiresAt, created_at: s.createdAt })
-      // H4: token and secret are IDENTITY across renewals — never updated on conflict.
-      .onConflict((oc) => oc.columns(['user_id', 'mode']).doUpdateSet({ endpoint: s.endpoint, topic: s.topic, state: s.state, expires_at: s.expiresAt }))
-      .execute()
-  }
-  async findPushSubscription(filter: { token?: string; userId?: string; mode?: PushProtocol; topic?: string }, opts?: { unexpiredAt?: string; state?: 'pending' | 'active' }): Promise<PushSubscription | undefined> {
-    let q = this.db.selectFrom('push_subscriptions').selectAll()
-    if (filter.token !== undefined) q = q.where('callback_token', '=', filter.token)
-    if (filter.userId !== undefined) q = q.where('user_id', '=', filter.userId)
-    if (filter.mode !== undefined) q = q.where('mode', '=', filter.mode)
-    if (filter.topic !== undefined) q = q.where('topic', '=', filter.topic)
-    if (opts?.unexpiredAt !== undefined) q = q.where('expires_at', '>', opts.unexpiredAt)
-    if (opts?.state !== undefined) q = q.where('state', '=', opts.state)
-    const r = await q.executeTakeFirst()
-    return r ? rowToPushSubscription(r) : undefined
-  }
-  async listRenewablePushSubscriptions(before: string): Promise<PushSubscription[]> {
-    const rows = await this.db.selectFrom('push_subscriptions').selectAll().where('state', '=', 'active').where('expires_at', '<', before).execute()
-    return rows.map(rowToPushSubscription)
-  }
-  async deletePushSubscription(id: string) {
-    await this.db.deleteFrom('push_subscriptions').where('id', '=', id).execute()
-  }
-
   // Manual cascade for a user: the LEGACY tables' FKs are plain REFERENCES with
   // no DB-level ON DELETE CASCADE. (The v2 tables DO declare ON DELETE CASCADE,
   // which is why the v2 reap below runs explicitly — the cascade removes the
@@ -776,8 +729,8 @@ export class SqliteRepository implements Repository, SourceRepository {
   }
 
   // The v2 "Connected instances" read: approved federation instances only —
-  // legacy markdown-webfeed authorship (listTextcastingPeers above) neither
-  // includes nor excludes correctly post-cutover. See app.ts's /peers route.
+  // legacy markdown-webfeed authorship (the retired listTextcastingPeers)
+  // neither includes nor excludes correctly post-cutover. See app.ts's /peers.
   async listApprovedFederationSources(): Promise<{ canonicalUrl: string }[]> {
     const rows = this.raw.prepare(
       `SELECT canonical_url FROM remote_sources_v2 s

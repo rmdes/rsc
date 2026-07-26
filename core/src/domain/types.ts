@@ -85,19 +85,6 @@ export interface Subscription {
   createdAt: string
 }
 
-export interface PushSubscription {
-  id: string
-  userId: string
-  mode: PushProtocol
-  endpoint: string
-  topic: string
-  callbackToken: string
-  secret: string | null
-  state: 'pending' | 'active'
-  expiresAt: string
-  createdAt: string
-}
-
 // --- v2 source-control plane (RSC_SOURCE_MODEL_V2, dormant) ---
 
 export type AttributionMode = 'single_publisher' | 'aggregate'

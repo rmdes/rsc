@@ -1,11 +1,5 @@
-import { randomUUID, createHash } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { parseFeed as parseFeedDocument } from 'feedsmith'
-import type { Repository } from './repository.ts'
-import type { EventBus } from './bus.ts'
-import type { User, Post } from './types.ts'
-import { discoverFeed } from './discovery.ts'
-import { checkCallbackUrl } from './push-guard.ts'
-import type { LookupFn } from './push-guard.ts'
 
 // `uid` is ADDITIVE and read by NOTHING in v1 ingest — `guid` (the folded
 // `uid ?? url ?? fallbackGuid`) is unchanged, so the flag-off path and the
@@ -30,16 +24,8 @@ function fallbackGuid(title: string | null, content: string, rawDate: string): s
   return createHash('sha256').update((title ?? '') + '\0' + content + '\0' + rawDate).digest('hex')
 }
 
+// Shared with logical/push.ts, which is now its only consumer.
 export const FETCH_TIMEOUT_MS = 10_000
-const MAX_FEED_BYTES = 5 * 1024 * 1024
-
-// Many feeds sit behind Cloudflare/WAFs that serve an HTML challenge to requests
-// with no (or a bare `node`) User-Agent — which then fails parsing as "Unrecognized
-// feed format". A descriptive UA + a feed Accept header gets the real feed back.
-const FEED_FETCH_HEADERS = {
-  'user-agent': 'RSC/0.1 (+https://github.com/rmdes/rsc)',
-  accept: 'application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5',
-}
 
 // A garbage or unparseable raw date must not throw and kill the whole feed —
 // it degrades to "now", same as a missing date. Callers still hash the raw
@@ -154,100 +140,6 @@ export function parseLinkHeader(header: string | null): { hubs: string[]; self: 
   return { hubs, self }
 }
 
-export async function ingestItems(repo: Repository, bus: EventBus, user: User, items: ParsedItem[]): Promise<number> {
-  const backfill = !(await repo.hasPostsByAuthor(user.id))
-  let inserted = 0
-  for (const item of items) {
-    const now = new Date()
-    const publishedAt = new Date(item.publishedAt).getTime() > now.getTime() ? now.toISOString() : item.publishedAt
-    // Resolve once (spec H2): the wire ref is matched here and never again.
-    const target = item.inReplyTo ? await repo.findPostByRef(item.inReplyTo) : undefined
-    const post: Post = {
-      id: randomUUID(), authorId: user.id, source: 'remote', guid: item.guid, title: item.title,
-      content: item.content, url: item.url, publishedAt, createdAt: now.toISOString(),
-      inReplyTo: item.inReplyTo, inReplyToPostId: target?.id ?? null,
-      threadRootId: target ? target.threadRootId ?? target.id : null,
-      sourceName: item.sourceName, sourceFeedUrl: item.sourceFeedUrl,
-      contentMarkdown: item.contentMarkdown,
-      replyContextAuthor: item.replyContextAuthor, replyContextSnippet: item.replyContextSnippet,
-    }
-    if (await repo.insertPost(post)) {
-      await repo.adoptOrphans(post)
-      if (!backfill) bus.emitNewPost({ ...post, author: user })
-      inserted++
-    } else {
-      // ponytail: one getEditableByGuid SELECT per already-seen item per poll
-      // (~50/feed/cycle). Fine at current scale; add a hash-column short-circuit
-      // only if poll read-volume ever bites.
-      const stored = await repo.getEditableByGuid(user.id, item.guid)
-      const changed = stored && (item.content !== stored.content || item.title !== stored.title || item.contentMarkdown !== stored.contentMarkdown)
-      if (stored && changed) {
-        const parsedUpdated = item.updatedAt ? new Date(item.updatedAt) : null
-        const editedAt = parsedUpdated && !Number.isNaN(parsedUpdated.getTime()) ? parsedUpdated.toISOString() : now.toISOString()
-        await repo.recordEdit(stored.id, { title: item.title, content: item.content, contentMarkdown: item.contentMarkdown, editedAt })
-      }
-      // Attribution/url still fill in place (per-column COALESCE), edit or not.
-      await repo.backfillItemExtras(user.id, item.guid, item.sourceName, item.sourceFeedUrl, item.contentMarkdown, item.url)
-      if (stored && changed && !backfill) {
-        const updated = await repo.getPost(stored.id)
-        if (updated) bus.emitNewPost({ ...updated, author: user })
-      }
-    }
-  }
-  return inserted
-}
-
-const MAX_REDIRECTS = 5
-
-// SSRF guard: validates the initial URL AND every redirect hop before fetching it.
-// redirect: 'manual' means fetch never follows a Location on its own — each hop is
-// re-validated by checkCallbackUrl at the top of the loop before we touch it.
-async function fetchFeedBody(url: string, fetchFn: typeof fetch, lookupFn?: LookupFn): Promise<{ body: string; res: Response }> {
-  let current = url
-  for (let hop = 0; ; hop++) {
-    const guard = await checkCallbackUrl(current, lookupFn) // SSRF: validate initial URL + every redirect target
-    if (!guard.ok) throw new Error(`blocked fetch to ${current}: ${guard.reason}`)
-    const res = await fetchFn(current, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: FEED_FETCH_HEADERS, redirect: 'manual' })
-    const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null
-    if (location) {
-      if (hop >= MAX_REDIRECTS) throw new Error(`too many redirects fetching ${url}`)
-      current = new URL(location, current).toString() // re-validated at the top of the next iteration
-      continue
-    }
-    const contentLength = Number(res.headers.get('content-length') ?? '0')
-    if (contentLength > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${contentLength} bytes`)
-    // ponytail: cap rejects oversized bodies but only after buffering them; stream + abort past the cap if memory ever matters
-    const body = await res.text()
-    if (Buffer.byteLength(body) > MAX_FEED_BYTES) throw new Error(`feed exceeds size cap: ${Buffer.byteLength(body)} bytes`)
-    return { body, res }
-  }
-}
-
-function looksLikeHtml(body: string): boolean {
-  return body.trimStart().startsWith('<')
-}
-
-// lookupFn is DI-only (as the retired v1 push-in deps were): omitted, checkCallbackUrl
-// falls back to real DNS — unchanged behavior for every existing production caller.
-export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: User, fetchFn: typeof fetch = fetch, lookupFn?: LookupFn): Promise<{ inserted: number; discovery: FeedDiscovery }> {
-  if (!user.feedUrl) return { inserted: 0, discovery: NO_DISCOVERY }
-  const { body, res } = await fetchFeedBody(user.feedUrl, fetchFn, lookupFn)
-
-  let parsed
-  try {
-    parsed = await parseFeedWithMeta(body)
-  } catch (err) {
-    // Primary parse failed. If the body is HTML, try discovery; else re-throw.
-    if (!looksLikeHtml(body)) throw err
-    return await ingestViaDiscovery(repo, bus, user, user.feedUrl, body, fetchFn, lookupFn)
-  }
-
-  const title = parsed.title?.trim()
-  if (title) await repo.updateDisplayNameIfUnset(user.id, title)
-  const inserted = await ingestItems(repo, bus, user, parsed.items)
-  return { inserted, discovery: mergeDiscovery(res, parsed.discovery) }
-}
-
 // Exported for the logical-v2 acquisition engine's inert push-capability
 // discovery (spec §1.2): it merges the response Link header with in-body hub/
 // self/cloud advertisements, then hands the result to choosePushTarget. Reused
@@ -258,47 +150,5 @@ export function mergeDiscovery(res: Response, discovery: FeedDiscovery): FeedDis
     hubs: [...new Set([...header.hubs, ...discovery.hubs])],
     self: header.self ?? discovery.self,
     cloud: discovery.cloud,
-  }
-}
-
-async function ingestViaDiscovery(repo: Repository, bus: EventBus, user: User, pageUrl: string, html: string, fetchFn: typeof fetch, lookupFn?: LookupFn): Promise<{ inserted: number; discovery: FeedDiscovery }> {
-  const { feedUrl, hentries } = discoverFeed(html, pageUrl)
-
-  // 1. Autodiscovery: a real feed link, one hop.
-  if (feedUrl && feedUrl !== pageUrl) {
-    let fetched: { body: string; res: Response } | null = null
-    try {
-      fetched = await fetchFeedBody(feedUrl, fetchFn, lookupFn) // guards feedUrl + every redirect hop
-    } catch {
-      fetched = null // SSRF-rejected or unreachable → fall through to h-feed
-    }
-    if (fetched) {
-      const parsed = await parseFeedWithMeta(fetched.body) // parse error still propagates (bounded by pollAll) — unchanged
-      const title = parsed.title?.trim()
-      // BEFORE updateFeedUrl: the unset-guard compares display_name to the
-      // CURRENT (input) feed_url; the rewrite below would break equality forever.
-      if (title) await repo.updateDisplayNameIfUnset(user.id, title)
-      const inserted = await ingestItems(repo, bus, user, parsed.items)
-      // R1: persist only if no OTHER user already holds this feedUrl.
-      const taken = (await repo.listRemoteUsers()).some((u) => u.id !== user.id && u.feedUrl === feedUrl)
-      if (!taken) await repo.updateFeedUrl(user.id, feedUrl)
-      return { inserted, discovery: mergeDiscovery(fetched.res, parsed.discovery) }
-    }
-  }
-
-  // 2. h-feed: the page is the feed; ingest its items, leave feedUrl unchanged.
-  if (hentries.length > 0) {
-    const inserted = await ingestItems(repo, bus, user, hentries)
-    return { inserted, discovery: NO_DISCOVERY }
-  }
-
-  // 3. Neither.
-  throw new Error('no feed found (no alternate link, no h-feed)')
-}
-
-export async function pollAll(repo: Repository, bus: EventBus, fetchFn: typeof fetch = fetch): Promise<void> {
-  for (const user of await repo.listRemoteUsers()) {
-    try { await ingestRemoteUser(repo, bus, user, fetchFn) }
-    catch (err) { console.error(`ingest failed for ${user.handle}:`, err instanceof Error ? err.message : err) }
   }
 }

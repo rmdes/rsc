@@ -128,7 +128,9 @@ test('a version-2 database upgrades in place to version 3 with data preserved', 
   const repo = await createSqliteRepository(file)
   expect((await repo.getUserByHandle('blog'))?.feedUrl).toBe('https://blog.example.com/feed.xml')
   expect(await repo.countActiveSubscriptions({ topic: 't' }, '2026-06-01T00:00:00.000Z')).toBe(1)
-  await repo.upsertPushSubscription({ id: 'p1', userId: 'u1', mode: 'websub', endpoint: 'e', topic: 't2', callbackToken: 'tok', secret: null, state: 'pending', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  // The legacy push_subscriptions table survives this release (migration/convert
+  // reads it); only the repository accessors for it were retired, so write raw.
+  repo.raw.prepare("INSERT INTO push_subscriptions VALUES ('p1','u1','websub','e','t2','tok',NULL,'pending','2027-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run()
   const check = new Database(file, { readonly: true })
   expect(check.pragma('user_version', { simple: true })).toBe(17)
   check.close()

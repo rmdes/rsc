@@ -16,8 +16,8 @@ async function setup() {
 }
 
 test('createLocalPost stores, emits, and appears in the timeline', async () => {
-  const { bus, svc } = await setup()
-  await svc.addRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) // remote coexists
+  const { repo, bus, svc } = await setup()
+  await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) // remote coexists
   const seen = vi.fn()
   bus.onNewPost(seen)
   await svc.createLocalPostAs('alice', 'Alice', 'hello world')
@@ -35,17 +35,6 @@ test('handles are lowercased, so posting as Alice then alice is one user', async
   const authorIds = new Set(tl.map((e) => e.authorId))
   expect(authorIds.size).toBe(1)
   expect(tl[0].author.handle).toBe('alice')
-})
-
-test('addRemoteUser rejects a handle with invalid characters', async () => {
-  const { svc } = await setup()
-  await expect(svc.addRemoteUser({ handle: 'Bad Handle!', displayName: 'Bad', feedUrl: 'https://ex.com/f.xml' })).rejects.toThrow(DomainError)
-})
-
-test('addRemoteUser rejects a handle that is already taken', async () => {
-  const { svc } = await setup()
-  await svc.addRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
-  await expect(svc.addRemoteUser({ handle: 'news', displayName: 'News Again', feedUrl: 'https://ex.com/g.xml' })).rejects.toThrow(DomainError)
 })
 
 test('a first post that loses the create race retries the lookup and succeeds', async () => {
