@@ -5,7 +5,7 @@ import { createLogicalStore } from '../src/logical/store.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import {
-  createLogicalRuntime, compose, activateLogicalV2, markReconciliationRequiredIfActive,
+  createLogicalRuntime, activateLogicalV2, markReconciliationRequiredIfActive,
 } from '../src/logical/runtime.ts'
 import type { LogicalRuntime } from '../src/logical/runtime.ts'
 import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
@@ -43,17 +43,6 @@ function mkRuntime(deps: Awaited<ReturnType<typeof setup>>, order?: string[]): L
     ...(order ? { trace: (p: string) => order.push(p) } : {}),
   })
 }
-
-// ---- fail-closed + v1/v2 worker isolation (spec §5.6/§7.4, Appendix D) -------
-
-test('compose fails closed when configured v2 has no runtime', () => {
-  expect(() => compose({ sourceModelV2: true, runtime: null })).toThrow('logical-v2 runtime unavailable')
-})
-
-test('disabled installs legacy poll + inbound push; enabled installs neither', () => {
-  expect(compose({ sourceModelV2: false, runtime: null })).toEqual({ legacyPoll: true, legacyPushIn: true })
-  expect(compose({ sourceModelV2: true, runtime: {} as LogicalRuntime })).toEqual({ legacyPoll: false, legacyPushIn: false })
-})
 
 // ---- construction order (Appendix D) ----------------------------------------
 

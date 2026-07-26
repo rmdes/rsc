@@ -227,7 +227,7 @@ function looksLikeHtml(body: string): boolean {
   return body.trimStart().startsWith('<')
 }
 
-// lookupFn is DI-only (mirrors push-in.ts's PushInDeps.lookupFn): omitted, checkCallbackUrl
+// lookupFn is DI-only (as the retired v1 push-in deps were): omitted, checkCallbackUrl
 // falls back to real DNS — unchanged behavior for every existing production caller.
 export async function ingestRemoteUser(repo: Repository, bus: EventBus, user: User, fetchFn: typeof fetch = fetch, lookupFn?: LookupFn): Promise<{ inserted: number; discovery: FeedDiscovery }> {
   if (!user.feedUrl) return { inserted: 0, discovery: NO_DISCOVERY }

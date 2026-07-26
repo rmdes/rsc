@@ -228,26 +228,14 @@ function writeActivation(tx: WriteTx, state: SourceModelV2Activation['state'], l
 
 // ---- the cutover (V4 spec §4.1, §4.3) ---------------------------------------
 
-// Both startup tripwires fail LOUD, in the shape of the existing
+// The startup tripwire fails LOUD, in the shape of the existing
 // `database is newer than this build` guard (storage/sqlite.ts:1442): a thrown
-// startup error naming the supported recovery. They are mutually exclusive and
-// together make the activation/marker pair self-verifying in both directions
-// (spec §4.3) — neither is ever a silent skip.
-export const CONVERTED_REQUIRES_V2 =
-  'converted database requires RSC_SOURCE_MODEL_V2=on — the legacy branch cannot run beside converted v2 state; to run it again, restore the pre-flip backup'
+// startup error naming the supported recovery — never a silent skip. (Its twin,
+// the converted-database-requires-v2 guard, retired with the legacy branch it
+// protected: there is no longer a v1 path to start.)
 export const ACTIVE_WITHOUT_MARKER =
   'v2 activation present without conversion marker — this database was activated without the legacy conversion (hand-repaired or partially restored); restore the pre-flip backup and restart the migration'
 export const PREFLIGHT_FAILED = 'migration preflight failed'
-
-// The v1-branch tripwire (spec §4.3): after the conversion marker is committed,
-// starting with RSC_SOURCE_MODEL_V2=off would resume legacy polling and legacy
-// push writes beside live v2 state. One read, no write — the ONLY V4 code the
-// flag-off path runs, and deliberately so: the guard exists precisely for that
-// branch. server.ts calls this before anything else in its disabled branch.
-export function assertLegacyStartupAllowed(raw: ReadTx): void {
-  const row = raw.prepare(`SELECT converted_at FROM logical_activation_v2 WHERE singleton = 1`).get() as { converted_at: string | null } | undefined
-  if (row?.converted_at) throw new Error(CONVERTED_REQUIRES_V2)
-}
 
 export interface CutoverInput {
   // RSC_MIGRATION_MANIFEST, or null. Presence only is validated by config; the
@@ -350,19 +338,6 @@ export function markReconciliationRequiredIfActive(db: DatabaseContext): boolean
     writeActivation(tx, 'reconciliation_required', act.lastActivatedAt, act.lastReconciledAt)
     return true
   })
-}
-
-// ---- worker composition + fail-closed decision (spec §5.6/§7.4, Appendix D) --
-
-// The v1/v2 worker isolation decision. A configured-v2 process with no runtime
-// (activation failed) fails closed; enabled installs NEITHER legacy poll nor legacy
-// inbound push; disabled runs today's legacy behavior.
-export function compose(input: { sourceModelV2: boolean; runtime: LogicalRuntime | null }): { legacyPoll: boolean; legacyPushIn: boolean } {
-  if (input.sourceModelV2) {
-    if (!input.runtime) throw new Error('logical-v2 runtime unavailable')
-    return { legacyPoll: false, legacyPushIn: false }
-  }
-  return { legacyPoll: true, legacyPushIn: true }
 }
 
 export function createLogicalRuntime(input: {

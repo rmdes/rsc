@@ -9,7 +9,7 @@ import { createSourceService } from '../src/domain/source-service.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createApp } from '../src/api/app.ts'
-import { createLogicalRuntime, createStreamSource, compose } from '../src/logical/runtime.ts'
+import { createLogicalRuntime, createStreamSource } from '../src/logical/runtime.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { fingerprintRequest } from '../src/domain/source-repository.ts'
 import { makeAuth, registeredSession } from './auth-helper.ts'
@@ -639,9 +639,6 @@ test('isolation OFF: no V3 route exists, no fan-out or verification work is ever
   expect(count(raw, 'policy_fanout_v2')).toBe(0)
   expect(count(raw, 'verification_checks_v2')).toBe(0)
   expect(count(raw, 'reconciliation_jobs_v2', "WHERE kind = 'verification'")).toBe(0)
-
-  // (4) legacy push: both legacy workers still start, exactly as before V3.
-  expect(compose({ sourceModelV2: false, runtime: null })).toEqual({ legacyPoll: true, legacyPushIn: true })
   deps.repo.close()
 })
 
@@ -652,7 +649,5 @@ test('isolation ON: the capability payload is EXACTLY V2\'s enabled shape — V3
   // ordinary contract (model + the two frozen versions) untouched.
   expect(await (await app.request('/capabilities')).json())
     .toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-  // …and with the flag on, neither legacy worker is installed (unchanged by V3).
-  expect(compose({ sourceModelV2: true, runtime: {} as LogicalRuntime })).toEqual({ legacyPoll: false, legacyPushIn: false })
   deps.repo.close()
 })

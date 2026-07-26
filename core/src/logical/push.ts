@@ -11,9 +11,7 @@ import { FETCH_TIMEOUT_MS } from '../domain/ingest.ts'
 import { urlPort } from '../domain/feed.ts'
 import { cloudScheme } from '../domain/push.ts'
 
-// v1's H5 thin-ping floor (push-in.ts:75). The ONE value this module restates
-// instead of importing: it is module-private there, and push-in.ts stays
-// byte-identical until Task 11 relocates these helpers.
+// The H5 thin-ping floor, inherited from the retired v1 push-in module.
 const THIN_PING_FLOOR_MS = 30_000
 
 // The v2 inbound push lifecycle (V4 spec §1.1-1.3): v1's shape rebuilt over
@@ -23,8 +21,8 @@ const THIN_PING_FLOOR_MS = 30_000
 // simply stop renewing and the lease lapses.
 //
 // The pure v1 helpers and every constant, RELOCATED here from domain/push-in.ts
-// (V4 Task 11 step 1 of 3) — that module keeps its own byte-identical copies
-// until Task 11's later step deletes the v1 runtime and the whole file.
+// (V4 Task 11) — that module and its v1 runtime are now deleted; this is their
+// only home.
 const SIGNATURE_ALGOS = new Set(['sha1', 'sha256', 'sha384', 'sha512'])
 
 // H1: the hub picks the algorithm. H2 handling lives at the caller.
@@ -90,9 +88,8 @@ export interface PushLifecycle {
 }
 
 // The lifecycle PLUS the four public callbacks (spec §1.4). The callback shapes are
-// v1's PushIn shapes verbatim, so api/app.ts's four routes need NO change — under
-// v2 the server composition simply supplies these instead of createPushIn's
-// (V2 §7.4: the v1 handlers are not routed).
+// v1's PushIn shapes verbatim, so api/app.ts's four routes need NO change — the
+// server composition supplies these as `pushInApi`.
 export interface LogicalPush extends PushLifecycle {
   websubVerify(token: string, query: Record<string, string>): Promise<{ status: number; body: string }>
   websubDeliver(token: string, body: string, signatureHeader: string | null): Promise<number>

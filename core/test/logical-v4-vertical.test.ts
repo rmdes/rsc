@@ -8,40 +8,25 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createSourcePlane } from '../src/domain/source-service.ts'
-import { createPushIn } from '../src/domain/push-in.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
-import { createLogicalRuntime, compose, assertLegacyStartupAllowed } from '../src/logical/runtime.ts'
+import { createLogicalRuntime } from '../src/logical/runtime.ts'
 import { createApp } from '../src/api/app.ts'
 import { mountLogicalHandleRoute } from '../src/api/logical-routes.ts'
 import { loadConfig } from '../src/config.ts'
 import { makeAuth, registeredSession } from './auth-helper.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
-// V4 Task 10 — THE VERTICAL GATE. Two halves, and neither of them re-proves what
-// a per-task suite already owns.
+// V4 Task 10 — THE VERTICAL GATE (runbook §8 step 6). It asserts COMPOSITION only:
+// a representative legacy instance is converted at startup and one pass through the
+// operator's verify list composes end to end. Field-level correctness of every
+// converted output is already pinned by Tasks 5-8 (migration-convert /
+// migration-cutover / source-admin-api / logical-push-callbacks) and is not
+// re-asserted here.
 //
-// PART A (spec §11 "Off-flag regression", WP3) is GATE ASSERTIONS ONLY: with the
-// flag off the v1 branch is what answers, the V4 surfaces are absent, and nothing
-// converts. The behavioral coverage stays where it is — push-in.test.ts and
-// push-guard.test.ts for legacy push, the legacy ingest/feed/timeline suites for
-// the rest. Duplicating them here would only give §7's retirement release a
-// second file to delete.
-//
-// What Part A deliberately does NOT assert: that no V4 module is LOADED. That is
-// not a true property of the v1 branch and never was —
-// `domain/source-repository.ts` statically imports the v2 logical modules (V3
-// execution handoff item 3), and the §4.3 tripwire runs ON the flag-off path by
-// design, dynamically importing `logical/runtime.ts` and with it the migration
-// modules (Task 8 plan correction 4). Isolation here is ROUTING and BEHAVIOR: what
-// answers a request, and what is written to the database.
-//
-// PART B (runbook §8 step 6) asserts COMPOSITION only: a representative legacy
-// instance flips on, starts, and one pass through the operator's verify list
-// composes end to end. Field-level correctness of every converted output is
-// already pinned by Tasks 5-8 (migration-convert / migration-cutover /
-// source-admin-api / logical-push-callbacks) and is not re-asserted here.
+// The former Part A (off-flag regression) retired with the v1 branch: there is no
+// flag-off composition left to gate.
 
 type Raw = InstanceType<typeof Database>
 const NOW = '2026-07-24T00:00:00.000Z'
@@ -66,155 +51,12 @@ const routedFetch = (map: Record<string, string>): typeof fetch => (async (input
   return new Response(body, { status: 200, headers: { 'content-type': 'application/rss+xml' } })
 }) as unknown as typeof fetch
 
-// =============================================================================
-// PART A — off-flag gate assertions
-// =============================================================================
-
-const OFF_ENV = { RSC_TOKEN: 'ops-token', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test', RSC_POLL_SECONDS: '9999' }
-const V1_WEBSUB_FEED = 'https://blog.test/f.xml'
-const V1_CLOUD_FEED = 'https://cloud.test/f.xml'
-
 function seedLegacyPush(raw: Raw, row: Record<string, string | null>): void {
   raw.prepare(
     `INSERT INTO push_subscriptions (id, user_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
      VALUES (@id, @user_id, @mode, @endpoint, @topic, @callback_token, @secret, @state, @expires_at, @created_at)`,
   ).run({ secret: null, state: 'pending', expires_at: LIVE_UNTIL, created_at: LEGACY_AT, ...row })
 }
-
-// The flag-off composition, assembled exactly as server.ts's disabled branch does:
-// the §4.3 tripwire first, then `compose`, then the v1 push-in handlers behind the
-// four public callback routes. No `sources`, no `logical` — that is the whole
-// difference, and everything Part A asserts follows from it.
-async function offFlagApp(seed?: (raw: Raw) => void | Promise<void>) {
-  const repo = await createSqliteRepository(':memory:')
-  const raw = repo.raw as Raw
-  const config = loadConfig(OFF_ENV) // RSC_SOURCE_MODEL_V2 unset: the flag-off posture
-  if (seed) await seed(raw)
-
-  assertLegacyStartupAllowed(raw)
-  const act = raw.prepare(`SELECT state FROM logical_activation_v2 WHERE singleton = 1`).get() as { state: string } | undefined
-  if (act?.state === 'active') raw.prepare(`UPDATE logical_activation_v2 SET state = 'reconciliation_required' WHERE singleton = 1`).run()
-  const workers = compose({ sourceModelV2: false, runtime: null })
-  expect(workers).toEqual({ legacyPoll: true, legacyPushIn: true })
-
-  const bus = createEventBus()
-  const pushIn = createPushIn({ repo, config, fetchFn: routedFetch({ [V1_CLOUD_FEED]: RSS(item('g-cloud')) }), lookupFn: publicLookup })
-  const app = createApp({
-    service: createService(repo, bus, config.publicUrl), // no logical store: the OFF path
-    bus,
-    token: config.token,
-    auth: makeAuth(repo),
-    users: repo,
-    adminEmails: new Set(['boss@x.test']),
-    feeds: { publicUrl: config.publicUrl, hubUrl: null, rssCloud: false },
-    pushIn: config.pushIn,
-    pushInApi: workers.legacyPushIn
-      ? {
-          websubVerify: (token: string, query: Record<string, string>) => pushIn.handleWebSubVerification(token, query),
-          websubDeliver: (token: string, body: string, signature: string | null) => pushIn.handleFatPing(token, body, signature, { bus }),
-          rsscloudChallenge: (url: string, challenge: string) => pushIn.handleRssCloudChallenge(url, challenge),
-          rsscloudPing: (url: string) => pushIn.handleThinPing(url, { bus }),
-        }
-      : undefined,
-  })
-  return { repo, raw, app }
-}
-
-test('OFF: the four callback routes dispatch to the V1 push-in handlers, and nothing v2 is written', async () => {
-  const { repo, raw, app } = await offFlagApp()
-  // The two remote feeds the legacy handlers resolve tokens/topics against.
-  const blog = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: V1_WEBSUB_FEED })
-  const cloud = await repo.createRemoteUser({ handle: 'cloudy', displayName: 'Cloudy', feedUrl: V1_CLOUD_FEED })
-  seedLegacyPush(raw, { id: 'ps-w', user_id: blog.id, mode: 'websub', endpoint: 'https://hub.test/hub', topic: V1_WEBSUB_FEED, callback_token: 'v1-token', secret: 'v1-secret', state: 'pending' })
-  seedLegacyPush(raw, { id: 'ps-c', user_id: cloud.id, mode: 'rsscloud', endpoint: 'http://cloud.test:5337/rsscloud/pleaseNotify', topic: V1_CLOUD_FEED, callback_token: 'v1-cloud-token', state: 'active' })
-
-  // (1) WebSub verification GET. The token exists ONLY in the legacy table, so a
-  // 200 + activated legacy row can only be the v1 handler answering.
-  const verify = await app.request(`/websub/callback/v1-token?hub.mode=subscribe&hub.topic=${encodeURIComponent(V1_WEBSUB_FEED)}&hub.challenge=xyz`)
-  expect(verify.status).toBe(200)
-  expect(await verify.text()).toBe('xyz')
-  expect(raw.prepare(`SELECT state FROM push_subscriptions WHERE id = 'ps-w'`).get()).toEqual({ state: 'active' })
-
-  // (2) Fat ping: the v1 handler ingests into the LEGACY posts table.
-  const body = RSS(item('g-v1'))
-  const fat = await app.request('/websub/callback/v1-token', {
-    method: 'POST', headers: { 'x-hub-signature': sign(body, 'v1-secret') }, body,
-  })
-  expect(fat.status).toBe(202)
-  expect(count(raw, 'posts', `WHERE author_id = '${blog.id}' AND guid = 'g-v1'`)).toBe(1)
-
-  // (3) rssCloud challenge: known legacy topic confirms.
-  const challenge = await app.request(`/rsscloud/notify?url=${encodeURIComponent(V1_CLOUD_FEED)}&challenge=c1`)
-  expect(challenge.status).toBe(200)
-  expect(await challenge.text()).toBe('confirming c1')
-
-  // (4) Thin ping: v1 re-fetches the STORED legacy feed url (fire-and-forget) and
-  // ingests through the legacy path. The v2 handler would have found no v2 row and
-  // returned the same neutral 200 without fetching — the ingested row is the tell.
-  const thin = await app.request('/rsscloud/notify', {
-    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ url: V1_CLOUD_FEED }).toString(),
-  })
-  expect(thin.status).toBe(200)
-  await vi.waitFor(() => expect(count(raw, 'posts', `WHERE author_id = '${cloud.id}' AND guid = 'g-cloud'`)).toBe(1))
-
-  // …and not one v2 row exists after all four.
-  for (const t of ['push_subscriptions_v2', 'acquisition_runs_v2', 'deliveries_v2', 'logical_items_v2', 'remote_sources_v2', 'logical_journal_v2']) {
-    expect([t, count(raw, t)]).toEqual([t, 0])
-  }
-  repo.close()
-})
-
-test('OFF: the ops route and every V4 admin field are absent', async () => {
-  const { repo, app } = await offFlagApp()
-  // An ADMIN session, so a 404 can only mean the route is absent: the /admin/*
-  // gate answers 401 first for anyone else.
-  const cookie = await registeredSession(app, 'boss@x.test', repo)
-
-  // `SourceSummary.push` and `SourceDetail.pushExpiresAt` (V4 Task 1/3) are
-  // reachable through exactly these two routes, and both live inside the v2 branch.
-  for (const path of ['/admin/sources', '/admin/sources/u1']) {
-    const res = await app.request(path, { headers: { cookie } })
-    expect([path, res.status]).toEqual([path, 404])
-  }
-
-  // The ops-token compatibility route exists only under v2 — a VALID bearer 404s.
-  const ops = await app.request('/ops/sources/federation', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: 'Bearer ops-token' },
-    body: JSON.stringify({ url: 'https://peer.test/f.xml', attributionMode: 'aggregate', category: 'operator_policy', note: 'peer', commandId: 'c1' }),
-  })
-  expect(ops.status).toBe(404)
-
-  // The capability web reads once and memoizes still says legacy.
-  expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: false })
-  repo.close()
-})
-
-test('OFF: preflight and conversion never run — no activation, no marker, no v2 row', async () => {
-  const legacy = (raw: Raw): void => {
-    raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at, feed_type) VALUES ('l1', 'local', 'localuser', 'Local', NULL, ?, NULL)`).run(LEGACY_AT)
-    raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at, feed_type) VALUES ('u1', 'remote', 'alice', 'Alice', 'https://a.test/feed.xml', ?, 'person')`).run(LEGACY_AT)
-    raw.prepare(`INSERT INTO follows (follower_id, followed_id, created_at) VALUES ('l1', 'u1', ?)`).run(LEGACY_AT)
-  }
-  const { repo, raw } = await offFlagApp(legacy)
-
-  // Conversion is flag-triggered and marker-guarded: the v1 branch runs neither it
-  // nor preflight, so a legacy-only database stays legacy-only.
-  expect(raw.prepare(`SELECT state, converted_at, conversion_findings_json FROM logical_activation_v2 WHERE singleton = 1`).get())
-    .toEqual({ state: 'never_activated', converted_at: null, conversion_findings_json: null })
-  for (const t of ['remote_sources_v2', 'remote_publishers_v2', 'source_subscriptions_v2', 'handle_reservations_v2', 'logical_items_v2', 'logical_journal_v2', 'push_subscriptions_v2', 'source_audit_v2']) {
-    expect([t, count(raw, t)]).toEqual([t, 0])
-  }
-  // …and the legacy rows are exactly as seeded.
-  expect(count(raw, 'users')).toBe(2)
-  expect(count(raw, 'follows')).toBe(1)
-  repo.close()
-})
-
-// =============================================================================
-// PART B — the on-flag whole-vertical composition (runbook §8 step 6)
-// =============================================================================
 
 // A representative legacy instance: every feed_type, a manifest-approved instance
 // beside an unconfirmed one, an over-cap follower, resolved and unresolved reply
@@ -281,9 +123,9 @@ function manifestPath(): string {
   return path
 }
 
-// Flip on and START: the real runtime runs THE cutover inside its one pre-listen
-// activation transaction, and the app is composed over it exactly as server.ts
-// composes it under v2 (push callbacks from runtime.push, the source plane, the
+// START on a legacy database: the real runtime runs THE cutover inside its one
+// pre-listen activation transaction, and the app is composed over it exactly as
+// server.ts composes it (push callbacks from runtime.push, the source plane, the
 // logical routes, the reserved-handle lookup).
 async function cutOver() {
   const repo = await createSqliteRepository(':memory:')
@@ -308,7 +150,6 @@ async function cutOver() {
   })
   await runtime.ready // THE cutover: preflight + conversion + activation, pre-listen
   await runtime.stop()
-  expect(compose({ sourceModelV2: true, runtime })).toEqual({ legacyPoll: false, legacyPushIn: false })
 
   const app = createApp({
     service: createService(repo, bus, config.publicUrl, store),

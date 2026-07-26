@@ -1,8 +1,8 @@
 import type { Repository } from './domain/repository.ts'
 import type { Config } from './config.ts'
 
-// Runs on server.ts's hourly sweepTimer (V4 Task 11 GAP 1): v1's runPollCycle
-// (domain/push-in.ts:272, now deleted) was the ONLY caller of
+// Runs on server.ts's hourly sweepTimer (V4 Task 11 GAP 1): the retired v1 poll
+// cycle (domain/push-in.ts, now deleted) was the ONLY caller of
 // purgeExpiredSubscriptions — it deletes from the OUTBOUND `subscriptions`
 // table (peers who follow OUR feeds via WebSub/rssCloud). The v2 scheduler
 // purges a DIFFERENT table (push_subscriptions_v2, inbound leases) — see

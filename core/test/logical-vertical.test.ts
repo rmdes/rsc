@@ -9,7 +9,7 @@ import { createScheduler } from '../src/logical/scheduler.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
-import { createLogicalRuntime, compose, activateLogicalV2, markReconciliationRequiredIfActive } from '../src/logical/runtime.ts'
+import { createLogicalRuntime, activateLogicalV2, markReconciliationRequiredIfActive } from '../src/logical/runtime.ts'
 import type { LogicalRuntime } from '../src/logical/runtime.ts'
 import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
@@ -100,10 +100,6 @@ const mkRuntime = (deps: Awaited<ReturnType<typeof fresh>>, acquisition: Acquisi
 // Cross-model isolation — v2 DISABLED (§7.4): v2 tables inert, legacy byte-identical
 // ============================================================================
 
-test('disabled: compose starts legacy poll + inbound push and no v2 worker', () => {
-  expect(compose({ sourceModelV2: false, runtime: null })).toEqual({ legacyPoll: true, legacyPushIn: true })
-})
-
 test('disabled: a service built WITHOUT the logical store writes NO v2 rows (flag-off byte-identical)', async () => {
   const { repo, raw } = await fresh()
   const service = createService(repo, createEventBus(), null) // no logical store — exactly the OFF path
@@ -121,10 +117,6 @@ test('disabled: the reconciliation marker is a no-op on a never-activated instan
 // ============================================================================
 // Cross-model isolation — v2 ENABLED (§7.4)
 // ============================================================================
-
-test('enabled: compose installs NEITHER legacy poll nor inbound push', () => {
-  expect(compose({ sourceModelV2: true, runtime: {} as LogicalRuntime })).toEqual({ legacyPoll: false, legacyPushIn: false })
-})
 
 test('enabled: capability is unavailable until activation commits (activate strictly precedes listen)', async () => {
   const deps = await fresh()

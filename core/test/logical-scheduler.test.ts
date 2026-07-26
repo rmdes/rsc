@@ -220,7 +220,7 @@ test('a throwing background drain is contained by the tick and never takes the p
 // --- the v2 push lifecycle rides THIS pass (V4 Task 2, spec §1.3) ------------
 // Registration after each successful acquisition commit, one renewal sweep plus
 // the expired-row purge at pass end, and the reduced cadence for a live lease —
-// v1's runPollCycle tail (push-in.ts:264,271-272) rebuilt over sources.
+// the retired v1 poll-cycle tail, rebuilt over sources.
 
 function stubPush(opts: { claim?: PushClaim | null; active?: Set<string> } = {}) {
   const registered: Array<{ sourceId: string; claim: PushClaim | null }> = []

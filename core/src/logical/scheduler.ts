@@ -112,7 +112,7 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
       // no blocking work, so there is nothing to interleave with.
       if (deps.breather) await deps.breather()
     }
-    // v1's runPollCycle tail (push-in.ts:271-272) rebuilt over sources.
+    // The retired v1 poll-cycle tail, rebuilt over sources.
     await deps.push?.renewDue()
     deps.push?.purgeExpired(nowStr)
     return polled

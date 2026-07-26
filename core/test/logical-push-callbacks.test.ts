@@ -4,18 +4,16 @@ import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
-import { createLogicalPush } from '../src/logical/push.ts'
+import { createLogicalPush, WEBSUB_LEASE_SECONDS } from '../src/logical/push.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalRuntime } from '../src/logical/runtime.ts'
 import { loadConfig } from '../src/config.ts'
-import { WEBSUB_LEASE_SECONDS } from '../src/domain/push-in.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
 // V4 Task 3 — the four v2 push CALLBACKS (spec §1.4) and the runtime composition
-// that serves them. The route code in api/app.ts does not change: under v2 the
-// server composition supplies `pushInApi` from createLogicalPush instead of
-// createPushIn, so these tests drive the handlers directly (the routes are already
-// pinned by the v1 push-in suite).
+// that serves them. The route code in api/app.ts does not change: the server
+// composition supplies `pushInApi` from createLogicalPush, and these tests drive
+// the handlers directly.
 //
 // Everything v1 hardened stays hardened: a bad/missing HMAC is a SILENT 202, an
 // unknown topic is a neutral 200 no-op with the 30 s per-topic floor, and

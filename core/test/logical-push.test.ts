@@ -1,22 +1,23 @@
 import { test, expect, vi } from 'vitest'
+import { createHmac } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
-import { createLogicalPush, parsePushCapability } from '../src/logical/push.ts'
+import {
+  createLogicalPush, parsePushCapability, choosePushTarget, pushInEffective, verifySignature,
+  PENDING_TTL_MS, RSSCLOUD_TTL_MS, WEBSUB_LEASE_SECONDS,
+  WEBSUB_RENEW_HORIZON_MS, RSSCLOUD_RENEW_HORIZON_MS,
+} from '../src/logical/push.ts'
 import type { PushClaim, PushRowV2 } from '../src/logical/push.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import type { AcquisitionEngine } from '../src/logical/acquisition.ts'
 import { loadConfig } from '../src/config.ts'
-import {
-  PENDING_TTL_MS, RSSCLOUD_TTL_MS, WEBSUB_LEASE_SECONDS,
-  WEBSUB_RENEW_HORIZON_MS, RSSCLOUD_RENEW_HORIZON_MS,
-} from '../src/domain/push-in.ts'
 
 // V4 Task 2 — the v2 push lifecycle over push_subscriptions_v2: the capability
 // parser, registration, renewal, and the purge. No callback handling (Task 3).
-// The v1 helpers/constants are IMPORTED, never re-implemented (push-in.ts stays
-// their home until Task 11 relocates them).
+// Plus the pure helpers this module owns since the v1 retirement deleted
+// domain/push-in.ts (target choice, signature verification, the effective switch).
 
 type Raw = InstanceType<typeof Database>
 const NOW = '2026-07-24T00:00:00.000Z'
@@ -414,4 +415,48 @@ test('listRenewablePushRows lists only ACTIVE rows expiring before the horizon',
   const due = store.listRenewablePushRows(iso(Date.now() + 600_000))
   expect(due.map((r) => r.id)).toEqual(['p1'])
   raw.close()
+})
+
+// ---- the pure helpers (relocated here with domain/push-in.ts's deletion) -----
+
+const FEED = 'https://blog.example.com/feed.xml'
+
+test('choosePushTarget prefers websub, topic = advertised self else feedUrl', () => {
+  expect(choosePushTarget({ hubs: ['https://hub.example.com/hub'], self: 'https://blog.example.com/rss', cloud: null }, FEED))
+    .toEqual({ mode: 'websub', endpoint: 'https://hub.example.com/hub', topic: 'https://blog.example.com/rss' })
+  expect(choosePushTarget({ hubs: ['https://hub.example.com/hub'], self: null, cloud: null }, FEED))
+    .toEqual({ mode: 'websub', endpoint: 'https://hub.example.com/hub', topic: FEED })
+})
+
+test('choosePushTarget falls back to an http-post cloud, and yields null otherwise', () => {
+  const cloud = { domain: 'blog.example.com', port: 5337, path: '/rsscloud/pleaseNotify', protocol: 'http-post' }
+  expect(choosePushTarget({ hubs: [], self: null, cloud }, FEED))
+    .toEqual({ mode: 'rsscloud', endpoint: 'http://blog.example.com:5337/rsscloud/pleaseNotify', topic: FEED })
+  expect(choosePushTarget({ hubs: ['https://hub.example.com/hub'], self: null, cloud }, FEED)?.mode).toBe('websub') // websub preferred
+  expect(choosePushTarget({ hubs: [], self: null, cloud: { ...cloud, protocol: 'xml-rpc' } }, FEED)).toBeNull()
+  expect(choosePushTarget({ hubs: [], self: null, cloud: null }, FEED)).toBeNull()
+})
+
+test('cloud endpoints derive scheme from port: 443 is https, others http', () => {
+  const cloud = (port: number) => ({ domain: 'a.example', port, path: '/rsscloud/pleaseNotify', protocol: 'http-post' })
+  expect(choosePushTarget({ hubs: [], self: null, cloud: cloud(443) }, 'https://a.example/users/x/feed.xml')?.endpoint).toBe('https://a.example:443/rsscloud/pleaseNotify')
+  expect(choosePushTarget({ hubs: [], self: null, cloud: cloud(5337) }, 'https://a.example/users/x/feed.xml')?.endpoint).toBe('http://a.example:5337/rsscloud/pleaseNotify')
+})
+
+test('pushInEffective requires both the switch and a public URL', () => {
+  expect(pushInEffective(loadConfig(ENV))).toBe(true)
+  expect(pushInEffective(loadConfig({ ...ENV, RSC_PUSH_IN: 'off' }))).toBe(false)
+  expect(pushInEffective(loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' }))).toBe(false)
+})
+
+test('verifySignature accepts all four W3C algorithms and rejects tampering (H1)', () => {
+  const body = 'the payload'
+  for (const algo of ['sha1', 'sha256', 'sha384', 'sha512'] as const) {
+    const sig = `${algo}=` + createHmac(algo, 'sec').update(body).digest('hex')
+    expect(verifySignature(body, 'sec', sig)).toBe(true)
+    expect(verifySignature(body + 'x', 'sec', sig)).toBe(false)
+  }
+  expect(verifySignature(body, 'sec', null)).toBe(false)
+  expect(verifySignature(body, 'sec', 'md5=abc')).toBe(false)
+  expect(verifySignature(body, 'sec', 'sha256=zzzz')).toBe(false)
 })

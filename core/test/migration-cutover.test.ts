@@ -14,8 +14,8 @@ import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalPush } from '../src/logical/push.ts'
 import { createScheduler } from '../src/logical/scheduler.ts'
 import {
-  activateLogicalV2, assertLegacyStartupAllowed, markReconciliationRequiredIfActive,
-  CONVERTED_REQUIRES_V2, ACTIVE_WITHOUT_MARKER, PREFLIGHT_FAILED,
+  activateLogicalV2, markReconciliationRequiredIfActive,
+  ACTIVE_WITHOUT_MARKER, PREFLIGHT_FAILED,
 } from '../src/logical/runtime.ts'
 import type { CutoverInput } from '../src/logical/runtime.ts'
 import { createApp } from '../src/api/app.ts'
@@ -30,7 +30,8 @@ import type { LookupFn } from '../src/domain/push-guard.ts'
 // marker with its per-kind finding counts, the activation timestamps, and the
 // transition to `active`. Preflight runs in-process immediately before, inside
 // the same transaction, and any aborting finding fails startup committing
-// NOTHING. Both tripwires (§4.1 step 2 and §4.3) are exercised in both directions.
+// NOTHING. The activation tripwire (§4.1 step 2) is exercised in both directions;
+// §4.3's flag-off twin retired with the legacy branch.
 //
 // Nothing here does network I/O: preflight and conversion are pure SQL by
 // contract, so the pre-listen barrier stays free of AWAITED network I/O exactly
@@ -193,8 +194,7 @@ test('an aborting preflight finding fails startup with diagnostics and commits N
   expect(() => activate(db)).toThrow(new RegExp(`${PREFLIGHT_FAILED}.*invalid_url.*u2`))
 
   expectNothingCommitted(raw, before)
-  // …and restarting with the flag off works: no marker, so the v1 branch is legal.
-  expect(() => assertLegacyStartupAllowed(raw)).not.toThrow()
+  // …and the activation state is untouched: nothing to reconcile on the next start.
   expect(markReconciliationRequiredIfActive(db)).toBe(false)
   repo.close()
 })
@@ -278,24 +278,12 @@ test('a fault before the journal, the marker, or the commit leaves a legacy-inta
 })
 
 // =============================================================================
-// Step 2 — the two tripwires, in both directions
+// Step 2 — the activation tripwire. (Its twin, the flag-off "converted database
+// requires v2" guard, retired with the legacy branch: there is no v1 path left to
+// start, so the anomaly it caught can no longer occur.)
 // =============================================================================
 
-test('(a) marker present + RSC_SOURCE_MODEL_V2=off is a startup error naming the backup-restore procedure', async () => {
-  const { repo, raw, db } = await fresh()
-  seedLegacy(raw)
-  // BEFORE conversion, off is always safe (the flip-back surface is this one guard).
-  expect(() => assertLegacyStartupAllowed(raw)).not.toThrow()
-
-  activate(db)
-
-  expect(() => assertLegacyStartupAllowed(raw)).toThrow(CONVERTED_REQUIRES_V2)
-  expect(() => assertLegacyStartupAllowed(raw)).toThrow(/RSC_SOURCE_MODEL_V2=on/)
-  expect(() => assertLegacyStartupAllowed(raw)).toThrow(/restore the pre-flip backup/)
-  repo.close()
-})
-
-test('(b) activation without the conversion marker is a NAMED startup error, never a silent skip', async () => {
+test('activation without the conversion marker is a NAMED startup error, never a silent skip', async () => {
   for (const state of ['active', 'reconciliation_required'] as const) {
     const { repo, raw, db } = await fresh()
     seedLegacy(raw)
@@ -310,7 +298,7 @@ test('(b) activation without the conversion marker is a NAMED startup error, nev
   }
 })
 
-test('the tripwire pair is self-verifying: with the marker, both states start normally', async () => {
+test('the tripwire is self-verifying: with the marker, both states start normally', async () => {
   const { repo, raw, db } = await fresh()
   seedLegacy(raw)
   activate(db)
