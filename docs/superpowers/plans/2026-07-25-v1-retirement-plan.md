@@ -2106,6 +2106,14 @@ developed with the help of AI tools"
 **Interfaces:**
 - Consumes: Task 11a/11b's simplified capability + stream contract.
 
+**Note found in Task 11b's review:** `page.actions.test.ts:153` — the case
+named "a capability failure keeps subscribe on the legacy endpoint" — must be
+**deleted outright, not retargeted onto the v2 endpoint**. There is no longer
+a legacy endpoint for a capability failure to fall back to (Task 11b already
+removed the home load's v1/v2 race); the scenario this test describes cannot
+occur anymore. Confirm this by reading the test before touching it — do not
+assume the note above is complete without checking the real file.
+
 - [ ] **Step 1: `+page.svelte` — remove the v1 `<LiveTimeline>` mount and the `type`-select fallback**
 
 ```svelte
@@ -2394,6 +2402,20 @@ developed with the help of AI tools"
   `web/src/routes/admin/items/[id]/+page.server.ts`,
   `web/src/routes/admin/sources/[sourceId]/runs/+page.server.ts`
 - Test: `web/src/routes/admin/feeds/source-actions.test.ts`
+- Test: `web/src/routes/source-control-integration.test.ts` (**added, found in
+  Task 11b's review** — a WEB file distinct from the `core/` file of the same
+  name; genuinely unowned by any task before this correction, already 2/2
+  failing before this task even starts. Only 2 tests: delete
+  `:83` ("with the capability off every changed page stays legacy…") outright
+  — dead once v1 is gone, same class as every other flag-off test this
+  release deletes. Fix or re-verify `:121` ("with the capability on all three
+  pages switch together: subscribe, owner projection, unsubscribe, source
+  console") against the FINAL state of those pages — it's a cross-cutting
+  integration test spanning the home page's subscribe form (11b/11c), the
+  following page's unsubscribe (11c), and the admin source console (this
+  task), so run it LAST, after every other web task in this list has landed,
+  not before. This file blocks the "full suite PASS" claim in Step 6 below —
+  do not skip it.)
 
 **Interfaces:**
 - Consumes: Task 5 (core) already deleted `GET /admin/feeds`, `POST /users`,
