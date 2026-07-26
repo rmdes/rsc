@@ -268,34 +268,27 @@ export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser
 // --- v2 source registry (RSC_SOURCE_MODEL_V2) --------------------------------
 
 // The capability probe. It NEVER rejects: a core that predates /capabilities —
-// or any blip during a rolling deploy — must degrade the caller to the LEGACY
-// path, which is exactly what the flag being off is (spec §5.6 carve 1). Only a
-// successful (200) reading is memoized for the process lifetime (the value is
-// immutable on core, so one read per pod suffices); a failure is never cached as
-// sticky state and is retried on the very next request — so a transient blip can
-// never pin a pod to the wrong branch.
-//
-// The reading is the WIDENED discriminated shape (spec §5.6, review C5): the v2
-// variant carries `model` + the two protocol versions Core advertises. It is
-// LENIENT — a body that reports `sourceModelV2: true` is treated as v2 and its
-// version hints defaulted when absent; strict `model` validation is the job of
-// each ENVELOPE (carve 2), not of the capability probe.
+// or any blip during a rolling deploy — degrades to safe v2 defaults rather
+// than throwing (V1 retirement, Task 11a: there is no legacy mode to degrade
+// INTO anymore). Only a successful (200) reading is memoized for the process
+// lifetime (the value is immutable on core, so one read per pod suffices); a
+// failure is never cached as sticky state and is retried on the very next
+// request — so a transient blip can never pin a pod to stale defaults.
 let capabilities: Capabilities | null = null
 export async function getCapabilities(f: typeof fetch): Promise<Capabilities> {
 	if (capabilities) return capabilities
+	const defaults: Capabilities = { model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }
 	try {
 		const res = await f(`${base()}/capabilities`)
-		if (!res.ok) return { sourceModelV2: false }
-		const body = (await res.json()) as { sourceModelV2?: unknown; journalCursorVersion?: unknown; streamProtocolVersion?: unknown }
-		if (body.sourceModelV2 !== true) return (capabilities = { sourceModelV2: false })
+		if (!res.ok) return defaults
+		const body = (await res.json()) as { journalCursorVersion?: unknown; streamProtocolVersion?: unknown }
 		return (capabilities = {
-			sourceModelV2: true,
 			model: 'logical-v2',
 			journalCursorVersion: typeof body.journalCursorVersion === 'number' ? body.journalCursorVersion : 1,
 			streamProtocolVersion: typeof body.streamProtocolVersion === 'number' ? body.streamProtocolVersion : 1
 		})
 	} catch {
-		return { sourceModelV2: false }
+		return defaults
 	}
 }
 

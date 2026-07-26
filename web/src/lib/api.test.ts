@@ -242,38 +242,36 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 // The capability reading is memoized for the module's lifetime, so every case
 // below takes a FRESH module instance instead of a production reset hook.
 
-// C5 supersession fold (spec §5.6): the enabled reading is now the WIDENED
-// discriminated shape carrying model + protocol versions. Task 5 already
-// superseded the core-side exact-equality assertion; this is the same authorized
-// widening applied to the Web client's exact-equality assertion (the Task 5
-// precedent for staging a non-Appendix-C test file with a documented note).
-test('getCapabilities reports the flag and memoizes a successful reading', async () => {
+// V1 retirement (Task 11a): Capabilities is no longer discriminated — v2 is
+// the only model. A probe failure degrades to safe v2 defaults instead of a
+// legacy `{sourceModelV2:false}` variant.
+test('getCapabilities reports the model + protocol versions and memoizes a successful reading', async () => {
 	vi.resetModules()
 	const { getCapabilities } = await import('./api.ts')
 	const f = vi.fn(async () => new Response(JSON.stringify({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }), { status: 200 }))
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/capabilities')
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 	expect(f).toHaveBeenCalledTimes(1) // process-immutable on core — one read per pod
 })
 
-test('getCapabilities degrades to legacy on a non-200 and never caches the failure', async () => {
+test('getCapabilities degrades to defaults on a non-200 and never caches the failure', async () => {
 	vi.resetModules()
 	const { getCapabilities } = await import('./api.ts')
 	const f = vi.fn(async () => new Response('not found', { status: 404 })) // a core without /capabilities
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 	expect(f).toHaveBeenCalledTimes(2) // retried on the very next request
 })
 
-test('getCapabilities degrades to legacy when the fetch throws, and stays retryable', async () => {
+test('getCapabilities degrades to defaults when the fetch throws, and stays retryable', async () => {
 	vi.resetModules()
 	const { getCapabilities } = await import('./api.ts')
 	const f = vi.fn(async () => {
 		throw new Error('fetch failed')
 	})
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ sourceModelV2: false })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
+	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 	expect(f).toHaveBeenCalledTimes(2)
 })
 

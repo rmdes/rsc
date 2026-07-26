@@ -1,10 +1,12 @@
-// The widened capability contract (spec §5.6, review C5) — supersedes V1's
-// inline `{sourceModelV2: boolean}`. The v2 variant carries the model + the two
-// protocol versions Core advertises. getCapabilities (api.ts) reads this shape;
-// the memoize-success-only + degrade-on-failure semantics are unchanged.
-export type Capabilities =
-	| { sourceModelV2: false }
-	| { sourceModelV2: true; model: 'logical-v2'; journalCursorVersion: number; streamProtocolVersion: number }
+// The capability contract (V1 retirement, Task 11a) — v2 is the only model,
+// so this is no longer discriminated. Carries the model + the two protocol
+// versions Core advertises. getCapabilities (api.ts) reads this shape; the
+// memoize-success-only + degrade-on-failure semantics are unchanged.
+export interface Capabilities {
+	model: 'logical-v2'
+	journalCursorVersion: number
+	streamProtocolVersion: number
+}
 
 export interface TimelineEntry {
 	id: string
