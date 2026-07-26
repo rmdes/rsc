@@ -64,31 +64,11 @@ test('compose returns fail(400) when the core rejects the request', async () => 
 })
 
 
-test('subscribe follows a feed and redirects to the personal river', async () => {
-	const fetch = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'r1', handle: 'blog', displayName: 'B', kind: 'remote', feedType: 'webfeed' }, followed: true }), { status: 201 }))
-	const event = sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'webfeed' }), fetch)
-	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=blog' })
-})
-
-test('subscribe to an instance URL lands on federated with no flash', async () => {
-	const fetch = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'i1', handle: 'peer', displayName: 'P', kind: 'remote', feedType: 'instance' }, followed: false }), { status: 200 }))
-	const event = sessionedEvent(formRequest('subscribe', { url: 'https://peer.ex/f.xml', type: 'webfeed' }), fetch)
-	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=federated' })
-})
-
-test('subscribe to your own feed URL lands on personal with no flash', async () => {
-	const fetch = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'me1', handle: 'me', displayName: 'Me', kind: 'local' }, followed: false }), { status: 200 }))
-	const event = sessionedEvent(formRequest('subscribe', { url: 'https://x/users/me/feed.xml', type: 'webfeed' }), fetch)
-	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal' })
-})
-
-test('subscribe surfaces the cap error and rejects a bad type', async () => {
+test('subscribe surfaces the cap error from the source endpoint', async () => {
 	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'subscription limit reached' }), { status: 429 }))
-	const capped = await actions.subscribe(sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'webfeed' }), fetch) as never)
+	const capped = await actions.subscribe(sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', commandId: 'cmd-1' }), fetch) as never)
 	expect(capped).toMatchObject({ status: 400 })
 	expect((capped as { data: { error: string } }).data.error).toMatch(/subscription limit reached/)
-	const bad = await actions.subscribe(sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'nope' }), fetch) as never)
-	expect(bad).toMatchObject({ status: 400 })
 })
 
 test('SvelteKit CSRF origin check stays on (SEC-2: it is the real browser-boundary defense)', () => {
@@ -148,17 +128,4 @@ test('a v2 subscribe that resolves to a local account still lands on the persona
 	const fetch = capFetch(true, () => new Response(JSON.stringify({ follow: { kind: 'local', id: 'u1', handle: 'bob', displayName: 'Bob' } }), { status: 201 }))
 	const event = sessionedEvent(formRequest('subscribe', { url: 'https://x/users/bob/feed.xml', commandId: 'cmd-3' }), fetch)
 	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=bob' })
-})
-
-test('a capability failure keeps subscribe on the legacy endpoint and body', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
-	const fetch = vi.fn(async (url: string | URL) => {
-		if (String(url).includes('/capabilities')) throw new Error('no /capabilities on this core')
-		return new Response(JSON.stringify({ user: { id: 'r1', handle: 'blog', displayName: 'B', kind: 'remote', feedType: 'webfeed' }, followed: true }), { status: 201 })
-	})
-	const event = sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', type: 'webfeed' }), fetch)
-	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=blog' })
-	const post = fetch.mock.calls.find((c) => String(c[0]).includes('/me/subscriptions')) as unknown as [string, RequestInit]
-	expect(JSON.parse(String(post[1].body))).toEqual({ url: 'https://ex.com/f.xml', type: 'webfeed' })
 })

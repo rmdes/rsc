@@ -1,6 +1,6 @@
 import type { PageServerLoad, Actions } from './$types'
 import { fail } from '@sveltejs/kit'
-import { getTimeline, getFollowing, addFollow, removeFollow, importOpml, getCapabilities, peekCapabilities, getOwnerFollowing, unsubscribeSource, importOpmlV2 } from '$lib/api'
+import { getFollowing, addFollow, removeFollow, getOwnerFollowing, unsubscribeSource, importOpmlV2 } from '$lib/api'
 import { getLogicalRiverOrEmpty } from '$lib/logical-api'
 import type { FollowRow, OwnerFollowingView, PublicFollowingEntry } from '$lib/types'
 import { enrichEntries } from '$lib/server/render'
@@ -36,47 +36,29 @@ export const load: PageServerLoad = async ({ fetch, params, url, parent, cookies
 	const { me } = await parent()
 	const isOwner = me?.user.handle === handle
 	try {
-		// The v1 river call rides ALONGSIDE capability (cold pod: it fires first, so
-		// a capability fetch failure never runs ahead of the legacy path); the
-		// follows list is fetched in parallel. A v2 core answers the same /timeline
-		// with the `followed_by` lens.
-		const known = peekCapabilities()
-		const v1TP = known?.sourceModelV2 ? null : getTimeline(fetch, { before, followedBy: handle, topLevel: true })
-		// Synchronous discard handler — a cold-pod 400 during the await below is
-		// otherwise an unhandledRejection crash loop (see the home load).
-		v1TP?.catch(() => {})
+		// The follows list is fetched in parallel with the river.
 		const followingP = getFollowing(fetch, handle)
-		// Same cold-pod hazard as v1TP: handled-at-creation or a throw in the
-		// awaits below leaves this rejection unhandled and kills the process.
+		// Cold-pod hazard: a throw in the awaits below leaves this rejection
+		// unhandled and kills the process (see the home load).
 		followingP.catch(() => {})
-		const cap = await getCapabilities(fetch)
-		let timeline, nextCursor
-		if (cap.sourceModelV2) {
-			;({ entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, followedBy: handle }))
-		} else {
-			;({ timeline, nextCursor } = await v1TP!)
-		}
+		const { entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, followedBy: handle })
 		const following = await followingP
 		const page = { handle, isOwner, timeline: enrichEntries(timeline), nextCursor, isFirstPage }
-		if (cap.sourceModelV2) {
-			// Under v2 core serves /users/:handle/follows with the public projection
-			// — same path, same in-flight call, different shape.
-			const rows = isOwner
-				? ownerRows(await getOwnerFollowing(authedFetch(fetch, url.origin, cookieHeader(cookies))))
-				: publicRows(following as unknown as PublicFollowingEntry[])
-			return {
-				...page,
-				following: [],
-				rows,
-				// ponytail: a v2 source carries no local user id, so the live lens
-				// tracks local follows only while the flag is on — V2's logical-item
-				// ordinary reads supersede this.
-				followIds: rows.flatMap((r) => (r.kind === 'local' ? [r.id] : [])),
-				sourceModelV2: true,
-				commandIds: { subscribe: crypto.randomUUID(), import: crypto.randomUUID() }
-			}
+		// Core serves /users/:handle/follows with the public projection — same
+		// path, same in-flight call, different shape depending on ownership.
+		const rows = isOwner
+			? ownerRows(await getOwnerFollowing(authedFetch(fetch, url.origin, cookieHeader(cookies))))
+			: publicRows(following as unknown as PublicFollowingEntry[])
+		return {
+			...page,
+			following: [],
+			rows,
+			// ponytail: a v2 source carries no local user id, so the live lens
+			// tracks local follows only — V2's logical-item ordinary reads
+			// supersede this.
+			followIds: rows.flatMap((r) => (r.kind === 'local' ? [r.id] : [])),
+			commandIds: { subscribe: crypto.randomUUID(), import: crypto.randomUUID() }
 		}
-		return { ...page, following, followIds: following.filter((u) => u.feedType !== 'instance').map((u) => u.id) }
 	} catch {
 		return { handle, isOwner, timeline: [], nextCursor: null, isFirstPage, following: [], followIds: [], coreDown: true }
 	}
@@ -126,15 +108,10 @@ export const actions = {
 			// no mint: OPML import is registered-only; a sessionless POST gets core's 401/403
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 			const opml = await file.text()
-			// v1-vs-v2 is a CAPABILITY reading, not a form field — the load's coreDown
-			// catch can drop `commandIds` from the rendered form (a core blip mid-load),
-			// so trusting the form would wrongly take the legacy branch against a v2
-			// core and get its correct 400 ("commandId invalid"). Mint here (mirrors
-			// unsubscribe above) when the form carries none.
-			const cap = await getCapabilities(event.fetch)
-			const result = cap.sourceModelV2
-				? await importOpmlV2(f, opml, String(form.get('commandId') ?? '') || crypto.randomUUID())
-				: await importOpml(f, opml)
+			// The load's coreDown catch can drop `commandIds` from the rendered form
+			// (a core blip mid-load); mint one here (mirrors unsubscribe above) when
+			// the form carries none.
+			const result = await importOpmlV2(f, opml, String(form.get('commandId') ?? '') || crypto.randomUUID())
 			return { ok: true, result }
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'import failed' })

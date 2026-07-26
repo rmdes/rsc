@@ -77,13 +77,7 @@ test('unfollow deletes the target via the core with the session cookie', async (
 })
 
 test('import NEVER mints a session — registered-only, core 403s anonymous', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
-	const fetch = vi.fn(async (url: string | URL, ..._rest: unknown[]) =>
-		String(url).includes('/capabilities')
-			? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 })
-			: new Response(JSON.stringify({ error: 'not authenticated' }), { status: 401 })
-	)
+	const fetch = vi.fn(async (..._rest: unknown[]) => new Response(JSON.stringify({ error: 'not authenticated' }), { status: 401 }))
 	const event = anonymousEvent(importRequest('<opml/>'), fetch)
 	const res = await actions.import(event as never)
 	expect(fetch.mock.calls.some((c) => String(c[0]).includes('/sign-in/anonymous'))).toBe(false) // no mint call ever
@@ -96,32 +90,27 @@ test('import NEVER mints a session — registered-only, core 403s anonymous', as
 	expect((res as { data: { error: string } }).data.error).toBe('not authenticated')
 })
 
-test('following load lowercases the handle, computes isOwner, and instance-filters followIds', async () => {
+test('following load lowercases the handle and computes isOwner', async () => {
 	const fetch = vi.fn(async (url: string | URL) =>
-		String(url).includes('/follows')
-			? new Response(JSON.stringify({ following: [
-					{ id: 'f1', handle: 'w', displayName: 'W', kind: 'remote', feedType: 'webfeed' },
-					{ id: 'f2', handle: 'i', displayName: 'I', kind: 'remote', feedType: 'instance' }
-				] }), { status: 200 })
-			: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
+		String(url).includes('/me/following')
+			? new Response(JSON.stringify({ localFollows: [{ kind: 'local', id: 'f1', handle: 'w', displayName: 'W' }], sourceSubscriptions: [] }), { status: 200 })
+			: String(url).includes('/follows')
+				? new Response(JSON.stringify({ following: [] }), { status: 200 })
+				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
 	)
 	const me = { user: { id: 'me1', handle: 'alice', displayName: 'Alice', kind: 'local' as const }, isAnonymous: false }
-	const owner = (await load({ fetch, params: { handle: 'Alice' }, url: new URL('http://x/u/Alice/following'), parent: async () => ({ me }) } as never)) as { handle: string; isOwner: boolean; followIds: string[] }
+	const owner = (await load({ fetch, params: { handle: 'Alice' }, url: new URL('http://x/u/Alice/following'), parent: async () => ({ me }), cookies: { getAll: () => [] } } as never)) as { handle: string; isOwner: boolean; followIds: string[] }
 	expect(owner.handle).toBe('alice')
 	expect(owner.isOwner).toBe(true)
 	expect(owner.followIds).toEqual(['f1'])
 	const timelineCall = fetch.mock.calls.map((c) => String(c[0])).find((s) => s.includes('/timeline'))
 	expect(timelineCall).toContain('followed_by=alice')
-	expect(timelineCall).toContain('top_level=1')
-	const visitor = (await load({ fetch, params: { handle: 'bob' }, url: new URL('http://x/u/bob/following'), parent: async () => ({ me }) } as never)) as { isOwner: boolean }
+	const visitor = (await load({ fetch, params: { handle: 'bob' }, url: new URL('http://x/u/bob/following'), parent: async () => ({ me }), cookies: { getAll: () => [] } } as never)) as { isOwner: boolean }
 	expect(visitor.isOwner).toBe(false)
 })
 
-// --- v2 source registry (RSC_SOURCE_MODEL_V2) -------------------------------
-// The capability reading is memoized per module instance, so each case below
-// imports a FRESH +page.server.ts rather than adding a production reset hook.
+// --- v2 source registry -----------------------------------------------------
 
-const isCap = (u: unknown) => String(u).includes('/capabilities')
 const me = { user: { id: 'me1', handle: 'alice', displayName: 'Alice', kind: 'local' as const }, isAnonymous: false }
 const sessionedLoad = (fetch: ReturnType<typeof vi.fn>, handle: string) => ({
 	fetch,
@@ -133,30 +122,24 @@ const sessionedLoad = (fetch: ReturnType<typeof vi.fn>, handle: string) => ({
 
 type Row = { kind: 'local'; id: string; handle: string } | { kind: 'source'; sourceId: string; url: string; label: string; pending: boolean; commandId: string }
 
-test('with the capability on, the owner reads /me/following and sees pending as a neutral row', async () => {
-	vi.resetModules()
-	const { load } = await import('./+page.server.ts')
+test('the owner reads /me/following and sees pending as a neutral row', async () => {
 	const fetch = vi.fn(async (url: string | URL) =>
-		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
-			: String(url).includes('/me/following')
-				? new Response(
-						JSON.stringify({
-							localFollows: [{ kind: 'local', id: 'f1', handle: 'bob', displayName: 'Bob' }],
-							sourceSubscriptions: [
-								{ sourceId: 's1', url: 'https://ex.com/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' },
-								{ sourceId: 's2', url: 'https://new.example/f.xml', attributionMode: 'aggregate', subscriptionState: 'pending', availability: 'awaiting_review' }
-							]
-						}),
-						{ status: 200 }
-					)
-				: String(url).includes('/follows')
-					? new Response(JSON.stringify({ following: [] }), { status: 200 })
-					: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
+		String(url).includes('/me/following')
+			? new Response(
+					JSON.stringify({
+						localFollows: [{ kind: 'local', id: 'f1', handle: 'bob', displayName: 'Bob' }],
+						sourceSubscriptions: [
+							{ sourceId: 's1', url: 'https://ex.com/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' },
+							{ sourceId: 's2', url: 'https://new.example/f.xml', attributionMode: 'aggregate', subscriptionState: 'pending', availability: 'awaiting_review' }
+						]
+					}),
+					{ status: 200 }
+				)
+			: String(url).includes('/follows')
+				? new Response(JSON.stringify({ following: [] }), { status: 200 })
+				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
 	)
-	const result = (await load(sessionedLoad(fetch, 'alice') as never)) as { sourceModelV2?: boolean; rows?: Row[]; followIds: string[]; commandIds?: { subscribe: string; import: string } }
-	expect(String(fetch.mock.calls[0][0])).toContain('/timeline') // capability never runs ahead of the legacy call
-	expect(result.sourceModelV2).toBe(true)
+	const result = (await load(sessionedLoad(fetch, 'alice') as never)) as { rows?: Row[]; followIds: string[]; commandIds?: { subscribe: string; import: string } }
 	expect(result.rows?.map((r) => (r.kind === 'source' ? [r.sourceId, r.pending] : [r.handle, false]))).toEqual([
 		['bob', false],
 		['s1', false],
@@ -171,49 +154,25 @@ test('with the capability on, the owner reads /me/following and sees pending as 
 	expect(result.commandIds?.import).not.toBe(result.commandIds?.subscribe)
 })
 
-test('with the capability on, a visitor reads the public projection only — /me/following is never called', async () => {
-	vi.resetModules()
-	const { load } = await import('./+page.server.ts')
+test('a visitor reads the public projection only — /me/following is never called', async () => {
 	const fetch = vi.fn(async (url: string | URL) =>
-		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
-			: String(url).includes('/follows')
-				? new Response(
-						JSON.stringify({
-							following: [
-								{ kind: 'local', id: 'f1', handle: 'bob', displayName: 'Bob' },
-								{ kind: 'source', sourceId: 's1', url: 'https://ex.com/f.xml', displayName: 'Ex Blog' }
-							]
-						}),
-						{ status: 200 }
-					)
-				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
+		String(url).includes('/follows')
+			? new Response(
+					JSON.stringify({
+						following: [
+							{ kind: 'local', id: 'f1', handle: 'bob', displayName: 'Bob' },
+							{ kind: 'source', sourceId: 's1', url: 'https://ex.com/f.xml', displayName: 'Ex Blog' }
+						]
+					}),
+					{ status: 200 }
+				)
+			: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
 	)
 	const result = (await load(sessionedLoad(fetch, 'bob') as never)) as { isOwner: boolean; rows?: Row[] }
 	expect(result.isOwner).toBe(false)
 	expect(fetch.mock.calls.some((c) => String(c[0]).includes('/me/following'))).toBe(false)
 	expect(result.rows?.every((r) => r.kind === 'local' || r.pending === false)).toBe(true) // pending is unreachable, not merely hidden
 	expect(result.rows?.find((r) => r.kind === 'source')).toMatchObject({ sourceId: 's1', label: 'Ex Blog' })
-})
-
-test('a capability failure degrades the following load to legacy — never coreDown — and is retried next request', async () => {
-	vi.resetModules()
-	const { load } = await import('./+page.server.ts')
-	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) throw new Error('no /capabilities on this core')
-		return String(url).includes('/follows')
-			? new Response(JSON.stringify({ following: [{ id: 'f1', handle: 'w', displayName: 'W', kind: 'remote', feedType: 'webfeed' }] }), { status: 200 })
-			: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
-	})
-	const event = sessionedLoad(fetch, 'alice')
-	const first = (await load(event as never)) as { coreDown?: boolean; sourceModelV2?: boolean; following: Array<{ handle: string }> }
-	expect(first.coreDown).toBeUndefined()
-	expect(first.sourceModelV2).toBeUndefined()
-	expect(first.following.map((u) => u.handle)).toEqual(['w']) // the already-in-flight legacy result stands
-	const capCalls = () => fetch.mock.calls.filter((c) => isCap(c[0])).length
-	expect(capCalls()).toBe(1)
-	await load(event as never)
-	expect(capCalls()).toBe(2)
 })
 
 test('unsubscribe removes by stable source id and carries the form command id', async () => {
@@ -229,16 +188,10 @@ test('unsubscribe removes by stable source id and carries the form command id', 
 })
 
 // W5: the load's coreDown catch can drop `commandIds` from the rendered form
-// (a core blip mid-load) — the action must decide v1-vs-v2 from capabilities,
-// not from whether the form happens to carry a commandId, or a v2 core 400s
-// the legacy-shaped POST.
-test('import with NO commandId on a v2-capable instance still calls the v2 import path (post-blip load)', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
+// (a core blip mid-load) — the action mints its own when the form carries none.
+test('import with NO commandId still mints one (post-blip load)', async () => {
 	const counts = { localFollowed: 1, active: 1, pending: 0, unavailable: 0, notSubscribable: 0, capSkipped: 0 }
-	const fetch = vi.fn(async (url: string | URL, ..._rest: unknown[]) =>
-		isCap(url) ? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 }) : new Response(JSON.stringify(counts), { status: 200 })
-	)
+	const fetch = vi.fn(async (..._rest: unknown[]) => new Response(JSON.stringify(counts), { status: 200 }))
 	const body = new FormData()
 	body.set('opml', new File(['<opml/>'], 'feed.opml'))
 	// no commandId field at all
@@ -253,12 +206,8 @@ test('import with NO commandId on a v2-capable instance still calls the v2 impor
 })
 
 test('import carries the form command id as a header and returns the v2 counts', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
 	const counts = { localFollowed: 1, active: 2, pending: 1, unavailable: 0, notSubscribable: 0, capSkipped: 0 }
-	const fetch = vi.fn(async (url: string | URL, ..._rest: unknown[]) =>
-		String(url).includes('/capabilities') ? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 }) : new Response(JSON.stringify(counts), { status: 200 })
-	)
+	const fetch = vi.fn(async (..._rest: unknown[]) => new Response(JSON.stringify(counts), { status: 200 }))
 	const body = new FormData()
 	body.set('opml', new File(['<opml/>'], 'feed.opml'))
 	body.set('commandId', 'cmd-7')

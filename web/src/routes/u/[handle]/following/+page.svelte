@@ -1,32 +1,20 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
-	import { keepEvent } from '$lib/lens'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
 	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
-	import { applyRiverEvent } from '$lib/live'
 	import { fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
-	const followSet = $derived(new Set(data.followIds))
 	const emptyNote = $derived(data.isOwner ? "You're not following anything yet — subscribe above." : `@${data.handle} isn't following anything yet.`)
-	let live = $state<TimelineEntry[]>([])
-	let edited = $state<Record<string, TimelineEntry>>({})
-	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
-	const posts = $derived([...live, ...data.timeline].map((p) => edited[p.id] ?? p))
-
-	function onPost(entry: TimelineEntry) {
-		const keep = keepEvent(entry, { kind: 'followed', followIds: followSet }) || entry.author.handle === data.handle
-		const r = applyRiverEvent({ live, edited }, entry, { posts, pageIds, keep })
-		live = r.live
-		edited = r.edited
-	}
+	// P3 (backlog): this page never got the v2 journal live stream (see the home
+	// page's $effect) — snapshot-only, reload to refresh.
+	const posts = $derived(data.timeline)
 
 	let expanded = $state<Record<string, TimelineEntry[]>>({})
 	let loading = $state<Record<string, boolean>>({})
@@ -49,11 +37,6 @@
 
 <svelte:head><title>@{data.handle} following — RSC</title></svelte:head>
 
-<!-- v1 firehose only; under v2 this river is snapshot (reload to refresh). -->
-{#if data.isFirstPage && !data.sourceModelV2}
-	<LiveTimeline {onPost} />
-{/if}
-
 <div class="lens">
 	<header class="masthead">
 		<a href="/">RSC</a>
@@ -68,13 +51,9 @@
 	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 	{#if form?.ok && form.result}
-		{#if 'followed' in form.result}
-			<p class="notice confirm" role="status">Imported: {form.result.followed} followed, {form.result.created} created, {form.result.skipped} skipped (unfetchable, duplicate, or over your subscription cap).</p>
-		{:else}
-			{@const r = form.result}
-			<!-- unavailable and not-subscribable are one indistinguishable outcome. -->
-			<p class="notice confirm" role="status">Imported: {r.localFollowed} followed, {r.active} subscribed, {r.pending} awaiting review, {r.unavailable + r.notSubscribable} unavailable, {r.capSkipped} over your subscription cap.</p>
-		{/if}
+		{@const r = form.result}
+		<!-- unavailable and not-subscribable are one indistinguishable outcome. -->
+		<p class="notice confirm" role="status">Imported: {r.localFollowed} followed, {r.active} subscribed, {r.pending} awaiting review, {r.unavailable + r.notSubscribable} unavailable, {r.capSkipped} over your subscription cap.</p>
 	{/if}
 
 	{#if !data.isOwner}
@@ -87,15 +66,7 @@
 			<form method="POST" action="/?/subscribe" class="add-remote">
 				<label class="visually-hidden" for="sub-url">Feed URL</label>
 				<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-				{#if data.sourceModelV2}
-					<input type="hidden" name="commandId" value={data.commandIds?.subscribe} />
-				{:else}
-					<label class="visually-hidden" for="sub-type">Subscription type</label>
-					<select id="sub-type" name="type">
-						<option value="webfeed" selected>a site or publication</option>
-						<option value="person">an individual</option>
-					</select>
-				{/if}
+				<input type="hidden" name="commandId" value={data.commandIds?.subscribe} />
 				<button>Subscribe</button>
 			</form>
 		</details>
@@ -114,9 +85,7 @@
 				<form method="POST" action="?/import" enctype="multipart/form-data" class="import-form">
 					<label class="visually-hidden" for="import-opml">OPML file to import</label>
 					<input id="import-opml" type="file" name="opml" accept=".opml,.xml,text/xml" required />
-					{#if data.sourceModelV2}
-						<input type="hidden" name="commandId" value={data.commandIds?.import} />
-					{/if}
+					<input type="hidden" name="commandId" value={data.commandIds?.import} />
 					<button>Import OPML</button>
 				</form>
 			</details>
@@ -127,52 +96,29 @@
 
 	<section>
 		<h2>{data.isOwner ? 'Your subscriptions' : `@${data.handle} follows`}</h2>
-		{#if data.sourceModelV2}
-			{#if (data.rows ?? []).length === 0}
-				<p class="timeline-empty">{emptyNote}</p>
-			{:else}
-				<ul class="following-list">
-					{#each data.rows ?? [] as row (row.kind === 'local' ? row.handle : row.sourceId)}
-						<li>
-							{#if row.kind === 'local'}
-								<span><a href="/u/{row.handle}">@{row.handle}</a> <span class="badge-kind">local</span></span>
-								<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'} class="unfollow-form" class:follow-row={!data.isOwner}>
-									<input type="hidden" name="target" value={row.handle} />
-									<button>{data.isOwner ? 'Unfollow' : 'Follow'}</button>
-								</form>
-							{:else}
-								<!-- Only the owner's own projection can carry pending, and it
-								     says nothing about why — no governance state reaches here. -->
-								<span><a href={row.url} rel="noreferrer">{row.label}</a>{#if row.pending}<span class="badge-kind">awaiting review</span>{/if}</span>
-								{#if data.isOwner}
-									<form method="POST" action="?/unsubscribe" class="unfollow-form">
-										<input type="hidden" name="sourceId" value={row.sourceId} />
-										<input type="hidden" name="commandId" value={row.commandId} />
-										<button>Unsubscribe</button>
-									</form>
-								{/if}
-							{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		{:else if data.following.length === 0}
+		{#if (data.rows ?? []).length === 0}
 			<p class="timeline-empty">{emptyNote}</p>
 		{:else}
 			<ul class="following-list">
-				{#each data.following as u (u.id)}
+				{#each data.rows ?? [] as row (row.kind === 'local' ? row.handle : row.sourceId)}
 					<li>
-						<span><a href="/u/{u.handle}">@{u.handle}</a> <span class="badge-kind">{u.kind}</span>{#if u.feedType === 'instance'}<span class="badge-kind on">instance</span>{/if}</span>
-						{#if data.isOwner}
-							<form method="POST" action="?/unfollow" class="unfollow-form">
-								<input type="hidden" name="target" value={u.handle} />
-								<button>Unfollow</button>
+						{#if row.kind === 'local'}
+							<span><a href="/u/{row.handle}">@{row.handle}</a> <span class="badge-kind">local</span></span>
+							<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'} class="unfollow-form" class:follow-row={!data.isOwner}>
+								<input type="hidden" name="target" value={row.handle} />
+								<button>{data.isOwner ? 'Unfollow' : 'Follow'}</button>
 							</form>
 						{:else}
-							<form method="POST" action="?/follow" class="unfollow-form follow-row">
-								<input type="hidden" name="target" value={u.handle} />
-								<button>Follow</button>
-							</form>
+							<!-- Only the owner's own projection can carry pending, and it
+							     says nothing about why — no governance state reaches here. -->
+							<span><a href={row.url} rel="noreferrer">{row.label}</a>{#if row.pending}<span class="badge-kind">awaiting review</span>{/if}</span>
+							{#if data.isOwner}
+								<form method="POST" action="?/unsubscribe" class="unfollow-form">
+									<input type="hidden" name="sourceId" value={row.sourceId} />
+									<input type="hidden" name="commandId" value={row.commandId} />
+									<button>Unsubscribe</button>
+								</form>
+							{/if}
 						{/if}
 					</li>
 				{/each}

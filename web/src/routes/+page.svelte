@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
@@ -11,7 +10,6 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
-	import { applyRiverEvent } from '$lib/live'
 	import { applyLiveEvent, type LiveEvent } from '$lib/logical-live'
 	import { fetchThread } from '$lib/wedge'
 	import { enhance } from '$app/forms'
@@ -24,7 +22,7 @@
 
 	let live = $state<TimelineEntry[]>([])
 	let edited = $state<Record<string, TimelineEntry>>({})
-	// v2 remove is durable; the set stays empty under v1, so `posts` is unchanged there.
+	// v2 remove is durable: entries land here so `posts` filters them out.
 	let removed = $state<Set<string>>(new Set())
 	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
 	const posts = $derived([...live, ...data.timeline].filter((p) => !removed.has(p.id)).map((p) => edited[p.id] ?? p))
@@ -37,13 +35,6 @@
 		if (data.tab === 'personal') return { kind: 'followed', followIds: new Set(data.followIds ?? []) }
 		return null
 	})
-
-	function onPost(entry: TimelineEntry) {
-		const keep = !lens || keepEvent(entry, lens)
-		const r = applyRiverEvent({ live, edited }, entry, { posts, pageIds, keep })
-		live = r.live
-		edited = r.edited
-	}
 
 	// The logical-v2 durable stream (spec §5.7). The proxy translates journal
 	// frames into upsert/remove/reset events carrying render-shape data; the
@@ -58,7 +49,7 @@
 		// Only with a valid snapshot cursor: a discarded (fail-closed) river yields
 		// none, so the stream stays closed until a reload gets a valid envelope —
 		// avoiding a reset↔refetch loop against a broken core.
-		if (!data.sourceModelV2 || !data.isFirstPage || !data.journalCursor) return
+		if (!data.isFirstPage || !data.journalCursor) return
 		const es = new EventSource(`/stream?v2=1&last=${encodeURIComponent(data.journalCursor)}`)
 		// A barrier reset (governance/moderation/reconciliation changed ordinary
 		// visibility) closes the stream and forces a fresh snapshot. Coalesce a
@@ -140,12 +131,6 @@
 
 <svelte:head><title>RSC</title></svelte:head>
 
-<!-- V1 uses the legacy `event: post` firehose; V2 wires its own upsert/remove/
-     reset stream in the effect above. Mount at most one. -->
-{#if data.isFirstPage && !data.sourceModelV2}
-	<LiveTimeline {onPost} />
-{/if}
-
 <div class="shell">
 	<aside class="tools">
 		<header class="masthead">
@@ -167,17 +152,9 @@
 				<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
 					<label class="visually-hidden" for="sub-url">Feed URL</label>
 					<input id="sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-					{#if data.sourceModelV2}
-						<!-- v2 derives the kind from the feed itself; the id makes a no-JS
-						     resubmit replay the same command instead of subscribing twice. -->
-						<input type="hidden" name="commandId" value={data.subscribeCommandId} />
-					{:else}
-						<label class="visually-hidden" for="sub-type">Subscription type</label>
-						<select id="sub-type" name="type">
-							<option value="webfeed" selected>a site or publication</option>
-							<option value="person">an individual</option>
-						</select>
-					{/if}
+					<!-- v2 derives the kind from the feed itself; the id makes a no-JS
+					     resubmit replay the same command instead of subscribing twice. -->
+					<input type="hidden" name="commandId" value={data.subscribeCommandId} />
 					<button>Subscribe</button>
 				</form>
 			</details>
