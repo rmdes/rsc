@@ -16,6 +16,7 @@ import { drainReconciliation, drainReconciliationAsync } from './reconcile.ts'
 import { createVerificationRunner } from './verification.ts'
 import { projectItem } from './projector.ts'
 import { materializeLocalChain } from './local.ts'
+import { deriveRoot } from './roots.ts'
 import { loadManifest, runPreflight } from '../migration/preflight.ts'
 import type { Manifest } from '../migration/preflight.ts'
 import { runConversion } from '../migration/convert.ts'
@@ -81,23 +82,6 @@ export interface LogicalRuntime {
 }
 
 const ORPHAN_BATCH = 100
-
-// The derived root of the chain ending at `id` (inclusive) — roots are derived,
-// never stored authority (spec §4.1).
-// ponytail: LOCKSTEP with local.ts's deriveRoot and store.ts's adminDeriveRoot
-// — see the note in local.ts. Exported only for the behavioural canary in
-// test/logical-lockstep.test.ts. Change one copy, change all three.
-export function deriveRoot(tx: ReadTx, id: string): string {
-  const parentOf = tx.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`)
-  let root = id
-  let cur: string | null = id
-  for (let i = 0; i < 1000 && cur; i++) {
-    root = cur
-    const row = parentOf.get(cur) as { parent_logical_item_id: string | null } | undefined
-    cur = row ? row.parent_logical_item_id : null
-  }
-  return root
-}
 
 // Send-time reply-count overlay (spec §5.5): the derived root's ID and its current
 // ordinary-visible conversation total, computed in THIS projection snapshot. Present

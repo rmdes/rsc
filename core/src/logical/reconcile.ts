@@ -6,6 +6,7 @@ import { appendJournal } from './journal.ts'
 import { resolveInitialParent, scheduleOrphanWork } from './threading.ts'
 import { materializeLocalPost } from './local.ts'
 import { scheduleVerification } from './verification.ts'
+import { normalizePermalink } from './roots.ts'
 import {
   compareFirstArrival, selectDisplayDelivery, selectAuthor,
   normalizePublisherName, presentationFingerprint, nextPresentationEntry, normalizeUtc,
@@ -164,20 +165,6 @@ interface VersionRow {
   canonical_material: Buffer; raw_evidence_json: string; normalized_json: string
 }
 interface Material { title: string | null; content: string | null; link: string | null; published: string | null; updated: string | null; inReplyTo: string | null; enclosures: unknown[] }
-
-// ponytail: LOCKSTEP with acquisition.ts's normalizePermalink — see the note
-// there. This copy additionally accepts null; acquisition's callers guard on
-// truthiness, so that difference is benign. Exported only for the behavioural
-// canary in test/logical-lockstep.test.ts. Change one copy, change both.
-export function normalizePermalink(raw: string | null): string | null {
-  if (!raw) return null
-  try {
-    const u = new URL(raw)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
-    u.hash = ''
-    return u.toString()
-  } catch { return null }
-}
 
 function identityOwner(tx: WriteTx, kind: string, key: string): string | null {
   const r = tx.prepare(`SELECT logical_item_id FROM logical_identity_keys_v2 WHERE kind = ? AND key = ?`).get(kind, key) as { logical_item_id: string } | undefined

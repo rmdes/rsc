@@ -5,6 +5,7 @@ import type { User } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
 import { reapSourceIfOrphaned } from '../domain/source-repository.ts'
+import { deriveRoot } from './roots.ts'
 
 export { resolveInitialParent }
 
@@ -61,27 +62,6 @@ function parentReplyRef(tx: WriteTx, parentId: string): string | null {
   return o ? o.key : null
 }
 
-// The derived root of the chain that ends at `parentId` (inclusive) — the topmost
-// ancestor. Roots are derived, never stored authority (spec §4.1).
-// ponytail: LOCKSTEP with runtime.ts's deriveRoot and store.ts's
-// adminDeriveRoot — a thread root must read the same from the write path, the
-// projection overlay and the admin store. Exported only for the behavioural
-// canary in test/logical-lockstep.test.ts. Change one copy, change all three.
-// projector.ts's remoteThreadRoot is a FOURTH parent-chain walk, deliberately
-// OUTSIDE this lockstep set: it stops at the first non-`resolved`
-// parent_state, so it must NOT agree with these three. Don't fold it in.
-export function deriveRoot(tx: WriteTx, parentId: string): string {
-  const parentOf = tx.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`)
-  let root = parentId
-  let cur: string | null = parentId
-  for (let i = 0; i < 1000 && cur; i++) {
-    root = cur
-    const row = parentOf.get(cur) as { parent_logical_item_id: string | null } | undefined
-    cur = row ? row.parent_logical_item_id : null
-  }
-  return root
-}
-
 // Race-safe materialization: INSERT OR IGNORE so two concurrent writers (or an
 // edit re-running it) never double-insert. Ordinary reads synthesize WITHOUT
 // calling this (read-without-write, spec §2.6).
@@ -125,8 +105,8 @@ export function materializeLocalPost(tx: WriteTx, postId: string): void {
 // satisfied as-is, whether this walk put it there, an earlier one did, or — the
 // cutover case — conversion minted the remote parent before the pass ran.
 //
-// Bounded at 1000 hops — the same bound as this codebase's other three parent
-// walks (deriveRoot here and in runtime.ts, adminDeriveRoot in store.ts). Ordinary
+// Bounded at 1000 hops — the same bound as the shared deriveRoot (roots.ts,
+// used here, in runtime.ts and in store.ts as adminDeriveRoot). Ordinary
 // commands can never produce a self-edge or cycle (createLocalPost's wouldCycle
 // guard), so this is hand-corruption only; but this walk runs inside the
 // pre-listen activation transaction, so an unhandled RangeError there is a

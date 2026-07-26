@@ -33,6 +33,7 @@ import { scheduleFanout, claimFanout, processFanoutBatch } from './fanout.ts'
 import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
 import { purgeSource, removeSourceEvidence, isTombstoned, unblockTombstone } from './tombstones.ts'
 import type { PurgeCommandInput, PurgeResult, UnblockCommandInput, UnblockResult } from './tombstones.ts'
+import { deriveRoot as adminDeriveRoot } from './roots.ts'
 
 // Bounded transactional reads/writes over the logical-v2 schema (plan File map,
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
@@ -244,22 +245,6 @@ function adminItemState(tx: ReadTx, row: { id: string; hidden_at: string | null;
   if (tx.prepare(`SELECT 1 FROM logical_deleted_local_v2 WHERE logical_item_id = ? LIMIT 1`).get(row.id)) return 'deleted_local'
   if (row.hidden_at != null) return 'hidden'
   return projectItem(tx, row.id, ADMIN_ANON) !== undefined ? 'ordinary' : 'unsupported'
-}
-
-// Derived thread root: walk the parent chain (bounded), never stored authority.
-// ponytail: LOCKSTEP with local.ts's and runtime.ts's deriveRoot — see the note
-// in local.ts. Exported only for the behavioural canary in
-// test/logical-lockstep.test.ts. Change one copy, change all three.
-export function adminDeriveRoot(tx: ReadTx, startId: string): string {
-  const q = tx.prepare(`SELECT parent_logical_item_id AS p FROM logical_items_v2 WHERE id = ?`)
-  let root = startId
-  let cur: string | null = startId
-  for (let i = 0; i < 1000 && cur; i++) {
-    root = cur
-    const r = q.get(cur) as { p: string | null } | undefined
-    cur = r ? r.p : null
-  }
-  return root
 }
 
 function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
