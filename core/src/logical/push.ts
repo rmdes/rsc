@@ -1,18 +1,15 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID, createHmac, timingSafeEqual } from 'node:crypto'
 import type { DatabaseContext } from './database.ts'
 import type { LogicalStore } from './store.ts'
 import type { Config } from '../config.ts'
 import type { PushProtocol } from '../domain/types.ts'
-import type { PushTarget } from '../domain/push-in.ts'
+import type { FeedDiscovery } from '../domain/ingest.ts'
 import type { LookupFn } from '../domain/push-guard.ts'
 import type { AcquisitionEngine } from './acquisition.ts'
 import { checkCallbackUrl } from '../domain/push-guard.ts'
 import { FETCH_TIMEOUT_MS } from '../domain/ingest.ts'
 import { urlPort } from '../domain/feed.ts'
-import {
-  pushInEffective, verifySignature, PENDING_TTL_MS, WEBSUB_LEASE_SECONDS, WEBSUB_RENEW_HORIZON_MS,
-  RSSCLOUD_TTL_MS, RSSCLOUD_RENEW_HORIZON_MS, RENEW_RETRY_FLOOR_MS,
-} from '../domain/push-in.ts'
+import { cloudScheme } from '../domain/push.ts'
 
 // v1's H5 thin-ping floor (push-in.ts:75). The ONE value this module restates
 // instead of importing: it is module-private there, and push-in.ts stays
@@ -25,8 +22,47 @@ const THIN_PING_FLOOR_MS = 30_000
 // pass, and NO unsubscribe request ever — pause, block and unsubscribe-to-zero
 // simply stop renewing and the lease lapses.
 //
-// The pure v1 helpers and every constant are IMPORTED from domain/push-in.ts,
-// never copied; that module stays byte-identical until Task 11 relocates them.
+// The pure v1 helpers and every constant, RELOCATED here from domain/push-in.ts
+// (V4 Task 11 step 1 of 3) — that module keeps its own byte-identical copies
+// until Task 11's later step deletes the v1 runtime and the whole file.
+const SIGNATURE_ALGOS = new Set(['sha1', 'sha256', 'sha384', 'sha512'])
+
+// H1: the hub picks the algorithm. H2 handling lives at the caller.
+export function verifySignature(body: string, secret: string, header: string | null): boolean {
+  if (!header) return false
+  const i = header.indexOf('=')
+  if (i <= 0) return false
+  const algo = header.slice(0, i).toLowerCase()
+  const hex = header.slice(i + 1)
+  if (!SIGNATURE_ALGOS.has(algo) || !/^[0-9a-f]+$/i.test(hex)) return false
+  const expected = createHmac(algo, secret).update(body).digest()
+  const given = Buffer.from(hex, 'hex')
+  return given.length === expected.length && timingSafeEqual(given, expected)
+}
+
+export interface PushTarget { mode: PushProtocol; endpoint: string; topic: string }
+
+export function choosePushTarget(discovery: FeedDiscovery, feedUrl: string): PushTarget | null {
+  if (discovery.hubs.length > 0) {
+    return { mode: 'websub', endpoint: discovery.hubs[0], topic: discovery.self ?? feedUrl }
+  }
+  if (discovery.cloud && discovery.cloud.protocol === 'http-post') {
+    const { domain, port, path } = discovery.cloud
+    return { mode: 'rsscloud', endpoint: `${cloudScheme(port)}://${domain}:${port}${path}`, topic: feedUrl }
+  }
+  return null
+}
+
+export const PENDING_TTL_MS = 600_000 // 10 min (spec H3)
+export const WEBSUB_LEASE_SECONDS = 864000 // 10 days requested
+export const WEBSUB_RENEW_HORIZON_MS = 86_400_000 // renew when < 1 day left
+export const RSSCLOUD_TTL_MS = 90_000_000 // 25 h
+export const RSSCLOUD_RENEW_HORIZON_MS = 7_200_000 // renew when < 2 h left
+export const RENEW_RETRY_FLOOR_MS = 3_600_000 // retry a due renewal at most hourly, not every tick
+
+export function pushInEffective(config: Config): boolean {
+  return config.pushIn && config.publicUrl !== null
+}
 
 export type PushClaim = PushTarget // {mode, endpoint, topic} — the inert run evidence
 

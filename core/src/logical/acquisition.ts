@@ -5,7 +5,7 @@ import { checkFetchHop } from '../domain/push-guard.ts'
 import type { LookupFn } from '../domain/push-guard.ts'
 import { parseFeedWithMeta, mergeDiscovery } from '../domain/ingest.ts'
 import { discoverFeed } from '../domain/discovery.ts'
-import { choosePushTarget } from '../domain/push-in.ts'
+import { choosePushTarget } from './push.ts'
 import { isTombstoned } from './tombstones.ts'
 import type {
   AcquisitionReason, AcquisitionRun, ClaimAcquisitionResult, CommitAcquisitionInput,
