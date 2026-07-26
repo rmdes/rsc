@@ -251,6 +251,16 @@ export interface CutoverInput {
   step?: (phase: 'conversion' | 'journal' | 'marker' | 'activation') => void
 }
 
+// LIVE ON THE FRESH-INSTALL PATH — do not "retire" this as cutover-only
+// machinery. activateLogicalV2 reaches convertLegacy whenever activation state
+// is `never_activated`, which is every brand-new install's FIRST BOOT, not just
+// a legacy cutover. loadManifest/runPreflight (migration/preflight.ts) and
+// runConversion (migration/convert.ts) all run there, trivially, over zero
+// legacy rows. Deleting either module would break first boot for every new
+// install while leaving already-converted instances working — a regression no
+// test against existing production can catch. core/test/fresh-install.test.ts
+// is the guard; keep it green.
+//
 // Preflight + conversion, inside the caller's write transaction. runPreflight is
 // read-only by construction, so running it here costs nothing and guarantees the
 // checks see exactly the rows conversion will convert; any abort throws, and the
