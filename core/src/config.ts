@@ -10,7 +10,6 @@ export interface Config {
   rssCloud: boolean
   pushIn: boolean
   authOpenApi: boolean
-  sourceModelV2: boolean
   authSecret: string
   webOrigin: string
   anonTtlDays: number
@@ -69,10 +68,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (rawAuthOpenApi !== 'on' && rawAuthOpenApi !== 'off') throw new Error(`RSC_AUTH_OPENAPI must be "on" or "off", got "${rawAuthOpenApi}"`)
   const authOpenApi = rawAuthOpenApi === 'on'
 
-  const rawSourceModelV2 = env.RSC_SOURCE_MODEL_V2 ?? 'off'
-  if (rawSourceModelV2 !== 'on' && rawSourceModelV2 !== 'off') throw new Error(`RSC_SOURCE_MODEL_V2 must be "on" or "off", got "${rawSourceModelV2}"`)
-  const sourceModelV2 = rawSourceModelV2 === 'on'
-
   // Fail-fast ONLY for explicitly enabled push (spec H1): defaults stay bootable.
   if ((websub.mode !== 'off' || rssCloud) && !publicUrl) {
     throw new Error('RSC_PUBLIC_URL is required when RSC_WEBSUB or RSC_RSSCLOUD is enabled')
@@ -100,7 +95,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rssCloud,
     pushIn,
     authOpenApi,
-    sourceModelV2,
     authSecret,
     webOrigin,
     anonTtlDays,

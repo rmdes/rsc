@@ -81,11 +81,11 @@ test('authOpenApi defaults off, accepts on, rejects garbage', () => {
   expect(() => loadConfig({ ...base, RSC_AUTH_OPENAPI: 'maybe' })).toThrow('RSC_AUTH_OPENAPI')
 })
 
-test('RSC_SOURCE_MODEL_V2 defaults off and accepts only on/off', () => {
-  const base = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' }
-  expect(loadConfig(base).sourceModelV2).toBe(false)
-  expect(loadConfig({ ...base, RSC_SOURCE_MODEL_V2: 'on' }).sourceModelV2).toBe(true)
-  expect(() => loadConfig({ ...base, RSC_SOURCE_MODEL_V2: 'yes' })).toThrow('RSC_SOURCE_MODEL_V2')
+test('a stale RSC_SOURCE_MODEL_V2 env var does not prevent boot', () => {
+  // Deploy-safety guarantee (V4 Task 11 §C): the unset-var-first deploy order
+  // is belt-and-braces, not the only guard — loadConfig must never fail on an
+  // env var it no longer reads.
+  expect(() => loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: 'on' })).not.toThrow()
 })
 
 test('RSC_MIGRATION_MANIFEST defaults null and passes a path straight through, unvalidated', () => {
