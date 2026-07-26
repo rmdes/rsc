@@ -1,4 +1,5 @@
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushProtocol, PostRevision } from './types.ts'
+import type { LogicalStore } from '../logical/store.ts'
 
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
@@ -49,5 +50,5 @@ export interface Repository {
   listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]>
   countActiveSubscriptions(filter: { callbackHost?: string; topic?: string }, now: string): Promise<number>
   purgeExpiredSubscriptions(now: string): Promise<void>
-  sweepAnonymousUsers(ttlDays: number): { swept: number }
+  sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
 }

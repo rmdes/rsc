@@ -11,6 +11,7 @@ import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrpha
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
+import type { LogicalStore } from '../logical/store.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
 // These source-command methods run only when the source-control plane is wired
@@ -604,8 +605,23 @@ export class SqliteRepository implements Repository, SourceRepository {
   // no DB-level ON DELETE CASCADE. (The v2 tables DO declare ON DELETE CASCADE,
   // which is why the v2 reap below runs explicitly — the cascade removes the
   // subscription rows but cannot evaluate whether the source itself is retained.)
-  // Shared by sweepAnonymousUsers and DELETE /users. post_revisions
-  // must go before posts — its post_id FK is RESTRICT and foreign_keys=ON.
+  // Shared by DELETE /users, removeFollow's orphaned-feed reap, removeRemoteFeed,
+  // deleteLocalAccount's flag-off branch, and sweepAnonymousUsers' fallback
+  // (only when no `logical` is passed). post_revisions must go before posts —
+  // its post_id FK is RESTRICT and foreign_keys=ON.
+  //
+  // UNSAFE for a LOCAL account that has posted under v2: `DELETE FROM posts`
+  // below violates logical_local_origins_v2.post_id's ON DELETE RESTRICT,
+  // because materializeLocalItem (logical/local.ts) gives every local post a
+  // bridge row there (found Task 8b/8c, V1 retirement). Callers with a local
+  // account MUST route through logical.deleteLocalAccount instead when a
+  // `logical` store is available — see sweepAnonymousUsers and
+  // service.deleteLocalAccount for the pattern. The three remaining raw
+  // callers here are safe: removeFollow's reap and removeRemoteFeed only ever
+  // delete `kind: 'remote'` users, and logical_local_origins_v2 is populated
+  // exclusively for local posts, so a remote user's posts (if any exist) never
+  // hold that bridge row; deleteLocalAccount's own call here is the explicit
+  // flag-off (`logical` absent) branch, the one case this cascade is meant for.
   deleteUserCascade(id: string): void {
     const raw = this.raw
     raw.transaction(() => {
@@ -1221,7 +1237,18 @@ export class SqliteRepository implements Repository, SourceRepository {
   // Idle = latest session update, else auth-user createdAt. Anon guests are
   // few; candidate selection in JS dodges better-auth's date-storage format
   // (new Date() parses ISO strings and epoch numbers alike).
-  sweepAnonymousUsers(ttlDays: number): { swept: number } {
+  //
+  // `logical` (when passed) routes both branches through
+  // logical.deleteLocalAccount instead of the raw this.deleteUserCascade:
+  // deleteUserCascade's `DELETE FROM posts` violates
+  // logical_local_origins_v2.post_id's ON DELETE RESTRICT for any account that
+  // has posted under v2, and both branches share ONE raw.transaction() here —
+  // a single FK violation rolled back the whole hourly sweep batch (found
+  // during Task 8b, V1 retirement). deleteLocalAccount clears each post's v2
+  // origin row per-post first, so it never hits the FK. Falls back to
+  // deleteUserCascade only when no logical store is available (never true in
+  // production since Task 6; kept for callers that still run flag-off).
+  sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
     const raw = this.raw
     const cutoff = Date.now() - ttlDays * 86400_000
     const anons = raw.prepare(`SELECT id, createdAt FROM user WHERE isAnonymous = 1`).all() as { id: string; createdAt: string | number }[]
@@ -1233,16 +1260,21 @@ export class SqliteRepository implements Repository, SourceRepository {
       .prepare(`SELECT u.id FROM users u LEFT JOIN user au ON au.id = u.auth_user_id WHERE u.auth_user_id IS NOT NULL AND au.id IS NULL AND u.kind = 'local'`)
       .all() as { id: string }[]
 
+    const deleteAccount = (id: string) => {
+      if (logical) logical.deleteLocalAccount({ accountId: id, actorId: id, now: new Date().toISOString() })
+      else this.deleteUserCascade(id)
+    }
+
     let swept = 0
     raw.transaction(() => {
       for (const a of idle) {
         const core = raw.prepare(`SELECT id FROM users WHERE auth_user_id = ?`).get(a.id) as { id: string } | undefined
-        if (core) this.deleteUserCascade(core.id)
+        if (core) deleteAccount(core.id)
         this.deleteAuthRows(a.id)
         swept++
       }
       for (const o of orphans) {
-        this.deleteUserCascade(o.id)
+        deleteAccount(o.id)
         swept++
       }
     })()
