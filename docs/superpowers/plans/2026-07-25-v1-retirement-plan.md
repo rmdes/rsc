@@ -1824,7 +1824,7 @@ V4 Task 11: v2 is now the only model; the flag and its parsing are deleted.
 loadConfig reads only explicitly named env keys with no unknown-key
 rejection, so a stale RSC_SOURCE_MODEL_V2=on left on an instance cannot
 crash boot — pinned with a regression test. The unset-first deploy order
-(Task 14) remains belt-and-braces.
+(see the plan's Global Constraints / Rollout section) remains belt-and-braces.
 
 developed with the help of AI tools"
 ```
