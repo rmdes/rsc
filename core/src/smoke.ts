@@ -28,9 +28,11 @@ export async function runSmoke(app: Hono, opsToken: string, origin: string): Pro
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${opsToken}` },
     body: JSON.stringify({
-      // A TEST-NET-3 (RFC 5737) IP literal — matches the codebase's own
-      // convention (source-ops-api.test.ts, source-admin-api.test.ts) for
-      // avoiding a live DNS lookup on a route that runs checkCallbackUrl.
+      // A TEST-NET-3 (RFC 5737) unresolvable placeholder host, kept
+      // consistent with source-ops-api.test.ts/source-admin-api.test.ts —
+      // establishFederation runs no SSRF/DNS check at all (that guard
+      // belongs to subscribeByUrl/importOpml, a different route), so this
+      // is purely a convention match, not a requirement of this endpoint.
       url: 'https://203.0.113.199/feed.xml',
       attributionMode: 'aggregate',
       category: 'operator_policy',

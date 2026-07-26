@@ -21,8 +21,9 @@
 // whether a reply threads depends on ingest arrival order. Checking only that
 // content showed up hides both faults.
 //
-// Ops tokens (needed for the POST /ops/sources/federation calls — guests are
-// 403'd there) come from env: TOK_MAIN, TOK_ALICE, TOK_BOB. On a Cloudron
+// Ops tokens (needed for the POST /ops/sources/federation calls — a missing
+// or wrong bearer token gets 401'd there, regardless of session) come from
+// env: TOK_MAIN, TOK_ALICE, TOK_BOB. On a Cloudron
 // deploy each one is the contents of /app/data/config/ops_token inside that
 // app's container.
 //   TOK_MAIN=… TOK_ALICE=… TOK_BOB=… node scripts/federation-demo.mjs
