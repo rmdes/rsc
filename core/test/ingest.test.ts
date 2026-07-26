@@ -381,39 +381,3 @@ test('h-cite reply persists context and threads onto an existing parent', async 
   expect(stored?.inReplyToPostId).toBe('P') // threaded, not orphaned — the bug fix
 })
 
-// KNOWN BUG — an aggregate feed (an instance firehose; rss.chat's everyone-feed)
-// and an author's own feed are two subscription paths to the SAME posts. Ingest
-// attributes every item to the POLLED row, so the post lands twice under two
-// author ids; posts_author_guid_uq is per-author and cannot catch it, and
-// findPostByRef then refuses the ambiguous ref, so the post stops working as a
-// parent for any later reply (resolution is once-at-insert, never retried).
-// Observed live on alice.rmdes.be / bob.rmdes.be, 2026-07-23.
-//
-// The fix is the source-governance milestone: docs/superpowers/specs/
-// 2026-07-20-rsc-source-governance-moderation-design.md — logical items keep
-// every delivery and select one by evidence rank, instead of collapsing authors.
-// test.fails() INVERTS when that lands: this starts passing, the assertion on
-// the failure starts failing, and you are forced to flip it back to test().
-//
-// STATUS (all four verticals implemented, flag-OFF by default): STILL
-// expected-fail. This test calls the v1 `ingestItems` path DIRECTLY, so the bug
-// stays reproducible for as long as that path exists. The V4 Task 8 cutover only
-// flips RSC_SOURCE_MODEL_V2 so LIVE ingestion runs through the v2 model — it does
-// NOT remove the v1 code this test invokes. The true flip point is therefore V4
-// Task 11 (legacy v1 retirement), which deletes the v1 ingestion path; that is a
-// separate post-soak release and is NOT yet executed. The POSITIVE proof that the
-// v2 logical model already fixes this exact dual-path scenario (one item via two
-// source paths → ONE logical item that still resolves as a parent) lives in
-// core/test/logical-vertical.test.ts ("v2 fix: one item reached by TWO source
-// paths…"); that assertion is already the live guarantee behind the flag.
-test.fails('KNOWN BUG: one post reached by two subscription paths is stored twice and stops resolving as a parent', async () => {
-  const repo = await createSqliteRepository(':memory:')
-  const bus = createEventBus()
-  const instance = await repo.createRemoteUser({ handle: 'peer', displayName: 'Peer', feedUrl: 'https://peer.example/users/rss.xml' })
-  const author = await repo.createRemoteUser({ handle: 'dave', displayName: 'Dave', feedUrl: 'https://peer.example/users/dave/feed.xml' })
-  const item = toParsedItem('https://peer.example/post/1', null, 'body', 'https://peer.example/post/1', '2026-07-20T00:00:00Z', new Date().toISOString(), null, { title: 'Dave', url: 'https://peer.example/users/dave/feed.xml' })
-
-  expect(await ingestItems(repo, bus, instance, [item])).toBe(1)
-  expect(await ingestItems(repo, bus, author, [item])).toBe(0)
-  expect(await repo.findPostByRef('https://peer.example/post/1')).toBeDefined()
-})
