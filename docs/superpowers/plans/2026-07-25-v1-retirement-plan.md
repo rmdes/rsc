@@ -1167,6 +1167,16 @@ tests handled in this task's Step 4.
 - Modify: `core/src/domain/repository.ts` (delete the `listTextcastingPeers`
   interface member at :14) and `core/src/storage/sqlite.ts` (delete its
   implementation at :290) — orphaned by Task 5 Step 5b's `/peers` collapse
+- Modify: `core/src/domain/repository.ts:53-56` (delete `upsertPushSubscription`,
+  `findPushSubscription`, `listRenewablePushSubscriptions`,
+  `deletePushSubscription`), `core/src/storage/sqlite.ts:631-646` (their
+  implementations), and `core/src/domain/repository-contract.ts:232-274` (their
+  shared contract tests) — **added, found in Task 6's review**: `push-in.ts`
+  was their sole production caller (`migration/convert.ts` reads the legacy
+  `push_subscriptions` table by raw SQL, not through these methods, and that
+  table itself is NOT dropped — see Non-goals). Verify with
+  `grep -rn "upsertPushSubscription\|findPushSubscription\|listRenewablePushSubscriptions\|deletePushSubscription" core/src core/test`
+  before deleting — confirm zero callers besides the three sites named above.
 - Modify: `core/test/ingest.test.ts` (delete the ~15 direct-call tests named
   in Part 0's table; keep the 9 pure-parser ones)
 
@@ -1375,6 +1385,19 @@ developed with the help of AI tools"
   `core/test/auth.test.ts`, `core/test/federation-following.test.ts`,
   `core/test/federation-threading.test.ts`, `core/test/feed.test.ts`,
   `core/test/revisions.test.ts`, `core/test/unfollow-cleanup.test.ts`
+- Modify: `core/test/peers.test.ts`, `core/test/source-capability-api.test.ts`,
+  `core/test/source-control-integration.test.ts`,
+  `core/test/source-ops-api.test.ts`, `core/test/subscriptions-api.test.ts` —
+  **added, found in Task 7's review**: Part 0 §0.3/§0.4 describe exactly what
+  each needs (delete the flag-off test named in §0.3, keep the v2 test, add
+  the required `sources`/`logical` deps) but none of these five files was
+  actually claimed by any task's file list before this correction. Specifics
+  per §0.3: `peers.test.ts:60` deleted (keep `:29`); `source-capability-api.test.ts`
+  delete `:71,:86` and rewrite `:61` to assert the now-constant capabilities
+  shape; `source-control-integration.test.ts` delete `:85`;
+  `source-ops-api.test.ts` delete `:61`; `subscriptions-api.test.ts` delete
+  `:25,42,56,66,77,88` (all POST the v1 `{url,type}` body), keep only the v2
+  test at `:153`.
 
 **Interfaces:**
 - Consumes: Task 5's required deps shape; Task 7's deleted `mintRemoteUser`/
@@ -2295,6 +2318,13 @@ developed with the help of AI tools"
   `DELETE /users/:handle` is gone and every `/admin/*` route is
   session-admin-only)
 - Modify: `docs/superpowers/documentation/2026-07-25-user-journey-checklist.md:12,145`
+- Modify: `.claude/skills/hono/SKILL.md` (**added — found in Task 5's review,
+  not in the original plan**: this skill is MANDATORY reading per root
+  CLAUDE.md for any future `core/` routing work, and it currently teaches
+  deleted v1 patterns as canonical examples — `/timeline/stream` as the SSE
+  example, `isValidFeedUrl` as the validation example, `adminOrToken`. Update
+  every example to a surviving v2 route before this release ships, or a
+  future task will be misled by its own mandatory reference doc.)
 
 **Interfaces:** none — documentation only.
 
