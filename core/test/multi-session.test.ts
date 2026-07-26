@@ -4,6 +4,10 @@ import { createSqliteRepository, type SqliteRepository } from '../src/storage/sq
 import { createApp } from '../src/api/app.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { makeAuth, cookieJar, uniqueIp } from './auth-helper.ts'
 
 const ORIGIN = 'http://web.test'
@@ -32,7 +36,13 @@ async function makeApp() {
   const bus = createEventBus()
   const service = createService(repo, bus, null)
   const auth = makeAuth(repo)
-  const app = createApp({ service, bus, token: 'secret', auth, users: repo })
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const app = createApp({
+    service, bus, token: 'secret', auth, users: repo,
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
   return { repo, auth, app }
 }
 

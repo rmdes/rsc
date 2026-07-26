@@ -2,6 +2,10 @@ import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 
@@ -9,11 +13,15 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const service = createService(repo, bus)
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
     adminEmails: new Set(adminEmails), mailEnabled: true,
     feeds: { publicUrl: 'https://x.test', hubUrl: null, rssCloud: true },
     websub: 'self', pushIn: true,
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo }
 }

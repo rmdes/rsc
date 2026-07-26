@@ -8,6 +8,7 @@ import { createAcquisition } from '../src/logical/acquisition.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { createService } from '../src/domain/service.ts'
 import { createEventBus } from '../src/domain/bus.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, registeredSession } from './auth-helper.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
@@ -27,12 +28,6 @@ test('POST /posts accepts a reply whose target is a v2 logical item, and the rep
   const store = createLogicalStore(db)
   const bus = createEventBus()
   const service = createService(repo, bus, null, store)
-  const app = createApp({ service, bus, token: 't0k3n', auth: makeAuth(repo), users: repo, adminEmails: new Set() })
-
-  raw.prepare(
-    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
-     VALUES (?, 'https://blog.test/feed', 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, ?)`,
-  ).run('s1', NOW)
   const feed = `<?xml version="1.0"?><rss version="2.0"><channel><title>Blog</title><item><guid isPermaLink="true">https://blog.test/p1</guid><title>t</title><description>hello</description></item></channel></rss>`
   const eng = createAcquisition({
     db,
@@ -40,6 +35,16 @@ test('POST /posts accepts a reply whose target is a v2 logical item, and the rep
     lookupFn: publicLookup,
     now: () => NOW,
   })
+  const app = createApp({
+    service, bus, token: 't0k3n', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: eng, now: () => NOW },
+  })
+
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, 'https://blog.test/feed', 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, ?)`,
+  ).run('s1', NOW)
   await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
   drainReconciliation({ store, now: () => NOW })
   const target = raw.prepare(`SELECT logical_item_id id FROM logical_identity_keys_v2 WHERE kind = 'permalink' AND key = 'https://blog.test/p1'`).get() as { id: string }

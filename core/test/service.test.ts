@@ -5,6 +5,8 @@ import { createService } from '../src/domain/service.ts'
 import { createApp } from '../src/api/app.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
 import { makeAuth, anonSession } from './auth-helper.ts'
 import { DomainError, HandleTakenError } from '../src/domain/types.ts'
 import type { Repository } from '../src/domain/repository.ts'
@@ -150,8 +152,15 @@ test('an unreserved handle is unaffected by the guard', async () => {
 async function renameApp(v2: boolean) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null, v2 ? createLogicalStore(createDatabaseContext(repo.raw)) : undefined)
-  return { repo, app: createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo }), service }
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, v2 ? store : undefined)
+  const app = createApp({
+    service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
+  return { repo, app, service }
 }
 
 const patchMe = (app: Awaited<ReturnType<typeof renameApp>>['app'], cookie: string, body: unknown) =>
