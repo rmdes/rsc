@@ -1541,3 +1541,72 @@ safe where `class` is not.
   brainstorm→spec, not a drop-in — source identity and the tombstone gate
   are both correctness-sensitive surfaces. Status: backlog — promote via
   brainstorm→spec.
+
+- **Dead client/service surface sweep (from V1 retirement's final
+  whole-branch review, 2026-07-27)** — a structural "exported, zero
+  importers" sweep (as opposed to the name-based v1-flavored greps this
+  release relied on elsewhere) turned up real residue the release's own
+  tasks didn't own, plus items each task's reviewer explicitly deferred
+  here. Mechanism: none of this is design work — it's inventory plus
+  careful deletion, one PR. Grounding, itemized:
+  - `web/src/lib/api.ts`: `addRemoteUser`, `listAdminFeeds`,
+    `removeRemoteFeed` — zero production callers (their core endpoints
+    `POST /users`, `GET /admin/feeds`, `DELETE /users/:handle` were
+    deleted in the retirement's Task 5); `getCapabilities` — zero
+    production callers since Task 11e. Deleting all four drags ~6 tests
+    in `api.test.ts:63-115` that mock them.
+  - `web/src/lib/api.ts`: `importOpml`, `getThread` — zero references
+    ANYWHERE, including tests (the same class as `peekCapabilities`,
+    already deleted in this release's final cleanup — these two were
+    found by the same sweep but not deleted alongside it since they
+    weren't yet confirmed at review time).
+  - `web/src/lib/api.ts`'s `getTimeline`, `getRevisions`, and
+    `web/src/lib/logical-api.ts`'s `getLogicalItem` — production-dead,
+    test-only.
+  - `web/src/lib/tabs.ts`'s `tabFilter`, `web/src/lib/api.ts`'s
+    `subscribeToFeed` — production-dead, test-only (found during Tasks
+    11b/11c's reviews).
+  - `web/src/routes/admin/feeds/+page.server.ts`'s `mode: 'v2' as const`
+    load field — no component reads it, only 3 test assertions do.
+  - core-side: the entire v1 timeline/thread READ chain in
+    `core/src/domain/service.ts` — `getTimeline`, `getTimelineAfter`,
+    `getRevisions`, `getThread`, `listRepliesByPostId`,
+    `listRemoteUsers`, `countRemoteSubscriptions`, `getRemoteUserByFeedUrl`
+    — plus their `Repository` interface declarations and
+    `core/src/storage/sqlite.ts` implementations. Zero production
+    callers (confirmed no `core/src` handler calls any of them); only
+    `core/test` and `repository-contract.ts`'s shared suite exercise
+    them. This is the one item here that ISN'T a one-line deletion —
+    removing it means editing the `Repository` interface, the SQLite
+    class, and the shared contract-test suite together, so it's real
+    surgery, not sweep cleanup.
+  - `core/src/logical/types.ts:256`'s `AdminRefreshResult` — zero
+    references anywhere; medium confidence on whether it's deliberate
+    (a v2-era admin projection type someone meant to wire up, not v1
+    residue) rather than dead.
+  - Dead `isCap`/`capFetch` test-mock scaffolding (~19+ inert branches)
+    across `web/src/routes/page.actions.test.ts`,
+    `admin/items/[id]/item-review.test.ts`,
+    `admin/sources/[sourceId]/source-detail.test.ts`,
+    `admin/feeds/source-actions.test.ts` — harmless (the mocked
+    `/capabilities` branch these `if (isCap(url))` guards check for is
+    provably unreachable, since no page calls that endpoint anymore) but
+    every one is a false "sourceModelV2 still lives here" signal to a
+    future grep.
+  - `core/test/subscribe.test.ts` — a 1-test file misnamed for a subject
+    (`subscribe.ts`) deleted in this release's Task 7; a `git mv` into
+    wherever its surviving test now belongs is a cosmetic fix.
+  - 12 unresolvable `push-in.ts:NNN` line citations scattered across
+    `core/src` comments (the file itself was deleted in Task 6) — lower
+    value than the rest here, harder to sweep mechanically (each needs
+    manual retargeting to whatever replaced the cited logic).
+  Why: every one of these is inert-but-misleading — code or comments
+  that read as "this might still matter" to the next person who greps
+  for `sourceModelV2` or traces a caller, when it provably doesn't.
+  Tradeoff: none of it is urgent (nothing here is reachable, so nothing
+  here is a correctness risk) — pure debt-interest reduction. The
+  Repository-interface item is the only piece that needs a real plan
+  rather than a mechanical PR. Status: backlog — bundle the mechanical
+  items into one PR; the Repository-interface item may want its own,
+  smaller spec if it turns out `repository-contract.ts` assumes any of
+  these methods exist for reasons beyond legacy coverage.
