@@ -110,8 +110,22 @@ function timeline(node) {
   return JSON.parse(curl(node, [`${CORE}/timeline?limit=60`])).timeline
 }
 
+function thread(node, rootId) {
+  const env = JSON.parse(curl(node, [`${CORE}/post/${rootId}/thread`]))
+  return env.nodes.filter((n) => n.kind === 'item').map((n) => n.item)
+}
+
+// The river (/timeline) is roots + UNRESOLVED replies only — a resolved reply
+// never appears there by design (spec §3.5), so it cannot detect hop 2+.
+// Once a node's local id for the conversation ROOT is known (node.rootId),
+// /post/:rootId/thread returns the whole resolved tree instead. n1 (the root
+// itself) is the only nonce ever checked before rootId exists on a node.
+function conversationItems(node) {
+  return node.rootId ? thread(node, node.rootId) : timeline(node)
+}
+
 function copies(node, nonce) {
-  return timeline(node).filter((it) => (it.content || '').includes(nonce))
+  return conversationItems(node).filter((it) => (it.content || '').includes(nonce))
 }
 
 // Poll the receiving instance until an item carrying `nonce` appears. Returns
@@ -190,10 +204,22 @@ async function main() {
   const n1 = nonce()
   log(`\n[1] main posts the opener  {{${n1}}}`)
   const p1 = post(NODES.main, `🌐 Federation test — this conversation is born on rsc.rmdes.be. Anyone can reply from their own instance. {{${n1}}}`)
+  NODES.main.rootId = p1.id // authored locally — no poll needed
   log(`    → ${p1.url}\n    waiting for it to federate into alice…`)
   const a1 = await waitForFederation(NODES.alice, n1)
   if (!a1.length) throw new Error('HOP 1 FAILED: opener never reached alice')
+  NODES.alice.rootId = a1[0].id
   log(`    ✓ alice received it over RSS (source=${a1[0].source})`)
+
+  // The full mesh means bob ALSO subscribes to main directly, so it should
+  // receive the opener independently of alice's reply — confirm that now and
+  // capture bob's own local root id, needed below to check hop 2 via its
+  // thread (a resolved reply never appears in bob's plain /timeline).
+  log(`    waiting for it to also reach bob directly (full mesh)…`)
+  const b1 = await waitForFederation(NODES.bob, n1)
+  if (!b1.length) throw new Error('HOP 1b FAILED: opener never reached bob directly')
+  NODES.bob.rootId = b1[0].id
+  log(`    ✓ bob received it over RSS too (source=${b1[0].source})`)
 
   const n2 = nonce()
   log(`\n[2] alice replies  {{${n2}}}`)
@@ -241,15 +267,15 @@ async function main() {
     }
   }
 
-  // 2. Replies must actually be threaded, not merely present. inReplyToPostId is
-  //    the resolved local parent; null means the reply landed orphaned.
+  // 2. Replies must actually be threaded, not merely present. parentLogicalItemId
+  //    is the resolved local parent; null means the reply landed orphaned.
   log('\n▶ Threading — every reply resolved to its parent')
   for (const [n, label] of [[n2, "alice's reply"], [n3, "bob's reply"], [n4, 'closing reply']]) {
     for (const node of nodes) {
       const c = copies(node, n)
       if (c.length !== 1) continue // already reported above
-      if (c[0].inReplyToPostId) log(`    ✓ ${node.name.padEnd(5)} ${label} → parent resolved`)
-      else fail(`${node.name}: ${label} (${n}) has inReplyToPostId=null — orphaned, and it is never retried`)
+      if (c[0].parentLogicalItemId) log(`    ✓ ${node.name.padEnd(5)} ${label} → parent resolved`)
+      else fail(`${node.name}: ${label} (${n}) has parentLogicalItemId=null — orphaned, and it is never retried`)
     }
   }
 
