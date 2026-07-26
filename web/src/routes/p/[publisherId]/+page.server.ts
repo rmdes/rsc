@@ -1,6 +1,5 @@
 import type { PageServerLoad } from './$types'
 import { error } from '@sveltejs/kit'
-import { getCapabilities } from '$lib/api'
 import { getLogicalTimeline } from '$lib/logical-api'
 import { enrichEntries } from '$lib/server/render'
 
@@ -13,8 +12,6 @@ import { enrichEntries } from '$lib/server/render'
 // (a valid publisher lens with no items) still renders. No publisher follow and
 // no publisher feed are introduced; /u stays local-account only.
 export const load: PageServerLoad = async ({ fetch, params, url }) => {
-	const cap = await getCapabilities(fetch)
-	if (!cap.sourceModelV2) throw error(404, 'no such page')
 	const before = url.searchParams.get('before') ?? undefined
 	let page
 	try {

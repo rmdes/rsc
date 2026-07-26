@@ -1,7 +1,6 @@
 import type { PageServerLoad } from './$types'
 import { redirect, isRedirect } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
-import { getTimeline, getCapabilities, peekCapabilities } from '$lib/api'
 import { getLogicalRiverOrEmpty } from '$lib/logical-api'
 import { enrichEntries } from '$lib/server/render'
 
@@ -23,27 +22,13 @@ export const load: PageServerLoad = async ({ fetch, params, url }) => {
 	const before = url.searchParams.get('before') ?? undefined
 	const isFirstPage = !before
 	try {
-		// Ride the v1 author call alongside capability on a cold pod; a v2 core
-		// answers the same /timeline with the logical `author=<handle>` lens (a
-		// local-account activity view; /u stays local-only, /p is the publisher).
-		const known = peekCapabilities()
-		const v1P = known?.sourceModelV2 ? null : getTimeline(fetch, { before, author: params.handle })
-		// Synchronous discard handler — a cold-pod 400 during the await below is
-		// otherwise an unhandledRejection crash loop (see the home load).
-		v1P?.catch(() => {})
-		const cap = await getCapabilities(fetch)
-		let timeline, nextCursor
-		if (cap.sourceModelV2) {
-			// The reservation lookup exists only under v2 (it is a converted-instance
-			// fact); asking before the river avoids rendering a page we are about to
-			// leave. 308 keeps the method and marks the move permanent.
-			const publisherId = await reservedPublisher(fetch, params.handle)
-			if (publisherId) throw redirect(308, `/p/${publisherId}`)
-			;({ entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, author: params.handle }))
-		} else {
-			;({ timeline, nextCursor } = await v1P!)
-		}
-		return { handle: params.handle, timeline: enrichEntries(timeline), nextCursor, isFirstPage, sourceModelV2: cap.sourceModelV2 || undefined }
+		// The reservation lookup is a converted-instance fact; asking before the
+		// river avoids rendering a page we are about to leave. 308 keeps the
+		// method and marks the move permanent.
+		const publisherId = await reservedPublisher(fetch, params.handle)
+		if (publisherId) throw redirect(308, `/p/${publisherId}`)
+		const { entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, author: params.handle })
+		return { handle: params.handle, timeline: enrichEntries(timeline), nextCursor, isFirstPage }
 	} catch (e) {
 		// A redirect is control flow, not a core failure — it must not be swallowed
 		// into the coreDown fallback below.

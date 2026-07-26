@@ -1,7 +1,5 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
-	import type { TimelineEntry } from '$lib/types'
-	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import Avatar from '$lib/Avatar.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
@@ -10,8 +8,6 @@
 	import MarkdownComposer from '$lib/MarkdownComposer.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
-	import { mergeIncoming } from '$lib/live'
-	import { keepEvent } from '$lib/lens'
 	import { enhance } from '$app/forms'
 	import type { SubmitFunction } from '@sveltejs/kit'
 	import { loadDraft, saveDraft } from '$lib/draft'
@@ -45,17 +41,9 @@
 			}
 			await update()
 		}
-	let live = $state<TimelineEntry[]>([])
-	let edited = $state<Record<string, TimelineEntry>>({})
-	const pageIds = $derived(new Set(data.thread.map((p) => p.id)))
-	const posts = $derived([...data.thread, ...live].map((p) => edited[p.id] ?? p))
-
-	function onPost(entry: TimelineEntry) {
-		if (!keepEvent(entry, { kind: 'thread', rootId: data.rootId })) return
-		const r = mergeIncoming(live, edited, entry, pageIds)
-		live = r.live
-		edited = r.edited
-	}
+	// P3 (backlog): this page never got the v2 journal live stream (see the home
+	// page's $effect) — snapshot-only, reload to refresh.
+	const posts = $derived(data.thread)
 
 	// The reading view is the TREE: the root card, then every reply nested
 	// under its parent (same ReplyTree as the timeline's wedge, fully unfolded).
@@ -70,12 +58,6 @@
 </script>
 
 <svelte:head><title>Conversation — RSC</title></svelte:head>
-
-<!-- Expanded conversations are snapshot-only under v2 (spec §5.7): a live reply
-     appears on the next reload. The v1 firehose stays for v1 cores. -->
-{#if !data.sourceModelV2}
-	<LiveTimeline {onPost} />
-{/if}
 
 <div class="lens">
 	<header class="masthead">

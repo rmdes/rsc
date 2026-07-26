@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import LiveTimeline from '$lib/LiveTimeline.svelte'
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
@@ -9,24 +8,13 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
-	import { keepEvent } from '$lib/lens'
-	import { mergeIncoming } from '$lib/live'
 	import { fetchThread } from '$lib/wedge'
 
 	let { data }: { data: PageData } = $props()
-	const authorId = $derived(data.timeline[0]?.author.id ?? null)
 	const kind = $derived(data.timeline[0]?.author.kind ?? null)
-	let live = $state<TimelineEntry[]>([])
-	let edited = $state<Record<string, TimelineEntry>>({})
-	const pageIds = $derived(new Set(data.timeline.map((p) => p.id)))
-	const posts = $derived([...live, ...data.timeline].map((p) => edited[p.id] ?? p))
-
-	function onPost(entry: TimelineEntry) {
-		if (!authorId || !keepEvent(entry, { kind: 'author', authorId })) return
-		const r = mergeIncoming(live, edited, entry, pageIds)
-		live = r.live
-		edited = r.edited
-	}
+	// P3 (backlog): this page never got the v2 journal live stream (see the home
+	// page's $effect) — snapshot-only, reload to refresh.
+	const posts = $derived(data.timeline)
 
 	// An author lens shows ONE card per conversation, not one per post: the
 	// author's replies fold under their thread's top card (a visible stack)
@@ -75,11 +63,6 @@
 	     the layout's firehose link follows as the site-wide fallback. -->
 	<link rel="alternate" type="application/rss+xml" title="@{data.handle}" href="/u/{data.handle}/feed.xml" />
 </svelte:head>
-
-<!-- v1 firehose only; under v2 this author view is snapshot (reload to refresh). -->
-{#if data.isFirstPage && authorId && !data.sourceModelV2}
-	<LiveTimeline {onPost} />
-{/if}
 
 <div class="lens">
 	<header class="masthead">

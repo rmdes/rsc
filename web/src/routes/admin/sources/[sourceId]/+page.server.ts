@@ -1,7 +1,6 @@
 import { error, fail } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { authedFetch, cookieHeader } from '$lib/server/session'
-import { getCapabilities } from '$lib/api'
 import { refreshSource, listSourceRuns, listSourceItems, purgeSource } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
@@ -14,13 +13,10 @@ import type { Actions, PageServerLoad } from './$types'
 const PURGE_CONSEQUENCE =
 	'Purging permanently deletes all stored versions and evidence for this source — this cannot be undone. The URL stays blocked by its tombstone; purge does not restore anything or lift the block.'
 
-// The v2-only admin acquisition console for one source (spec §6.2-6.3): a manual
-// refresh action + a status panel (governance, latest run, nonterminal count). It
-// mirrors the V1 admin-feeds capability carve EXACTLY — getCapabilities never
-// rejects, a probe failure reads as legacy. With v2 off this whole source-model
-// console does not exist, so the page is hidden as a 404 (there is no v1 per-source
-// detail surface to fall back to). It exposes NO evidence-review navigation
-// (deliveries, conflicts, findings, previews) — that is Vertical 3.
+// The admin acquisition console for one source (spec §6.2-6.3): a manual
+// refresh action + a status panel (governance, latest run, nonterminal count).
+// It exposes NO evidence-review navigation (deliveries, conflicts, findings,
+// previews) — that is Vertical 3.
 
 // ponytail: the V1 source-detail read (governance for quarantined labeling) is one
 // inline call here; the v2 run/status calls live in $lib/logical-api.ts. base() is
@@ -64,8 +60,6 @@ async function sourceGovernance(f: typeof fetch, id: string): Promise<{ source: 
 
 export const load: PageServerLoad = async ({ fetch, params, url, cookies }) => {
 	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
-	const cap = await getCapabilities(fetch)
-	if (!cap.sourceModelV2) throw error(404, 'Not found') // the source-model console is v2-only
 	const detail = await sourceGovernance(f, params.sourceId)
 	if (!detail) throw error(404, 'Not found')
 	const source = detail.source

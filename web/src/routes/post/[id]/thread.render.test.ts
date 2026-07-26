@@ -40,7 +40,7 @@ const placeholder = (over: Partial<TimelineEntry> = {}): TimelineEntry => ({
 })
 
 test('a placeholder ROOT renders the marker + live replies, not "No such conversation."', () => {
-	const data = { postId: 'gap', thread: [placeholder(), card()], rootId: 'gap', sourceModelV2: true, coreDown: false }
+	const data = { postId: 'gap', thread: [placeholder(), card()], rootId: 'gap', coreDown: false }
 	const { body } = render(Page, { props: { data, form: null } } as never)
 	expect(body).not.toContain('No such conversation.')
 	expect(body).toContain('Post unavailable') // the root marker
@@ -48,7 +48,7 @@ test('a placeholder ROOT renders the marker + live replies, not "No such convers
 })
 
 test('a genuinely empty thread (no nodes) still shows "No such conversation."', () => {
-	const data = { postId: 'x', thread: [] as TimelineEntry[], rootId: 'x', sourceModelV2: true, coreDown: false }
+	const data = { postId: 'x', thread: [] as TimelineEntry[], rootId: 'x', coreDown: false }
 	const { body } = render(Page, { props: { data, form: null } } as never)
 	expect(body).toContain('No such conversation.')
 })

@@ -1,10 +1,10 @@
 import { test, expect, vi } from 'vitest'
 
-// The v2-only admin acquisition console (spec §6.2-6.3): the source-detail page
-// (refresh action + status panel) and the runs/jobs history page. Mirrors the V1
-// admin-feeds capability carve exactly: getCapabilities OFF → the surface does not
-// exist (404, hidden); ON → the v2 console. The capability reading is memoized per
-// module instance, so every load case takes a FRESH +page.server.ts.
+// The admin acquisition console (spec §6.2-6.3): the source-detail page (refresh
+// action + status panel) and the runs/jobs history page. The runs/+page.server.ts
+// capability guard is untouched here (Task 11e territory); every load case takes
+// a FRESH +page.server.ts import so module-level memoization never bleeds
+// between cases.
 
 const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
@@ -73,17 +73,7 @@ async function loadRuns(fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search
 	return (await load(loadEvent(fetch, sourceId, search) as never)) as LoadResult
 }
 
-// --- capability off: the v2 console does not exist (hidden, 404) ---------------
-
-test('with the capability off the source-detail load is 404 (the console is v2-only) and never touches /admin/sources', async () => {
-	const fetch = vi.fn(async (url: string | URL) =>
-		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 })
-			: new Response('{}', { status: 200 })
-	)
-	await expect(loadDetail(fetch)).rejects.toMatchObject({ status: 404 })
-	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources/'))).toBe(false)
-})
+// --- capability off: the runs/jobs history page (Task 11e territory, untouched) -
 
 test('with the capability off the runs load is also 404', async () => {
 	const fetch = vi.fn(async (url: string | URL) => (isCap(url) ? new Response(JSON.stringify({ sourceModelV2: false }), { status: 200 }) : new Response('{}', { status: 200 })))

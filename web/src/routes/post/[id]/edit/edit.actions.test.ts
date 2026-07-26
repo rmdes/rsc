@@ -29,7 +29,7 @@ test('empty content → fail(400), no fetch', async () => {
 	expect(fetch).not.toHaveBeenCalled()
 })
 
-// --- v2: the edit load must branch on capabilities like the post page ---------
+// --- the edit load reads the logical thread envelope ------------------------
 
 import { load } from './+page.server.ts'
 
@@ -56,26 +56,21 @@ const localDto = (id: string) => ({
 	classification: { personal: true, federated: false }
 })
 
-test('under v2 the edit load finds the OWN local post through the logical thread envelope (500 regression)', async () => {
-	const fetch = vi.fn(async (input: unknown) => {
-		const url = String(input)
-		if (url.includes('/capabilities'))
-			return new Response(
-				JSON.stringify({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }),
+test('the edit load finds the OWN local post through the logical thread envelope (500 regression)', async () => {
+	const fetch = vi.fn(
+		async () =>
+			new Response(
+				JSON.stringify({
+					model: 'logical-v2',
+					requestedLogicalItemId: 'p1',
+					rootId: 'p1',
+					nodes: [{ kind: 'item', item: localDto('p1') }],
+					truncated: { depth: false, nodes: false, cycle: false },
+					journalCursor: 'x'
+				}),
 				{ status: 200 }
 			)
-		return new Response(
-			JSON.stringify({
-				model: 'logical-v2',
-				requestedLogicalItemId: 'p1',
-				rootId: 'p1',
-				nodes: [{ kind: 'item', item: localDto('p1') }],
-				truncated: { depth: false, nodes: false, cycle: false },
-				journalCursor: 'x'
-			}),
-			{ status: 200 }
-		)
-	})
+	)
 	const result = (await load({
 		fetch,
 		params: { id: 'p1' },

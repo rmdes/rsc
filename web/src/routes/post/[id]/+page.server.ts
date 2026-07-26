@@ -1,25 +1,19 @@
 import type { PageServerLoad, Actions } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getThread, createPost, deletePost, getCapabilities } from '$lib/api'
+import { createPost, deletePost } from '$lib/api'
 import { getLogicalThread } from '$lib/logical-api'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 
 export const load: PageServerLoad = async ({ fetch, params }) => {
 	try {
-		// A capability failure degrades to legacy (never downs the page); a v2
-		// core returns the bounded LogicalThreadEnvelope, which a malformed reply
-		// fails CLOSED into the catch (coreDown) rather than casting to a v1 thread.
-		const cap = await getCapabilities(fetch)
-		if (cap.sourceModelV2) {
-			const t = await getLogicalThread(fetch, params.id)
-			// Placeholder (unavailable-ancestor) nodes ride through as neutral marker
-			// entries; item nodes render as cards (D11). enrichEntries adds contentHtml
-			// — a marker's content is '' so it never gets an {@html}.
-			return { postId: params.id, thread: enrichEntries(t?.entries ?? []), rootId: t?.rootId ?? params.id, sourceModelV2: true }
-		}
-		const thread = await getThread(fetch, params.id)
-		return { postId: params.id, thread: enrichEntries(thread), rootId: thread[0]?.id ?? params.id }
+		// A v2 core returns the bounded LogicalThreadEnvelope, which a malformed
+		// reply fails CLOSED into the catch (coreDown) rather than casting to a
+		// v1 thread. Placeholder (unavailable-ancestor) nodes ride through as
+		// neutral marker entries; item nodes render as cards (D11). enrichEntries
+		// adds contentHtml — a marker's content is '' so it never gets an {@html}.
+		const t = await getLogicalThread(fetch, params.id)
+		return { postId: params.id, thread: enrichEntries(t?.entries ?? []), rootId: t?.rootId ?? params.id }
 	} catch {
 		return { postId: params.id, thread: [], rootId: params.id, coreDown: true }
 	}
