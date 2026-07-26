@@ -1,5 +1,5 @@
 import { timingSafeEqual, randomUUID } from 'node:crypto'
-import type { MiddlewareHandler, Next } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import type { Auth } from '../auth.ts'
 import type { User } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
@@ -66,14 +66,14 @@ export function sessionAuth(auth: Auth, users: UserDirectory, adminEmails: Reado
     c.set('coreUser', await ensureCoreUser(users, session.user.id))
     c.set('sessionIsAnonymous', (session.user as { isAnonymous?: boolean | null }).isAnonymous === true)
     c.set('isAdmin', deriveIsAdmin(session.user as { email?: string | null; emailVerified?: boolean | null }, adminEmails))
-    return next() // must propagate: adminOrToken composes this manually, outside Hono's own dispatch
+    return next() // propagate whatever the downstream middleware/handler returns, per Hono's compose contract
   }
 }
 
 export function registeredOnly(): MiddlewareHandler {
   return async (c, next) => {
     if (c.get('sessionIsAnonymous')) return c.json({ error: 'registration required' }, 403)
-    return next() // see sessionAuth: propagation matters for adminOrToken's manual composition
+    return next() // see sessionAuth: same propagation contract applies here
   }
 }
 
@@ -84,20 +84,3 @@ export function requireAdmin(): MiddlewareHandler {
   }
 }
 
-// Admin-gated writes (feed add/remove): ops bearer token OR an admin session.
-// A registered non-admin session AND an anonymous session both reach
-// requireAdmin → 403 (an anon session is a session, just not admin — matches
-// SP1's /admin/status); only a request with no session at all → 401
-// (viaSession rejects it before requireAdmin runs).
-export function adminOrToken(token: string, auth: Auth, users: UserDirectory, adminEmails: ReadonlySet<string> = new Set()): MiddlewareHandler {
-  const viaSession = sessionAuth(auth, users, adminEmails)
-  const mustBeAdmin = requireAdmin()
-  return async (c, next) => {
-    const header = c.req.header('authorization')
-    if (header !== undefined) return bearerAuth(token)(c, next)
-    // Hono types `next` as `() => Promise<void>`, but compose.js (see sessionAuth
-    // above) forwards whatever a middleware returns — mustBeAdmin may resolve to
-    // a 403 Response, which viaSession must see.
-    return viaSession(c, (() => mustBeAdmin(c, next)) as unknown as Next)
-  }
-}

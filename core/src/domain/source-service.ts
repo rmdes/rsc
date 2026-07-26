@@ -68,11 +68,11 @@ export interface SourceService {
 }
 
 // The ONE production composition of the v2 source-control plane (server.ts).
-// `logicalStore` is REQUIRED (never optional) so a caller cannot silently drop the
-// tombstone guard the way server.ts once did — omitting it is a type error, and
-// logical-tombstones.test.ts pins the wiring, not just the seam. Pass undefined
-// when RSC_SOURCE_MODEL_V2 is off: no store, no tombstone consultation, no new
-// query — byte-identical to the V1 path.
+// The `logicalStore` argument is REQUIRED (never optional) so a caller cannot
+// silently drop the tombstone guard the way server.ts once did — omitting the
+// argument is a type error, and logical-tombstones.test.ts pins the wiring, not
+// just the seam. server.ts always passes a real store now; only tests pass
+// `undefined` deliberately, to exercise the no-tombstone-consultation path.
 export function createSourcePlane(
   repo: Repository & SourceRepository,
   publicUrl: string | null,

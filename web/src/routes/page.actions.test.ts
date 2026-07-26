@@ -90,7 +90,7 @@ test('compose redirects back to the active tab; invalid tab params are dropped',
 })
 
 
-// --- v2 source registry (RSC_SOURCE_MODEL_V2) -------------------------------
+// --- v2 source registry -------------------------------------------------------
 
 const capFetch = (on: boolean, rest: (url: string | URL) => Response) =>
 	vi.fn(async (url: string | URL) =>

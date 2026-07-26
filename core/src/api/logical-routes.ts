@@ -293,11 +293,9 @@ export function mountLogicalRoutes(app: Hono, deps: LogicalRouteDeps): void {
 // =============================================================================
 // v2 ordinary read + feed surface (spec §3.4-3.6, §4.3, §4.5, §4.6) — Task 8
 // =============================================================================
-// Mounted (by app.ts) only when the flag is on, and EARLY — before every v1
-// content route — so the v2 branch wins on the shared paths (/timeline,
+// Mounted (by app.ts) unconditionally, on every content path (/timeline,
 // /post/:id/thread, /posts/:id/revisions, /users/rss.xml, /users/:handle/feed.*,
-// /post/:id/comments.xml) and GET /post/:id (the deliberate v2-only single-item
-// route). With the flag off, none of this registers and v1 behavior is untouched.
+// /post/:id/comments.xml) plus GET /post/:id (the v2-only single-item route).
 
 export interface LogicalReadDeps {
   store: LogicalStore
@@ -496,8 +494,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
 // v2 reserved-handle lookup (V4 spec §3.5) — Task 8
 // =============================================================================
 // Mounted by server.ts beside the stream route (both need composition pieces
-// app.ts does not carry), so it exists only under v2 — with the flag off the
-// path is an ordinary 404 and /u/:handle behaves exactly as today.
+// app.ts does not carry), unconditionally.
 //
 // Web asks this before rendering /u/:handle: every legacy remote handle is
 // permanently reserved at conversion and redirects to its publisher page. The

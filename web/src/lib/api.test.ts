@@ -238,7 +238,7 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 	expect(JSON.parse(String(patchInit.body))).toEqual({ maxSubsPerUser: 250 })
 })
 
-// --- v2 source registry (RSC_SOURCE_MODEL_V2) -------------------------------
+// --- v2 source registry ------------------------------------------------------
 // The capability reading is memoized for the module's lifetime, so every case
 // below takes a FRESH module instance instead of a production reset hook.
 

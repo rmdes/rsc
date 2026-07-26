@@ -19,11 +19,15 @@ async function makeApp(opts: { mailEnabled?: boolean; mailer?: Mailer | null } =
   const store = createLogicalStore(db)
   // NOTE: the store is deliberately NOT passed to createService here (prod does:
   // server.ts:47). With it, POST /posts materializes a logical_local_origins_v2
-  // row whose post_id FK is ON DELETE RESTRICT, and the sweep test below dies in
-  // repo.deleteUserCascade (sqlite.ts:621) — a REAL v2 defect in
-  // sweepAnonymousUsers, not a test artifact, reported out of Task 8b rather than
-  // fixed here (it needs the logical delete path, not a raw DELETE). These are
-  // auth tests; they do not otherwise need v2 materialization.
+  // row whose post_id FK is ON DELETE RESTRICT, and the sweep tests below call
+  // repo.sweepAnonymousUsers directly without threading a `logical` store
+  // through, so a v2-materialized account would hit the raw deleteUserCascade
+  // fallback (sqlite.ts:625) and violate that FK. This was a REAL v2 defect,
+  // found in Task 8b and fixed in Task 8c by routing sweepHousekeeping through
+  // the logical delete path when a store is available (see
+  // housekeeping.test.ts). It doesn't apply to the direct sweepAnonymousUsers
+  // calls here — these are auth tests and do not otherwise need v2
+  // materialization.
   const service = createService(repo, bus)
   const fake = fakeMailer()
   const mailer = opts.mailer !== undefined ? opts.mailer : fake.mailer

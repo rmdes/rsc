@@ -380,12 +380,12 @@ export const LOGICAL_PERF_INDEXES_2: string[] = [
 // It lives HERE, next to the table it protects, because BOTH handle-claiming
 // implementations must call it and neither owns the other: the v1 repository
 // (sqlite.ts insertUser + updateUserProfile) and the v2 logical store
-// (store.ts updateUserProfile, the path taken whenever RSC_SOURCE_MODEL_V2 is
-// on — which is the only state in which reservations exist at all). A guard
-// defined inside one of them is invisible to the other; a new handle-claiming
-// path anywhere must import this one function. `tx` is a plain better-sqlite3
-// database (ReadTx/WriteTx are aliases of it), so v2 callers can run the check
-// inside their own write transaction.
+// (store.ts updateUserProfile, the path service.ts always takes in production —
+// the only state in which reservations exist at all). A guard defined inside
+// one of them is invisible to the other; a new handle-claiming path anywhere
+// must import this one function. `tx` is a plain better-sqlite3 database
+// (ReadTx/WriteTx are aliases of it), so v2 callers can run the check inside
+// their own write transaction.
 export function assertHandleUnreserved(tx: ReadTx, handle: string): void {
   if (tx.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE handle = ?`).get(handle)) {
     throw new HandleTakenError('handle already taken')

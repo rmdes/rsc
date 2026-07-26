@@ -20,8 +20,7 @@ import type { CommandEnvelope, RemoteSource } from '../domain/types.ts'
 // candidates into observation versions, and commits runs/observations/jobs/
 // aliases in the §1.4 two-transaction protocol. NEVER calls a push endpoint —
 // a feed advertising WebSub/rssCloud records only the inert parse-time
-// push_capability_json. Flag-off isolation is absolute (nothing runs unless the
-// runtime, gated behind RSC_SOURCE_MODEL_V2, wires this in — Task 10).
+// push_capability_json. The runtime wires this in unconditionally (Task 10).
 
 // The versioned bounds profile (spec §1.5). Every constant is pinned and tested.
 export const BOUNDS = {

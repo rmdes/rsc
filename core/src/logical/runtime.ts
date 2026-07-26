@@ -23,8 +23,8 @@ import { runConversion } from '../migration/convert.ts'
 import type { ConversionCounts } from '../migration/convert.ts'
 
 // Startup activation and worker composition (spec §7.1-7.2). This is the module
-// that REPLACES Task 2's temporary fail-closed guard: with RSC_SOURCE_MODEL_V2 on
-// the runtime constructs every worker, runs the ONE pre-listen activation
+// that REPLACES Task 2's temporary fail-closed guard: on every boot the runtime
+// unconditionally constructs every worker, runs the ONE pre-listen activation
 // transaction, then lets the server accept traffic. The construction order is
 // exactly journal → projector → scheduler → reconcile → orphan → activate → listen
 // (Appendix D). No TS parameter properties; no new dependency.
@@ -284,10 +284,10 @@ export function activateLogicalV2(db: DatabaseContext, now: string, cutover: Cut
   db.write((tx) => {
     const act = readActivation(tx)
     // Tripwire: v2 was activated against UNCONVERTED data. Spec §4.1 step 2 names
-    // the `active` case; `reconciliation_required` is the same anomaly one
-    // flag-off restart later (markReconciliationRequiredIfActive moves an
-    // unmarked active database there), and letting it through would silently skip
-    // conversion — the dual-model state WC3 forbids. Both fail loud.
+    // the `active` case; `reconciliation_required` is the same anomaly
+    // (markReconciliationRequiredIfActive moves an unmarked active database
+    // there), and letting it through would silently skip conversion — the
+    // dual-model state WC3 forbids. Both fail loud.
     if (act.state !== 'never_activated' && !act.convertedAt) throw new Error(ACTIVE_WITHOUT_MARKER)
 
     // Conversion FIRST, ahead of materialization: it mints every legacy remote post
@@ -322,9 +322,9 @@ export function activateLogicalV2(db: DatabaseContext, now: string, cutover: Cut
   })
 }
 
-// A DISABLED process, before accepting traffic, marks reconciliation_required when
-// v2 was previously active (spec §7.1). A never-activated instance is left
-// untouched — so flag-off on a fresh install writes nothing (byte-identical legacy).
+// Marks reconciliation_required when v2 was previously active but this boot
+// path runs ahead of (re)activation (spec §7.1). A never-activated instance is
+// left untouched, so a fresh install writes nothing.
 export function markReconciliationRequiredIfActive(db: DatabaseContext): boolean {
   return db.write((tx) => {
     const act = readActivation(tx)

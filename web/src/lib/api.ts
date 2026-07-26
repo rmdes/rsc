@@ -265,7 +265,7 @@ export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser
 	if (!res.ok) throw new Error(await errorMessage(res, 'patchAdminSettings failed'))
 }
 
-// --- v2 source registry (RSC_SOURCE_MODEL_V2) --------------------------------
+// --- v2 source registry -------------------------------------------------------
 
 // The capability probe. It NEVER rejects: a core that predates /capabilities —
 // or any blip during a rolling deploy — degrades to safe v2 defaults rather
@@ -290,14 +290,6 @@ export async function getCapabilities(f: typeof fetch): Promise<Capabilities> {
 	} catch {
 		return defaults
 	}
-}
-
-// The synchronously-memoized reading (or null before the first success). Loads
-// use it to skip a doomed v1-shaped call on a warm v2 pod without ever running
-// capability AHEAD of the first request's legacy call (a cold pod sees null and
-// rides alongside, preserving the never-ahead invariant).
-export function peekCapabilities(): Capabilities | null {
-	return capabilities
 }
 
 export type SubscribeOutcome =

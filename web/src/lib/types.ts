@@ -43,9 +43,9 @@ export interface TimelineEntry {
 	placeholder?: boolean
 }
 
-// v2 source-registry DTOs (RSC_SOURCE_MODEL_V2), mirroring core's
-// `core/src/domain/types.ts`. Ordinary core routes never carry governance,
-// operation, provenance or retention state — so neither do these.
+// v2 source-registry DTOs, mirroring core's `core/src/domain/types.ts`.
+// Ordinary core routes never carry governance, operation, provenance or
+// retention state — so neither do these.
 export interface OwnerSourceFollow {
 	sourceId: string
 	url: string

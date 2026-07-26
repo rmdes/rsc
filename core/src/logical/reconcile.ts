@@ -36,10 +36,6 @@ export function retryDelayMs(attempt: number): number {
 // distinct from an operational failure which retries with backoff.
 export class ReconcileDataError extends Error {}
 
-// Terminal statuses; a job "waits" behind an earlier sibling only while that
-// sibling is non-terminal.
-const NON_TERMINAL = ['pending', 'processing', 'retrying']
-
 // ---- claim: pick the next eligible job (spec §2.3) --------------------------
 
 interface CandidateRow {

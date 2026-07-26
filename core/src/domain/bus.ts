@@ -9,9 +9,10 @@ export interface EventBus {
   // publishes its (coalesced) high-water sequence here so an open SSE /stream
   // catches up sooner than its heartbeat. The bus is NEVER event-content
   // authority — the hint carries only a sequence NUMBER; the stream re-reads the
-  // durable journal under current policy. Additive: v1 onNewPost/emitNewPost are
-  // untouched, so the legacy /timeline/stream, push, and push-in paths are
-  // byte-identical with v2 off.
+  // durable journal under current policy. Additive: onNewPost/emitNewPost stay
+  // the live outbound hook regardless — server.ts wires them to both this
+  // sequence-hint wake-up AND push.onLocalPost's outbound WebSub/rssCloud
+  // notification, independently of each other.
   emitSequenceHint(sequence: number): void
   onSequenceHint(fn: (sequence: number) => void): () => void
 }

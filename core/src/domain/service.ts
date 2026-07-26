@@ -21,10 +21,10 @@ async function followUnlessExcluded(repo: Repository, followerId: string, target
   return true
 }
 
-// `logical` is present ONLY when RSC_SOURCE_MODEL_V2 is on (wired by server.ts in
-// Task 10). Its presence flips local mutations onto the atomic logical-v2 commands
-// (spec §2.6); when absent — the case on all production instances — every path
-// below is the untouched v1 branch. The flag is startup-immutable.
+// `logical` is always present in production (wired unconditionally by server.ts
+// since Task 10 deleted the RSC_SOURCE_MODEL_V2 flag). Its presence flips local
+// mutations onto the atomic logical-v2 commands (spec §2.6); it stays optional
+// here only so tests that don't need v2 wiring can omit it.
 export function createService(repo: Repository, bus: EventBus, publicUrl?: string | null, logical?: LogicalStore) {
   async function ensureLocalUser(handle: string, displayName: string): Promise<User> {
     const normalized = normalizeHandle(handle)

@@ -5,15 +5,15 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
-	// SvelteKit's generated ActionData is a union across all four actions on
+	// SvelteKit's generated ActionData is a union across all three actions on
 	// this page; chaining `in` checks over it doesn't narrow cleanly once the
 	// shapes differ this much. The `source`/`establish` fail() branches always
 	// echo these fields as plain strings when present — read them through one
 	// loose shape instead of fighting the union.
 	// ponytail: `as`-cast past the generated union rather than fighting it with
-	// per-branch narrowing. Ceiling: a 5th action with a same-named, differently
+	// per-branch narrowing. Ceiling: a 4th action with a same-named, differently
 	// typed field could paper over a real mismatch here. Upgrade path: revisit
-	// if this page's action count grows past four.
+	// if this page's action count grows past three.
 	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string }
 	const retryFail = $derived(form as RetryFail | null)
 	// Retry id for the establish form specifically (no sourceId/tombstoneId of its

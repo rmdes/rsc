@@ -85,7 +85,7 @@ export interface Subscription {
   createdAt: string
 }
 
-// --- v2 source-control plane (RSC_SOURCE_MODEL_V2, dormant) ---
+// --- v2 source-control plane ---
 
 export type AttributionMode = 'single_publisher' | 'aggregate'
 export type SourceOperation = 'enabled' | 'paused'

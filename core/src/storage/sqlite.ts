@@ -14,9 +14,9 @@ import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
-// These source-command methods run only when the source-control plane is wired
-// (RSC_SOURCE_MODEL_V2 on; server.ts builds `sources` only then), so the journal
-// effects below never fire in flag-off production. Governance/federation/
+// These source-command methods run whenever the source-control plane is wired
+// (server.ts builds `sources` unconditionally), so the journal effects below
+// always fire in production. Governance/federation/
 // attribution-mode changes advance the SOURCE's policy_generation AND append ONE
 // ordinary in-generation reset — this is appendJournal, NOT reconstructJournal:
 // the journal's own reset_generation gates SSE cursor validity and must not move
@@ -59,9 +59,9 @@ function rowToSubscription(r: SubscriptionsTable): Subscription {
   return { id: r.id, protocol: r.protocol, topic: r.topic, callback: r.callback, callbackHost: r.callback_host, secret: r.secret, expiresAt: r.expires_at, createdAt: r.created_at }
 }
 
-// v2 source-control plane row shapes (RSC_SOURCE_MODEL_V2, dormant) — read-only
-// in this task. Rows carry the WIDER SQL CHECK vocabulary (rev 5, V4 §10 pin);
-// mapping to the narrower V1 DTO types below is deliberate, not a bug.
+// v2 source-control plane row shapes — read-only in this task. Rows carry the
+// WIDER SQL CHECK vocabulary (rev 5, V4 §10 pin); mapping to the narrower V1
+// DTO types below is deliberate, not a bug.
 interface RemoteSourceV2Row {
   id: string; canonical_url: string
   attribution_mode: 'single_publisher' | 'aggregate'
@@ -606,9 +606,9 @@ export class SqliteRepository implements Repository, SourceRepository {
   // which is why the v2 reap below runs explicitly — the cascade removes the
   // subscription rows but cannot evaluate whether the source itself is retained.)
   // Shared by DELETE /users, removeFollow's orphaned-feed reap, removeRemoteFeed,
-  // deleteLocalAccount's flag-off branch, and sweepAnonymousUsers' fallback
-  // (only when no `logical` is passed). post_revisions must go before posts —
-  // its post_id FK is RESTRICT and foreign_keys=ON.
+  // deleteLocalAccount's no-`logical`-passed branch, and sweepAnonymousUsers'
+  // fallback (only when no `logical` is passed). post_revisions must go before
+  // posts — its post_id FK is RESTRICT and foreign_keys=ON.
   //
   // UNSAFE for a LOCAL account that has posted under v2: `DELETE FROM posts`
   // below violates logical_local_origins_v2.post_id's ON DELETE RESTRICT,
@@ -620,16 +620,17 @@ export class SqliteRepository implements Repository, SourceRepository {
   // callers here are safe: removeFollow's reap and removeRemoteFeed only ever
   // delete `kind: 'remote'` users, and logical_local_origins_v2 is populated
   // exclusively for local posts, so a remote user's posts (if any exist) never
-  // hold that bridge row; deleteLocalAccount's own call here is the explicit
-  // flag-off (`logical` absent) branch, the one case this cascade is meant for.
+  // hold that bridge row; deleteLocalAccount's own call here only runs when no
+  // `logical` store was passed (production always passes one; tests are the
+  // only remaining case this cascade is meant for).
   deleteUserCascade(id: string): void {
     const raw = this.raw
     raw.transaction(() => {
       // v2 subscriptions go with the user via their own ON DELETE CASCADE, so
       // read the source ids first and re-evaluate retention after — otherwise
       // an account deletion leaves subscriber-less sources behind that no
-      // unsubscribe will ever reach. Empty (a no-op) while RSC_SOURCE_MODEL_V2
-      // is off, since nothing writes the v2 tables then.
+      // unsubscribe will ever reach. Empty (a no-op) when the account has no
+      // v2 source subscriptions.
       const sourceIds = (raw.prepare(`SELECT source_id FROM source_subscriptions_v2 WHERE owner_id = ?`).all(id) as { source_id: string }[]).map((r) => r.source_id)
       raw.prepare(`DELETE FROM follows WHERE follower_id = ? OR followed_id = ?`).run(id, id)
       raw.prepare(`DELETE FROM push_subscriptions WHERE user_id = ?`).run(id)
@@ -649,11 +650,12 @@ export class SqliteRepository implements Repository, SourceRepository {
     })()
   }
 
-  // Under RSC_SOURCE_MODEL_V2, remote feeds and remote items live in the v2
-  // tables (remote_sources_v2, logical_items_v2), not users/posts — a plain
-  // union would double-count a converted DB that still has rows in both. So
-  // this branches on the flag rather than unioning; the v1 query stays the
-  // untouched original.
+  // Under v2, remote feeds and remote items live in the v2 tables
+  // (remote_sources_v2, logical_items_v2), not users/posts — a plain union
+  // would double-count a converted DB that still has rows in both. So this
+  // branches on the `v2` argument rather than unioning; production (api/app.ts)
+  // always passes `true` now, and the v1 query (`false`) stays the untouched
+  // original for tests.
   instanceStats(v2: boolean): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number } {
     if (!v2) {
       return this.raw.prepare(
@@ -683,10 +685,9 @@ export class SqliteRepository implements Repository, SourceRepository {
     return rows.map((r) => ({ ...r, emailVerified: r.emailVerified === null ? null : r.emailVerified === 1 }))
   }
 
-  // --- v2 source-control plane administrative reads (RSC_SOURCE_MODEL_V2,
-  // dormant) — no HTTP route calls these yet; nothing here touches legacy
-  // tables. Flag-off isolation is by construction: these methods only ever
-  // read the five v2 tables, which stay empty until a later vertical writes.
+  // --- v2 source-control plane administrative reads (served by the
+  // /admin/sources routes) — nothing here touches legacy tables; these methods
+  // only ever read the five v2 tables.
 
   // Shared tail of every v2 cursor-paginated read: rows arrived limit+1 deep;
   // split off the displayed page and, if the extra row is present, encode a
@@ -822,8 +823,8 @@ export class SqliteRepository implements Repository, SourceRepository {
     return { items: page.map(rowToSourceAuditV2), nextCursor }
   }
 
-  // --- v2 source-control plane mutations (RSC_SOURCE_MODEL_V2, dormant) —
-  // Task 3. Each method is a single ledger-backed BEGIN IMMEDIATE
+  // --- v2 source-control plane mutations (Task 3). Each method is a single
+  // ledger-backed BEGIN IMMEDIATE
   // transaction: checkCommand, resolve, cap-check where applicable, write,
   // storeCommand, commit. No await inside the transaction() callback —
   // better-sqlite3's transactions are synchronous only (Task 2 report).
@@ -1247,7 +1248,7 @@ export class SqliteRepository implements Repository, SourceRepository {
   // during Task 8b, V1 retirement). deleteLocalAccount clears each post's v2
   // origin row per-post first, so it never hits the FK. Falls back to
   // deleteUserCascade only when no logical store is available (never true in
-  // production since Task 6; kept for callers that still run flag-off).
+  // production since Task 6; kept for tests that omit the store).
   sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
     const raw = this.raw
     const cutoff = Date.now() - ttlDays * 86400_000
@@ -1410,8 +1411,7 @@ const MIGRATIONS: string[][] = [
     `INSERT INTO instance_settings (key, value) VALUES ('max_subs_per_user', '500')`,
   ],
   [
-    // v2 source-control plane (RSC_SOURCE_MODEL_V2, dormant): nothing reads
-    // or writes these tables yet. The SQL CHECKs are deliberately WIDER than
+    // v2 source-control plane. The SQL CHECKs are deliberately WIDER than
     // the V1 TS enums in domain/types.ts (source_audit_v2.category carries
     // all nine foundation categories, actor_kind carries operator_token,
     // command_ledger_v2.actor_scope carries ops) — SQLite cannot widen a
@@ -1455,20 +1455,21 @@ const MIGRATIONS: string[][] = [
     'CREATE INDEX source_subscriptions_v2_owner_state ON source_subscriptions_v2(owner_id,state,source_id)',
     'CREATE INDEX source_audit_v2_page ON source_audit_v2(source_id,created_at DESC,id DESC)',
   ],
-  // Logical-v2 additive schema (RSC_SOURCE_MODEL_V2, dormant). Appended at the
-  // TAIL — mid-array insertion corrupts user_version on live databases. Pure
-  // additive CREATE/ALTER/INSERT; creates only the inactive activation row.
-  // Defined in logical/schema.ts; see plan Appendix A.
+  // Logical-v2 additive schema. Appended at the TAIL — mid-array insertion
+  // corrupts user_version on live databases. Pure additive CREATE/ALTER/INSERT;
+  // creates only the inactive activation row (flipped to active by
+  // activateLogicalV2 at boot). Defined in logical/schema.ts; see plan
+  // Appendix A.
   LOGICAL_V2_SCHEMA,
-  // Logical-v3 additive schema (moderation/events/verification, RSC_SOURCE_MODEL_V2,
-  // dormant). Appended at the TAIL, AFTER LOGICAL_V2_SCHEMA — mid-array insertion
-  // corrupts user_version on live databases. Pure additive ALTER/CREATE. Defined
-  // in logical/schema.ts; see the V3 plan Appendix A.
+  // Logical-v3 additive schema (moderation/events/verification). Appended at
+  // the TAIL, AFTER LOGICAL_V2_SCHEMA — mid-array insertion corrupts
+  // user_version on live databases. Pure additive ALTER/CREATE. Defined in
+  // logical/schema.ts; see the V3 plan Appendix A.
   LOGICAL_V3_SCHEMA,
-  // Logical-v4 additive schema (migration & cutover, RSC_SOURCE_MODEL_V2,
-  // dormant). Appended at the TAIL, AFTER LOGICAL_V3_SCHEMA — mid-array
-  // insertion corrupts user_version on live databases. Pure additive
-  // CREATE/ALTER. Defined in logical/schema.ts; see the V4 plan Appendix A.
+  // Logical-v4 additive schema (migration & cutover). Appended at the TAIL,
+  // AFTER LOGICAL_V3_SCHEMA — mid-array insertion corrupts user_version on
+  // live databases. Pure additive CREATE/ALTER. Defined in logical/schema.ts;
+  // see the V4 plan Appendix A.
   LOGICAL_V4_SCHEMA,
   // Read-path performance index (post-V4 hotfix). Appended at the TAIL, AFTER
   // LOGICAL_V4_SCHEMA — mid-array insertion corrupts user_version on live

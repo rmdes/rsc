@@ -1,8 +1,7 @@
-// Canonical URL normalization for the v2 source-control plane
-// (RSC_SOURCE_MODEL_V2, dormant). Deliberately narrow per design §3: normalize
-// scheme/host and remove default ports, remove fragments; preserve path,
-// query, trailing slash, and HTTP-vs-HTTPS. Reject credentials and URLs over
-// 2048 characters.
+// Canonical URL normalization for the v2 source-control plane. Deliberately
+// narrow per design §3: normalize scheme/host and remove default ports, remove
+// fragments; preserve path, query, trailing slash, and HTTP-vs-HTTPS. Reject
+// credentials and URLs over 2048 characters.
 const DEFAULT_PORT: Record<string, string> = { 'http:': '80', 'https:': '443' }
 
 export function normalizeSourceUrl(raw: string): string {

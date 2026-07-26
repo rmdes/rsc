@@ -86,9 +86,10 @@ export interface PushInApi {
 // EXPORTED (V4 Task 3 review pin): this must stay EQUAL to
 // `logical/acquisition.ts`'s BOUNDS.maxBodyBytes — a pushed document is accepted
 // at exactly the size a polled one is, so unauthenticated-until-HMAC-verified
-// input can never outrun the trusted fetch path. Not derived by import (this
-// route also serves the flag-off v1 push-in path, which never loads the V2-only
-// logical/acquisition module); instead `logical-bounds.test.ts` asserts the
+// input can never outrun the trusted fetch path. Not derived by import (the two
+// bounds live in different layers — the HTTP layer here bounds a pushed body
+// before it ever reaches the fetch module's own enforcement, and an import in
+// either direction is awkward); instead `logical-bounds.test.ts` asserts the
 // equality directly.
 export const MAX_FAT_PING_BYTES = 5 * 1024 * 1024
 const MAX_FORM_BYTES = 64 * 1024
@@ -108,6 +109,8 @@ export const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOve
 export const JOURNAL_CURSOR_VERSION = 1
 export const STREAM_PROTOCOL_VERSION = 1
 
+// ponytail: deps.bus kept dead in the type to avoid touching every createApp
+// call site; remove when a call site changes anyway.
 export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; sources: { service: SourceService; repo: SourceRepository }; logical: LogicalRouteDeps }): Hono {
   const { service, token, sources } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
@@ -254,8 +257,8 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ ok: true }, 200)
   })
 
-  // Same 1 MB bound as the legacy OPML route below; the command id travels as
-  // a header because the body is XML, not JSON.
+  // 1 MB bound for an OPML import; the command id travels as a header because
+  // the body is XML, not JSON.
   app.post('/me/follows/opml', authed, registeredOnly(), bodyLimit({ maxSize: 1024 * 1024, onError: rejectOversized }), async (c) => {
     const commandId = c.req.header('x-rsc-command-id')
     if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)

@@ -28,9 +28,10 @@ const TEST_CONFIG = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_POLL_
 // isolation. Two things it deliberately proves that no single-task suite can:
 //   (1) the cross-model isolation matrix (§7.4) — flag-OFF v2 tables are inert and
 //       byte-identical legacy; flag-ON legacy paths are not started; and
-//   (2) the v2-path dual-path convergence FIX for the v1 bug that `ingest.test.ts`
-//       and `federation-live.test.ts` still pin as `test.fails()` (see the marked
-//       proof below).
+//   (2) the v2-path dual-path convergence FIX for the v1 bug that the now-deleted
+//       `ingest.test.ts` and `federation-live.test.ts` used to pin as
+//       `test.fails()` (see the marked proof below), before the v1 ingestion
+//       path they exercised was retired.
 
 type Raw = InstanceType<typeof Database>
 const NOW = '2026-07-24T00:00:00.000Z'
@@ -261,15 +262,15 @@ test('a local post and a remote delivery of the same permalink converge to ONE l
 // ============================================================================
 // THE v2-PATH DUAL-PATH CONVERGENCE PROOF (§7.3 acceptance intent)
 // ----------------------------------------------------------------------------
-// `ingest.test.ts` and `federation-live.test.ts` carry `test.fails()` markers for
-// the v1 dual-path duplicate bug: one post reached by TWO subscription/source paths
-// is stored twice and stops resolving as a parent. Those markers STAY expected-fail
-// here — v2 is flag-OFF by default and does NOT replace the v1 ingestion path they
-// exercise; that replacement is the Vertical 4 cutover, at which point those two
-// markers flip from `test.fails()` to `test()`. This test is the POSITIVE assertion
-// that the logical model fixes what v1 cannot, and it is what becomes the live
-// guarantee at V4: the same dual-path scenario against the v2 logical model
-// converges to exactly ONE logical item that resolves correctly AS A PARENT.
+// The now-deleted `ingest.test.ts` and `federation-live.test.ts` used to carry
+// `test.fails()` markers for the v1 dual-path duplicate bug: one post reached
+// by TWO subscription/source paths was stored twice and stopped resolving as a
+// parent. Those markers flipped to `test()` at the Vertical 4 cutover, when the
+// logical v2 model replaced the v1 ingestion path they exercised, and the v1
+// files were retired soon after. This test is the POSITIVE assertion that the
+// logical model fixes what v1 got wrong, and is the live guarantee: the same
+// dual-path scenario against the v2 logical model converges to exactly ONE
+// logical item that resolves correctly AS A PARENT.
 // ============================================================================
 
 test('v2 fix: one item reached by TWO source paths converges to ONE logical item that still resolves as a parent', async () => {
