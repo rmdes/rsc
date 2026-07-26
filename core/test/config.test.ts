@@ -85,7 +85,7 @@ test('a stale RSC_SOURCE_MODEL_V2 env var does not prevent boot', () => {
   // Deploy-safety guarantee (V4 Task 11 §C): the unset-var-first deploy order
   // is belt-and-braces, not the only guard — loadConfig must never fail on an
   // env var it no longer reads.
-  expect(() => loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: 'on' })).not.toThrow()
+  expect(() => loadConfig({ ...process.env, RSC_TOKEN: 'x', RSC_AUTH_SECRET: 'x', RSC_SOURCE_MODEL_V2: 'on' })).not.toThrow()
 })
 
 test('RSC_MIGRATION_MANIFEST defaults null and passes a path straight through, unvalidated', () => {

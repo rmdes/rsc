@@ -20,7 +20,7 @@ test('sweepHousekeeping purges expired outbound subscriptions', async () => {
     callback: 'https://hub.example/cb2', callbackHost: 'hub.example',
     secret: null, expiresAt: future, createdAt: now.toISOString(),
   })
-  const config = loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: undefined })
+  const config = loadConfig({ RSC_TOKEN: 'x', RSC_AUTH_SECRET: 'x' })
   // Cutoff far in the past: expires_at > cutoff is true for every realistic row,
   // so this counts rows actually present in the table, irrespective of expiry.
   const epoch = '1970-01-01T00:00:00.000Z'
@@ -42,7 +42,7 @@ test('sweepHousekeeping reclaims an idle anonymous account that posted under v2,
   const repo = await createSqliteRepository(':memory:')
   const db = createDatabaseContext(repo.raw)
   const logical = createLogicalStore(db)
-  const config = loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: undefined })
+  const config = loadConfig({ RSC_TOKEN: 'x', RSC_AUTH_SECRET: 'x' })
 
   const authUserId = 'anon-auth-1'
   const old = new Date(Date.now() - 8 * 86400_000).toISOString() // beyond the 7-day default anonTtlDays
@@ -71,7 +71,7 @@ test('sweepHousekeeping reaps a source left orphaned by the swept account\'s del
   const repo = await createSqliteRepository(':memory:')
   const db = createDatabaseContext(repo.raw)
   const logical = createLogicalStore(db)
-  const config = loadConfig({ ...process.env, RSC_SOURCE_MODEL_V2: undefined })
+  const config = loadConfig({ RSC_TOKEN: 'x', RSC_AUTH_SECRET: 'x' })
 
   const authUserId = 'anon-auth-2'
   const old = new Date(Date.now() - 8 * 86400_000).toISOString()
