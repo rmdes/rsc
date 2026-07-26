@@ -393,27 +393,27 @@ test('paced acquisition resumes for enabled allowed AND enabled quarantined sour
 
 // ---- the capability flip is core-only ---------------------------------------
 
-async function makeApp(opts: { v2: boolean }) {
+async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw as Raw
   const bus = createEventBus()
   const db = createDatabaseContext(raw)
   const store = createLogicalStore(db)
-  const service = createService(repo, bus, null, opts.v2 ? store : undefined)
+  const service = createService(repo, bus, null, store)
   const acquisition = createAcquisition({ db, fetchFn: refusingFetch(), lookupFn: publicLookup, now: () => NOW })
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(['boss@x.test']),
     feeds: { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false },
-    ...(opts.v2 ? { sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW } } : {}),
+    sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW },
   })
-  // server.ts mounts the reserved-handle lookup beside the stream route, so the
-  // route exists only under v2 — exactly the composition this app reproduces.
-  if (opts.v2) mountLogicalHandleRoute(app, { raw })
+  // server.ts mounts the reserved-handle lookup beside the stream route —
+  // exactly the composition this app reproduces.
+  mountLogicalHandleRoute(app, { raw })
   return { app, repo, raw, db, store }
 }
 
 test('the flip is core-only: /capabilities reports V2 exact enabled shape — V4 adds no field', async () => {
-  const { app, repo, raw, db } = await makeApp({ v2: true })
+  const { app, repo, raw, db } = await makeApp()
   seedLegacy(raw)
   activate(db)
   // EXACT equality against V2's shape (the V3 Task 10 pattern): a web already
@@ -422,11 +422,6 @@ test('the flip is core-only: /capabilities reports V2 exact enabled shape — V4
     sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1,
   })
   repo.close()
-
-  const off = await makeApp({ v2: false })
-  expect(await (await off.app.request('/capabilities')).json()).toEqual({ sourceModelV2: false })
-  expect((await off.app.request('/handles/alice')).status).toBe(404) // the lookup is v2-only
-  off.repo.close()
 })
 
 // =============================================================================
@@ -452,7 +447,7 @@ function approvedInstanceManifest(): string {
 }
 
 async function convertedInstance() {
-  const ctx = await makeApp({ v2: true })
+  const ctx = await makeApp()
   seedLocal(ctx.raw)
   seedRemote(ctx.raw, { feed_type: 'instance' })
   seedFollow(ctx.raw, 'l1', 'u1')
@@ -542,7 +537,7 @@ function seedLocalReplyToRemote(raw: Raw): void {
 }
 
 async function legacyWithLocalReply() {
-  const ctx = await makeApp({ v2: true })
+  const ctx = await makeApp()
   seedLegacy(ctx.raw)
   seedLocalReplyToRemote(ctx.raw)
   return ctx

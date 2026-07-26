@@ -168,18 +168,13 @@ const replayKinds = (db: Db, store: Store, id: string): string[] => {
 
 // A full app over the same store — the feed/route surfaces the mandatory
 // scenarios name (comments.xml) and the isolation matrix's V3 routes.
-function makeApp(deps: Deps, opts: { logical?: boolean } = {}) {
-  const on = opts.logical !== false
+function makeApp(deps: Deps) {
   return createApp({
-    service: createService(deps.repo, createEventBus(), null, on ? deps.store : undefined),
+    service: createService(deps.repo, createEventBus(), null, deps.store),
     bus: createEventBus(), token: 'ops-token', auth: makeAuth(deps.repo), users: deps.repo,
     adminEmails: new Set(['boss@x.test']),
-    ...(on
-      ? {
-          sources: { service: createSourceService(deps.repo, null), repo: deps.repo },
-          logical: { store: deps.store, acquisition: stubEngine, now: () => NOW },
-        }
-      : {}),
+    sources: { service: createSourceService(deps.repo, null), repo: deps.repo },
+    logical: { store: deps.store, acquisition: stubEngine, now: () => NOW },
   })
 }
 
@@ -610,37 +605,8 @@ const V3_ROUTES = [
 const postJson = (cookie: string, body: unknown) =>
   ({ method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) })
 
-test('isolation OFF: no V3 route exists, no fan-out or verification work is ever scheduled, and legacy moderation + legacy push are unchanged', async () => {
-  const deps = await fresh()
-  const { raw } = deps
-  const app = makeApp(deps, { logical: false }) // exactly the flag-off composition
-  // An ADMIN session, so a 404 can only mean the route is absent — the /admin/*
-  // gate would answer 401 first if we asked anonymously.
-  const cookie = await registeredSession(app, 'boss@x.test', deps.repo)
-
-  // (1) not one V3 route is registered — a plain routing 404, never the V3 body.
-  for (const path of V3_ROUTES) {
-    const res = await app.request(path, postJson(cookie, { commandId: 'c1', category: 'spam' }))
-    expect([path, res.status]).toEqual([path, 404])
-    expect(await res.text()).not.toContain('logical-v2')
-  }
-  expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: false })
-
-  // (2) legacy moderation over the v1 service: a local post created and removed
-  // the v1 way writes NOTHING into any v2 table (V2's off-flag regression fixture,
-  // extended to the V3 families).
-  const service = createService(deps.repo, createEventBus(), null) // no logical store — the OFF path
-  const entry = await service.createLocalPostAs('bob', 'Bob', 'hello from v1')
-  expect(await service.deletePost(entry.id)).toEqual({ ok: true })
-  for (const t of ['logical_items_v2', 'logical_journal_v2', 'item_audit_v2', 'blocked_source_tombstones_v2', 'tombstone_aliases_v2']) {
-    expect([t, count(raw, t)]).toEqual([t, 0])
-  }
-  // (3) no fan-out and no verification work is ever scheduled while off.
-  expect(count(raw, 'policy_fanout_v2')).toBe(0)
-  expect(count(raw, 'verification_checks_v2')).toBe(0)
-  expect(count(raw, 'reconciliation_jobs_v2', "WHERE kind = 'verification'")).toBe(0)
-  deps.repo.close()
-})
+// GONE: 'isolation OFF: no V3 route exists…'. The V1 retirement removes the
+// flag-off composition it asserted; the V3 routes are unconditional now.
 
 test('isolation ON: the capability payload is EXACTLY V2\'s enabled shape — V3 adds no field', async () => {
   const deps = await fresh()

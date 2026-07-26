@@ -5,6 +5,9 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 
@@ -19,7 +22,9 @@ const FED_URL = 'https://203.0.113.50/f.xml'
 async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service,
     bus,
@@ -28,6 +33,7 @@ async function makeApp() {
     users: repo,
     adminEmails: new Set(['boss@x.test']),
     sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, service }
 }

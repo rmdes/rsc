@@ -42,7 +42,7 @@ function seedRemoteItem(raw: Raw, sourceId: string, key: string): void {
   raw.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`).run(jobId, runId, versionId, NOW, NOW)
 }
 
-async function makeApp(withFlag = true) {
+async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const service = createService(repo, bus, null)
@@ -52,7 +52,7 @@ async function makeApp(withFlag = true) {
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(['boss@x.test']),
     feeds: { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false },
-    ...(withFlag ? { sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW } } : {}),
+    sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW },
   })
   // Local posts flow through store.createLocalPost (materialized) in production;
   // seedPost writes raw, so materialize on demand for the thread/comments projector.
@@ -148,13 +148,5 @@ test('a resolved publisher lens returns that publisher activity', async () => {
   repo.close()
 })
 
-test('with the flag off, GET /post/:id does not exist and /timeline keeps the v1 shape', async () => {
-  const { app, repo } = await makeApp(false)
-  expect((await app.request('/post/whatever')).status).toBe(404) // no v2 single-item route registered
-  const tl = await app.request('/timeline')
-  expect(tl.status).toBe(200)
-  const body = await tl.json()
-  expect(body.model).toBeUndefined() // v1 timeline has no model discriminator
-  expect(body).toHaveProperty('timeline')
-  repo.close()
-})
+// GONE: 'with the flag off, GET /post/:id does not exist and /timeline keeps the
+// v1 shape'. V1 is retired — there is no flag-off composition left to assert.

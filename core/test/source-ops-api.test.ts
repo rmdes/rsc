@@ -5,6 +5,9 @@ import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
 import type { SourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { fingerprintRequest } from '../src/domain/source-repository.ts'
 import { normalizeSourceUrl } from '../src/domain/source-url.ts'
 import { createApp } from '../src/api/app.ts'
@@ -39,10 +42,12 @@ function recordingService(inner: SourceService): { service: SourceService; touch
   return { service, touched }
 }
 
-async function makeApp(opts: { v2?: boolean } = {}) {
+async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const rec = recordingService(createSourceService(repo, null))
   const app = createApp({
     service,
@@ -51,19 +56,13 @@ async function makeApp(opts: { v2?: boolean } = {}) {
     auth: makeAuth(repo),
     users: repo,
     adminEmails: new Set(['boss@x.test']),
-    ...(opts.v2 === false ? {} : { sources: { service: rec.service, repo } }),
+    sources: { service: rec.service, repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, touched: rec.touched }
 }
 
 // --- Step 1: the route contract ------------------------------------------
-
-test('the ops route exists only under v2 — with the flag off it is a plain 404', async () => {
-  const { app, repo } = await makeApp({ v2: false })
-  const res = await app.request(OPS_PATH, post(bearer, fedBody()))
-  expect(res.status).toBe(404)
-  repo.close()
-})
 
 test('a valid bearer establishes federation as actor kind operator_token under ledger scope ops', async () => {
   const { app, repo, touched } = await makeApp()
@@ -148,13 +147,17 @@ test('the ops route validates its body, takes commandId ONLY from the body, and 
 
 // --- Step 2: the authorization matrix (V1 review Finding 3) ---------------
 
-test('the ops route is bearer-only: [none,invalid bearer,admin session,valid bearer] → [401,401,401,201]', async () => {
+test('the ops route is bearer-only: [none,invalid bearer,same-length bearer,admin session,valid bearer] → [401,401,401,401,201]', async () => {
   const { app, repo } = await makeApp()
   const cookie = await registeredSession(app, 'boss@x.test', repo)
 
   const actors: Array<[string, Record<string, string>, number]> = [
     ['unauthenticated', {}, 401],
     ['invalidToken', { authorization: 'Bearer nope' }, 401],
+    // Equal length is the case that actually reaches timingSafeEqual — a
+    // shorter/longer header short-circuits on the length check first. (Carried
+    // over from api.test.ts, whose POST /users home this release deleted.)
+    ['sameLengthToken', { authorization: `Bearer ${'x'.repeat(OPS_TOKEN.length)}` }, 401],
     ['adminSession', { cookie }, 401], // bearer-only: a session carries no bearer header
     ['validToken', bearer, 201],
   ]
@@ -178,13 +181,9 @@ test('the ops token reaches no /admin/* route — every one answers 401, never 4
   // requireAdmin's 403 (:82) is ever reachable. The token grants no read,
   // moderation, purge, evidence or subscriber access under /admin/*.
   //
-  // This probe does NOT cover the token's full reach: adminOrToken
-  // (api/auth.ts:92, used at api/app.ts:179 and :498) also admits this same
-  // bearer to POST /users and DELETE /users/:handle — routes that live under
-  // /users, not /admin, and keep their own adminOrToken gate (api/app.ts:245-
-  // 246). DELETE /users/:handle removes a remote feed. That reach is
-  // pre-existing and deliberate (app.ts:244-246), not a regression — it is
-  // simply outside what this test asserts.
+  // Since the v1 retirement deleted POST /users and DELETE /users/:handle (and
+  // adminOrToken with them), THIS ROUTE is now the operator token's only reach
+  // into the API — so this probe is the whole picture, not a partial one.
   const admin: Array<[string, RequestInit | undefined]> = [
     ['/admin/sources', undefined],
     [`/admin/sources/${sourceId}`, undefined],
@@ -193,7 +192,6 @@ test('the ops token reaches no /admin/* route — every one answers 401, never 4
     ['/admin/overview', undefined],
     ['/admin/users', undefined],
     ['/admin/settings', undefined],
-    ['/admin/feeds', undefined],
     [`/admin/sources/${sourceId}/block`, post({}, { commandId: 'tok-1', category: 'abuse' })],
     [`/admin/sources/${sourceId}/pause`, post({}, { commandId: 'tok-2' })],
     ['/admin/sources', post({}, fedBody({ commandId: 'tok-3' }))],

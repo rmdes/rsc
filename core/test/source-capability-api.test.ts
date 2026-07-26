@@ -5,6 +5,9 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, registeredSession } from './auth-helper.ts'
 
@@ -20,11 +23,13 @@ const BLOCKED_URL = 'https://203.0.113.31/f.xml'
 const AGGREGATE_URL = 'https://203.0.113.32/f.xml'
 const PUBLIC_URL = 'https://203.0.113.9' // IP literal: a hostname publicUrl would trip the SSRF gate first
 
-async function makeApp(opts: { v2: boolean; publicUrl?: string | null } = { v2: false }) {
+async function makeApp(opts: { publicUrl?: string | null } = {}) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const publicUrl = opts.publicUrl ?? null
-  const service = createService(repo, bus, publicUrl)
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, publicUrl, store)
   const app = createApp({
     service,
     bus,
@@ -33,9 +38,8 @@ async function makeApp(opts: { v2: boolean; publicUrl?: string | null } = { v2: 
     users: repo,
     adminEmails: new Set(['boss@x.test']),
     feeds: { publicUrl, hubUrl: null, rssCloud: false },
-    // Presence of `sources` IS the RSC_SOURCE_MODEL_V2 flag at the HTTP layer:
-    // server.ts only builds it when the flag is on.
-    ...(opts.v2 ? { sources: { service: createSourceService(repo, publicUrl), repo } } : {}),
+    sources: { service: createSourceService(repo, publicUrl), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, service }
 }
@@ -56,74 +60,29 @@ async function subscribe(app: ReturnType<typeof createApp>, cookie: string, body
   return { status: res.status, body: await res.json() }
 }
 
-// --- Step 1: the capability endpoint is served in BOTH states ---
+// --- Step 1: the capability endpoint reports the one surviving model ---
 
-test('GET /capabilities is always served and reports the flag exactly', async () => {
-  const off = await makeApp({ v2: false })
-  const on = await makeApp({ v2: true })
-  expect(await (await off.app.request('/capabilities')).json()).toEqual({ sourceModelV2: false })
-  // V2 supersession (spec §5.6): the enabled branch is the discriminated shape.
-  expect(await (await on.app.request('/capabilities')).json()).toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-  off.repo.close()
-  on.repo.close()
-})
-
-test('while off no v2 route is registered; while on /admin/sources answers the admin', async () => {
-  const off = await makeApp({ v2: false })
-  const offAdmin = { headers: { cookie: await registeredSession(off.app, 'boss@x.test', off.repo) } }
-  expect((await off.app.request('/admin/feeds', offAdmin)).status).toBe(200)
-  expect((await off.app.request('/admin/sources', offAdmin)).status).toBe(404)
-  expect((await off.app.request('/me/following', offAdmin)).status).toBe(404)
-
-  const on = await makeApp({ v2: true })
-  const onAdmin = { headers: { cookie: await registeredSession(on.app, 'boss@x.test', on.repo) } }
-  expect((await on.app.request('/admin/feeds', onAdmin)).status).toBe(200)
-  expect((await on.app.request('/admin/sources', onAdmin)).status).toBe(200)
-  off.repo.close()
-  on.repo.close()
-})
-
-test('while off the legacy subscribe/OPML/following routes behave exactly as today', async () => {
-  const { app, repo } = await makeApp({ v2: false })
-  const cookie = await registeredSession(app, 'legacy@x.test', repo)
-
-  // Legacy shape: {url,type} → 201 {user,followed}; a v2-shaped body 400s on the
-  // legacy `type` validator (proof no v2 handler is in front of it).
-  const legacy = await subscribe(app, cookie, { url: REMOTE_URL, type: 'webfeed' })
-  expect(legacy.status).toBe(201)
-  expect(legacy.body.followed).toBe(true)
-  expect(legacy.body.user.feedUrl).toBe(REMOTE_URL)
-  const v2Shaped = await subscribe(app, cookie, { url: 'https://203.0.113.21/f.xml', commandId: 'off-1' })
-  expect(v2Shaped.status).toBe(400)
-
-  const me = await (await app.request('/me', { headers: { cookie } })).json()
-  const follows = await (await app.request(`/users/${me.user.handle}/follows`)).json()
-  // Legacy projection: full User rows (remote shadow accounts), never v2 entries.
-  expect(follows.following.map((f: { feedUrl: string }) => f.feedUrl)).toEqual([REMOTE_URL])
-
-  // Legacy OPML import needs no command-id header and returns legacy counts.
-  const opml = await app.request('/me/follows/opml', {
-    method: 'POST',
-    headers: { cookie },
-    body: '<opml version="2.0"><body><outline type="rss" text="x" xmlUrl="https://203.0.113.22/f.xml"/></body></opml>',
-  })
-  expect(opml.status).toBe(200)
-  expect(Object.keys(await opml.json()).sort()).toEqual(['created', 'followed', 'skipped'])
+test('GET /capabilities reports the constant v2 shape', async () => {
+  // V1 is retired, so this payload is no longer a flag readout — it is a fixed
+  // wire contract web still reads (app.ts:129-134). sourceModelV2 stays in it.
+  const { app, repo } = await makeApp()
+  expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
+  expect((await app.request('/admin/sources', { headers: { cookie: await registeredSession(app, 'boss@x.test', repo) } })).status).toBe(200)
   repo.close()
 })
 
-// --- Step 1 (cont.): while ON, v2 supersedes legacy on the shared paths ---
+// --- Step 1 (cont.): the v2 handlers own the shared paths ---
 
-test('while on, v2 supersedes the legacy handlers on every shared path', async () => {
-  const { app, repo } = await makeApp({ v2: true })
+test('the v2 handlers own every shared path (a v1-shaped body no longer works)', async () => {
+  const { app, repo } = await makeApp()
   const cookie = await registeredSession(app, 'v2@x.test', repo)
 
-  // Legacy would 201 here (url+type is a valid legacy body); v2 rejects the
-  // missing commandId — so the v2 handler, not the legacy one, ran.
+  // The v1 body ({url,type}) 201'd before this release; the v2 handler rejects
+  // its missing commandId, which is what proves no v1 handler survives here.
   const legacyShaped = await subscribe(app, cookie, { url: REMOTE_URL, type: 'webfeed' })
   expect(legacyShaped).toEqual({ status: 400, body: { error: 'commandId invalid' } })
 
-  // And a v2 body (no `type`) succeeds, which legacy would have 400'd.
+  // And a v2 body (no `type`) succeeds, which v1 would have 400'd.
   const created = await subscribe(app, cookie, { url: REMOTE_URL, commandId: 'sub-1' })
   expect(created.status).toBe(201)
   // Owner projection only — never the RemoteSource row.
@@ -139,13 +98,13 @@ test('while on, v2 supersedes the legacy handlers on every shared path', async (
   expect(await subscribe(app, cookie, { url: REMOTE_URL, commandId: 'sub-1' })).toEqual(created)
   expect(await subscribe(app, cookie, { url: REMOTE_URL, commandId: 'sub-2' })).toEqual({ status: 200, body: created.body })
 
-  // Legacy OPML import needs no header; v2 requires x-rsc-command-id.
+  // v1's OPML import needed no header; v2 requires x-rsc-command-id.
   const noHeader = await app.request('/me/follows/opml', { method: 'POST', headers: { cookie }, body: '<opml version="2.0"><body></body></opml>' })
   expect(noHeader.status).toBe(400)
   expect(await noHeader.json()).toEqual({ error: 'commandId invalid' })
 
-  // Public projections come from the v2 tables: legacy would report nothing at
-  // all for this user (no `follows` row exists).
+  // Public projections come from the v2 tables: v1 would have reported nothing
+  // at all for this user (no `follows` row exists).
   const me = await (await app.request('/me', { headers: { cookie } })).json()
   const follows = await (await app.request(`/users/${me.user.handle}/follows`)).json()
   expect(follows.following).toEqual([{ kind: 'source', sourceId: created.body.subscription.sourceId, url: REMOTE_URL, displayName: '203.0.113.20' }])
@@ -161,7 +120,7 @@ test('while on, v2 supersedes the legacy handlers on every shared path', async (
 })
 
 test('a pending subscription answers the neutral payload only — 202 then 200, never the owner projection', async () => {
-  const { app, repo } = await makeApp({ v2: true })
+  const { app, repo } = await makeApp()
   const cookie = await registeredSession(app, 'pending@x.test', repo)
   insertSourceRow(repo.raw, { canonicalUrl: QUARANTINED_URL, governance: 'quarantined' })
 
@@ -177,7 +136,7 @@ test('a pending subscription answers the neutral payload only — 202 then 200, 
 })
 
 test('blocked and not-subscribable answer one indistinguishable 409; cap is 429; a malformed URL is 400', async () => {
-  const { app, repo, service } = await makeApp({ v2: true })
+  const { app, repo, service } = await makeApp()
   const cookie = await registeredSession(app, 'refused@x.test', repo)
   insertSourceRow(repo.raw, { canonicalUrl: BLOCKED_URL, governance: 'blocked' })
   insertSourceRow(repo.raw, { canonicalUrl: AGGREGATE_URL, attributionMode: 'aggregate' })
@@ -199,7 +158,7 @@ test('blocked and not-subscribable answer one indistinguishable 409; cap is 429;
 })
 
 test('an own-instance feed URL still resolves to a local follow under v2', async () => {
-  const { app, repo } = await makeApp({ v2: true, publicUrl: PUBLIC_URL })
+  const { app, repo } = await makeApp({ publicUrl: PUBLIC_URL })
   const target = await registeredSession(app, 'localtarget@x.test', repo)
   const targetMe = await (await app.request('/me', { headers: { cookie: target } })).json()
   const cookie = await registeredSession(app, 'localfollower@x.test', repo)

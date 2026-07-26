@@ -2,15 +2,31 @@ import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 
+// v2 thread envelope (spec §4.3): `nodes`, each an {kind:'item'} or a neutral
+// {kind:'placeholder'} for a connective node the viewer may not see. The v1
+// flat `thread` array is gone, so every assertion here reads nodes' item ids.
+const itemIds = (env: { nodes: Array<{ kind: string; item?: { id: string } }> }) =>
+  env.nodes.filter((n) => n.kind === 'item').map((n) => n.item!.id)
+
 async function makeApp(feeds?: FeedContext) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
-  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds })
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, feeds?.publicUrl ?? null, store)
+  const app = createApp({
+    service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds,
+    sources: { service: createSourceService(repo, feeds?.publicUrl ?? null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
   return { app, repo, service }
 }
 
@@ -20,7 +36,10 @@ test('reply compose: stores refs, resolves parent, thread endpoint returns the c
   const auth = { 'content-type': 'application/json', cookie }
   const root = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 'root post' }) })).json()
   const re = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 'a reply', inReplyTo: root.post.id }) })).json()
-  expect(re.post.inReplyTo).toBe(root.post.guid) // local posts have url null → ref falls to guid
+  // v2 (logical/local.ts:50 parentReplyRef): with no publicUrl the parent has no
+  // permalink, so the stored wire ref is the parent's ID — which is exactly the
+  // guid that parent's own feed advertises (logical-outbound-threading.test.ts:144).
+  expect(re.post.inReplyTo).toBe(root.post.id)
   expect(re.post.inReplyToPostId).toBe(root.post.id)
   expect(re.post.threadRootId).toBe(root.post.id)
   // thread endpoint works from BOTH the root id and the reply id
@@ -28,11 +47,15 @@ test('reply compose: stores refs, resolves parent, thread endpoint returns the c
   // membership, not a total order (the contract suite pins ordering with distinct days).
   for (const id of [root.post.id, re.post.id]) {
     const t = await (await app.request(`/post/${id}/thread`)).json()
-    expect(new Set(t.thread.map((e: { id: string }) => e.id))).toEqual(new Set([root.post.id, re.post.id]))
+    expect(new Set(itemIds(t))).toEqual(new Set([root.post.id, re.post.id]))
   }
 })
 
-test('timeline entries carry replyCount (roots with replies > 0, replies 0, plain posts 0)', async () => {
+// v2 river (projector.ts:667-693): a conversation-entry lens carries roots and
+// unresolved replies only — a RESOLVED reply never appears in /timeline, so the
+// v1 shape (every reply present with replyCount 0) no longer exists. This is the
+// same predicate the deleted `?top_level=1` test used to ask for explicitly.
+test('the river carries roots with their reply counts and excludes resolved replies', async () => {
   const { app } = await makeApp()
   const cookie = await anonSession(app)
   const auth = { 'content-type': 'application/json', cookie }
@@ -41,8 +64,10 @@ test('timeline entries carry replyCount (roots with replies > 0, replies 0, plai
   await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 're two', inReplyTo: root.post.id }) })
   const { timeline } = await (await app.request('/timeline')).json()
   const byContent = (c: string) => timeline.find((e: { content: string }) => e.content === c)
-  expect(byContent('root').replyCount).toBe(2)
-  expect(byContent('re one').replyCount).toBe(0)
+  // v2 DTO splits v1's single replyCount into direct/conversation counts.
+  expect(byContent('root')).toMatchObject({ directReplyCount: 2, conversationReplyCount: 2 })
+  expect(byContent('re one')).toBeUndefined()
+  expect(byContent('re two')).toBeUndefined()
 })
 
 test('reply compose errors: unknown target 404; thread of unknown post 404', async () => {
@@ -62,30 +87,13 @@ test('reply-to-reply threads to the TOP root', async () => {
   const r2 = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: '3', inReplyTo: r1.post.id }) })).json()
   expect(r2.post.threadRootId).toBe(root.post.id) // not r1
   const t = await (await app.request(`/post/${root.post.id}/thread`)).json()
-  expect(t.thread).toHaveLength(3)
+  expect(itemIds(t)).toHaveLength(3)
 })
 
-test('GET /timeline?top_level=1 keeps roots and honest orphans, excludes resolved replies, and reports conversation totals', async () => {
-  const { app, repo } = await makeApp()
-  const alice = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-  const base = { authorId: alice.id, source: 'local' as const, title: null, url: null }
-  const rootId = 'root'
-  const replyId = 'reply'
-  const nestedId = 'nested'
-  const orphanId = 'orphan'
-  await repo.insertPost({ ...base, id: rootId, guid: 'g-root', content: 'root', publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-  await repo.insertPost({ ...base, id: replyId, guid: 'g-reply', content: 'reply', inReplyTo: rootId, inReplyToPostId: rootId, threadRootId: rootId, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z' })
-  await repo.insertPost({ ...base, id: nestedId, guid: 'g-nested', content: 'nested', inReplyTo: replyId, inReplyToPostId: replyId, threadRootId: rootId, publishedAt: '2026-01-03T00:00:00.000Z', createdAt: '2026-01-03T00:00:00.000Z' })
-  await repo.insertPost({ ...base, id: orphanId, guid: 'g-orphan', content: 'orphan', inReplyTo: 'https://missing.example/post', inReplyToPostId: null, threadRootId: null, publishedAt: '2026-01-04T00:00:00.000Z', createdAt: '2026-01-04T00:00:00.000Z' })
-
-  const top = await app.request('/timeline?top_level=1')
-  expect(top.status).toBe(200)
-  const body = (await top.json()) as { timeline: Array<{ id: string; replyCount: number }> }
-  expect(body.timeline.map((e) => e.id)).toEqual(expect.arrayContaining([rootId, orphanId]))
-  expect(body.timeline.map((e) => e.id)).not.toEqual(expect.arrayContaining([replyId, nestedId]))
-  expect(body.timeline.find((e) => e.id === rootId)?.replyCount).toBe(2)
-  expect((await app.request('/timeline?top_level=true')).status).toBe(400)
-})
+// GONE: 'GET /timeline?top_level=1 …'. top_level is a FORBIDDEN lens key in v2
+// (logical-routes.ts:324) — every use of it is now one 400 'invalid lens',
+// already pinned in logical-routes.test.ts:66. The river predicate that
+// replaced it is covered by logical-feeds/logical-routes.
 
 test('comments.xml serves direct replies; feed.xml advertises source:comments', async () => {
   const { app, repo } = await makeApp({ publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false })

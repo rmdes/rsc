@@ -2,14 +2,24 @@ import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, registeredSession } from './auth-helper.ts'
 
 async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
-  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo })
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
+  const app = createApp({
+    service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
   return { app, repo, service }
 }
 

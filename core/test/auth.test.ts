@@ -3,6 +3,10 @@ import type { Hono } from 'hono'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { ensureCoreUser } from '../src/api/auth.ts'
 import { makeAuth, anonSession, registeredSession, fakeMailer, uniqueIp } from './auth-helper.ts'
@@ -11,12 +15,25 @@ import type { Mailer } from '../src/mail.ts'
 async function makeApp(opts: { mailEnabled?: boolean; mailer?: Mailer | null } = {}) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  // NOTE: the store is deliberately NOT passed to createService here (prod does:
+  // server.ts:47). With it, POST /posts materializes a logical_local_origins_v2
+  // row whose post_id FK is ON DELETE RESTRICT, and the sweep test below dies in
+  // repo.deleteUserCascade (sqlite.ts:621) — a REAL v2 defect in
+  // sweepAnonymousUsers, not a test artifact, reported out of Task 8b rather than
+  // fixed here (it needs the logical delete path, not a raw DELETE). These are
+  // auth tests; they do not otherwise need v2 materialization.
   const service = createService(repo, bus)
   const fake = fakeMailer()
   const mailer = opts.mailer !== undefined ? opts.mailer : fake.mailer
   const mailEnabled = opts.mailEnabled ?? true
   const auth = makeAuth(repo, mailer)
-  const app = createApp({ service, bus, token: 'secret', auth, users: repo, mailEnabled })
+  const app = createApp({
+    service, bus, token: 'secret', auth, users: repo, mailEnabled,
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
   return { app, repo, service, auth, mail: fake }
 }
 
@@ -125,27 +142,24 @@ test('login while anonymous abandons the guest core user (orphaned, reclaimed in
   expect(guestAfter?.authUserId).toBe(anonAuthId) // still points at the now-deleted anon auth row: orphaned
 })
 
-test('user actions 401 without a session; POST /users is admin-gated (feed-management task 2)', async () => {
+// The admin-gated probe used to be POST /users (deleted with v1). POST
+// /admin/sources is its surviving equivalent — same gate shape, and the same
+// two answers: a session that is not an admin is 403, no session at all is 401.
+test('user actions 401 without a session; the admin write surface is admin-gated', async () => {
   const { app, repo } = await makeApp()
   expect((await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"content":"x"}' })).status).toBe(401)
   expect((await app.request('/me')).status).toBe(401)
   expect((await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: '{"handle":"x"}' })).status).toBe(401)
   expect((await app.request('/me/follows/whoever', { method: 'DELETE' })).status).toBe(401)
   expect((await app.request('/me/follows/opml', { method: 'POST', body: '<opml></opml>' })).status).toBe(401)
-  const anon = await anonSession(app)
-  const addFeed = await app.request('/users', {
+  const federate = (cookie?: string) => app.request('/admin/sources', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: anon },
-    body: JSON.stringify({ handle: 'feed1', displayName: 'Feed', feedUrl: 'http://e.example/f.xml' }),
+    headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+    body: JSON.stringify({ url: 'https://203.0.113.60/f.xml', attributionMode: 'single_publisher', category: 'operator_policy', commandId: 'auth-gate-1' }),
   })
-  expect(addFeed.status).toBe(403) // adminOrToken: an anon session is a session, just not admin (matches SP1 /admin/status); only NO session → 401
-  const reg = await registeredSession(app, 'r@test.example', repo)
-  const addFeed2 = await app.request('/users', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: reg },
-    body: JSON.stringify({ handle: 'feed1', displayName: 'Feed', feedUrl: 'http://e.example/f.xml' }),
-  })
-  expect(addFeed2.status).toBe(403) // registered but not admin (no adminEmails configured in this app)
+  expect((await federate()).status).toBe(401) // no session at all
+  expect((await federate(await anonSession(app))).status).toBe(403) // an anon session IS a session, just not admin (matches SP1 /admin/status)
+  expect((await federate(await registeredSession(app, 'r@test.example', repo))).status).toBe(403) // registered but not admin (no adminEmails configured in this app)
 })
 
 test('PATCH /me renames; posts and follows survive; 409 on conflict', async () => {
@@ -157,9 +171,9 @@ test('PATCH /me renames; posts and follows survive; 409 on conflict', async () =
   const before = meRes.user
   const renamed = await app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: '{"handle":"ricardo","displayName":"Ricardo"}' })
   expect(renamed.status).toBe(200)
+  // v2 timeline DTO: the author is `selectedAuthor`, not `author` (types.ts:53).
   const timeline = (await (await app.request('/timeline')).json()).timeline
-  expect(timeline[0].author.handle).toBe('ricardo')
-  expect(timeline[0].author.id).toBe(before.id) // same identity, no data moved
+  expect(timeline[0].selectedAuthor).toMatchObject({ kind: 'local', handle: 'ricardo', id: before.id }) // same identity, no data moved
 })
 
 test('PATCH /me rejects an unnormalized handle (400), and a valid rename keeps posting working', async () => {

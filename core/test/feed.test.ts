@@ -2,22 +2,79 @@ import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
-import { parseFeedWithMeta, ingestItems } from '../src/domain/ingest.ts'
+import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post } from '../src/domain/types.ts'
 import { renderFirehoseRss, injectSourceComments, localGuid } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
+import { randomUUID } from 'node:crypto'
+import { drainReconciliation } from '../src/logical/reconcile.ts'
+import { projectItem, projectTimeline } from '../src/logical/projector.ts'
+import type { ProjectionViewer } from '../src/logical/types.ts'
+import type { LookupFn } from '../src/domain/push-guard.ts'
 import { makeAuth } from './auth-helper.ts'
+
+const NOW = '2026-07-23T00:00:00.000Z'
+const ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
+// checkCallbackUrl runs real DNS and the sandbox has no network, so every
+// acquisition resolves through an injected public address (same convention as
+// logical-projector/logical-feeds).
+const publicLookup: LookupFn = async () => [{ address: '93.184.216.34' }]
+
+// Acquire a remote feed body into an instance the way production does — the v2
+// acquisition engine plus reconciliation — replacing v1's deleted ingestItems.
+async function acquireFeed(
+  ctx: { repo: Awaited<ReturnType<typeof createSqliteRepository>>; db: ReturnType<typeof createDatabaseContext>; store: ReturnType<typeof createLogicalStore> },
+  opts: { url: string; xml: string; sourceId?: string },
+): Promise<string> {
+  const sourceId = opts.sourceId ?? randomUUID()
+  const exists = ctx.repo.raw.prepare(`SELECT id FROM remote_sources_v2 WHERE id = ?`).get(sourceId)
+  if (!exists) {
+    ctx.repo.raw.prepare(
+      `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+       VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+    ).run(sourceId, opts.url, NOW)
+  }
+  const eng = createAcquisition({
+    db: ctx.db,
+    fetchFn: (async () => new Response(opts.xml, { status: 200, headers: { 'content-type': 'application/rss+xml' } })) as unknown as typeof fetch,
+    lookupFn: publicLookup,
+    now: () => NOW,
+  })
+  await eng.acquireSource(sourceId, { kind: 'scheduled' }, undefined)
+  // The same two-stage drain runtime.ts:386 runs after an acquisition:
+  // reconciliation, then the orphan-adoption worker — a newest-first feed
+  // delivers the reply before its parent, so adoption is what threads it.
+  drainReconciliation({ store: ctx.store, now: () => NOW })
+  for (;;) {
+    const claim = ctx.store.claimOrphanWork(NOW)
+    if (!claim) break
+    let res
+    do { res = ctx.store.adoptOrphans({ claim, now: NOW, limit: 100 }) } while (res.remaining)
+  }
+  return sourceId
+}
 
 const CTX: FeedContext = { publicUrl: 'https://cast.example.com', hubUrl: 'https://cast.example.com/hub', rssCloud: true }
 
 async function makeApp(feeds?: FeedContext) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, feeds?.publicUrl ?? null)
-  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds })
-  return { repo, service, app }
+  const publicUrl = feeds?.publicUrl ?? null
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, publicUrl, store)
+  const app = createApp({
+    service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds,
+    sources: { service: createSourceService(repo, publicUrl), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
+  return { repo, service, app, db, store }
 }
 
 async function seedAlice(service: Awaited<ReturnType<typeof makeApp>>['service']) {
@@ -174,11 +231,7 @@ test('xmlns dedup checks the opening tag, not the whole document (body text may 
 // tests build the app with createService's publicUrl arg set — makeApp()
 // above intentionally omits it (existing tests assert on url-less output).
 async function makeFirehoseApp() {
-  const repo = await createSqliteRepository(':memory:')
-  const bus = createEventBus()
-  const service = createService(repo, bus, CTX.publicUrl)
-  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds: CTX })
-  return { repo, service, app }
+  return makeApp(CTX)
 }
 
 test('GET /users/rss.xml serves the firehose; a user literally named rss keeps their feed', async () => {
@@ -198,29 +251,43 @@ test('GET /users/rss.xml serves the firehose; a user literally named rss keeps t
   expect(await perUser.text()).not.toContain(': all posts</title>')
 })
 
-test('ROUND TRIP: our own ingest consumes the firehose with full attribution and threading', async () => {
+// The dogfood loop, re-pointed onto the v2 acquisition engine (v1's ingestItems
+// is gone). Attribution/presentation selection itself is unit-pinned in
+// logical-presentation/logical-projector; what only THIS test can prove is that
+// our own firehose output is consumable by our own acquisition path — same
+// permalink guids, same source:inReplyTo, same dedup.
+test('ROUND TRIP: our own v2 acquisition consumes our own firehose, threading and deduping', async () => {
   const { service, app } = await makeFirehoseApp()
   const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
   await service.createLocalPostAs('bob', 'Bob', 'reply text', root)
   const xml = await (await app.request('/users/rss.xml')).text()
-  const { items } = await parseFeedWithMeta(xml)
-  const freshRepo = await createSqliteRepository(':memory:')
-  const sub = await freshRepo.createRemoteUser({ handle: 'tc-firehose', displayName: 'TC', feedUrl: 'https://tc.example/users/rss.xml' })
-  const bus = createEventBus()
-  await ingestItems(freshRepo, bus, sub, items)
-  const timeline = await freshRepo.getTimeline(50)
-  const rootEntry = timeline.find((e) => e.content.includes('root post text'))!
-  const replyEntry = timeline.find((e) => e.content.includes('reply text'))!
-  // attribution: item author, not the subscription
-  expect(rootEntry.sourceName).toBe('Alice')
-  expect(rootEntry.sourceFeedUrl).toBe(`${CTX.publicUrl}/users/alice/feed.xml`)
-  expect(replyEntry.sourceName).toBe('Bob')
-  // threading: the reply resolved against the root's permalink (adoption
-  // covers newest-first order: the reply arrives before its parent)
-  expect(replyEntry.inReplyToPostId).toBe(rootEntry.id)
-  expect(replyEntry.threadRootId).toBe(rootEntry.id)
-  // idempotent re-ingest: the same permalink-guid items polled again dedup fully
-  expect(await ingestItems(freshRepo, bus, sub, items)).toBe(0)
+
+  // A peer instance acquires that firehose as an ordinary remote source.
+  const peerRepo = await createSqliteRepository(':memory:')
+  const peerDb = createDatabaseContext(peerRepo.raw)
+  const peer = { repo: peerRepo, db: peerDb, store: createLogicalStore(peerDb) }
+  const FIREHOSE = 'https://tc.example/users/rss.xml'
+  const sourceId = await acquireFeed(peer, { url: FIREHOSE, xml })
+
+  const river = () => peerDb.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 50, viewer: ANON })).timeline
+  const all = () => (peerRepo.raw.prepare(`SELECT id FROM logical_items_v2 WHERE origin = 'remote'`).all() as { id: string }[])
+    .map((r) => peerDb.read((tx) => projectItem(tx, r.id, ANON))!)
+  expect(all()).toHaveLength(2)
+  expect(river().map((d) => d.content)).toContain('<p>root post text</p>') // the root enters the river
+
+  const rootItem = all().find((d) => d.content?.includes('root post text'))!
+  const replyItem = all().find((d) => d.content?.includes('reply text'))!
+  // threading: the reply resolved against the root's permalink, which is exactly
+  // what the firehose emitted as this item's <guid> and its <source:inReplyTo>.
+  expect(replyItem.parentResolutionState).toBe('resolved')
+  expect(replyItem.parentLogicalItemId).toBe(rootItem.id)
+  expect(replyItem.threadRootId).toBe(rootItem.id)
+  expect(rootItem.permalink).toBe(root.url)
+
+  // idempotent re-acquisition: the same permalink-keyed items add no new item.
+  await acquireFeed(peer, { url: FIREHOSE, xml, sourceId })
+  expect(all()).toHaveLength(2)
+  peerRepo.close()
 })
 
 test('localGuid: url-bearing post → bare permalink guid, no isPermaLink key', () => {
@@ -290,29 +357,31 @@ test('comments feed carries per-reply core <source> (multi-author, threadwalker 
   expect(body).toContain('<source url="https://cast.example.com/users/carol/feed.xml">Carol</source>')
 })
 
-test('comments feed: a remote cross-instance reply keeps its origin guid and still names its author', async () => {
-  const { repo, service, app } = await makeApp(CTX)
+test('comments feed: a remote cross-instance reply keeps its origin guid and still names its publisher', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
   // Local root with a minted permalink (createLocalPostAs under CTX.publicUrl).
   const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
-  // Ingest a remote reply the real way (shared insert path used by pushes and
-  // polls alike, per ingest.test.ts) — inReplyTo targets the root's permalink
-  // URL so findPostByRef resolves it onto the local post, exactly like a real
-  // cross-instance reply would.
-  // The remote reply ALSO carries its own (non-local) permalink url, distinct
-  // from its guid — this is what makes the test bite: renderCommentsFeed's remote
-  // branch must emit r.guid verbatim (never localGuid-derived) while still naming
-  // the author, and a remote author's <source> points at its ORIGIN feed, not our
-  // per-handle url.
-  const dan = await repo.createRemoteUser({ handle: 'dan-remote', displayName: 'Dan', feedUrl: 'https://elsewhere.example/users/dan/feed.xml' })
-  await ingestItems(repo, createEventBus(), dan, [{
-    guid: 'origin-guid-77', title: null, content: 'a remote reply', url: 'https://elsewhere.example/notes/77',
-    publishedAt: '2026-01-03T00:00:00.000Z', inReplyTo: root.url, sourceName: null, sourceFeedUrl: null, contentMarkdown: null, updatedAt: null, replyContextAuthor: null, replyContextSnippet: null,
-  }])
-  const replies = await service.listRepliesByPostId(root.id)
-  expect(replies.map((r) => r.content)).toContain('a remote reply') // sanity: ingest really resolved onto the local root
+  // Acquire a remote reply the real way (v2 acquisition + reconciliation, the
+  // shared path pushes and polls both use) — source:inReplyTo targets the root's
+  // permalink so threading resolves it onto the local post, exactly like a real
+  // cross-instance reply. The reply carries its own (non-local) permalink AND an
+  // opaque wire guid: that is what makes the test bite, since the comments feed
+  // must emit the ORIGIN guid verbatim, never a localGuid-derived one.
+  const DAN_FEED = 'https://elsewhere.example/users/dan/feed.xml'
+  await acquireFeed(ctx, {
+    url: DAN_FEED,
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Dan</title>`
+      + `<item><guid isPermaLink="false">origin-guid-77</guid><link>https://elsewhere.example/notes/77</link>`
+      + `<description>a remote reply</description><source:inReplyTo>${root.url}</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
-  // author named via core <source>, even though the reply is remote — url is dan's origin feed
-  expect(body).toContain('<source url="https://elsewhere.example/users/dan/feed.xml">Dan</source>')
+  expect(body).toContain('a remote reply') // sanity: the reply really resolved onto the local root
+  // author named via core <source>, even though the reply is remote — the url is
+  // the publisher's origin feed, the name its channel title (never ours).
+  expect(body).toContain(`<source url="${DAN_FEED}">Dan</source>`)
   // origin guid kept verbatim — never swapped for the reply's own url or the local permalink form
   expect(body).toMatch(/<guid isPermaLink="false">origin-guid-77<\/guid>/)
   expect(body).not.toContain('<guid>https://elsewhere.example/notes/77</guid>') // not localGuid-derived

@@ -2,14 +2,24 @@ import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 
 async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
-  const app = createApp({ service, bus, token: 'secret', auth: makeAuth(repo), users: repo, adminEmails: new Set(adminEmails) })
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
+  const app = createApp({
+    service, bus, token: 'secret', auth: makeAuth(repo), users: repo, adminEmails: new Set(adminEmails),
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
+  })
   return { app, repo }
 }
 
@@ -41,18 +51,19 @@ test('PATCH /admin/settings: admin updates the cap, GET reflects it, and it is e
   const get = await app.request('/admin/settings', { headers: { cookie } })
   expect(await get.json()).toEqual({ maxSubsPerUser: 1 })
 
+  // v2 subscribe body: {url, commandId} — no `type` field (P4).
   const alice = await registeredSession(app, 'alice@x.test', repo)
   const first = await app.request('/me/subscriptions', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie: alice },
-    body: JSON.stringify({ url: FEED_1, type: 'webfeed' }),
+    body: JSON.stringify({ url: FEED_1, commandId: 'cap-1' }),
   })
   expect(first.status).toBe(201)
 
   const second = await app.request('/me/subscriptions', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie: alice },
-    body: JSON.stringify({ url: FEED_2, type: 'webfeed' }),
+    body: JSON.stringify({ url: FEED_2, commandId: 'cap-2' }),
   })
   expect(second.status).toBe(429)
 })

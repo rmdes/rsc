@@ -3,30 +3,35 @@ import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, registeredSession } from './auth-helper.ts'
 
 // The whole-vertical gate (Task 10). Every earlier task proved its own layer;
-// this file walks BOTH feature states end to end through the HTTP surface only,
+// this file walks the control plane end to end through the HTTP surface only,
 // so a regression that only shows up when the pieces are wired together fails
-// here rather than in production.
+// here rather than in production. (The flag-off half went with the V1
+// retirement — there is no second feature state left to walk.)
 
 // checkCallbackUrl runs real DNS for hostnames and the sandbox has no network,
 // so every URL is a TEST-NET-3 literal (RFC 5737) — classified public without a
 // DNS round trip. Same convention as source-capability-api/subscriptions-api.
 const SRC = 'https://203.0.113.90/f.xml'
 const OTHER = 'https://203.0.113.91/f.xml'
-const LEGACY_OPML_SRC = 'https://203.0.113.92/f.xml'
 
 // Field names that exist only on the administrative projections. An ordinary
 // (non-admin) response body must never contain any of them — asserted against
 // the SERIALIZED body, so a nested or renamed-but-still-leaking field is caught.
 const ADMIN_ONLY = ['governance', 'operation', 'provenanceNote', 'adminRetained']
 
-async function makeApp(v2: boolean) {
+async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service,
     bus,
@@ -35,9 +40,8 @@ async function makeApp(v2: boolean) {
     users: repo,
     adminEmails: new Set(['boss@x.test']),
     feeds: { publicUrl: null, hubUrl: null, rssCloud: false },
-    // Presence of `sources` IS RSC_SOURCE_MODEL_V2 at the HTTP layer: server.ts
-    // builds it only when the flag is on (and imports the module dynamically).
-    ...(v2 ? { sources: { service: createSourceService(repo, null), repo } } : {}),
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo }
 }
@@ -48,53 +52,7 @@ const json = (cookie: string, body: unknown) => ({
   body: JSON.stringify(body),
 })
 
-// --- flag OFF: today's instance, unchanged --------------------------------
-
-async function expectLegacySurface(app: Awaited<ReturnType<typeof makeApp>>['app'], repo: Awaited<ReturnType<typeof makeApp>>['repo']) {
-  expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: false })
-
-  const cookie = await registeredSession(app, 'legacy@x.test', repo)
-
-  // Legacy subscribe: {url,type} → 201 with the remote shadow account.
-  const sub = await app.request('/me/subscriptions', json(cookie, { url: SRC, type: 'webfeed' }))
-  expect(sub.status).toBe(201)
-  expect((await sub.json()).user.feedUrl).toBe(SRC)
-
-  // Legacy following: full User rows, keyed by handle.
-  const handle = (await (await app.request('/me', { headers: { cookie } })).json()).user.handle
-  const follows = await app.request(`/users/${handle}/follows`)
-  expect(follows.status).toBe(200)
-  expect((await follows.json()).following.map((f: { feedUrl: string }) => f.feedUrl)).toEqual([SRC])
-  expect((await app.request(`/users/${handle}/following.opml`)).status).toBe(200)
-
-  // Legacy OPML import: no command-id header, legacy counts.
-  const opml = await app.request('/me/follows/opml', {
-    method: 'POST',
-    headers: { cookie },
-    body: `<opml version="2.0"><body><outline type="rss" text="x" xmlUrl="${LEGACY_OPML_SRC}"/></body></opml>`,
-  })
-  expect(opml.status).toBe(200)
-  expect(Object.keys(await opml.json()).sort()).toEqual(['created', 'followed', 'skipped'])
-
-  // Legacy admin surface.
-  const admin = { headers: { cookie: await registeredSession(app, 'boss@x.test', repo) } }
-  expect((await app.request('/admin/feeds', admin)).status).toBe(200)
-  return admin
-}
-
-test('with the flag off the legacy surface is intact and no v2 route exists', async () => {
-  const { app, repo } = await makeApp(false)
-  const adminRequest = await expectLegacySurface(app, repo)
-
-  // 404, not 403: the request passes the app.use('/admin/*') gate as an admin
-  // and finds no route at all. (An UNauthenticated caller gets 401 from that
-  // same gate first — house behavior for any unknown /admin/* path.)
-  expect((await app.request('/admin/sources', adminRequest)).status).toBe(404)
-  expect((await app.request('/me/following', adminRequest)).status).toBe(404)
-  repo.close()
-})
-
-// --- flag ON: the v2 control plane, end to end ----------------------------
+// --- the v2 control plane, end to end -------------------------------------
 
 async function runV2ControlPlaneFlow(app: Awaited<ReturnType<typeof makeApp>>['app'], repo: Awaited<ReturnType<typeof makeApp>>['repo']) {
   const member = await registeredSession(app, 'member@x.test', repo)
@@ -183,9 +141,9 @@ async function runV2ControlPlaneFlow(app: Awaited<ReturnType<typeof makeApp>>['a
   return { auditActions: ['gov-1', 'gov-2', 'gov-3', 'gov-4', 'fed-1'].map((id) => String(byCommand.get(id))), ordinaryBodies }
 }
 
-test('with the flag on the v2 control plane runs end to end and leaks no administrative field', async () => {
-  const { app, repo } = await makeApp(true)
-  // V2 supersession (spec §5.6): the enabled branch is the discriminated shape.
+test('the v2 control plane runs end to end and leaks no administrative field', async () => {
+  const { app, repo } = await makeApp()
+  // V2 supersession (spec §5.6): the only shape /capabilities now reports.
   expect(await (await app.request('/capabilities')).json()).toEqual({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
 
   const flow = await runV2ControlPlaneFlow(app, repo)
