@@ -21,9 +21,10 @@
 // whether a reply threads depends on ingest arrival order. Checking only that
 // content showed up hides both faults.
 //
-// Ops tokens (needed for the POST /users follow calls — guests are 403'd there)
-// come from env: TOK_MAIN, TOK_ALICE, TOK_BOB. On a Cloudron deploy each one is
-// the contents of /app/data/config/ops_token inside that app's container.
+// Ops tokens (needed for the POST /ops/sources/federation calls — guests are
+// 403'd there) come from env: TOK_MAIN, TOK_ALICE, TOK_BOB. On a Cloudron
+// deploy each one is the contents of /app/data/config/ops_token inside that
+// app's container.
 //   TOK_MAIN=… TOK_ALICE=… TOK_BOB=… node scripts/federation-demo.mjs
 //
 // This is an integration test against LIVE instances — it is intentionally not
@@ -77,10 +78,18 @@ function mintPoster(node) {
   node.feedUrl = `${node.origin}/users/${node.handle}/feed.xml`
 }
 
-function follow(node, remoteName, feedUrl) {
-  const body = JSON.stringify({ handle: remoteName, displayName: remoteName, feedUrl })
+function follow(node, feedUrl) {
+  // POST /users (v1) is gone; the v2 replacement establishes the peer's feed
+  // as a governed, instance-wide federation source rather than a per-user
+  // subscription — same 201-new / 409-already-exists shape this script reads.
+  const body = JSON.stringify({
+    url: feedUrl,
+    attributionMode: 'aggregate',
+    category: 'operator_policy',
+    commandId: crypto.randomUUID(),
+  })
   return curl(node, [
-    '-o', '/dev/null', '-w', '%{http_code}', '-X', 'POST', `${CORE}/users`,
+    '-o', '/dev/null', '-w', '%{http_code}', '-X', 'POST', `${CORE}/ops/sources/federation`,
     '-H', 'content-type: application/json', '-H', `authorization: Bearer ${node.token}`, '-d', body,
   ]).trim()
 }
@@ -166,7 +175,7 @@ async function main() {
   for (const a of nodes) {
     for (const b of nodes) {
       if (a === b) continue
-      const code = follow(a, b.name, b.feedUrl)
+      const code = follow(a, b.feedUrl)
       const note = code === '201' ? '  (new subscription)' : code === '409' ? '  (already followed)' : '  ← unexpected'
       log(`   ${a.name.padEnd(5)} → follows ${b.name.padEnd(5)} [${code}]${note}`)
     }
