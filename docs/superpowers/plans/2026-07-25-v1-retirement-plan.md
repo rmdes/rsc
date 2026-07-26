@@ -1392,7 +1392,10 @@ developed with the help of AI tools"
   each needs (delete the flag-off test named in §0.3, keep the v2 test, add
   the required `sources`/`logical` deps) but none of these five files was
   actually claimed by any task's file list before this correction. Specifics
-  per §0.3: `peers.test.ts:60` deleted (keep `:29`); `source-capability-api.test.ts`
+  per §0.3: `peers.test.ts:60` **already deleted in Task 7** (found there
+  before this correction landed — nothing left to do for this file except
+  add `sources`/`logical` to its remaining v2 test if not already present);
+  `source-capability-api.test.ts`
   delete `:71,:86` and rewrite `:61` to assert the now-constant capabilities
   shape; `source-control-integration.test.ts` delete `:85`;
   `source-ops-api.test.ts` delete `:61`; `subscriptions-api.test.ts` delete
