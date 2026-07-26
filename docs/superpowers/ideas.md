@@ -1519,3 +1519,25 @@ safe where `class` is not.
   establish just skips them. Tradeoff: establish gains a network fetch
   (bounded, SSRF-gated like acquisition) and a discovery-failure error
   path. Status: backlog — promote via brainstorm→spec.
+
+- **HTML `rel=alternate` feed autodiscovery for v2 subscribe (GAP 2, V4
+  Task 11 parity audit)** — pasting a site homepage into Subscribe worked
+  under v1 (`ingestViaDiscovery`: one-hop follow + URL rewrite onto the
+  discovered feed) and silently delivers nothing under v2 today
+  (`extractRawItems` falls back only to h-feed, with no `rel=alternate`
+  discovery step). Already live since the v2 cutover — not caused by this
+  retirement, found while auditing v1/v2 parity during V1 retirement.
+  Mechanism: not a simple rewiring — the fix has to touch source identity
+  (`canonicalUrl`, since the URL a user pastes and the feed URL discovery
+  resolves to are different identities), redirect-proof/alias rules (so a
+  re-paste of the same homepage doesn't mint a duplicate source), and the
+  tombstone gate (a previously-purged source shouldn't silently reappear
+  via rediscovery). Why: closes a real, live capability regression from
+  the v1→v2 transition — subscribing by homepage URL is a common,
+  expected UX. Grounding: `ingestViaDiscovery`'s one-hop-follow pattern is
+  the known-working precedent (deleted this release, but its shape is the
+  reference); `extractRawItems`'s h-feed-only fallback and `canonicalUrl`
+  as the identity key are today's real code. Tradeoff: needs its own
+  brainstorm→spec, not a drop-in — source identity and the tombstone gate
+  are both correctness-sensitive surfaces. Status: backlog — promote via
+  brainstorm→spec.
