@@ -1518,6 +1518,150 @@ developed with the help of AI tools"
 
 ---
 
+## Task 8c: Fix a live production bug — the housekeeping sweep silently fails on any v2 account that has posted
+
+> ⚠ **Found during Task 8b, confirmed independently by the operator, added to
+> this release by explicit decision — this is not in the original plan.**
+> `logical_local_origins_v2.post_id` is `NOT NULL UNIQUE REFERENCES posts(id)
+> ON DELETE RESTRICT` (`core/src/logical/schema.ts:66`). `deleteUserCascade`
+> (`core/src/storage/sqlite.ts:609-625`) does `DELETE FROM posts WHERE
+> author_id=?` with nothing clearing that table first. `sweepAnonymousUsers`
+> (`sqlite.ts:1224-1250`) calls `this.deleteUserCascade(...)` for BOTH the
+> idle-anonymous branch and the orphaned-core-user branch, and **both calls sit
+> inside one `raw.transaction()`** — so a single FK violation rolls back the
+> **entire sweep batch** for that hourly cycle, not just the offending account.
+> This has been silently firing on all four production instances every hour
+> since the v2 flip (2026-07-25): any idle anonymous account that posted at
+> least once causes that cycle's whole housekeeping sweep to throw, caught by
+> `server.ts`'s `try/catch` (from Task 1), logged, and forgotten. No data loss,
+> no user-facing outage — accounts simply never get reaped.
+>
+> **The fix already exists and is proven correct**: `service.deleteLocalAccount`
+> (`core/src/domain/service.ts:193-208`) already branches — when `logical` is
+> present, it calls `logical.deleteLocalAccount({accountId, actorId, now})`
+> (`core/src/logical/store.ts:374-375` → `core/src/logical/local.ts:269-283`),
+> which runs `terminallyDelete(tx, p.id, now)` **per post** before touching
+> `users` — this respects the FK. Route the sweep through the same call.
+
+**Files:**
+- Modify: `core/src/storage/sqlite.ts` (`sweepAnonymousUsers`, `:1224-1250`) —
+  accept an optional deletion-strategy override so both branches can route
+  through `logical.deleteLocalAccount` instead of `this.deleteUserCascade`
+- Modify: `core/src/housekeeping.ts` (`sweepHousekeeping`) — thread a
+  `LogicalStore`-shaped parameter through to `repo.sweepAnonymousUsers`
+- Modify: `core/src/server.ts` (the `sweepLoop` call site) — pass the
+  already-unconditionally-constructed `logicalStore` (Task 6 made this
+  non-optional; there is no longer a "no logical" case in production)
+- Test: `core/test/housekeeping.test.ts` (extend with the failing-then-passing
+  reproduction)
+
+**Interfaces:**
+- Consumes: `LogicalStore.deleteLocalAccount(input: {accountId: string; actorId: string; now: string}): void`
+  (`core/src/logical/store.ts:374-375` — verify the exact signature by reading
+  it fresh; do not assume).
+- Produces: nothing new for later tasks; this is a self-contained fix.
+
+- [ ] **Step 1: Write the failing test — reproduce the actual FK violation**
+
+Read `core/test/housekeeping.test.ts`'s current shape first (it already tests
+GAP 1's purge). Extend it with a new test that:
+1. Constructs a real `logical` (`createDatabaseContext(repo.raw)` +
+   `createLogicalStore(db)` — the same pattern Task 1's and Task 2's own tests
+   already use).
+2. Creates an anonymous local user, backdates their session/creation so
+   `sweepAnonymousUsers`'s idle check matches, and has them create a post
+   THROUGH THE V2 PATH (`store.createLocalPost({...})` — the same call
+   `service.createLocalPostAs`'s v2 branch makes — NOT `repo.insertPost`
+   directly, which would not populate `logical_local_origins_v2` and would
+   fail to reproduce the bug).
+3. Calls `sweepHousekeeping(repo, config, logical)` (or however Step 2/3
+   below end up shaping the call) and asserts it does **not** throw.
+4. Asserts the user row is actually gone afterward (the sweep genuinely
+   reclaimed the account, not just avoided crashing).
+
+- [ ] **Step 2: Run it, confirm it fails for the RIGHT reason**
+
+Run: `docker compose exec -T core npm run -w core test -- housekeeping.test.ts`
+Expected: FAIL with `SqliteError: FOREIGN KEY constraint failed` (or the
+transaction-wrapped equivalent) — NOT a different error. If it fails for any
+other reason, your fixture doesn't reproduce the real bug yet; fix the
+fixture before proceeding.
+
+- [ ] **Step 3: Implement the fix**
+
+Read `core/src/storage/sqlite.ts:1224-1250` (`sweepAnonymousUsers`) and
+`core/src/domain/service.ts:193-208` (`deleteLocalAccount`, the pattern to
+mirror) fresh — do not work from the line numbers/snippets above without
+confirming them, prior tasks in this release repeatedly found drift between
+a brief's citations and the real file. Modify `sweepAnonymousUsers` so BOTH
+the idle-anonymous branch (`core: this.deleteUserCascade(core.id)`) and the
+orphaned-core-user branch (`this.deleteUserCascade(o.id)`) route through
+`logical.deleteLocalAccount({accountId: id, actorId: id, now})` when a
+`logical` reference is available, falling back to `this.deleteUserCascade(id)`
+only when it is not. `sqlite.ts` already imports from `../logical/schema.ts`,
+`../logical/journal.ts`, `../logical/fanout.ts` — importing from
+`../logical/local.ts` or typing the parameter against `LogicalStore` follows
+existing precedent, it is not a new architectural direction.
+
+Thread the parameter through `housekeeping.ts`'s `sweepHousekeeping` and
+`server.ts`'s call site (which already holds `logicalStore` unconditionally,
+per Task 6).
+
+- [ ] **Step 4: Verify `deleteUserCascade`'s remaining callers precisely — do not assert, check**
+
+Run: `grep -rn "deleteUserCascade" core/src --include=*.ts`
+Expected: three remaining callers in `service.ts` (`removeFollow`'s
+orphaned-self-serve-feed reap, `removeRemoteFeed`, and `deleteLocalAccount`'s
+own `else`/flag-off branch). **Determine whether the first two (remote-feed
+deletions) are actually subject to the same FK hazard** — a remote user's
+posts are not necessarily materialized into `logical_local_origins_v2` the
+same way a local user's are, but verify this from the schema/write paths
+rather than assume it. If they ARE at risk, say so explicitly in your report
+as a finding, not a fix (this task's scope is the housekeeping sweep only —
+do not silently expand scope to fix a different call site without flagging
+it). Write the comment on `deleteUserCascade` to accurately reflect what you
+find, not the assumption in this brief.
+
+- [ ] **Step 5: Run the test again — must now pass**
+
+Run: `docker compose exec -T core npm run -w core test -- housekeeping.test.ts`
+Expected: PASS — no FK error, and the account is confirmed gone.
+
+- [ ] **Step 6: Run the full core suite + typecheck**
+
+Run: `docker compose exec -T core npm run -w core test`
+Run: `docker compose exec -T core npm run -w core typecheck`
+Expected: `core/src` 0 errors; the suite should return to the Task 8b baseline
+(957 passed / 1 failed — the one known `smoke.test.ts` failure Task 9 owns)
+plus your new passing test, with no new failures anywhere.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add core/src/storage/sqlite.ts core/src/housekeeping.ts core/src/server.ts core/test/housekeeping.test.ts
+git commit -m "core: route the housekeeping sweep through logical.deleteLocalAccount
+
+Found during Task 8b of the V1 retirement, confirmed against schema.ts and
+sqlite.ts, and added to this release by explicit operator decision (same
+class of finding as GAP 1 -- a live, silently-failing production defect
+surfaced mid-implementation, with a bounded fix reusing already-proven v2
+machinery).
+
+logical_local_origins_v2.post_id is ON DELETE RESTRICT; deleteUserCascade's
+raw DELETE FROM posts violates it whenever the deleted account has posted
+under v2. sweepAnonymousUsers called deleteUserCascade for both its
+idle-anonymous and orphaned-core-user branches inside ONE transaction, so a
+single FK violation rolled back the entire hourly sweep batch, silently,
+since the v2 flip (2026-07-25) -- caught by server.ts's try/catch, logged,
+and never retried correctly. Routes both branches through
+logical.deleteLocalAccount instead, mirroring service.deleteLocalAccount's
+own existing v2 branch exactly.
+
+developed with the help of AI tools"
+```
+
+---
+
 ## Task 9: Close GAP 3 — re-point `smoke.ts` and `federation-demo.mjs`
 
 **Files:**
