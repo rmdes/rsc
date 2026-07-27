@@ -344,6 +344,42 @@ test('successful fetch with no match → terminal unverified, job reconciled, no
   expect(count(raw, 'deliveries_v2')).toBe(0)
 })
 
+test('a previously-terminal unverified check gets re-matched and promoted when a later batch fetch for the same URL succeeds', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  // First fetch for this URL doesn't contain li-1's guid (a timing race, the
+  // real dev-data shape: the post hadn't propagated to the author's own feed
+  // yet) -> terminal unverified.
+  const jobId1 = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: jobId1, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g-other' })]), now: NOW })
+  expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-1'`).get() as { state: string }).state).toBe('unverified')
+
+  // A second item asserts the same origin URL; this fetch DOES contain g1 ->
+  // li-1 (previously stuck) should ALSO get promoted, not just li-2.
+  const LATER = '2026-07-24T01:00:00.000Z'
+  const jobId2 = seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g2' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: jobId2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' }), evidenceFor({ guid: 'g2' })]), now: LATER })
+
+  expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-1'`).get() as { state: string }).state).toBe('verified')
+  expect(count(raw, 'publisher_claims_v2', "WHERE logical_item_id = 'li-1' AND evidence_level = 'verified_origin'")).toBe(1)
+  expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-2'`).get() as { state: string }).state).toBe('verified')
+})
+
+test('a still-non-matching previously-unverified check stays unverified after an unrelated batch re-run', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+  const jobId1 = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: jobId1, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g-other' })]), now: NOW })
+  expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-1'`).get() as { state: string }).state).toBe('unverified')
+
+  // A second batch fetch for the SAME url, still without g1's content.
+  const jobId2 = seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g2' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: jobId2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g2' })]), now: NOW })
+
+  expect((raw.prepare(`SELECT state FROM verification_checks_v2 WHERE logical_item_id = 'li-1'`).get() as { state: string }).state).toBe('unverified')
+  expect(count(raw, 'publisher_claims_v2', "WHERE logical_item_id = 'li-1'")).toBe(0)
+})
+
 test('operational failure retries with backoff, and exhaustion → unverified', async () => {
   const { raw, store } = await fresh()
   seedSource(raw, 's_agg', 'https://agg.test/f')

@@ -246,7 +246,7 @@ export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerification
     return
   }
 
-  const checks = tx.prepare(`SELECT id, logical_item_id, source_id FROM verification_checks_v2 WHERE batch_key = ? AND state = 'pending'`).all(batchKey) as { id: string; logical_item_id: string; source_id: string }[]
+  const checks = tx.prepare(`SELECT id, logical_item_id, source_id FROM verification_checks_v2 WHERE batch_key = ? AND state IN ('pending', 'unverified')`).all(batchKey) as { id: string; logical_item_id: string; source_id: string }[]
   let anyVerified = false
   let originSourceId: string | null = null
   let originPublisherId: string | null = null
