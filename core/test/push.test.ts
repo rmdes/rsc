@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
 import { createPush, handleWebSubRequest, handleRssCloudRequest, resolveLocalTopic } from '../src/domain/push.ts'
 import { loadConfig } from '../src/config.ts'
 
@@ -11,7 +13,8 @@ const EXT_ENV = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https:/
 async function setup(env: Record<string, string>) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
+  const store = createLogicalStore(createDatabaseContext(repo.raw))
+  const service = createService(repo, bus, null, store)
   const config = loadConfig(env)
   return { repo, bus, service, config }
 }
@@ -179,7 +182,6 @@ test('O5: self mode fat ping counts a REMOTE logical reply (v2) so the push body
   // A v2 remote reply lives in logical_items_v2, NOT posts. countRepliesByPostIds
   // must union it in — the projector's directReplyCount (the PULL body) does.
   const NOW = '2026-07-25T00:00:00.000Z'
-  repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'local', ?, 'none', NULL, NULL, NULL, ?)`).run(root.id, NOW, NOW)
   repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'resolved', ?, NULL, NULL, ?)`).run(randomUUID(), NOW, root.id, NOW)
   const bodies: string[] = []
   const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(String(init?.body)); return new Response('', { status: 200 }) })

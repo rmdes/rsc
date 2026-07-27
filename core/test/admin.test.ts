@@ -35,9 +35,9 @@ test('deriveIsAdmin: case-insensitive match', () => {
 async function makeApp(adminEmails: string[]) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo, adminEmails: new Set(adminEmails),
     sources: { service: createSourceService(repo, null), repo },

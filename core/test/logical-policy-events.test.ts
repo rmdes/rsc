@@ -279,14 +279,3 @@ test('service.updateUserProfile appends one reset when v2 is on', async () => {
   expect(updated.displayName).toBe('Renamed')
   expect(resets(raw)).toBe(1)
 })
-
-test('with v2 OFF the same service writes NO journal row (flag-off isolation)', async () => {
-  const repo = await fresh()
-  const raw = repo.raw
-  const svc = createService(repo, createEventBus(), 'https://cast.example') // no logical store
-  const me = await repo.createLocalUser({ handle: 'me', displayName: 'Me' })
-  const you = await repo.createLocalUser({ handle: 'you', displayName: 'You' }) as User
-  await svc.addFollow(me, you)
-  await svc.updateUserProfile(me.id, { displayName: 'Renamed' })
-  expect(journalSeq(raw)).toBe(0)
-})

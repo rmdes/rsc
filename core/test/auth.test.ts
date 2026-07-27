@@ -17,18 +17,16 @@ async function makeApp(opts: { mailEnabled?: boolean; mailer?: Mailer | null } =
   const bus = createEventBus()
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
-  // NOTE: the store is deliberately NOT passed to createService here (prod does:
-  // server.ts:47). With it, POST /posts materializes a logical_local_origins_v2
-  // row whose post_id FK is ON DELETE RESTRICT, and the sweep tests below call
-  // repo.sweepAnonymousUsers directly without threading a `logical` store
-  // through, so a v2-materialized account would hit the raw deleteUserCascade
-  // fallback (sqlite.ts:625) and violate that FK. This was a REAL v2 defect,
-  // found in Task 8b and fixed in Task 8c by routing sweepHousekeeping through
-  // the logical delete path when a store is available (see
-  // housekeeping.test.ts). It doesn't apply to the direct sweepAnonymousUsers
-  // calls here — these are auth tests and do not otherwise need v2
-  // materialization.
-  const service = createService(repo, bus)
+  // The store IS passed to createService here (matching prod: server.ts:47), so
+  // POST /posts materializes a logical_local_origins_v2 row per post. That row's
+  // post_id FK is ON DELETE RESTRICT, so any test below that calls
+  // repo.sweepAnonymousUsers directly on an account that has posted MUST thread
+  // `store` through too (repo.sweepAnonymousUsers(7, store)) — the raw
+  // deleteUserCascade fallback (sqlite.ts:626) violates that FK otherwise (the
+  // v2 defect found in Task 8b/8c; see the sqlite.ts comment above
+  // sweepAnonymousUsers). Tests that never post before sweeping are unaffected
+  // either way.
+  const service = createService(repo, bus, null, store)
   const fake = fakeMailer()
   const mailer = opts.mailer !== undefined ? opts.mailer : fake.mailer
   const mailEnabled = opts.mailEnabled ?? true
@@ -38,7 +36,7 @@ async function makeApp(opts: { mailEnabled?: boolean; mailer?: Mailer | null } =
     sources: { service: createSourceService(repo, null), repo },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
-  return { app, repo, service, auth, mail: fake }
+  return { app, repo, service, auth, store, mail: fake }
 }
 
 // Hard verification (Step 1) blocks sign-in until the emailed link is
@@ -217,7 +215,7 @@ test('PATCH /me trims displayName edges and preserves internal whitespace', asyn
 })
 
 test('sweep reclaims idle anonymous guests (full cascade, one transaction) and orphans; spares the active and the registered', async () => {
-  const { app, repo } = await makeApp()
+  const { app, repo, store } = await makeApp()
   // idle guest with a post and follows in both directions
   const idle = await anonSession(app)
   await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie: idle }, body: '{"content":"guest post"}' })
@@ -235,7 +233,7 @@ test('sweep reclaims idle anonymous guests (full cascade, one transaction) and o
   const active = await anonSession(app)
   await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie: active }, body: '{"content":"still here"}' })
 
-  const { swept } = repo.sweepAnonymousUsers(7)
+  const { swept } = repo.sweepAnonymousUsers(7, store)
   expect(swept).toBe(1)
   expect(await repo.getUserByHandle(idleUser.handle)).toBeUndefined()
   expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM posts WHERE author_id = ?`).get(idleUser.id)).toMatchObject({ n: 0 })
@@ -248,9 +246,9 @@ test('sweep reclaims idle anonymous guests (full cascade, one transaction) and o
 })
 
 test('sweep reclaims core users whose auth account is gone (login-abandon orphans)', async () => {
-  const { repo } = await makeApp()
+  const { repo, store } = await makeApp()
   await repo.createLocalUser({ handle: 'guest-orphan', displayName: 'guest-orphan', authUserId: 'deleted-auth-id' })
-  const { swept } = repo.sweepAnonymousUsers(7)
+  const { swept } = repo.sweepAnonymousUsers(7, store)
   expect(swept).toBe(1)
   expect(await repo.getUserByHandle('guest-orphan')).toBeUndefined()
 })
@@ -346,7 +344,7 @@ test('guest upgrade: register while anon, verify, sign in — prior posts keep t
 })
 
 test('guest upgrade abandoned: register but never verify — guest stays anonymous and is swept', async () => {
-  const { app, repo } = await makeApp()
+  const { app, repo, store } = await makeApp()
   const anon = await anonSession(app)
   const guest = (await (await app.request('/me', { headers: { cookie: anon } })).json()).user
   await app.request('/api/auth/sign-up/email', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie: anon, 'x-forwarded-for': uniqueIp() }, body: JSON.stringify({ email: 'x@b.test', password: 'password123', name: 'x' }) })
@@ -358,7 +356,7 @@ test('guest upgrade abandoned: register but never verify — guest stays anonymo
   const old = new Date(Date.now() - 8 * 86400_000).toISOString()
   repo.raw.prepare('UPDATE session SET updatedAt = ? WHERE userId = ?').run(old, guest.authUserId)
   repo.raw.prepare('UPDATE user SET createdAt = ? WHERE id = ?').run(old, guest.authUserId)
-  const { swept } = repo.sweepAnonymousUsers(7)
+  const { swept } = repo.sweepAnonymousUsers(7, store)
   expect(swept).toBeGreaterThanOrEqual(1)
   expect(await repo.getUserByHandle(guest.handle)).toBeUndefined()
 })

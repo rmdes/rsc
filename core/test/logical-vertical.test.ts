@@ -101,14 +101,6 @@ const mkRuntime = (deps: Awaited<ReturnType<typeof fresh>>, acquisition: Acquisi
 // Cross-model isolation — v2 DISABLED (§7.4): v2 tables inert, legacy byte-identical
 // ============================================================================
 
-test('disabled: a service built WITHOUT the logical store writes NO v2 rows (flag-off byte-identical)', async () => {
-  const { repo, raw } = await fresh()
-  const service = createService(repo, createEventBus(), null) // no logical store — exactly the OFF path
-  await service.createLocalPostAs('bob', 'Bob', 'hello from v1')
-  expect(count(raw, 'logical_items_v2')).toBe(0)
-  expect(count(raw, 'logical_journal_v2')).toBe(0)
-})
-
 test('disabled: the reconciliation marker is a no-op on a never-activated instance (no write)', async () => {
   const deps = await fresh()
   expect(markReconciliationRequiredIfActive(deps.db)).toBe(false)

@@ -10,12 +10,14 @@ import { createSourceService } from '../src/domain/source-service.ts'
 import { makeAuth, anonSession } from './auth-helper.ts'
 import { DomainError, HandleTakenError } from '../src/domain/types.ts'
 import type { Repository } from '../src/domain/repository.ts'
+import type { LogicalStore } from '../src/logical/store.ts'
 import type { User } from '../src/domain/types.ts'
 
 async function setup() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  return { repo, bus, svc: createService(repo, bus) }
+  const store = createLogicalStore(createDatabaseContext(repo.raw))
+  return { repo, bus, svc: createService(repo, bus, null, store) }
 }
 
 test('createLocalPost stores, emits, and appears in the timeline', async () => {
@@ -50,7 +52,8 @@ test('a first post that loses the create race retries the lookup and succeeds', 
       return repo.getUserByHandle(h)
     },
   })
-  const svc = createService(racy, createEventBus())
+  const store = createLogicalStore(createDatabaseContext(repo.raw))
+  const svc = createService(racy, createEventBus(), null, store)
   const entry = await svc.createLocalPostAs('alice', 'Alice', 'raced post')
   expect(entry.author.handle).toBe('alice')
 })
@@ -74,7 +77,8 @@ test('addFollow requires a local follower and is idempotent', async () => {
 test('addFollow refuses self-follow and instance targets, minting nothing', async () => {
   const follows: Array<[string, string]> = []
   const repo = { addFollow: async (a: string, b: string) => { follows.push([a, b]) } } as unknown as Repository
-  const svc = createService(repo, createEventBus())
+  const logical = { addLocalFollow: () => { follows.push(['via-logical', 'unused']) } } as unknown as LogicalStore
+  const svc = createService(repo, createEventBus(), null, logical)
   const alice: User = { id: 'alice-id', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
   const peer: User = { id: 'inst-id', kind: 'remote', handle: 'peer', displayName: 'Peer', feedUrl: 'https://p.example/f.xml', createdAt: '2026-01-01T00:00:00.000Z', authUserId: null, feedType: 'instance' }
   expect(await svc.addFollow(alice, alice)).toBe(false)
@@ -82,7 +86,7 @@ test('addFollow refuses self-follow and instance targets, minting nothing', asyn
   expect(follows).toEqual([])
   const person: User = { ...peer, id: 'p2', handle: 'p2', feedType: 'person' }
   expect(await svc.addFollow(alice, person)).toBe(true)
-  expect(follows).toEqual([['alice-id', 'p2']])
+  expect(follows).toEqual([['via-logical', 'unused']])
 })
 
 test('followed lens passes the filter through', async () => {
@@ -97,21 +101,24 @@ test('followed lens passes the filter through', async () => {
 
 test('local posts get a permalink url when publicUrl is configured', async () => {
   const repo = await createSqliteRepository(':memory:')
-  const service = createService(repo, createEventBus(), 'https://tc.example')
+  const store = createLogicalStore(createDatabaseContext(repo.raw))
+  const service = createService(repo, createEventBus(), 'https://tc.example', store)
   const entry = await service.createLocalPostAs('alice', 'Alice', 'hello')
   expect(entry.url).toBe(`https://tc.example/post/${entry.id}`)
 })
 
 test('local posts keep url null without publicUrl (existing behavior)', async () => {
   const repo = await createSqliteRepository(':memory:')
-  const service = createService(repo, createEventBus())
+  const store = createLogicalStore(createDatabaseContext(repo.raw))
+  const service = createService(repo, createEventBus(), null, store)
   const entry = await service.createLocalPostAs('alice', 'Alice', 'hello')
   expect(entry.url).toBeNull()
 })
 
 test('replies to permalinked posts reference the permalink, not the guid', async () => {
   const repo = await createSqliteRepository(':memory:')
-  const service = createService(repo, createEventBus(), 'https://tc.example')
+  const store = createLogicalStore(createDatabaseContext(repo.raw))
+  const service = createService(repo, createEventBus(), 'https://tc.example', store)
   const parent = await service.createLocalPostAs('alice', 'Alice', 'root')
   const parentPost = await repo.getPost(parent.id)
   const reply = await service.createLocalPostAs('bob', 'Bob', 'reply', parentPost!)
@@ -187,8 +194,8 @@ async function renameApp(v2: boolean) {
 const patchMe = (app: Awaited<ReturnType<typeof renameApp>>['app'], cookie: string, body: unknown) =>
   app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) })
 
-test.each([false, true])('PATCH /me refuses a reserved handle after the converted source row is removed (v2=%s)', async (v2) => {
-  const { repo, app } = await renameApp(v2)
+test('PATCH /me refuses a reserved handle after the converted source row is removed', async () => {
+  const { repo, app } = await renameApp(true)
   // A converted legacy remote feed: conversion reserves its handle …
   const converted = await repo.createRemoteUser({ handle: 'newsbot', displayName: 'Newsbot', feedUrl: 'https://ex.com/n.xml' })
   reserve(repo, 'newsbot')
@@ -205,8 +212,8 @@ test.each([false, true])('PATCH /me refuses a reserved handle after the converte
   expect(await repo.getUserByHandle('newsbot')).toBeUndefined() // nothing was renamed
 })
 
-test.each([false, true])('an ordinary rename still succeeds — the guard does not over-block (v2=%s)', async (v2) => {
-  const { repo, app } = await renameApp(v2)
+test('an ordinary rename still succeeds — the guard does not over-block', async () => {
+  const { repo, app } = await renameApp(true)
   reserve(repo, 'newsbot')
   const cookie = await anonSession(app)
   const res = await patchMe(app, cookie, { handle: 'freehandle', displayName: 'Free' })

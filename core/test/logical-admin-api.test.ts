@@ -35,9 +35,9 @@ function seedSource(raw: Raw, id: string, url: string, opts: { operation?: strin
 async function makeApp(fetchMap: Record<string, () => Response | Promise<Response>> = {}, refreshWaitMs = 80) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const fetchFn = (async (input: string | URL | Request) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const h = fetchMap[url]

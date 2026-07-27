@@ -13,9 +13,9 @@ import { makeAuth } from './auth-helper.ts'
 test('smoke: anonymous sign-in, post, /me, and ops-token federation seeding all work end to end', async () => {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
     sources: { service: createSourceService(repo, null), repo },

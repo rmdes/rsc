@@ -12,9 +12,9 @@ import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
     adminEmails: new Set(adminEmails), mailEnabled: true,

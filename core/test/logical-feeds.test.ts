@@ -41,9 +41,9 @@ function seedRemoteItem(raw: Raw, sourceId: string, url: string, key: string, co
 async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const acquisition = createAcquisition({ db, fetchFn: (async () => new Response('', { status: 200 })) as unknown as typeof fetch, lookupFn: publicLookup, now: () => NOW })
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(),

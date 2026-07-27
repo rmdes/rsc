@@ -26,9 +26,9 @@ async function makeApp(fetchMap: Record<string, () => Response | Promise<Respons
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw as Raw
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
   const db = createDatabaseContext(raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const fetchFn = (async (input: string | URL | Request) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const h = fetchMap[url]

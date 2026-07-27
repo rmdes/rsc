@@ -34,10 +34,10 @@ async function addAccount(app: Hono, repo: SqliteRepository, jar: ReturnType<typ
 async function makeApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
-  const service = createService(repo, bus, null)
   const auth = makeAuth(repo)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth, users: repo,
     sources: { service: createSourceService(repo, null), repo },

@@ -15,7 +15,7 @@ async function makeApp() {
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
   const app = createApp({
-    service: createService(repo, bus), bus, token: 'secret', auth: makeAuth(repo), users: repo,
+    service: createService(repo, bus, null, store), bus, token: 'secret', auth: makeAuth(repo), users: repo,
     sources: { service: createSourceService(repo, null), repo },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
