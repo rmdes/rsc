@@ -14,7 +14,7 @@ import { makeAuth, anonSession } from './auth-helper.ts'
 //    is source-admin-api.test.ts:62 + source-ops-api.test.ts's bearer matrix
 //    (which also inherited the equal-length wrong-token case); malformed-JSON
 //    400 and bad-URL 400 are source-ops-api.test.ts:125; the taken-handle 409
-//    is repository-contract.ts:159.
+//    is repository-contract.ts:69.
 //  - 'reply-context is nulled on a resolved reply, kept on an orphan', which
 //    drove the deleted ingestItems. Its subject — replyContext on a remote
 //    reply, resolved vs asserted-external — is logical-projector.test.ts's D4

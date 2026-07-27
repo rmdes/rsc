@@ -46,15 +46,6 @@ export function hideResolvedReplyContext<T extends { inReplyToPostId?: string | 
   return e.inReplyToPostId ? { ...e, replyContextAuthor: null, replyContextSnippet: null } : e
 }
 
-export interface PostRevision {
-  id: string
-  postId: string
-  title: string | null
-  content: string
-  contentMarkdown: string | null
-  seenAt: string
-}
-
 export interface NewLocalUser { handle: string; displayName: string; authUserId?: string }
 export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string; feedType?: FeedType }
 // rootReplyCount is transient SSE timeline metadata (spec §Live updates): the
@@ -62,15 +53,6 @@ export interface NewRemoteUser { handle: string; displayName: string; feedUrl: s
 // reply, added only by the SSE route. It is never stored and never present on
 // roots, unresolved replies, or edits.
 export type TimelineEntry = Post & { author: User; rootReplyCount?: number }
-export interface TimelineCursor { publishedAt: string; id: string }
-
-export interface TimelineFilter {
-  followedBy?: string
-  authorId?: string
-  source?: 'local'
-  feedType?: 'instance'
-  topLevel?: true
-}
 
 export type PushProtocol = 'websub' | 'rsscloud'
 

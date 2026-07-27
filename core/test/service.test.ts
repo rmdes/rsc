@@ -22,7 +22,6 @@ async function setup() {
 
 test('createLocalPost stores, emits, and reads back', async () => {
   const { repo, bus, svc } = await setup()
-  await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) // remote coexists
   const seen = vi.fn()
   bus.onNewPost(seen)
   const entry = await svc.createLocalPostAs('alice', 'Alice', 'hello world')

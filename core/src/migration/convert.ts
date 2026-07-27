@@ -519,7 +519,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
 
     // The accepted presentation chain: legacy revisions oldest-first, then the
     // post's CURRENT state (post_revisions holds superseded snapshots, and
-    // seen_at is the moment each was superseded — sqlite.ts recordEdit).
+    // seen_at is the moment each was superseded — logical/local.ts editLocalPost).
     const revisions = revisionsOf.all(post.id) as { title: string | null; content: string; content_markdown: string | null; seen_at: string }[]
     const steps = [
       ...revisions.map((r) => ({ title: r.title, content: r.content, contentMarkdown: r.content_markdown, updated: r.seen_at })),
