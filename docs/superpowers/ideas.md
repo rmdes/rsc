@@ -1610,3 +1610,15 @@ safe where `class` is not.
   items into one PR; the Repository-interface item may want its own,
   smaller spec if it turns out `repository-contract.ts` assumes any of
   these methods exist for reasons beyond legacy coverage.
+
+  **Addendum (2026-07-27, the release's own final cleanup-commit
+  review):** 3 more stale-flag sites the cleanup commit's itemized scope
+  didn't reach, same class as above: `web/src/routes/admin/feeds/
+  +page.server.ts:135,204` (two more "the flag is on" comments in a file
+  the cleanup batch never touched); `core/test/opml.test.ts:34` and
+  `core/test/service.test.ts:146` (stale flag language in test-file
+  comments, outside the batch's stated `core/src`/`web/src` scope);
+  `core/test/logical-v4-vertical.test.ts:138` passes an inert
+  `RSC_SOURCE_MODEL_V2: 'on'` key into `loadConfig` (harmless — the key
+  isn't read — not worth a special fix, just noting it's the last
+  remaining string literal of the flag anywhere in a test fixture).
