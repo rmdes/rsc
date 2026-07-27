@@ -9,7 +9,7 @@ import type { LogicalStore } from '../logical/store.ts'
 import type { ReadTx } from '../logical/database.ts'
 import type { AcquisitionEngine } from '../logical/acquisition.ts'
 import type { CommandEnvelope, AuditCategory } from '../domain/types.ts'
-import type { RunCursor, JobCursor, AdminRunProjection, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult } from '../logical/types.ts'
+import type { RunCursor, JobCursor, AdminRunProjection, AdminRefreshResult, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult } from '../logical/types.ts'
 import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
 import type { Service } from '../domain/service.ts'
@@ -166,7 +166,8 @@ export function mountLogicalRoutes(app: Hono, deps: LogicalRouteDeps): void {
     if (check.kind === 'replay') {
       const proj = store.getRunProjection(check.runId)
       if (!proj) return c.json(NEUTRAL_404, 404)
-      return c.json({ ...proj, disposition: 'replayed' as const }, proj.status === 'terminal' ? 200 : 202)
+      const result: AdminRefreshResult = { ...proj, disposition: 'replayed' }
+      return c.json(result, proj.status === 'terminal' ? 200 : 202)
     }
 
     // Fresh: an in-flight run means this command joins it (no second fetch).
@@ -189,7 +190,8 @@ export function mountLogicalRoutes(app: Hono, deps: LogicalRouteDeps): void {
       store.recordHealth({ sourceId, outcome: run.outcome, now: now() })
     }
     const { proj, terminal } = await waitForTerminal(run.runId)
-    return c.json({ ...proj, disposition }, terminal ? 200 : 202)
+    const result: AdminRefreshResult = { ...proj, disposition }
+    return c.json(result, terminal ? 200 : 202)
   })
 
   app.get('/admin/acquisition-runs/:runId', (c) => {
