@@ -10,6 +10,7 @@ import { createSourceService } from '../src/domain/source-service.ts'
 import { makeAuth, anonSession } from './auth-helper.ts'
 import { DomainError, HandleTakenError } from '../src/domain/types.ts'
 import type { Repository } from '../src/domain/repository.ts'
+import type { User } from '../src/domain/types.ts'
 
 async function setup() {
   const repo = await createSqliteRepository(':memory:')
@@ -62,6 +63,26 @@ test('addFollow requires a local follower and is idempotent', async () => {
   await svc.addFollow(alice, news) // idempotent
   expect((await svc.listFollowing(alice.id)).map((u) => u.handle)).toEqual(['news'])
   await expect(svc.addFollow(news, alice)).rejects.toBeInstanceOf(DomainError) // remote follower rejected
+})
+
+// Was core/test/subscribe.test.ts (renamed: v1 subscribeByUrl and its five
+// tests were deleted with the v1 path, V4 Task 11; SourceService.subscribeByUrl
+// is covered by source-subscribe.test.ts — what survived was this exclusion
+// guard, which belongs with the rest of addFollow's coverage above). A fake
+// stub Repository, not setup()'s real sqlite one: this only checks the
+// exclusion guard fires before any storage call, so a spy is enough.
+test('addFollow refuses self-follow and instance targets, minting nothing', async () => {
+  const follows: Array<[string, string]> = []
+  const repo = { addFollow: async (a: string, b: string) => { follows.push([a, b]) } } as unknown as Repository
+  const svc = createService(repo, createEventBus())
+  const alice: User = { id: 'alice-id', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+  const peer: User = { id: 'inst-id', kind: 'remote', handle: 'peer', displayName: 'Peer', feedUrl: 'https://p.example/f.xml', createdAt: '2026-01-01T00:00:00.000Z', authUserId: null, feedType: 'instance' }
+  expect(await svc.addFollow(alice, alice)).toBe(false)
+  expect(await svc.addFollow(alice, peer)).toBe(false)
+  expect(follows).toEqual([])
+  const person: User = { ...peer, id: 'p2', handle: 'p2', feedType: 'person' }
+  expect(await svc.addFollow(alice, person)).toBe(true)
+  expect(follows).toEqual([['alice-id', 'p2']])
 })
 
 test('followed lens passes the filter through', async () => {
@@ -143,12 +164,12 @@ test('an unreserved handle is unaffected by the guard', async () => {
 })
 
 // ── the guard on the path production actually takes ───────────────────────────
-// Reservations only EXIST once conversion has run, i.e. with RSC_SOURCE_MODEL_V2
-// on — and with the flag on service.updateUserProfile routes to the LOGICAL
-// store, not the repository. So the rename guard has to hold there too, with the
-// identical error (and therefore the identical 409) whichever implementation runs.
-
-// Same composition service.ts sees at runtime: `logical` present ⇔ flag on.
+// Reservations only EXIST once conversion has run, and service.updateUserProfile
+// always routes to the LOGICAL store in production (server.ts passes it
+// unconditionally), not the repository. So the rename guard has to hold there
+// too, with the identical error (and therefore the identical 409) whichever
+// implementation runs — `logical` stays optional here only so this test can
+// parametrize both.
 async function renameApp(v2: boolean) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()

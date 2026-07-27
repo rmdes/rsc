@@ -5,7 +5,6 @@ import { test, expect, vi } from 'vitest'
 // a FRESH +page.server.ts import so module-level memoization never bleeds
 // between cases.
 
-const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 
 const loadEvent = (fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search = '') => ({
@@ -76,7 +75,6 @@ async function loadRuns(fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search
 
 test('the v2 source-detail load reads governance + the latest run and mints a stable refresh command id', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope()), { status: 200 })
 		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [runProjection('r2', 'processing'), runProjection('r1', 'terminal')], nextCursor: null }), { status: 200 })
 		return new Response(JSON.stringify(sourceDetail('quarantined')), { status: 200 })
@@ -97,7 +95,6 @@ test('the v2 source-detail load reads governance + the latest run and mints a st
 
 test('a 404 source-detail (unknown source) is hidden as 404', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		return new Response(JSON.stringify({ error: 'unknown source' }), { status: 404 })
 	})
 	await expect(loadDetail(fetch)).rejects.toMatchObject({ status: 404 })
@@ -110,7 +107,6 @@ test('a 404 source-detail (unknown source) is hidden as 404', async () => {
 
 const withPush = (push: Record<string, unknown>, expiresAt: string | null) =>
 	vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope(0)), { status: 200 })
 		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null }), { status: 200 })
 		return new Response(JSON.stringify(sourceDetail('quarantined', push, expiresAt)), { status: 200 })
@@ -133,7 +129,6 @@ test('no lease ⇒ push is null, so the panel renders no push block at all', asy
 
 test('the v2 source-detail load reads conflictCount + the item navigation rows and mints a stable purge command id', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope(4, [{ logicalItemId: 'li9', state: 'hidden', timelineSortAt: '2026-07-20T00:00:00Z', hiddenAt: '2026-07-20T00:00:00Z' }], 'iNext')), { status: 200 })
 		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [runProjection('r1', 'terminal')], nextCursor: null }), { status: 200 })
 		return new Response(JSON.stringify(sourceDetail('quarantined')), { status: 200 })
@@ -152,7 +147,6 @@ test('the v2 source-detail load reads conflictCount + the item navigation rows a
 
 test('a blocked source is purge-eligible and the loader carries purge’s DISTINCT consequence copy', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/items')) return new Response(JSON.stringify(itemsEnvelope(0)), { status: 200 })
 		if (String(url).includes('/runs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null }), { status: 200 })
 		return new Response(JSON.stringify(sourceDetail('blocked')), { status: 200 })
@@ -255,7 +249,6 @@ test('a missing commandId is refused without calling core and never minted in it
 
 test('the runs load paginates with ?before= and does not load jobs without a selected run', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		return new Response(JSON.stringify({ model: 'logical-v2', items: [runProjection('r5', 'terminal')], nextCursor: 'cNext' }), { status: 200 })
 	})
 	const result = await loadRuns(fetch, 's1', '?before=cPrev')
@@ -268,7 +261,6 @@ test('the runs load paginates with ?before= and does not load jobs without a sel
 
 test('the runs load fetches a selected run’s jobs and paginates them with the shared cursor', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/jobs')) return new Response(JSON.stringify({ model: 'logical-v2', items: [{ jobId: 'j1', createdAt: 't', status: 'reconciled', attempts: 1, nextAttemptAt: null, failureCategory: null, diagnostic: null }], nextCursor: 'jNext' }), { status: 200 })
 		return new Response(JSON.stringify({ model: 'logical-v2', items: [runProjection('r5', 'terminal')], nextCursor: null }), { status: 200 })
 	})

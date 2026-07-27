@@ -9,7 +9,7 @@ import {
 	LogicalContractError,
 	type LogicalItemDto
 } from './logical-types.ts'
-import { getLogicalTimeline, getLogicalItem, getLogicalThread, getLogicalRiverOrEmpty } from './logical-api.ts'
+import { getLogicalTimeline, getLogicalThread, getLogicalRiverOrEmpty } from './logical-api.ts'
 
 // A minimal but valid remote logical item.
 const dto = (over: Partial<LogicalItemDto> = {}): LogicalItemDto => ({
@@ -198,22 +198,8 @@ describe('getLogicalRiverOrEmpty — secondary rivers discard a contract violati
 	})
 })
 
-describe('getLogicalItem / getLogicalThread', () => {
-	test('getLogicalItem returns null on the neutral 404', async () => {
-		const f = vi.fn(async () => new Response('nope', { status: 404 }))
-		expect(await getLogicalItem(f as never, 'x')).toBeNull()
-	})
-	test('getLogicalItem maps a valid single-item envelope', async () => {
-		const f = vi.fn(async () => new Response(JSON.stringify({ model: 'logical-v2', item: dto(), journalCursor: 'jc' }), { status: 200 }))
-		const r = await getLogicalItem(f as never, 'i1')
-		expect(r?.entry.id).toBe('i1')
-		expect(r?.journalCursor).toBe('jc')
-	})
-	test('getLogicalItem fails closed on a malformed 200', async () => {
-		const f = vi.fn(async () => new Response(JSON.stringify({ item: dto() }), { status: 200 }))
-		await expect(getLogicalItem(f as never, 'i1')).rejects.toBeInstanceOf(LogicalContractError)
-	})
-	test('getLogicalThread returns null on 404 and passes placeholders through as connective markers (D11)', async () => {
+describe('getLogicalThread', () => {
+	test('returns null on 404 and passes placeholders through as connective markers (D11)', async () => {
 		const f404 = vi.fn(async () => new Response('nope', { status: 404 }))
 		expect(await getLogicalThread(f404 as never, 'x')).toBeNull()
 		const body = { model: 'logical-v2', requestedLogicalItemId: 'i1', rootId: 'i1', nodes: [{ kind: 'item', item: dto() }, { kind: 'placeholder', logicalItemId: 'gap', parentLogicalItemId: 'i1', timelineSortAt: 't', placeholderKind: 'unavailable' }], truncated: { depth: false, nodes: false, cycle: false }, journalCursor: 'x' }

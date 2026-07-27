@@ -101,9 +101,8 @@ test('all three pages switch together: subscribe, owner projection, unsubscribe,
 	expect(del[1].method).toBe('DELETE')
 	expect(JSON.parse(String(del[1].body))).toEqual({ commandId: 'cmd-9' })
 
-	// The admin page switches to the source console on the same reading.
-	const adminData = (await admin.load(adminEvent(fetch) as never)) as { mode: string; groups?: Array<{ key: string; rows: Array<{ id: string }> }> }
-	expect(adminData.mode).toBe('v2')
+	// The admin page renders the source console on the same reading.
+	const adminData = (await admin.load(adminEvent(fetch) as never)) as { groups?: Array<{ key: string; rows: Array<{ id: string }> }> }
 	expect(adminData.groups?.map((g) => [g.key, g.rows.map((r) => r.id)])).toEqual([
 		['federation', ['s1']],
 		['review', []],

@@ -129,7 +129,7 @@ export function createLogicalPush(deps: {
   // H5: in-memory per-topic floor — a ping storm costs the attacker requests and us
   // nothing. ponytail: resets on restart, never pruned; a rate floor, not state.
   const lastThinFetch = new Map<string, number>()
-  // The hourly per-row renewal floor, in-memory exactly like v1 (push-in.ts:174-177):
+  // The hourly per-row renewal floor, in-memory exactly like v1's deleted push-in.ts:
   // a due row against a dead hub would otherwise re-POST every poll pass.
   // ponytail: resets on restart and is never pruned — bounded by row count, it is
   // a rate floor, not state.
@@ -179,7 +179,7 @@ export function createLogicalPush(deps: {
       console.error(`push: rejecting advertised ${claim.mode} endpoint for source ${sourceId}: ${gate.reason}`)
       return
     }
-    // R1 (v1 push-in.ts:79-83, verbatim): the stored token/secret ARE the
+    // R1 (v1's deleted push-in.ts, verbatim): the stored token/secret ARE the
     // subscription's identity — generate ONLY when no (source, mode) row exists
     // at all, in any state, even expired.
     const prior = store.findPushRow({ sourceId, mode: claim.mode })
@@ -227,7 +227,7 @@ export function createLogicalPush(deps: {
       return row ? parsePushCapability(row.push_capability_json) : null
     },
 
-    // v1's maybeSubscribe (push-in.ts:149-164) rebuilt over sources.
+    // v1's maybeSubscribe (deleted push-in.ts) rebuilt over sources.
     async maybeRegister(sourceId: string, claim: PushClaim | null): Promise<void> {
       try {
         if (!pushInEffective(config) || !claim) return
@@ -243,7 +243,7 @@ export function createLogicalPush(deps: {
       }
     },
 
-    // One sweep per poll pass (v1 push-in.ts:165-192). No unsubscribe is ever
+    // One sweep per poll pass (v1's deleted push-in.ts). No unsubscribe is ever
     // sent: a row whose source is no longer eligible is simply left to lapse.
     async renewDue(): Promise<void> {
       try {
@@ -277,7 +277,7 @@ export function createLogicalPush(deps: {
     },
 
     // --- the four public callbacks (spec §1.4) ----------------------------
-    // v1's handlers (push-in.ts:196-254) rebuilt over sources. Every hardening
+    // v1's handlers (deleted push-in.ts) rebuilt over sources. Every hardening
     // rule v1 earned is kept: silent 202 on a bad HMAC, a neutral 200 no-op for
     // an unknown topic, the per-topic floor, and `denied` DELETES the row.
 

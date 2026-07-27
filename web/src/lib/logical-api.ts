@@ -1,10 +1,9 @@
-// Capability-checked logical-v2 Core client (server-only — uses $env). Callers
-// invoke these ONLY after `getCapabilities` reports v2; each function validates
+// Logical-v2 Core client (server-only — uses $env). Every function validates
 // the `model: 'logical-v2'` envelope and FAILS CLOSED (throws LogicalContractError)
 // on any mismatch — it never falls back to or casts a v1 shape (spec §5.6 carve 2).
 
 import { env } from '$env/dynamic/private'
-import { asLogicalTimeline, asLogicalSingleItem, asLogicalThread, asLogicalHistory, logicalToEntry, placeholderToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
+import { asLogicalTimeline, asLogicalThread, asLogicalHistory, logicalToEntry, placeholderToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
@@ -64,16 +63,6 @@ export async function getLogicalRiverOrEmpty(f: typeof fetch, opts: V2Lens & { b
 		if (e instanceof LogicalContractError) return { entries: [], nextCursor: null, journalCursor: null }
 		throw e
 	}
-}
-
-// The deliberate v2-only single-item route. 404 → null (the neutral ordinary
-// not-found); a malformed 200 → fail closed.
-export async function getLogicalItem(f: typeof fetch, id: string): Promise<{ entry: RenderEntry; journalCursor: string } | null> {
-	const res = await f(`${base()}/post/${encodeURIComponent(id)}`)
-	if (res.status === 404) return null
-	if (!res.ok) throw new Error(`post ${res.status}`)
-	const env = asLogicalSingleItem(await res.json())
-	return { entry: logicalToEntry(env.item), journalCursor: env.journalCursor }
 }
 
 export interface V2Thread {

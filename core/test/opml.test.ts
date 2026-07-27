@@ -31,7 +31,7 @@ import { createSourceService } from '../src/domain/source-service.ts'
 import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 
-// --- v2 SourceService.importOpml (RSC_SOURCE_MODEL_V2, dormant; Task 4) ---
+// --- v2 SourceService.importOpml (Task 4) ---
 // The batch analogue of subscribeByUrl (Task 4). The v1 importFollowingOpml
 // tests that used to sit above went with the v1 path itself (V4 Task 11).
 

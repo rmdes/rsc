@@ -115,7 +115,6 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	// rendered unblock form — a resubmit replays the identical id (design §11).
 	const tombstones = (await listTombstones(f)).map((t) => ({ ...t, commandId: crypto.randomUUID() }))
 	return {
-		mode: 'v2' as const,
 		groups: GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => r.group === g.key) })),
 		tombstones,
 		tombstoneConsequence: TOMBSTONE_CONSEQUENCE,
@@ -131,9 +130,9 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 }
 
 export const actions: Actions = {
-	// v2-only: the markup that renders these two forms exists only while the
-	// flag is on and always carries its own command id — no capability probe
-	// needed (same carve as the following page's unsubscribe).
+	// The markup that renders these two forms always carries its own command
+	// id — no capability probe needed (same carve as the following page's
+	// unsubscribe).
 	source: async (event) => {
 		const form = await event.request.formData()
 		const action = String(form.get('action') ?? '')
@@ -201,8 +200,8 @@ export const actions: Actions = {
 		}
 		return { established: true }
 	},
-	// v2-only: the unblock-tombstone markup exists only while the flag is on and
-	// always carries its own command id — no capability probe (same carve as source).
+	// The unblock-tombstone markup always carries its own command id — no
+	// capability probe (same carve as source).
 	tombstone: async (event) => {
 		const form = await event.request.formData()
 		const tombstoneId = String(form.get('tombstoneId') ?? '').trim()

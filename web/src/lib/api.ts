@@ -1,12 +1,7 @@
 import { env } from '$env/dynamic/private'
-import type { OwnerFollowingView, TimelineEntry, Capabilities } from './types.ts'
+import type { OwnerFollowingView, TimelineEntry } from './types.ts'
 
 const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
-
-export interface TimelinePage {
-	timeline: TimelineEntry[]
-	nextCursor: string | null
-}
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
 	try {
@@ -16,35 +11,6 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 		// non-JSON body — use the fallback
 	}
 	return fallback
-}
-
-export async function getTimeline(
-	f: typeof fetch,
-	opts: {
-		before?: string
-		followedBy?: string
-		author?: string
-		source?: 'local'
-		feedType?: 'instance'
-		topLevel?: true
-	} = {}
-): Promise<TimelinePage> {
-	// Build the query manually with encodeURIComponent — NOT URLSearchParams.
-	// The cursor wire format is `<publishedAt>~<id>`; URLSearchParams'
-	// form-encoding mangled it once already (found, fixed, revert rejected). P3.
-	const url = new URL(`${base()}/timeline`)
-	const params: string[] = []
-	if (opts.before) params.push(`before=${encodeURIComponent(opts.before)}`)
-	if (opts.followedBy) params.push(`followed_by=${encodeURIComponent(opts.followedBy)}`)
-	if (opts.author) params.push(`author=${encodeURIComponent(opts.author)}`)
-	if (opts.source) params.push(`source=${opts.source}`)
-	if (opts.feedType) params.push(`feed_type=${opts.feedType}`)
-	if (opts.topLevel) params.push('top_level=1')
-	if (params.length) url.search = params.join('&')
-	const res = await f(url.toString())
-	if (!res.ok) throw new Error(await errorMessage(res, `timeline ${res.status}`))
-	const body = (await res.json()) as { timeline: TimelineEntry[]; nextCursor?: string | null }
-	return { timeline: body.timeline, nextCursor: body.nextCursor ?? null }
 }
 
 export interface Peer {
@@ -81,12 +47,6 @@ export async function removeFollow(f: typeof fetch, target: string): Promise<voi
 	if (!res.ok) throw new Error(await errorMessage(res, `removeFollow ${res.status}`))
 }
 
-export async function importOpml(f: typeof fetch, opml: string): Promise<{ followed: number; created: number; skipped: number }> {
-	const res = await f(`${base()}/me/follows/opml`, { method: 'POST', body: opml })
-	if (!res.ok) throw new Error(await errorMessage(res, `importOpml ${res.status}`))
-	return res.json()
-}
-
 export async function createPost(f: typeof fetch, input: { content: string; inReplyTo?: string }): Promise<void> {
 	const res = await f(`${base()}/posts`, {
 		method: 'POST',
@@ -103,15 +63,6 @@ export async function editPost(f: typeof fetch, id: string, content: string): Pr
 		body: JSON.stringify({ content })
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, `editPost ${res.status}`))
-}
-
-export interface Revision { id: string; title: string | null; content: string; contentMarkdown: string | null; seenAt: string }
-// `post` is core's bare Post (NO author at runtime) — typed via Omit so reading
-// `.author` off it is a compile error. The history page reads only content/markdown/source/editedAt.
-export async function getRevisions(f: typeof fetch, id: string): Promise<{ post: Omit<TimelineEntry, 'author'>; revisions: Revision[] }> {
-	const res = await f(`${base()}/posts/${encodeURIComponent(id)}/revisions`)
-	if (!res.ok) throw new Error(await errorMessage(res, `revisions ${res.status}`))
-	return (await res.json()) as { post: Omit<TimelineEntry, 'author'>; revisions: Revision[] }
 }
 
 // emailVerified is optional and NOT sent by core's /me today (hard verification
@@ -132,35 +83,6 @@ export async function updateProfile(f: typeof fetch, patch: { handle?: string; d
 		body: JSON.stringify(patch)
 	})
 	if (!res.ok) throw new Error(await errorMessage(res, 'updateProfile failed'))
-}
-
-export async function getThread(f: typeof fetch, id: string): Promise<TimelineEntry[]> {
-	const res = await f(`${base()}/post/${encodeURIComponent(id)}/thread`)
-	if (!res.ok) throw new Error(await errorMessage(res, `thread ${res.status}`))
-	return (await res.json()).thread
-}
-
-export async function addRemoteUser(
-	f: typeof fetch,
-	input: { handle: string; displayName: string; feedUrl: string }
-): Promise<void> {
-	const res = await f(`${base()}/users`, {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify(input)
-	})
-	if (!res.ok) throw new Error(await errorMessage(res, `addRemoteUser ${res.status}`))
-}
-
-export async function listAdminFeeds(f: typeof fetch): Promise<Array<{ handle: string; displayName: string; feedUrl: string | null }>> {
-	const res = await f(`${base()}/admin/feeds`)
-	if (!res.ok) throw new Error(await errorMessage(res, 'listAdminFeeds failed'))
-	return ((await res.json()) as { feeds: Array<{ handle: string; displayName: string; feedUrl: string | null }> }).feeds
-}
-
-export async function removeRemoteFeed(f: typeof fetch, handle: string): Promise<void> {
-	const res = await f(`${base()}/users/${encodeURIComponent(handle)}`, { method: 'DELETE' })
-	if (!res.ok) throw new Error(await errorMessage(res, 'removeRemoteFeed failed'))
 }
 
 export async function getAdminOverview(f: typeof fetch): Promise<{
@@ -237,19 +159,6 @@ export async function revokeSession(f: typeof fetch, sessionToken: string): Prom
 	return res
 }
 
-export async function subscribeToFeed(
-	f: typeof fetch,
-	input: { url: string; type: 'person' | 'webfeed' }
-): Promise<{ user: TimelineEntry['author']; followed: boolean }> {
-	const res = await f(`${base()}/me/subscriptions`, {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify(input)
-	})
-	if (!res.ok) throw new Error(await errorMessage(res, `subscribe ${res.status}`))
-	return (await res.json()) as { user: TimelineEntry['author']; followed: boolean }
-}
-
 export async function getAdminSettings(f: typeof fetch): Promise<{ maxSubsPerUser: number }> {
 	const res = await f(`${base()}/admin/settings`)
 	if (!res.ok) throw new Error(await errorMessage(res, 'getAdminSettings failed'))
@@ -266,31 +175,6 @@ export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser
 }
 
 // --- v2 source registry -------------------------------------------------------
-
-// The capability probe. It NEVER rejects: a core that predates /capabilities —
-// or any blip during a rolling deploy — degrades to safe v2 defaults rather
-// than throwing (V1 retirement, Task 11a: there is no legacy mode to degrade
-// INTO anymore). Only a successful (200) reading is memoized for the process
-// lifetime (the value is immutable on core, so one read per pod suffices); a
-// failure is never cached as sticky state and is retried on the very next
-// request — so a transient blip can never pin a pod to stale defaults.
-let capabilities: Capabilities | null = null
-export async function getCapabilities(f: typeof fetch): Promise<Capabilities> {
-	if (capabilities) return capabilities
-	const defaults: Capabilities = { model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }
-	try {
-		const res = await f(`${base()}/capabilities`)
-		if (!res.ok) return defaults
-		const body = (await res.json()) as { journalCursorVersion?: unknown; streamProtocolVersion?: unknown }
-		return (capabilities = {
-			model: 'logical-v2',
-			journalCursorVersion: typeof body.journalCursorVersion === 'number' ? body.journalCursorVersion : 1,
-			streamProtocolVersion: typeof body.streamProtocolVersion === 'number' ? body.streamProtocolVersion : 1
-		})
-	} catch {
-		return defaults
-	}
-}
 
 export type SubscribeOutcome =
 	| { kind: 'source'; created: boolean }

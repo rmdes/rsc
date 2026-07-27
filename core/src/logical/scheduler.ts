@@ -59,7 +59,7 @@ export interface SchedulerDeps {
 
 // A source with a live push lease polls at a reduced cadence: the durable
 // equivalent of v1's in-memory `tick % 10 !== 0 && hasActivePush` skip
-// (push-in.ts:264), composed with the lastPollAt comparison instead of tick state.
+// (v1's deleted push-in.ts), composed with the lastPollAt comparison instead of tick state.
 const PUSH_POLL_FACTOR = 10
 
 // "Successful acquisition commit" — the same outcomes recordHealth counts as a

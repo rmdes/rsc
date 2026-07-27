@@ -1,13 +1,3 @@
-// The capability contract (V1 retirement, Task 11a) — v2 is the only model,
-// so this is no longer discriminated. Carries the model + the two protocol
-// versions Core advertises. getCapabilities (api.ts) reads this shape; the
-// memoize-success-only + degrade-on-failure semantics are unchanged.
-export interface Capabilities {
-	model: 'logical-v2'
-	journalCursorVersion: number
-	streamProtocolVersion: number
-}
-
 export interface TimelineEntry {
 	id: string
 	title: string | null

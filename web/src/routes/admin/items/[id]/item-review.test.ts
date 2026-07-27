@@ -8,7 +8,6 @@ import { readFileSync } from 'node:fs'
 // invariant is asserted by reading the .svelte source. Every load case takes a
 // FRESH +page.server.ts import for isolation between cases.
 
-const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 
 const loadEvent = (fetch: ReturnType<typeof vi.fn>, id = 'li1', search = '') => ({
@@ -83,18 +82,14 @@ async function itemAction(action: 'hide' | 'restore', fetch: ReturnType<typeof v
 // --- unknown item: hidden as 404 -----------------------------------------------
 
 test('an unknown item (neutral 404 from core) is hidden as 404', async () => {
-	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
-		return new Response(JSON.stringify({ model: 'logical-v2', error: 'item unavailable' }), { status: 404 })
-	})
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ model: 'logical-v2', error: 'item unavailable' }), { status: 404 }))
 	await expect(loadItem(fetch)).rejects.toMatchObject({ status: 404 })
 })
 
-// --- capability on: the bounded detail + first audit page ----------------------
+// --- the bounded detail + first audit page --------------------------------------
 
 test('the item-review load reads the detail + first audit page and mints stable hide/restore command ids', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage()), { status: 200 })
 		return new Response(JSON.stringify(detail()), { status: 200 })
 	})
@@ -113,7 +108,6 @@ test('the item-review load reads the detail + first audit page and mints stable 
 
 test('the item-review load paginates the audit trail with ?before= and returns the SECOND page', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage({ items: [{ id: 'a2', logicalItemId: 'li1', commandId: 'cmd-a2', actorId: 'admin', actorKind: 'administrator', action: 'restore', category: 'false_positive', note: 'y', resultJson: '{}', createdAt: '2026-07-19T00:00:00Z' }], nextCursor: null })), { status: 200 })
 		return new Response(JSON.stringify(detail()), { status: 200 })
 	})
@@ -127,7 +121,6 @@ test('the item-review load paginates the audit trail with ?before= and returns t
 
 test('bounded sections keep their TRUE totals in counts while the inline rows are capped', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage()), { status: 200 })
 		return new Response(JSON.stringify(detail()), { status: 200 })
 	})
@@ -141,7 +134,6 @@ test('bounded sections keep their TRUE totals in counts while the inline rows ar
 
 test('raw evidence survives the loader VERBATIM (Web escapes at render, never sanitizes/strips at the data layer)', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage()), { status: 200 })
 		return new Response(JSON.stringify(detail()), { status: 200 })
 	})
@@ -152,7 +144,6 @@ test('raw evidence survives the loader VERBATIM (Web escapes at render, never sa
 
 test('the verification section passes through, and an item never scheduled stays empty', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage()), { status: 200 })
 		return new Response(JSON.stringify(detail({ verification: [] })), { status: 200 })
 	})
@@ -160,7 +151,6 @@ test('the verification section passes through, and an item never scheduled stays
 	expect((empty.detail as { verification: unknown[] }).verification).toEqual([])
 
 	const fetch2 = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage()), { status: 200 })
 		return new Response(JSON.stringify(detail()), { status: 200 })
 	})

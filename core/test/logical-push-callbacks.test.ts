@@ -136,7 +136,7 @@ test('a pending row activates, and a non-integer or absent lease falls back to t
   repo.close()
 })
 
-test('hub.mode=denied DELETES the row (v1 push-in.ts:200-202, kept)', async () => {
+test('hub.mode=denied DELETES the row (v1 behavior, kept)', async () => {
   const { repo, raw, push } = await fresh()
   await seedSubscribed(raw, repo, 's1', FEED)
   insertPushRow(raw)
@@ -146,7 +146,7 @@ test('hub.mode=denied DELETES the row (v1 push-in.ts:200-202, kept)', async () =
   repo.close()
 })
 
-test('websub activation retires a surviving rsscloud fallback row (push-in.ts:208-210)', async () => {
+test('websub activation retires a surviving rsscloud fallback row (v1 behavior)', async () => {
   const { repo, raw, push } = await fresh()
   await seedSubscribed(raw, repo, 's1', FEED)
   insertPushRow(raw, { id: 'p-cloud', mode: 'rsscloud', endpoint: CLOUD, callback_token: 'cloud-tok', secret: null, state: 'active' })
@@ -388,7 +388,7 @@ test('a known eligible topic runs ONE acquisition through the ordinary gate, mar
   repo.close()
 })
 
-test('the 30-second per-topic floor bounds a ping storm (push-in.ts:238-241)', async () => {
+test('the 30-second per-topic floor bounds a ping storm (v1 behavior)', async () => {
   const { fn, calls } = routedFetch({ [FEED]: () => new Response(RSS(item('g1')), { status: 200 }) })
   const { repo, raw, push } = await fresh({ fetchFn: fn })
   await seedSubscribed(raw, repo, 's1', FEED)
@@ -425,7 +425,7 @@ test('an expired rsscloud lease is not a known topic — the thin ping stays a n
   repo.close()
 })
 
-test('the rssCloud challenge confirms a known topic and 404s an unknown one (push-in.ts:231-234)', async () => {
+test('the rssCloud challenge confirms a known topic and 404s an unknown one (v1 behavior)', async () => {
   const { repo, raw, push } = await fresh()
   await seedSubscribed(raw, repo, 's1', FEED)
   insertPushRow(raw, { mode: 'rsscloud', endpoint: CLOUD, secret: null })

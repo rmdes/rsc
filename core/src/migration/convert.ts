@@ -76,7 +76,7 @@ interface LegacyPush {
 // dated plan-correction note.
 //
 // The DNS half is deferred, not lost: every legacy row passed the FULL gate at
-// v1 registration time (push-in.ts:114). The residual this leaves — a
+// v1 registration time (v1's deleted push-in.ts). The residual this leaves — a
 // converted row whose endpoint later resolves to a private address is
 // blind-POSTed by renewDue — is real, but not a regression: it is exactly the
 // "host does not resolve" / "any resolved address is private" pair
@@ -379,7 +379,7 @@ export function runConversion(tx: WriteTx, input: { manifest: Manifest | null; n
   //
   // CONTINUITY CEILING (recorded honestly): preservation holds for a lease that
   // is LIVE at conversion, not indefinitely afterwards. v1 never purged this
-  // table — purgeExpiredSubscriptions (sqlite.ts:602-604, push-in.ts:272) deletes
+  // table — purgeExpiredSubscriptions (sqlite.ts:602-604, v1's deleted push-in.ts) deletes
   // from the OUTBOUND `subscriptions` table — so under v1 R1 token/secret reuse
   // was permanent. Under v2, spec §1.2 mandates purging expired push rows every
   // poll cycle, so after a lapse the row is gone and re-registration generates

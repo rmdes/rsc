@@ -1,22 +1,16 @@
 import { test, expect, vi } from 'vitest'
 import {
-	getTimeline,
 	createPost,
-	addRemoteUser,
 	getMe,
-	listAdminFeeds,
-	removeRemoteFeed,
 	getAdminOverview,
 	listAdminUsers,
 	editPost,
-	getRevisions,
 	deleteLocalAccount,
 	deletePost,
 	listDeviceSessions,
 	getActiveAuthUserId,
 	setActiveSession,
 	revokeSession,
-	subscribeToFeed,
 	getAdminSettings,
 	patchAdminSettings,
 	subscribeToSource,
@@ -35,23 +29,6 @@ const entry = {
 	author: { id: 'u1', handle: 'a', displayName: 'A', kind: 'local' }
 }
 
-test('getTimeline returns entries and the next cursor', async () => {
-	const f = vi.fn(
-		async () => new Response(JSON.stringify({ timeline: [entry], nextCursor: '2026~p1' }), { status: 200 })
-	)
-	const page = await getTimeline(f as unknown as typeof fetch)
-	expect(page.timeline[0].content).toBe('hi')
-	expect(page.nextCursor).toBe('2026~p1')
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/timeline')
-})
-
-test('getTimeline passes the before cursor as a query param and defaults nextCursor to null', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ timeline: [] }), { status: 200 }))
-	const page = await getTimeline(f as unknown as typeof fetch, { before: '2026-01-01T00:00:00.000Z~p9' })
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/timeline?before=2026-01-01T00%3A00%3A00.000Z~p9')
-	expect(page.nextCursor).toBeNull()
-})
-
 test('createPost posts content (identity comes from the session, not the body)', async () => {
 	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 201 }))
 	await createPost(f as unknown as typeof fetch, { content: 'x' })
@@ -60,23 +37,9 @@ test('createPost posts content (identity comes from the session, not the body)',
 	expect(JSON.parse(String(init.body))).toEqual({ content: 'x' })
 })
 
-test('addRemoteUser sends no authorization header (CORE_API_TOKEN is dead)', async () => {
-	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 201 }))
-	await addRemoteUser(f as unknown as typeof fetch, { handle: 'a', displayName: 'A', feedUrl: 'https://x/f' })
-	const init = f.mock.calls[0][1] as RequestInit
-	expect(new Headers(init.headers).has('authorization')).toBe(false)
-})
-
 test('createPost surfaces the core error message', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'content invalid' }), { status: 400 }))
 	await expect(createPost(f as unknown as typeof fetch, { content: '' })).rejects.toThrow('content invalid')
-})
-
-test('addRemoteUser falls back to a status message when the body has no error field', async () => {
-	const f = vi.fn(async () => new Response('nope', { status: 502 }))
-	await expect(
-		addRemoteUser(f as unknown as typeof fetch, { handle: 'a', displayName: 'A', feedUrl: 'https://x/f' })
-	).rejects.toThrow('addRemoteUser 502')
 })
 
 test('getMe returns null on 401 instead of throwing', async () => {
@@ -87,31 +50,6 @@ test('getMe returns null on 401 instead of throwing', async () => {
 test('getMe returns the session user', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ user: entry.author, isAnonymous: true }), { status: 200 }))
 	await expect(getMe(f as unknown as typeof fetch)).resolves.toEqual({ user: entry.author, isAnonymous: true })
-})
-
-test('listAdminFeeds returns the feeds array and GETs /admin/feeds', async () => {
-	const f = vi.fn(
-		async () => new Response(JSON.stringify({ feeds: [{ handle: 'a', displayName: 'A', feedUrl: 'https://x/f' }] }), { status: 200 })
-	)
-	const feeds = await listAdminFeeds(f as unknown as typeof fetch)
-	expect(feeds[0].handle).toBe('a')
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/feeds')
-})
-
-test('listAdminFeeds surfaces the core error message', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'admin only' }), { status: 403 }))
-	await expect(listAdminFeeds(f as unknown as typeof fetch)).rejects.toThrow('admin only')
-})
-
-test('removeRemoteFeed DELETEs the url-encoded handle', async () => {
-	const f = vi.fn(async (..._args: unknown[]) => new Response(null, { status: 200 }))
-	await removeRemoteFeed(f as unknown as typeof fetch, 'a b')
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/users/a%20b', { method: 'DELETE' })
-})
-
-test('removeRemoteFeed surfaces the core error message', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a remote feed' }), { status: 409 }))
-	await expect(removeRemoteFeed(f as unknown as typeof fetch, 'x')).rejects.toThrow('not a remote feed')
 })
 
 test('getAdminOverview returns the snapshot and GETs /admin/overview', async () => {
@@ -135,13 +73,6 @@ test('editPost PATCHes /posts/:id with the content', async () => {
 	await editPost(f as unknown as typeof fetch, 'p1', 'new body')
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/posts/p1', expect.objectContaining({ method: 'PATCH' }))
 	expect(JSON.parse(String((f.mock.calls[0][1] as RequestInit).body))).toEqual({ content: 'new body' })
-})
-
-test('getRevisions GETs /posts/:id/revisions', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ post: { id: 'p1' }, revisions: [] }), { status: 200 }))
-	const out = await getRevisions(f as unknown as typeof fetch, 'p1')
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/posts/p1/revisions')
-	expect(out.revisions).toEqual([])
 })
 
 test('deleteLocalAccount DELETEs the url-encoded handle', async () => {
@@ -202,33 +133,6 @@ test('revokeSession POSTs the token to the revoke endpoint', async () => {
 	expect(JSON.parse(String(init.body))).toEqual({ sessionToken: 'old' })
 })
 
-test('getTimeline threads source and feed_type params', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 }))
-	await getTimeline(f as unknown as typeof fetch, { source: 'local' })
-	expect(String((f.mock.calls[0] as unknown as [string])[0])).toContain('source=local')
-	await getTimeline(f as unknown as typeof fetch, { feedType: 'instance' })
-	expect(String((f.mock.calls[1] as unknown as [string])[0])).toContain('feed_type=instance')
-})
-
-test('getTimeline sends top_level=1 only when requested', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 }))
-	await getTimeline(f as unknown as typeof fetch, { topLevel: true })
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/timeline?top_level=1')
-})
-
-test('subscribeToFeed posts url+type and returns user/followed', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ user: { id: 'u1', handle: 'feed', displayName: 'F', kind: 'remote' }, followed: true }), { status: 201 }))
-	const out = await subscribeToFeed(f as unknown as typeof fetch, { url: 'https://ex.com/f.xml', type: 'webfeed' })
-	expect(out.followed).toBe(true)
-	const [, init] = f.mock.calls[0] as unknown as [string, RequestInit]
-	expect(JSON.parse(String(init.body))).toEqual({ url: 'https://ex.com/f.xml', type: 'webfeed' })
-})
-
-test('subscribeToFeed surfaces the cap error string', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'subscription limit reached' }), { status: 429 }))
-	await expect(subscribeToFeed(f as unknown as typeof fetch, { url: 'https://ex.com/f.xml', type: 'webfeed' })).rejects.toThrow('subscription limit reached')
-})
-
 test('admin settings wrappers hit GET and PATCH', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ maxSubsPerUser: 500 }), { status: 200 }))
 	expect(await getAdminSettings(f as unknown as typeof fetch)).toEqual({ maxSubsPerUser: 500 })
@@ -239,41 +143,6 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 })
 
 // --- v2 source registry ------------------------------------------------------
-// The capability reading is memoized for the module's lifetime, so every case
-// below takes a FRESH module instance instead of a production reset hook.
-
-// V1 retirement (Task 11a): Capabilities is no longer discriminated — v2 is
-// the only model. A probe failure degrades to safe v2 defaults instead of a
-// legacy `{sourceModelV2:false}` variant.
-test('getCapabilities reports the model + protocol versions and memoizes a successful reading', async () => {
-	vi.resetModules()
-	const { getCapabilities } = await import('./api.ts')
-	const f = vi.fn(async () => new Response(JSON.stringify({ sourceModelV2: true, model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 }), { status: 200 }))
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/capabilities')
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-	expect(f).toHaveBeenCalledTimes(1) // process-immutable on core — one read per pod
-})
-
-test('getCapabilities degrades to defaults on a non-200 and never caches the failure', async () => {
-	vi.resetModules()
-	const { getCapabilities } = await import('./api.ts')
-	const f = vi.fn(async () => new Response('not found', { status: 404 })) // a core without /capabilities
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-	expect(f).toHaveBeenCalledTimes(2) // retried on the very next request
-})
-
-test('getCapabilities degrades to defaults when the fetch throws, and stays retryable', async () => {
-	vi.resetModules()
-	const { getCapabilities } = await import('./api.ts')
-	const f = vi.fn(async () => {
-		throw new Error('fetch failed')
-	})
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-	await expect(getCapabilities(f as unknown as typeof fetch)).resolves.toEqual({ model: 'logical-v2', journalCursorVersion: 1, streamProtocolVersion: 1 })
-	expect(f).toHaveBeenCalledTimes(2)
-})
 
 test('subscribeToSource posts url+commandId (no type) and reports source, pending and local outcomes', async () => {
 	const source = vi.fn(async () => new Response(JSON.stringify({ subscription: { sourceId: 's1', url: 'https://ex.com/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' } }), { status: 201 }))

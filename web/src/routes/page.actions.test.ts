@@ -92,17 +92,9 @@ test('compose redirects back to the active tab; invalid tab params are dropped',
 
 // --- v2 source registry -------------------------------------------------------
 
-const capFetch = (on: boolean, rest: (url: string | URL) => Response) =>
-	vi.fn(async (url: string | URL) =>
-		String(url).includes('/capabilities') ? new Response(JSON.stringify({ sourceModelV2: on }), { status: 200 }) : rest(url)
-	)
-
-test('with the capability on, subscribe posts url+commandId to the v2 source endpoint', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
-	const fetch = capFetch(
-		true,
-		() =>
+test('subscribe posts url+commandId to the v2 source endpoint', async () => {
+	const fetch = vi.fn(
+		async (..._a: unknown[]) =>
 			new Response(
 				JSON.stringify({ subscription: { sourceId: 's1', url: 'https://ex.com/f.xml', attributionMode: 'single_publisher', subscriptionState: 'active', availability: 'available' } }),
 				{ status: 201 }
@@ -115,17 +107,13 @@ test('with the capability on, subscribe posts url+commandId to the v2 source end
 })
 
 test('a pending v2 subscription lands on the neutral awaiting-review flash', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
-	const fetch = capFetch(true, () => new Response(JSON.stringify({ subscription: 'pending', message: 'This source is awaiting review.' }), { status: 202 }))
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ subscription: 'pending', message: 'This source is awaiting review.' }), { status: 202 }))
 	const event = sessionedEvent(formRequest('subscribe', { url: 'https://ex.com/f.xml', commandId: 'cmd-2' }), fetch)
 	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&sub=pending' })
 })
 
 test('a v2 subscribe that resolves to a local account still lands on the personal river flash', async () => {
-	vi.resetModules()
-	const { actions } = await import('./+page.server.ts')
-	const fetch = capFetch(true, () => new Response(JSON.stringify({ follow: { kind: 'local', id: 'u1', handle: 'bob', displayName: 'Bob' } }), { status: 201 }))
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ follow: { kind: 'local', id: 'u1', handle: 'bob', displayName: 'Bob' } }), { status: 201 }))
 	const event = sessionedEvent(formRequest('subscribe', { url: 'https://x/users/bob/feed.xml', commandId: 'cmd-3' }), fetch)
 	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=bob' })
 })

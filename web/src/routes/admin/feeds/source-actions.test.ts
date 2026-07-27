@@ -1,7 +1,6 @@
 import { test, expect, vi } from 'vitest'
 import { actions } from './+page.server.ts'
 
-const isCap = (u: unknown) => String(u).includes('/capabilities')
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 
 function formEvent(action: string, fields: Record<string, string>, fetch: ReturnType<typeof vi.fn>) {
@@ -35,7 +34,7 @@ const summary = (
 
 type Row = { id: string; url: string; governance: string; operation: string; federationStatus: string; actions: Array<{ action: string; commandId: string }> }
 type Group = { key: string; title: string; blurb: string; rows: Row[] }
-type LoadResult = { mode: string; groups?: Group[]; cursor?: string | null; nextCursor?: string | null; establishCommandId?: string }
+type LoadResult = { groups?: Group[]; cursor?: string | null; nextCursor?: string | null; establishCommandId?: string }
 
 // Every load case takes a FRESH +page.server.ts import (vi.resetModules) purely
 // for isolation between cases — the load itself has no memoized state.
@@ -47,26 +46,23 @@ async function loadAdminWith(fetch: ReturnType<typeof vi.fn>, search = ''): Prom
 
 // --- the source console --------------------------------------------------------
 
-test('with the capability on the admin load reads /admin/sources and groups the four buckets', async () => {
-	const fetch = vi.fn(async (url: string | URL) =>
-		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
-			: new Response(
-					JSON.stringify({
-						items: [
-							summary('fed', 'allowed', 'approved'),
-							summary('cand', 'allowed', 'pending'),
-							summary('quar', 'quarantined', 'none'),
-							summary('user', 'allowed', 'none', 'paused'),
-							summary('bad', 'blocked', 'pending')
-						],
-						nextCursor: 'c2'
-					}),
-					{ status: 200 }
-				)
+test('the admin load reads /admin/sources and groups the four buckets', async () => {
+	const fetch = vi.fn(async (..._url: unknown[]) =>
+		new Response(
+			JSON.stringify({
+				items: [
+					summary('fed', 'allowed', 'approved'),
+					summary('cand', 'allowed', 'pending'),
+					summary('quar', 'quarantined', 'none'),
+					summary('user', 'allowed', 'none', 'paused'),
+					summary('bad', 'blocked', 'pending')
+				],
+				nextCursor: 'c2'
+			}),
+			{ status: 200 }
+		)
 	)
 	const result = await loadAdminWith(fetch)
-	expect(result.mode).toBe('v2')
 	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources'))).toBe(true)
 	expect(urlsOf(fetch).some((u) => u.includes('/admin/feeds'))).toBe(false)
 	expect(result.groups?.map((g) => [g.key, g.rows.map((r) => r.id)])).toEqual([
@@ -107,10 +103,8 @@ test('with the capability on the admin load reads /admin/sources and groups the 
 })
 
 test('the v2 load echoes back the inbound cursor so a mutating form can carry pagination forward on retry', async () => {
-	const fetch = vi.fn(async (url: string | URL) =>
-		isCap(url)
-			? new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
-			: new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
+	const fetch = vi.fn(async (..._url: unknown[]) =>
+		new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
 	)
 	const result = await loadAdminWith(fetch, '?cursor=page2cursor')
 	// This is the current page's cursor (what put us on page 2), not nextCursor
@@ -235,7 +229,6 @@ const tombstone = (id: string, action = 'purge') => ({
 
 test('the v2 load lists tombstones (canonical URL + terminal facts) with a per-row unblock command id and the DISTINCT unblock consequence copy', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/admin/tombstones')) return new Response(JSON.stringify({ model: 'logical-v2', tombstones: [tombstone('t1'), tombstone('t2', 'block')] }), { status: 200 })
 		return new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
 	})
@@ -257,7 +250,6 @@ test('the v2 load lists tombstones (canonical URL + terminal facts) with a per-r
 
 test('with tombstones absent the section is simply empty (no crash on the unpaginated read)', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
-		if (isCap(url)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (String(url).includes('/admin/tombstones')) return new Response(JSON.stringify({ model: 'logical-v2', tombstones: [] }), { status: 200 })
 		return new Response(JSON.stringify({ items: [summary('fed', 'allowed', 'approved')], nextCursor: null }), { status: 200 })
 	})
@@ -300,7 +292,6 @@ test('a core outage still throws to the error page — never an empty admin list
 test('the federation and review sections come from the governance fetch, not from whichever page is being viewed', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
 		const u = String(url)
-		if (isCap(u)) return new Response(JSON.stringify({ sourceModelV2: true }), { status: 200 })
 		if (u.includes('filter=governance'))
 			return new Response(
 				JSON.stringify({ items: [summary('fed-buried', 'allowed', 'approved'), summary('quar-buried', 'quarantined', 'none')], nextCursor: null }),
