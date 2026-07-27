@@ -1,38 +1,22 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
-import type { Repository } from '../src/domain/repository.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore, type LogicalStore } from '../src/logical/store.ts'
 
 describe('per-user-feeds repo reads', () => {
-  let repo: Repository
+  let repo: Awaited<ReturnType<typeof createSqliteRepository>>
+  let logical: LogicalStore
   beforeEach(async () => {
     repo = await createSqliteRepository(':memory:')
-  })
-
-  it('getRemoteUserByFeedUrl finds a remote row by feed_url, undefined on unknown', async () => {
-    const remote = await repo.createRemoteUser({ handle: 'alice', displayName: 'Alice', feedUrl: 'https://alice.example/feed.xml', feedType: 'person' })
-    await expect(repo.getRemoteUserByFeedUrl('https://alice.example/feed.xml')).resolves.toMatchObject({ id: remote.id })
-    await expect(repo.getRemoteUserByFeedUrl('https://unknown.example/feed.xml')).resolves.toBeUndefined()
-  })
-
-  it('countRemoteSubscriptions counts only person/webfeed follows, excludes local and instance', async () => {
-    const local = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
-    const otherLocal = await repo.createLocalUser({ handle: 'carol', displayName: 'Carol' })
-    const person = await repo.createRemoteUser({ handle: 'dana', displayName: 'Dana', feedUrl: 'https://dana.example/feed.xml', feedType: 'person' })
-    const webfeed = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://blog.example/feed.xml', feedType: 'webfeed' })
-    const instance = await repo.createRemoteUser({ handle: 'peer', displayName: 'Peer', feedUrl: 'https://peer.example/feed.xml', feedType: 'instance' })
-    await repo.addFollow(local.id, person.id)
-    await repo.addFollow(local.id, webfeed.id)
-    await repo.addFollow(local.id, instance.id)
-    await repo.addFollow(local.id, otherLocal.id)
-    await expect(repo.countRemoteSubscriptions(local.id)).resolves.toBe(2)
+    logical = createLogicalStore(createDatabaseContext(repo.raw))
   })
 
   it('countFollowers counts followers regardless of follower kind', async () => {
     const remote = await repo.createRemoteUser({ handle: 'eve', displayName: 'Eve', feedUrl: 'https://eve.example/feed.xml', feedType: 'webfeed' })
     const f1 = await repo.createLocalUser({ handle: 'f1', displayName: 'F1' })
     const f2 = await repo.createLocalUser({ handle: 'f2', displayName: 'F2' })
-    await repo.addFollow(f1.id, remote.id)
-    await repo.addFollow(f2.id, remote.id)
+    logical.addLocalFollow({ followerId: f1.id, followedId: remote.id, now: '2026-01-01T00:00:00.000Z' })
+    logical.addLocalFollow({ followerId: f2.id, followedId: remote.id, now: '2026-01-02T00:00:00.000Z' })
     await expect(repo.countFollowers(remote.id)).resolves.toBe(2)
   })
 
@@ -43,13 +27,5 @@ describe('per-user-feeds repo reads', () => {
     await expect(repo.getSetting('max_subs_per_user')).resolves.toBe('250')
     await repo.setSetting('new_key', 'value')
     await expect(repo.getSetting('new_key')).resolves.toBe('value')
-  })
-
-  it('updateDisplayNameIfUnset writes only while display_name equals feed_url', async () => {
-    const seeded = await repo.createRemoteUser({ handle: 'f1', displayName: 'https://ex.com/f.xml', feedUrl: 'https://ex.com/f.xml', feedType: 'webfeed' })
-    await repo.updateDisplayNameIfUnset(seeded.id, 'Example Feed')
-    await expect(repo.getUser(seeded.id)).resolves.toMatchObject({ displayName: 'Example Feed' })
-    await repo.updateDisplayNameIfUnset(seeded.id, 'Clobber Attempt')
-    await expect(repo.getUser(seeded.id)).resolves.toMatchObject({ displayName: 'Example Feed' }) // no longer equals feed_url → refused
   })
 })

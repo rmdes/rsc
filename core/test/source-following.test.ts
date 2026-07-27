@@ -1,6 +1,8 @@
 import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
 import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
 
@@ -61,7 +63,8 @@ test('ownerFollowing includes local-account follows alongside source subscriptio
   const repo = await createSqliteRepository(':memory:')
   const target = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
   const owner = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
-  await repo.addFollow(owner.id, target.id)
+  createLogicalStore(createDatabaseContext(repo.raw))
+    .addLocalFollow({ followerId: owner.id, followedId: target.id, now: '2026-01-01T00:00:00.000Z' })
   const service = createSourceService(repo, PUBLIC_URL)
 
   const view = await service.ownerFollowing(owner.id)

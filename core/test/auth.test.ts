@@ -72,14 +72,12 @@ test('cookie without Origin is rejected by better-auth CSRF (probed MISSING_OR_N
 })
 
 test('registration while anonymous re-points the guest core user (onLinkAccount)', async () => {
-  const { app, repo, mail } = await makeApp()
+  const { app, repo, store, mail } = await makeApp()
   const cookie = await anonSession(app)
   const anonAuthId = anonAuthUserId(repo)
   const guest = await ensureCoreUser(repo, anonAuthId)
-  await repo.insertPost({
-    id: 'guest-post', authorId: guest.id, source: 'local', guid: 'guest-post', title: null,
-    content: 'guest content', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z',
-  })
+  // Seeded the way POST /posts does it, so the logical origin row travels too.
+  const guestPostId = store.createLocalPost({ author: guest, content: 'guest content', replyToId: null, now: '2026-01-01T00:00:00.000Z' }).id
 
   const res = await app.request('/api/auth/sign-up/email', {
     method: 'POST',
@@ -103,7 +101,7 @@ test('registration while anonymous re-points the guest core user (onLinkAccount)
   const linked = await repo.getUserByAuthUserId(newAuthId)
   expect(linked?.id).toBe(guest.id) // same core identity, re-pointed
   expect(linked?.handle).toBe(guest.handle) // guest handle intact
-  const guestPost = await repo.getPost('guest-post')
+  const guestPost = await repo.getPost(guestPostId)
   expect(guestPost?.authorId).toBe(guest.id) // posts intact
 
   const remainingAnon = repo.raw.prepare('SELECT COUNT(*) AS n FROM user WHERE isAnonymous = 1').get() as { n: number }

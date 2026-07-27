@@ -23,6 +23,22 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   return { app, repo, service }
 }
 
+// A remote-authored `posts` row — the legacy shape v2 no longer writes but
+// converted databases still hold, and the only thing service.deletePost's
+// `source !== 'local'` guard can be exercised against.
+function seedRemotePost(repo: Awaited<ReturnType<typeof makeApp>>['repo'], id: string, authorId: string): void {
+  repo.raw.prepare(
+    `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at)
+     VALUES (?, ?, 'remote', ?, NULL, 'x', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+  ).run(id, authorId, `g-${id}`, `https://e/${id}`)
+}
+
+const revisionCount = (repo: Awaited<ReturnType<typeof makeApp>>['repo'], postId: string): number =>
+  (repo.raw.prepare('SELECT COUNT(*) AS n FROM post_revisions WHERE post_id = ?').get(postId) as { n: number }).n
+
+const edit = (app: Awaited<ReturnType<typeof makeApp>>['app'], cookie: string, id: string, content: string) =>
+  app.request(`/posts/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content }) })
+
 test('deleteLocalAccount removes the core user + posts + better-auth rows', async () => {
   const { app, repo, service } = await makeApp()
   const cookie = await registeredSession(app, 'target@x.test', repo)
@@ -80,7 +96,7 @@ test('deletePost removes a local post; 409 remote, 404 unknown', async () => {
 
   // a remote post → error remote
   const remote = await repo.createRemoteUser({ handle: 'rf', displayName: 'RF', feedUrl: 'https://e/f.xml' })
-  await repo.insertPost({ id: 'rp', authorId: remote.id, source: 'remote', guid: 'rg', title: null, content: 'x', url: 'https://e/p', publishedAt: '2026-07-18T00:00:00Z', createdAt: '2026-07-18T00:00:00Z', inReplyTo: null, inReplyToPostId: null, threadRootId: null })
+  seedRemotePost(repo, 'rp', remote.id)
   expect(await service.deletePost('rp')).toEqual({ error: 'remote' })
   expect(await service.deletePost('ghost')).toEqual({ error: 'unknown' })
 })
@@ -93,7 +109,7 @@ test('DELETE /admin/posts/:id: 200 local, 409 remote, 404 unknown; gate matrix',
   const admin = await registeredSession(app, 'boss@x.test', repo)
   expect((await app.request(`/admin/posts/${created.post.id}`, { method: 'DELETE', headers: { cookie: admin } })).status).toBe(200)
   const remote = await repo.createRemoteUser({ handle: 'rf2', displayName: 'RF', feedUrl: 'https://e/f.xml' })
-  await repo.insertPost({ id: 'rp2', authorId: remote.id, source: 'remote', guid: 'rg2', title: null, content: 'x', url: 'https://e/p2', publishedAt: '2026-07-18T00:00:00Z', createdAt: '2026-07-18T00:00:00Z', inReplyTo: null, inReplyToPostId: null, threadRootId: null })
+  seedRemotePost(repo, 'rp2', remote.id)
   const admin2 = await registeredSession(app, 'boss@x.test', repo)
   expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: admin2 } })).status).toBe(409)
   expect((await app.request('/admin/posts/ghost', { method: 'DELETE', headers: { cookie: admin2 } })).status).toBe(404)
@@ -111,12 +127,12 @@ test('deletePost removes an edited post (clears its post_revisions)', async () =
   await app.request('/me', { headers: { cookie } })
   const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'v1' }) })).json()
   const postId = created.post.id
-  await repo.recordEdit(postId, { title: null, content: 'v2', contentMarkdown: null, editedAt: '2026-07-19T00:00:00Z' })
-  expect((await repo.getRevisions(postId)).length).toBeGreaterThan(0) // sanity: a revision exists
+  expect((await edit(app, cookie, postId, 'v2')).status).toBe(200)
+  expect(revisionCount(repo, postId)).toBeGreaterThan(0) // sanity: a revision exists
 
   expect(await service.deletePost(postId)).toEqual({ ok: true })
   expect(await repo.getPost(postId)).toBeUndefined()
-  expect(await repo.getRevisions(postId)).toEqual([]) // revisions gone too
+  expect(revisionCount(repo, postId)).toBe(0) // revisions gone too
 })
 
 test('deleteLocalAccount removes an account whose post was edited (clears post_revisions)', async () => {
@@ -125,10 +141,11 @@ test('deleteLocalAccount removes an account whose post was edited (clears post_r
   const me = await (await app.request('/me', { headers: { cookie } })).json()
   const handle = me.user.handle
   const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'v1' }) })).json()
-  await repo.recordEdit(created.post.id, { title: null, content: 'v2', contentMarkdown: null, editedAt: '2026-07-19T00:00:00Z' })
+  expect((await edit(app, cookie, created.post.id, 'v2')).status).toBe(200)
+  expect(revisionCount(repo, created.post.id)).toBeGreaterThan(0) // sanity: a revision exists
 
   expect(await service.deleteLocalAccount(handle)).toEqual({ ok: true })
   expect(await repo.getUserByHandle(handle)).toBeUndefined()
   expect(repo.instanceStats(false).posts).toBe(0)
-  expect(await repo.getRevisions(created.post.id)).toEqual([]) // revisions cascaded away
+  expect(revisionCount(repo, created.post.id)).toBe(0) // revisions cascaded away
 })

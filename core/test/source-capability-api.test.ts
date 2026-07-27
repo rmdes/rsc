@@ -90,7 +90,7 @@ test('the v2 handlers own every shared path (a v1-shaped body no longer works)',
   expect(created.body.subscription.availability).toBe('available')
   expect(JSON.stringify(created.body)).not.toMatch(/governance|provenance|adminRetained|operation/)
   // No legacy remote-user shadow row was minted.
-  expect((await repo.listRemoteUsers()).filter((u) => u.feedUrl === REMOTE_URL)).toHaveLength(0)
+  expect(repo.listUsers().filter((u) => u.feedUrl === REMOTE_URL)).toHaveLength(0)
 
   // Replaying the same command id returns the ORIGINAL result verbatim, so it
   // keeps the original 201; a fresh command id against the now-existing

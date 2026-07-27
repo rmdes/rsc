@@ -27,6 +27,13 @@ async function createPost(app: Awaited<ReturnType<typeof makeApp>>['app'], cooki
   return (await res.json()).post.id
 }
 
+// The history chain itself (oldest-first, current marker) is revisions.test.ts's
+// subject; here it is only the yardstick for "was a snapshot taken?".
+async function historyContent(app: Awaited<ReturnType<typeof makeApp>>['app'], id: string): Promise<string[]> {
+  const body = await (await app.request(`/posts/${id}/revisions`)).json()
+  return body.entries.map((e: { content: string }) => e.content)
+}
+
 test('owner edits own local post → 200, one revision (original), edited_at set', async () => {
   const { app, repo } = await makeApp()
   const cookie = await anonSession(app)
@@ -34,16 +41,16 @@ test('owner edits own local post → 200, one revision (original), edited_at set
   const res = await app.request(`/posts/${pid}`, patch(cookie, 'corrected'))
   expect(res.status).toBe(200)
   expect((await res.json()).post.content).toBe('corrected')
-  expect((await repo.getRevisions(pid)).map((r) => r.content)).toEqual(['original'])
+  expect(await historyContent(app, pid)).toEqual(['original', 'corrected']) // the snapshot, then the current
   expect((await repo.getPost(pid))?.editedAt).toBeTruthy()
 })
 
 test('no-op edit (same content) → 200, no revision', async () => {
-  const { app, repo } = await makeApp()
+  const { app } = await makeApp()
   const cookie = await anonSession(app)
   const pid = await createPost(app, cookie, 'same')
   expect((await app.request(`/posts/${pid}`, patch(cookie, 'same'))).status).toBe(200)
-  expect(await repo.getRevisions(pid)).toEqual([])
+  expect(await historyContent(app, pid)).toEqual(['same']) // current only — nothing snapshotted
 })
 
 test('a different session (non-owner) → 403; missing → 404', async () => {

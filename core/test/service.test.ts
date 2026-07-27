@@ -20,26 +20,25 @@ async function setup() {
   return { repo, bus, svc: createService(repo, bus, null, store) }
 }
 
-test('createLocalPost stores, emits, and appears in the timeline', async () => {
+test('createLocalPost stores, emits, and reads back', async () => {
   const { repo, bus, svc } = await setup()
   await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' }) // remote coexists
   const seen = vi.fn()
   bus.onNewPost(seen)
-  await svc.createLocalPostAs('alice', 'Alice', 'hello world')
+  const entry = await svc.createLocalPostAs('alice', 'Alice', 'hello world')
   expect(seen).toHaveBeenCalledTimes(1)
-  const tl = await svc.getTimeline()
-  expect(tl.map((e) => e.content)).toContain('hello world')
-  expect(tl[0].author.kind).toBe('local')
+  expect(entry.author.kind).toBe('local')
+  expect((await repo.getPost(entry.id))?.content).toBe('hello world')
 })
 
 test('handles are lowercased, so posting as Alice then alice is one user', async () => {
-  const { svc } = await setup()
+  const { repo, svc } = await setup()
   await svc.createLocalPostAs('Alice', 'Alice', 'first')
   await svc.createLocalPostAs('alice', 'Alice', 'second')
-  const tl = await svc.getTimeline()
-  const authorIds = new Set(tl.map((e) => e.authorId))
-  expect(authorIds.size).toBe(1)
-  expect(tl[0].author.handle).toBe('alice')
+  const alice = await repo.getUserByHandle('alice')
+  expect(alice).toBeDefined()
+  expect(await repo.getUserByHandle('Alice')).toBeUndefined() // never a second, cased user
+  expect((await repo.getPostsByAuthor(alice!.id, 10)).map((p) => p.content).sort()).toEqual(['first', 'second'])
 })
 
 test('a first post that loses the create race retries the lookup and succeeds', async () => {
@@ -87,16 +86,6 @@ test('addFollow refuses self-follow and instance targets, minting nothing', asyn
   const person: User = { ...peer, id: 'p2', handle: 'p2', feedType: 'person' }
   expect(await svc.addFollow(alice, person)).toBe(true)
   expect(follows).toEqual([['via-logical', 'unused']])
-})
-
-test('followed lens passes the filter through', async () => {
-  const { repo, svc } = await setup()
-  const me = await repo.createLocalUser({ handle: 'me', displayName: 'Me' })
-  const x = await repo.createRemoteUser({ handle: 'x', displayName: 'X', feedUrl: 'https://ex.com/x.xml' })
-  await svc.addFollow(me, x)
-  await repo.insertPost({ id: 'x1', authorId: x.id, source: 'remote', guid: 'x1', title: null, content: 'x1', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-  const tl = await svc.getTimeline(10, undefined, { followedBy: me.id })
-  expect(tl.map((e) => e.id)).toEqual(['x1'])
 })
 
 test('local posts get a permalink url when publicUrl is configured', async () => {
@@ -150,17 +139,6 @@ test('ensureLocalUser (first post) refuses a reserved handle through the same gu
   const { svc, repo } = await setup()
   reserve(repo, 'alice')
   await expect(svc.createLocalPostAs('Alice', 'Alice', 'hello')).rejects.toThrow(HandleTakenError)
-})
-
-test('a handle-changing updateUserProfile refuses a reserved handle', async () => {
-  const { repo } = await setup()
-  reserve(repo, 'taken')
-  const user = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-  await expect(repo.updateUserProfile(user.id, { handle: 'taken' })).rejects.toThrow(HandleTakenError)
-  // a display-name-only patch never consults the reservations
-  const renamed = await repo.updateUserProfile(user.id, { displayName: 'Alice B' })
-  expect(renamed.handle).toBe('alice')
-  expect(renamed.displayName).toBe('Alice B')
 })
 
 test('an unreserved handle is unaffected by the guard', async () => {
@@ -227,6 +205,10 @@ test('with v2 ON the logical store raises the same HandleTakenError as the repos
   // The v2 implementation is synchronous, so it THROWS where v1 rejects; the
   // route awaits inside one try/catch, which is why both still answer 409.
   await expect((async () => service.updateUserProfile(user.id, { handle: 'newsbot' }))()).rejects.toThrow(HandleTakenError)
+  // …and the same error for an ordinary already-taken handle (the users.UNIQUE
+  // collision, not a reservation) — the 409 the rename route answers.
+  await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
+  await expect((async () => service.updateUserProfile(user.id, { handle: 'bob' }))()).rejects.toThrow(HandleTakenError)
   // a display-name-only patch never consults the reservations
   expect((await service.updateUserProfile(user.id, { displayName: 'Alice B' })).handle).toBe('alice')
 })

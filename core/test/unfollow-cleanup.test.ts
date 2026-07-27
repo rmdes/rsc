@@ -34,11 +34,12 @@ test('last unfollow of a webfeed cascades; earlier unfollow does not', async () 
   const bob = await registeredSession(app, 'bob@test.example', repo)
   await renameTo(app, bob, 'bob', 'Bob')
   const feed = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml', feedType: 'webfeed' })
-  await repo.insertPost({
-    id: 'p1', authorId: feed.id, source: 'remote', guid: 'g1', title: null, content: 'hi',
-    url: 'https://ex.com/post/1', publishedAt: '2026-07-19T00:00:00Z', createdAt: '2026-07-19T00:00:00Z',
-    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
-  })
+  // A remote-authored `posts` row — the legacy shape v2 no longer writes but
+  // converted databases still hold; the cascade must still take it with the user.
+  repo.raw.prepare(
+    `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at)
+     VALUES ('p1', ?, 'remote', 'g1', NULL, 'hi', 'https://ex.com/post/1', '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')`,
+  ).run(feed.id)
 
   await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie: alice }, body: JSON.stringify({ handle: 'news' }) })
   await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie: bob }, body: JSON.stringify({ handle: 'news' }) })
@@ -47,14 +48,13 @@ test('last unfollow of a webfeed cascades; earlier unfollow does not', async () 
   const r1 = await app.request('/me/follows/news', { method: 'DELETE', headers: { cookie: alice } })
   expect(r1.status).toBe(200)
   expect(await repo.getUserByHandle('news')).toBeTruthy()
+  expect(await repo.getPost('p1')).toBeTruthy() // …and so do its posts
 
   // bob unfollows — last follower gone, self-serve feed cascade-deleted
   const r2 = await app.request('/me/follows/news', { method: 'DELETE', headers: { cookie: bob } })
   expect(r2.status).toBe(200)
   expect(await repo.getUserByHandle('news')).toBeUndefined()
-  const remoteHandles = (await repo.listRemoteUsers()).map((u) => u.handle)
-  expect(remoteHandles).not.toContain('news')
-  expect((await repo.getTimeline(50)).find((e) => e.id === 'p1')).toBeUndefined()
+  expect(await repo.getPost('p1')).toBeUndefined() // its posts went with it
 })
 
 test('unfollowing the sole follower of an instance keeps the row', async () => {

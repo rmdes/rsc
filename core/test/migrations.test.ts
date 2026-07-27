@@ -13,7 +13,7 @@ test('a fresh database migrates to the current version and works', async () => {
   const file = tempDb()
   const repo = await createSqliteRepository(file)
   const u = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-  expect((await repo.getTimeline(10)).length).toBe(0)
+  expect((await repo.getRecentLocalPosts(10)).length).toBe(0)
   expect(u.handle).toBe('alice')
   const raw = new Database(file, { readonly: true })
   expect(raw.pragma('user_version', { simple: true })).toBe(17)
@@ -93,7 +93,7 @@ test('a version-1 database upgrades in place to version 2 with data preserved', 
 
   const repo = await createSqliteRepository(file)
   expect((await repo.getUserByHandle('alice'))?.displayName).toBe('Alice')
-  expect((await repo.getTimeline(10)).map((e) => e.content)).toEqual(['kept'])
+  expect((await repo.getRecentLocalPosts(10)).map((e) => e.content)).toEqual(['kept'])
   await repo.upsertSubscription({ id: 'x1', protocol: 'websub', topic: 't', callback: 'c', callbackHost: 'h', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const check = new Database(file, { readonly: true })
   expect(check.pragma('user_version', { simple: true })).toBe(17)
