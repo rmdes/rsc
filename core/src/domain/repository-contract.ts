@@ -1,10 +1,32 @@
 import { describe, test, expect } from 'vitest'
 import type { Repository } from './repository.ts'
 import { HandleTakenError } from './types.ts'
-import type { Subscription, Post } from './types.ts'
+import type { Subscription } from './types.ts'
+import { createDatabaseContext, type DatabaseContext } from '../logical/database.ts'
+import { createLogicalStore } from '../logical/store.ts'
 
-export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
+// The v1 post/follow WRITERS (insertPost, addFollow, …) are being retired, so
+// every fixture here seeds through the logical store — the same path production
+// takes — and asserts against the surviving Repository readers. That needs the
+// raw handle, which only the concrete repository carries.
+export function runRepositoryContract(makeRepo: () => Promise<Repository & Pick<DatabaseContext, 'raw'>>) {
   describe('Repository contract', () => {
+    async function makeRepoAndStore() {
+      const repo = await makeRepo()
+      return { repo, logical: createLogicalStore(createDatabaseContext(repo.raw)) }
+    }
+
+    // Legacy v1 row shapes (a remote-authored post; an unresolved raw in_reply_to
+    // ref) that nothing writes any more but converted databases still hold —
+    // which is exactly what the two filters exercised below defend against.
+    // Seeded raw because every Repository method that could write this is dying.
+    function seedLegacyPost(repo: Pick<DatabaseContext, 'raw'>, p: { id: string; authorId: string; source: 'local' | 'remote'; at: string; inReplyTo?: string }): void {
+      repo.raw.prepare(
+        `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at, in_reply_to)
+         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?)`,
+      ).run(p.id, p.authorId, p.source, `g-${p.id}`, p.id, p.at, p.at, p.inReplyTo ?? null)
+    }
+
     test('creates and reads a local user', async () => {
       const repo = await makeRepo()
       const u = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
@@ -20,14 +42,12 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       expect(await repo.getUser('nope')).toBeUndefined()
     })
 
-    test('creates a remote user and lists it among remotes only', async () => {
+    test('creates a remote user', async () => {
       const repo = await makeRepo()
       await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
       const r = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
       expect(r.kind).toBe('remote')
       expect(r.feedUrl).toBe('https://ex.com/f.xml')
-      const remotes = await repo.listRemoteUsers()
-      expect(remotes.map((x) => x.handle)).toEqual(['news'])
     })
 
     test('updateFeedUrl changes a user feedUrl and no-ops on an unknown id', async () => {
@@ -38,121 +58,11 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
       await repo.updateFeedUrl('no-such-id', 'https://ex.com/x') // no throw
     })
 
-    test('inserts posts and returns a newest-first timeline with authors', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      await repo.insertPost({ id: 'p1', authorId: a.id, source: 'local', guid: 'g1', title: null, content: 'first', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-      await repo.insertPost({ id: 'p2', authorId: a.id, source: 'local', guid: 'g2', title: 'Second title', content: 'second', url: null, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z' })
-      const tl = await repo.getTimeline(10)
-      expect(tl.map((e) => e.id)).toEqual(['p2', 'p1'])
-      expect(tl[0].author.handle).toBe('alice')
-      expect(tl[0].title).toBe('Second title')
-      expect(tl[1].title).toBeNull()
-    })
-
-    test('insertPost returns false and does not duplicate on a repeat (author_id, guid) pair', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
-      const post = { id: 'p1', authorId: a.id, source: 'remote' as const, guid: 'g1', title: null, content: 'x', url: 'https://ex.com/1', publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' }
-      expect(await repo.insertPost(post)).toBe(true)
-      expect(await repo.insertPost({ ...post, id: 'p1-dup' })).toBe(false)
-      const tl = await repo.getTimeline(10)
-      expect(tl.filter((e) => e.guid === 'g1')).toHaveLength(1)
-    })
-
-    test('insertPost allows the same guid under a different author', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'news-a', displayName: 'News A', feedUrl: 'https://ex.com/a.xml' })
-      const b = await repo.createRemoteUser({ handle: 'news-b', displayName: 'News B', feedUrl: 'https://ex.com/b.xml' })
-      expect(await repo.insertPost({ id: 'pa', authorId: a.id, source: 'remote', guid: 'shared-guid', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })).toBe(true)
-      expect(await repo.insertPost({ id: 'pb', authorId: b.id, source: 'remote', guid: 'shared-guid', title: null, content: 'y', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })).toBe(true)
-      const tl = await repo.getTimeline(10)
-      expect(tl.filter((e) => e.guid === 'shared-guid')).toHaveLength(2)
-    })
-
-    test('hasPostsByAuthor is false before any post and true after', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
-      expect(await repo.hasPostsByAuthor(a.id)).toBe(false)
-      await repo.insertPost({ id: 'p1', authorId: a.id, source: 'remote', guid: 'g1', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-      expect(await repo.hasPostsByAuthor(a.id)).toBe(true)
-    })
-
-    test('inserting a post whose authorId does not exist rejects', async () => {
-      const repo = await makeRepo()
-      await expect(repo.insertPost({ id: 'p1', authorId: 'no-such-user', source: 'remote', guid: 'g1', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })).rejects.toThrow()
-    })
-
-    test('getTimeline pages with a before cursor: page 2 starts where page 1 ended', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      for (let i = 1; i <= 3; i++) {
-        await repo.insertPost({ id: `p${i}`, authorId: a.id, source: 'local', guid: `g${i}`, title: null, content: `post ${i}`, url: null, publishedAt: `2026-01-0${i}T00:00:00.000Z`, createdAt: `2026-01-0${i}T00:00:00.000Z` })
-      }
-      const page1 = await repo.getTimeline(2)
-      expect(page1.map((e) => e.id)).toEqual(['p3', 'p2'])
-      const last = page1[page1.length - 1]
-      const page2 = await repo.getTimeline(2, { publishedAt: last.publishedAt, id: last.id })
-      expect(page2.map((e) => e.id)).toEqual(['p1'])
-    })
-
-    test('getTimeline splits publishedAt ties by id across pages', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      const t = '2026-01-01T00:00:00.000Z'
-      await repo.insertPost({ id: 'aaa', authorId: a.id, source: 'local', guid: 'g-aaa', title: null, content: 'tie low', url: null, publishedAt: t, createdAt: t })
-      await repo.insertPost({ id: 'zzz', authorId: a.id, source: 'local', guid: 'g-zzz', title: null, content: 'tie high', url: null, publishedAt: t, createdAt: t })
-      const page1 = await repo.getTimeline(1)
-      expect(page1[0].id).toBe('zzz')
-      const page2 = await repo.getTimeline(1, { publishedAt: t, id: 'zzz' })
-      expect(page2[0].id).toBe('aaa')
-    })
-
-    test('topLevel timeline keeps roots and honest orphans but excludes resolved descendants before pagination', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      const insert = (id: string, day: string, over: Partial<Post> = {}) => repo.insertPost({
-        id, authorId: a.id, source: 'local', guid: `g-${id}`, title: null,
-        content: id, url: null,
-        publishedAt: `2026-01-${day}T00:00:00.000Z`,
-        createdAt: `2026-01-${day}T00:00:00.000Z`,
-        ...over,
-      })
-      await insert('root-old', '01')
-      await insert('reply', '02', { inReplyTo: 'root-old', inReplyToPostId: 'root-old', threadRootId: 'root-old' })
-      await insert('nested', '03', { inReplyTo: 'reply', inReplyToPostId: 'reply', threadRootId: 'root-old' })
-      await insert('orphan', '04', { inReplyTo: 'https://missing.example/post', inReplyToPostId: null, threadRootId: null })
-      await insert('root-new', '05')
-
-      expect((await repo.getTimeline(10)).map((e) => e.id)).toEqual(['root-new', 'orphan', 'nested', 'reply', 'root-old'])
-      expect((await repo.getTimeline(10, undefined, { topLevel: true })).map((e) => e.id)).toEqual(['root-new', 'orphan', 'root-old'])
-
-      const page1 = await repo.getTimeline(2, undefined, { topLevel: true })
-      const last = page1.at(-1)!
-      const page2 = await repo.getTimeline(2, { publishedAt: last.publishedAt, id: last.id }, { topLevel: true })
-      expect(page1.map((e) => e.id)).toEqual(['root-new', 'orphan'])
-      expect(page2.map((e) => e.id)).toEqual(['root-old'])
-    })
-
-    test('getTimelineAfter returns arrival order, inclusive of the anchor timestamp', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      // anchor: arrived first, displays newest (published latest)
-      await repo.insertPost({ id: 'anchor', authorId: a.id, source: 'local', guid: 'g-anchor', title: null, content: 'anchor', url: null, publishedAt: '2026-01-10T12:00:00.000Z', createdAt: '2026-01-10T12:00:00.000Z' })
-      // same-created_at sibling (R1 case)
-      await repo.insertPost({ id: 'sibling', authorId: a.id, source: 'local', guid: 'g-sibling', title: null, content: 'sibling', url: null, publishedAt: '2026-01-10T12:00:00.000Z', createdAt: '2026-01-10T12:00:00.000Z' })
-      // arrived later but published in the past (H1 case)
-      await repo.insertPost({ id: 'olddate', authorId: a.id, source: 'remote', guid: 'g-old', title: null, content: 'old-dated', url: null, publishedAt: '2020-01-01T00:00:00.000Z', createdAt: '2026-01-10T12:00:01.000Z' })
-      const replay = await repo.getTimelineAfter('2026-01-10T12:00:00.000Z', 10)
-      expect(replay.map((e) => e.id)).toEqual(['anchor', 'sibling', 'olddate'])
-      expect(replay[0].author.handle).toBe('alice')
-    })
-
     test('getPost returns a post by id and undefined for unknown ids', async () => {
-      const repo = await makeRepo()
+      const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      await repo.insertPost({ id: 'p1', authorId: a.id, source: 'local', guid: 'g1', title: null, content: 'x', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-      expect((await repo.getPost('p1'))?.guid).toBe('g1')
+      const p = logical.createLocalPost({ author: a, content: 'x', replyToId: null, now: '2026-01-01T00:00:00.000Z' })
+      expect((await repo.getPost(p.id))?.content).toBe('x')
       expect(await repo.getPost('nope')).toBeUndefined()
     })
 
@@ -213,236 +123,79 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository>) {
     })
 
     test('getPostsByAuthor returns only that author, display-ordered, limited', async () => {
-      const repo = await makeRepo()
+      const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
       const b = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
-      for (let i = 1; i <= 3; i++) {
-        await repo.insertPost({ id: `a${i}`, authorId: a.id, source: 'local', guid: `ga${i}`, title: null, content: `alice ${i}`, url: null, publishedAt: `2026-01-0${i}T00:00:00.000Z`, createdAt: `2026-01-0${i}T00:00:00.000Z` })
-      }
-      await repo.insertPost({ id: 'b1', authorId: b.id, source: 'local', guid: 'gb1', title: null, content: 'bob 1', url: null, publishedAt: '2026-01-09T00:00:00.000Z', createdAt: '2026-01-09T00:00:00.000Z' })
+      const mine = [1, 2, 3].map((i) => logical.createLocalPost({ author: a, content: `alice ${i}`, replyToId: null, now: `2026-01-0${i}T00:00:00.000Z` }))
+      // bob's post is the newest of all: it would lead an unscoped result
+      logical.createLocalPost({ author: b, content: 'bob 1', replyToId: null, now: '2026-01-09T00:00:00.000Z' })
       const posts = await repo.getPostsByAuthor(a.id, 2)
-      expect(posts.map((p) => p.id)).toEqual(['a3', 'a2'])
+      expect(posts.map((p) => p.id)).toEqual([mine[2].id, mine[1].id])
     })
 
-    test('addFollow is idempotent and listFollowing returns follows in created_at order', async () => {
-      const repo = await makeRepo()
+    test('listFollowing returns follows in created_at order and duplicate follows are idempotent', async () => {
+      const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      const b = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
-      const c = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://ex.com/b.xml' })
-      await repo.addFollow(a.id, c.id) // follow 'blog' first
-      await repo.addFollow(a.id, b.id) // follow 'news' second
-      await repo.addFollow(a.id, c.id) // duplicate re-follow of blog — still idempotent
-      const following = await repo.listFollowing(a.id)
-      // Insertion order (blog first, news second) matches assertion regardless of timing.
-      // Even if both land in the same millisecond and tiebreak by handle ASC, result is blog, news.
-      expect(following.map((u) => u.handle)).toEqual(['blog', 'news'])
+      const news = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
+      const blog = await repo.createRemoteUser({ handle: 'blog', displayName: 'Blog', feedUrl: 'https://ex.com/b.xml' })
+      // 'news' first even though it sorts LAST by handle: created_at leads, the
+      // handle is only the same-ms tiebreak.
+      logical.addLocalFollow({ followerId: a.id, followedId: news.id, now: '2026-01-01T00:00:00.000Z' })
+      logical.addLocalFollow({ followerId: a.id, followedId: blog.id, now: '2026-01-02T00:00:00.000Z' })
+      logical.addLocalFollow({ followerId: a.id, followedId: news.id, now: '2026-01-03T00:00:00.000Z' }) // re-follow: no row, no reorder
+      expect((await repo.listFollowing(a.id)).map((u) => u.handle)).toEqual(['news', 'blog'])
     })
 
-    test('removeFollow is idempotent (removing a non-follow is a no-op)', async () => {
-      const repo = await makeRepo()
+    test('listFollowing reflects removeLocalFollow, and removing a non-follow is a no-op', async () => {
+      const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
       const b = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://ex.com/f.xml' })
-      await repo.removeFollow(a.id, b.id) // never followed — no throw
-      await repo.addFollow(a.id, b.id)
-      await repo.removeFollow(a.id, b.id)
-      await repo.removeFollow(a.id, b.id) // already gone — no throw
+      const now = '2026-01-01T00:00:00.000Z'
+      logical.removeLocalFollow({ followerId: a.id, followedId: b.id, now }) // never followed — no throw
+      logical.addLocalFollow({ followerId: a.id, followedId: b.id, now })
+      logical.removeLocalFollow({ followerId: a.id, followedId: b.id, now })
+      logical.removeLocalFollow({ followerId: a.id, followedId: b.id, now }) // already gone — no throw
       expect(await repo.listFollowing(a.id)).toEqual([])
     })
 
-    // This contract describes the REPO layer, which stays permissive; the
-    // SERVICE layer refuses self-follows as of SP3 (service.ts's addFollow guard).
-    test('self-follow is allowed and needs no special-casing', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      await repo.addFollow(a.id, a.id)
-      expect((await repo.listFollowing(a.id)).map((u) => u.id)).toEqual([a.id])
-    })
-
-    test('followedBy filter scopes the timeline to followed authors, paginating across boundaries', async () => {
-      const repo = await makeRepo()
-      const me = await repo.createLocalUser({ handle: 'me', displayName: 'Me' })
-      const x = await repo.createRemoteUser({ handle: 'x', displayName: 'X', feedUrl: 'https://ex.com/x.xml' })
-      const y = await repo.createRemoteUser({ handle: 'y', displayName: 'Y', feedUrl: 'https://ex.com/y.xml' })
-      await repo.addFollow(me.id, x.id) // follows X, not Y
-      const mk = (id: string, author: string, day: string) => repo.insertPost({ id, authorId: author, source: 'remote', guid: id, title: null, content: id, url: null, publishedAt: `2026-01-${day}T00:00:00.000Z`, createdAt: `2026-01-${day}T00:00:00.000Z` })
-      await mk('x1', x.id, '01'); await mk('y1', y.id, '02'); await mk('x2', x.id, '03'); await mk('y2', y.id, '04')
-      const page1 = await repo.getTimeline(1, undefined, { followedBy: me.id })
-      expect(page1.map((e) => e.id)).toEqual(['x2']) // newest followed post, Y excluded
-      const page2 = await repo.getTimeline(1, { publishedAt: page1[0].publishedAt, id: page1[0].id }, { followedBy: me.id })
-      expect(page2.map((e) => e.id)).toEqual(['x1'])
-    })
-
-    test('authorId filter scopes to one author (works for remote authors too)', async () => {
-      const repo = await makeRepo()
-      const x = await repo.createRemoteUser({ handle: 'x', displayName: 'X', feedUrl: 'https://ex.com/x.xml' })
-      const y = await repo.createRemoteUser({ handle: 'y', displayName: 'Y', feedUrl: 'https://ex.com/y.xml' })
-      await repo.insertPost({ id: 'x1', authorId: x.id, source: 'remote', guid: 'x1', title: null, content: 'x1', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-      await repo.insertPost({ id: 'y1', authorId: y.id, source: 'remote', guid: 'y1', title: null, content: 'y1', url: null, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z' })
-      const tl = await repo.getTimeline(10, undefined, { authorId: x.id })
-      expect(tl.map((e) => e.id)).toEqual(['x1'])
-    })
-
-    const mkPost = (over: Partial<Post> & { id: string; authorId: string }): Post => ({
-      source: 'remote', guid: over.id, title: null, content: over.id, url: null,
-      publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over,
-    })
-
-    test('backfillItemExtras fills each column independently, only where null (COR-1)', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'agg', displayName: 'Agg', feedUrl: 'https://agg.ex/f' })
-      await repo.insertPost(mkPost({ id: 'p1', authorId: a.id, guid: 'g1' }))
-      // first pass: attribution only (the migration-6 world)
-      await repo.backfillItemExtras(a.id, 'g1', 'Dave Winer', 'https://rss.chat/users/dave/rss.xml', null, null)
-      // second pass: markdown + permalink-guid url arrive later — must still fill
-      await repo.backfillItemExtras(a.id, 'g1', 'Someone Else', 'https://other.ex/f', '**md**', 'https://rss.chat/?id=1')
-      const p = await repo.getPost('p1')
-      expect(p?.sourceName).toBe('Dave Winer') // no flapping
-      expect(p?.contentMarkdown).toBe('**md**') // filled despite source_name being set
-      expect(p?.url).toBe('https://rss.chat/?id=1') // url fills where null
-      // third pass: url never flaps once set
-      await repo.backfillItemExtras(a.id, 'g1', null, null, null, 'https://evil.ex/other')
-      expect((await repo.getPost('p1'))?.url).toBe('https://rss.chat/?id=1')
-      await repo.backfillItemExtras(a.id, 'nope', 'X', null, null, null) // unknown guid → no-op
-    })
-
-    test('findPostByRef: unique url wins; duplicated url resolves to NOTHING (Hole A)', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
-      const b = await repo.createRemoteUser({ handle: 'b', displayName: 'B', feedUrl: 'https://b.ex/f' })
-      await repo.insertPost(mkPost({ id: 'p1', authorId: a.id, url: 'https://a.ex/1' }))
-      expect((await repo.findPostByRef('https://a.ex/1'))?.id).toBe('p1')
-      await repo.insertPost(mkPost({ id: 'p2', authorId: b.id, url: 'https://a.ex/1' })) // syndicated duplicate
-      expect(await repo.findPostByRef('https://a.ex/1')).toBeUndefined()
-    })
-
-    test('findPostByRef: unique guid matches; guid shared by two posts resolves to NOTHING (H2)', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
-      const b = await repo.createRemoteUser({ handle: 'b', displayName: 'B', feedUrl: 'https://b.ex/f' })
-      await repo.insertPost(mkPost({ id: 'g1', authorId: a.id, guid: 'shared-guid' }))
-      expect((await repo.findPostByRef('shared-guid'))?.id).toBe('g1')
-      await repo.insertPost(mkPost({ id: 'g2', authorId: b.id, guid: 'shared-guid' })) // guid unique per (author,guid) only
-      expect(await repo.findPostByRef('shared-guid')).toBeUndefined()
-      expect(await repo.findPostByRef('nope')).toBeUndefined()
-    })
-
-    test('reply fields round-trip through insertPost/getPost and default to null', async () => {
-      const repo = await makeRepo()
+    test('countRepliesByPostIds keys on resolved ids only', async () => {
+      const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
-      await repo.insertPost(mkPost({ id: 'root', authorId: a.id }))
-      await repo.insertPost(mkPost({ id: 're', authorId: a.id, inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
-      const re = await repo.getPost('re')
-      expect([re?.inReplyTo, re?.inReplyToPostId, re?.threadRootId]).toEqual(['root', 'root', 'root'])
-      const root = await repo.getPost('root')
-      expect([root?.inReplyTo, root?.inReplyToPostId, root?.threadRootId]).toEqual([null, null, null])
-    })
-
-    test('getThread returns root + all descendants flat, (published_at, id) ASC', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
-      const day = (d: string) => `2026-01-0${d}T00:00:00.000Z`
-      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, publishedAt: day('1') }))
-      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: day('2'), inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
-      await repo.insertPost(mkPost({ id: 'r2', authorId: a.id, publishedAt: day('3'), inReplyTo: 'r1', inReplyToPostId: 'r1', threadRootId: 'root' }))
-      await repo.insertPost(mkPost({ id: 'other', authorId: a.id, publishedAt: day('4') }))
-      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'r1', 'r2'])
-    })
-
-    test('getThread never shows a reply before its parent, even when feed-truncated timestamps invert them', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
-      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, publishedAt: '2026-01-01T00:00:00.500Z' }))
-      // RFC-822 pubDate truncates sub-second precision: the reply's timestamp sorts EARLIER than its parent
-      await repo.insertPost(mkPost({ id: 're', authorId: a.id, publishedAt: '2026-01-01T00:00:00.000Z', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
-      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 're'])
-    })
-
-    test('getThread terminates on a mutual-reply cycle (adoption-formed) and returns each post exactly once', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
-      await repo.insertPost(mkPost({ id: 'x', authorId: a.id, inReplyToPostId: 'y', threadRootId: 'x' }))
-      await repo.insertPost(mkPost({ id: 'y', authorId: a.id, inReplyToPostId: 'x', threadRootId: 'x' }))
-      const thread = await repo.getThread('x')
-      expect(thread.map((e) => e.id)).toEqual(['x', 'y'])
-    })
-
-    test('adoptOrphans attaches earlier orphans and re-roots their whole subtree', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
-      const day = (d: string) => `2026-01-0${d}T00:00:00.000Z`
-      // Distinct publishedAt per post: getThread orders (published_at, id) ASC and
-      // gives NO root-first guarantee on ties — same reason Task 1's test uses days.
-      // Arrival order: reply-to-reply first, then reply, then the root (worst case).
-      await repo.insertPost(mkPost({ id: 'rr', authorId: a.id, publishedAt: day('3'), inReplyTo: 'https://a.ex/r1' }))
-      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: day('2'), url: 'https://a.ex/r1', inReplyTo: 'root-guid' }))
-      await repo.adoptOrphans((await repo.getPost('r1'))!) // rr adopted by r1 (r1 is its own root for now)
-      expect((await repo.getPost('rr'))?.threadRootId).toBe('r1')
-      expect((await repo.getPost('rr'))?.inReplyToPostId).toBe('r1')
-      await repo.insertPost(mkPost({ id: 'root', authorId: a.id, publishedAt: day('1'), guid: 'root-guid' }))
-      await repo.adoptOrphans((await repo.getPost('root'))!)
-      // r1 adopted by root; rr's subtree re-rooted to the TOP root in the same pass
-      expect((await repo.getPost('r1'))?.threadRootId).toBe('root')
-      expect((await repo.getPost('r1'))?.inReplyToPostId).toBe('root')
-      expect((await repo.getPost('rr'))?.threadRootId).toBe('root')
-      expect((await repo.getThread('root')).map((e) => e.id)).toEqual(['root', 'r1', 'rr'])
-    })
-
-    test('adoption refuses ambiguous refs on BOTH arms (H2 + Hole A)', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createRemoteUser({ handle: 'a', displayName: 'A', feedUrl: 'https://a.ex/f' })
-      const b = await repo.createRemoteUser({ handle: 'b', displayName: 'B', feedUrl: 'https://b.ex/f' })
-      await repo.insertPost(mkPost({ id: 'orphan', authorId: a.id, inReplyTo: 'dup-guid' }))
-      await repo.insertPost(mkPost({ id: 'h1', authorId: a.id, guid: 'dup-guid' }))
-      await repo.insertPost(mkPost({ id: 'h2', authorId: b.id, guid: 'dup-guid' }))
-      await repo.adoptOrphans((await repo.getPost('h2'))!) // dup-guid held by h1 AND h2 → refuse
-      expect((await repo.getPost('orphan'))?.inReplyToPostId).toBeNull()
-      // url arm: same shape
-      await repo.insertPost(mkPost({ id: 'orphan2', authorId: a.id, inReplyTo: 'https://dup.ex/1' }))
-      await repo.insertPost(mkPost({ id: 'u1', authorId: a.id, url: 'https://dup.ex/1' }))
-      await repo.insertPost(mkPost({ id: 'u2', authorId: b.id, url: 'https://dup.ex/1' }))
-      await repo.adoptOrphans((await repo.getPost('u2'))!)
-      expect((await repo.getPost('orphan2'))?.inReplyToPostId).toBeNull()
-    })
-
-    test('countRepliesByPostIds and listRepliesByPostId key on resolved ids only', async () => {
-      const repo = await makeRepo()
-      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
-      await repo.insertPost(mkPost({ id: 'root', authorId: a.id }))
-      await repo.insertPost(mkPost({ id: 'r1', authorId: a.id, publishedAt: '2026-01-02T00:00:00.000Z', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
-      await repo.insertPost(mkPost({ id: 'r2', authorId: a.id, publishedAt: '2026-01-03T00:00:00.000Z', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' }))
-      // an UNRESOLVED reply whose raw ref happens to equal the root's guid must NOT count
-      await repo.insertPost(mkPost({ id: 'stray', authorId: a.id, inReplyTo: 'root' }))
-      const counts = await repo.countRepliesByPostIds(['root', 'r1'])
-      expect(counts.get('root')).toBe(2)
-      expect(counts.get('r1')).toBeUndefined()
+      const post = (content: string, replyToId: string | null, day: string) =>
+        logical.createLocalPost({ author: a, content, replyToId, now: `2026-01-0${day}T00:00:00.000Z` })
+      const root = post('root', null, '1')
+      const r1 = post('r1', root.id, '2')
+      post('r2', root.id, '3')
+      // a legacy UNRESOLVED reply whose raw ref happens to equal the root's id must NOT count
+      seedLegacyPost(repo, { id: 'stray', authorId: a.id, source: 'local', at: '2026-01-04T00:00:00.000Z', inReplyTo: root.id })
+      const counts = await repo.countRepliesByPostIds([root.id, r1.id])
+      expect(counts.get(root.id)).toBe(2)
+      expect(counts.get(r1.id)).toBeUndefined()
       expect(await repo.countRepliesByPostIds([])).toEqual(new Map())
-      expect((await repo.listRepliesByPostId('root')).map((p) => p.id)).toEqual(['r1', 'r2'])
     })
 
-    test('conversation counts include every descendant while direct counts stay direct', async () => {
-      const repo = await makeRepo()
+    test('countRepliesByPostIds counts direct replies only, never the whole conversation', async () => {
+      const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      const base = { authorId: a.id, source: 'local' as const, title: null, url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' }
-      await repo.insertPost({ ...base, id: 'root', guid: 'root', content: 'root' })
-      await repo.insertPost({ ...base, id: 'r1', guid: 'r1', content: 'r1', inReplyTo: 'root', inReplyToPostId: 'root', threadRootId: 'root' })
-      await repo.insertPost({ ...base, id: 'r2', guid: 'r2', content: 'r2', inReplyTo: 'r1', inReplyToPostId: 'r1', threadRootId: 'root' })
-
-      expect(await repo.countRepliesByPostIds(['root', 'r1'])).toEqual(new Map([['root', 1], ['r1', 1]]))
-      expect(await repo.countThreadRepliesByRootIds(['root'])).toEqual(new Map([['root', 2]]))
-      expect(await repo.countThreadRepliesByRootIds([])).toEqual(new Map())
+      const root = logical.createLocalPost({ author: a, content: 'root', replyToId: null, now: '2026-01-01T00:00:00.000Z' })
+      const r1 = logical.createLocalPost({ author: a, content: 'r1', replyToId: root.id, now: '2026-01-02T00:00:00.000Z' })
+      logical.createLocalPost({ author: a, content: 'r2', replyToId: r1.id, now: '2026-01-03T00:00:00.000Z' })
+      // root's grandchild is r1's child, not root's: 1 each, never 2 for the root
+      expect(await repo.countRepliesByPostIds([root.id, r1.id])).toEqual(new Map([[root.id, 1], [r1.id, 1]]))
     })
 
     test('getRecentLocalPosts: local authors only, newest first, limited', async () => {
-      const repo = await makeRepo()
+      const { repo, logical } = await makeRepoAndStore()
       const local = await repo.createLocalUser({ handle: 'loc', displayName: 'Loc' })
       const remote = await repo.createRemoteUser({ handle: 'rem', displayName: 'Rem', feedUrl: 'https://r.ex/f' })
-      await repo.insertPost(mkPost({ id: 'l1', authorId: local.id, guid: 'l1', publishedAt: '2026-01-01T00:00:00.000Z' }))
-      await repo.insertPost(mkPost({ id: 'l2', authorId: local.id, guid: 'l2', publishedAt: '2026-01-02T00:00:00.000Z' }))
-      await repo.insertPost(mkPost({ id: 'r1', authorId: remote.id, guid: 'r1', publishedAt: '2026-01-03T00:00:00.000Z' }))
+      const l1 = logical.createLocalPost({ author: local, content: 'l1', replyToId: null, now: '2026-01-01T00:00:00.000Z' })
+      const l2 = logical.createLocalPost({ author: local, content: 'l2', replyToId: null, now: '2026-01-02T00:00:00.000Z' })
+      // legacy remote-authored row, newest of all — excluded by author kind, not by date
+      seedLegacyPost(repo, { id: 'r1', authorId: remote.id, source: 'remote', at: '2026-01-03T00:00:00.000Z' })
       const entries = await repo.getRecentLocalPosts(10)
-      expect(entries.map((e) => e.id)).toEqual(['l2', 'l1']) // remote excluded, newest first
+      expect(entries.map((e) => e.id)).toEqual([l2.id, l1.id])
       expect(entries[0].author.handle).toBe('loc') // author joined inline
-      expect((await repo.getRecentLocalPosts(1)).map((e) => e.id)).toEqual(['l2'])
+      expect((await repo.getRecentLocalPosts(1)).map((e) => e.id)).toEqual([l2.id])
     })
   })
 }

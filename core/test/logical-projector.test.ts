@@ -279,6 +279,24 @@ test('timeline orders by (timelineSortAt DESC, id DESC) and paginates through th
   expect(second.nextCursor).toBeNull()
 })
 
+// makeRiver gives every row a DISTINCT timelineSortAt, so the id half of the sort
+// key and the cursor's `sort_at = ? AND id < ?` arm never fire there. Two rows on
+// the SAME instant are the only thing that exercises them.
+test('timeline tie-breaks an equal timelineSortAt by id DESC, across the cursor', async () => {
+  const { raw, db } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  const tied = '2026-07-23T00:00:05.000Z'
+  seedPost(raw, { id: 'aaa', author: 'u1', at: tied })
+  seedPost(raw, { id: 'zzz', author: 'u1', at: tied })
+  const first = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 1, viewer: ANON }))
+  expect(first.timeline.map((d) => d.id)).toEqual(['zzz'])
+  const dec = decodeCursor(first.nextCursor as string)!
+  const before: TimelineCursorV2 = { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
+  const second = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before, limit: 1, viewer: ANON }))
+  expect(second.timeline.map((d) => d.id)).toEqual(['aaa']) // a sort_at-only cursor would return nothing
+  expect(second.nextCursor).toBeNull()
+})
+
 // ---- unresolved reply keeps ordinary reply context (spec §3.4-3.5) ----------
 
 test('a remote reply to an unknown parent is missing, stays in the river, and exposes asserted external reply context', async () => {
