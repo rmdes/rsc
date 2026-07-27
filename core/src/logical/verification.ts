@@ -222,9 +222,12 @@ async function fetchAndParse(url: string, fetchFn: typeof fetch, lookupFn: Looku
 // quarantined), a verified_origin publisher claim, one system-actor item-audit
 // entry, and an inline hint recompute through the SHARED comparator. The §6
 // journal upsert fires ONLY when the ordinary selection/author actually changed.
-// A successful fetch with no match is terminal `unverified` (never contradicted,
-// no retry); an operational failure rides the SHARED drain backoff and exhausts
-// to `unverified` at eight attempts.
+// A successful fetch with no match sets `unverified` — not terminal: the check
+// is picked up again by a LATER batch fetch for the same URL (this function's
+// own query below matches state IN ('pending', 'unverified')), and can
+// transition to `verified` if that fetch's fresh evidence now contains a match.
+// No fetch is triggered on the check's own behalf. An operational failure
+// rides the SHARED drain backoff and exhausts to `unverified` at eight attempts.
 
 const ANON_VIEWER: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
 // A valid empty AdminAcquisitionCounters JSON for the synthetic verification run.
