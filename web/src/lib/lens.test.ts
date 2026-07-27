@@ -9,10 +9,10 @@ test('author lens keeps only the matching author', () => {
   expect(keepEvent(entry('b'), { kind: 'author', authorId: 'a' })).toBe(false)
 })
 
-test('followed lens keeps only authors in the follow set', () => {
-  const lens = { kind: 'followed' as const, followIds: new Set(['a', 'b']) }
-  expect(keepEvent(entry('a'), lens)).toBe(true)
-  expect(keepEvent(entry('c'), lens)).toBe(false)
+test('followed lens keeps entries by classification.personal', () => {
+  const lens = { kind: 'followed' as const }
+  expect(keepEvent({ ...entry('a'), classification: { personal: true, federated: false } }, lens)).toBe(true)
+  expect(keepEvent({ ...entry('c'), classification: { personal: false, federated: false } }, lens)).toBe(false)
 })
 
 test('thread lens keeps the root and its descendants only', () => {
@@ -44,12 +44,11 @@ test('feedType lens keeps a v2 entry by classification.federated, ignoring the n
   expect(keepEvent(notFed, { kind: 'feedType', feedType: 'instance' })).toBe(false)
 })
 
-// D3: a followed remote publisher carries no local user id in followIds — the
-// personal tab must key off classification.personal or the item drops live.
-test('followed lens keeps a v2 entry by classification.personal even when its id is not in followIds', () => {
-  const lens = { kind: 'followed' as const, followIds: new Set(['someone-else']) }
+// D3: a followed remote publisher carries no local user id — the personal tab
+// keys off classification.personal alone, which the projector always sets.
+test('followed lens keeps a v2 entry by classification.personal regardless of author id', () => {
+  const lens = { kind: 'followed' as const }
   const e = { ...entry('remote-pub'), classification: { personal: true, federated: false } }
-  expect(lens.followIds.has(e.author.id)).toBe(false) // the v1 path would drop it
   expect(keepEvent(e, lens)).toBe(true)
   const notPersonal = { ...entry('remote-pub'), classification: { personal: false, federated: true } }
   expect(keepEvent(notPersonal, lens)).toBe(false)

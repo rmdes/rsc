@@ -74,9 +74,8 @@ test('all three pages switch together: subscribe, owner projection, unsubscribe,
 	const fetch = coreFetch()
 	const { home, following, admin } = await pages()
 
-	const homeData = (await home.load(homeEvent(fetch) as never)) as { subscribeCommandId?: string; followIds?: string[] }
+	const homeData = (await home.load(homeEvent(fetch) as never)) as { subscribeCommandId?: string }
 	expect(homeData.subscribeCommandId).toMatch(/^[0-9a-f]{8}-/)
-	expect(homeData.followIds).toEqual(['me1']) // a v2 source carries no local user id
 
 	// Subscribe posts url+commandId (no `type`) and lands on the v2 flash.
 	await expect(home.actions.subscribe(formEvent('subscribe', { url: 'https://203.0.113.90/f.xml', commandId: 'cmd-1' }, fetch) as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&sub=added' })

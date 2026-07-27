@@ -1,8 +1,7 @@
 import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { getPeers, getFollowing, createPost, deletePost, subscribeToSource } from '$lib/api'
+import { getPeers, createPost, deletePost, subscribeToSource } from '$lib/api'
 import { getLogicalTimeline, type V2Lens } from '$lib/logical-api'
-import type { PublicFollowingEntry } from '$lib/types'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 import { TABS, resolveTab, type Tab } from '$lib/tabs'
@@ -27,13 +26,6 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 	const { me } = await parent()
 	const tab = resolveTab(url.searchParams.get('tab'), me)
 	try {
-		// followIds feed the live lens only, and the live stream mounts on the first page only.
-		const followingP = tab === 'personal' && isFirstPage && me ? getFollowing(fetch, me.user.handle) : Promise.resolve(null)
-		// The discard handler attaches SYNCHRONOUSLY: if the river await below throws,
-		// the load returns without ever awaiting this promise, and a rejection with no
-		// handler is fatal (unhandledRejection kills the pod). `await followingP` still
-		// surfaces the real error on the happy path.
-		followingP.catch(() => {})
 		// The PRIMARY home river validates + maps the logical envelope. A malformed
 		// envelope FAILS CLOSED (spec §5.6 carve 2) by throwing LogicalContractError,
 		// which the catch below turns into coreDown — the same "can't load this page"
@@ -43,13 +35,8 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 		// client opens /stream?last=<journalCursor> so Core serves from here instead
 		// of forcing a reset (an empty cursor would loop reset↔refetch).
 		const { entries: timeline, nextCursor, journalCursor } = await getLogicalTimeline(fetch, { before, ...tabLens(tab, me?.user.handle) })
-		const following = await followingP
 		// Widget data, never load-bearing: a peers failure must not down the page.
 		const peers = await getPeers(fetch).catch(() => [])
-		// Self first (the river includes its owner).
-		// ponytail: a source follow carries no local user id, so the lens tracks local
-		// follows only — logical-item ordinary reads supersede this.
-		const followIds = following && me ? [me.user.id, ...(following as unknown as PublicFollowingEntry[]).filter((e) => e.kind === 'local').map((e) => e.id)] : undefined
 		return {
 			timeline: enrichEntries(timeline),
 			nextCursor,
@@ -58,7 +45,6 @@ export const load: PageServerLoad = async ({ fetch, url, parent }) => {
 			addedFeed,
 			subscribed,
 			tab,
-			followIds,
 			journalCursor,
 			// One id per rendered form: resubmitting THIS form (no-JS retry) replays
 			// the same command server-side instead of mutating twice.

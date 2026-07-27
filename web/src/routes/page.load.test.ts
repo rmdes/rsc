@@ -90,41 +90,14 @@ test('load returns an empty timeline with coreDown when the core is unreachable'
 	expect(result).toEqual({ timeline: [], nextCursor: null, isFirstPage: true, coreDown: true, peers: [], tab: 'public' })
 })
 
-test('registered default resolves to personal: followed_by lens, self-first followIds, sources excluded', async () => {
-	const fetch = vi.fn(async (url: string | URL) =>
-		String(url).includes('/follows')
-			? new Response(
-					JSON.stringify({
-						following: [
-							{ kind: 'local', id: 'f1', handle: 'w', displayName: 'W' },
-							{ kind: 'source', sourceId: 's1', url: 'https://ex.com/f.xml', displayName: 'Ex' }
-						]
-					}),
-					{ status: 200 }
-				)
-			: river()
-	)
+test('registered default resolves to personal: followed_by lens', async () => {
+	const fetch = vi.fn(async (..._args: unknown[]) => river())
 	const result = (await load({ fetch, url: new URL('http://x/'), parent: async () => ({ me: meOf('alice') }) } as never)) as {
 		tab: string
-		followIds?: string[]
 	}
 	const calls = fetch.mock.calls.map((c) => String(c[0]))
 	expect(calls.some((s) => s.includes('followed_by=alice'))).toBe(true)
 	expect(result.tab).toBe('personal')
-	expect(result.followIds).toEqual(['me1', 'f1']) // a source follow carries no local user id
-})
-
-test('paginated personal load skips the follows fetch', async () => {
-	const fetch = vi.fn(async (..._args: unknown[]) => river())
-	const result = (await load({
-		fetch,
-		url: new URL('http://x/?tab=personal&before=ts~p9'),
-		parent: async () => ({ me: meOf('alice') })
-	} as never)) as { tab: string; followIds?: string[] }
-	const calls = fetch.mock.calls.map((c) => String(c[0]))
-	expect(calls.some((s) => s.includes('/follows'))).toBe(false)
-	expect(result.tab).toBe('personal')
-	expect(result.followIds).toBeUndefined()
 })
 
 test('explicit ?tab=local selects the local origin lens; guest-on-personal keeps the public firehose', async () => {

@@ -99,10 +99,9 @@ test('following load lowercases the handle and computes isOwner', async () => {
 				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
 	)
 	const me = { user: { id: 'me1', handle: 'alice', displayName: 'Alice', kind: 'local' as const }, isAnonymous: false }
-	const owner = (await load({ fetch, params: { handle: 'Alice' }, url: new URL('http://x/u/Alice/following'), parent: async () => ({ me }), cookies: { getAll: () => [] } } as never)) as { handle: string; isOwner: boolean; followIds: string[] }
+	const owner = (await load({ fetch, params: { handle: 'Alice' }, url: new URL('http://x/u/Alice/following'), parent: async () => ({ me }), cookies: { getAll: () => [] } } as never)) as { handle: string; isOwner: boolean }
 	expect(owner.handle).toBe('alice')
 	expect(owner.isOwner).toBe(true)
-	expect(owner.followIds).toEqual(['f1'])
 	const timelineCall = fetch.mock.calls.map((c) => String(c[0])).find((s) => s.includes('/timeline'))
 	expect(timelineCall).toContain('followed_by=alice')
 	const visitor = (await load({ fetch, params: { handle: 'bob' }, url: new URL('http://x/u/bob/following'), parent: async () => ({ me }), cookies: { getAll: () => [] } } as never)) as { isOwner: boolean }
@@ -139,7 +138,7 @@ test('the owner reads /me/following and sees pending as a neutral row', async ()
 				? new Response(JSON.stringify({ following: [] }), { status: 200 })
 				: new Response(JSON.stringify({ timeline: [], nextCursor: null }), { status: 200 })
 	)
-	const result = (await load(sessionedLoad(fetch, 'alice') as never)) as { rows?: Row[]; followIds: string[]; commandIds?: { subscribe: string; import: string } }
+	const result = (await load(sessionedLoad(fetch, 'alice') as never)) as { rows?: Row[]; commandIds?: { subscribe: string; import: string } }
 	expect(result.rows?.map((r) => (r.kind === 'source' ? [r.sourceId, r.pending] : [r.handle, false]))).toEqual([
 		['bob', false],
 		['s1', false],
@@ -149,7 +148,6 @@ test('the owner reads /me/following and sees pending as a neutral row', async ()
 	for (const r of result.rows ?? []) expect(Object.keys(r).some((k) => /governance|operation|provenance|adminRetained|attributionMode|availability|subscriptionState/.test(k))).toBe(false)
 	const authed = fetch.mock.calls.find((c) => String(c[0]).includes('/me/following')) as unknown as [string, RequestInit]
 	expect(new Headers(authed[1].headers).get('cookie')).toBe('rsc.session_token=s1')
-	expect(result.followIds).toEqual(['f1'])
 	expect(result.commandIds?.subscribe).toMatch(/^[0-9a-f]{8}-/)
 	expect(result.commandIds?.import).not.toBe(result.commandIds?.subscribe)
 })

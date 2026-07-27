@@ -53,14 +53,10 @@ export const load: PageServerLoad = async ({ fetch, params, url, parent, cookies
 			...page,
 			following: [],
 			rows,
-			// ponytail: a v2 source carries no local user id, so the live lens
-			// tracks local follows only — V2's logical-item ordinary reads
-			// supersede this.
-			followIds: rows.flatMap((r) => (r.kind === 'local' ? [r.id] : [])),
 			commandIds: { subscribe: crypto.randomUUID(), import: crypto.randomUUID() }
 		}
 	} catch {
-		return { handle, isOwner, timeline: [], nextCursor: null, isFirstPage, following: [], followIds: [], coreDown: true }
+		return { handle, isOwner, timeline: [], nextCursor: null, isFirstPage, following: [], coreDown: true }
 	}
 }
 

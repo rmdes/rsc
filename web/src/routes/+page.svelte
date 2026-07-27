@@ -32,7 +32,7 @@
 	const lens = $derived.by((): Lens | null => {
 		if (data.tab === 'local') return { kind: 'source', source: 'local' }
 		if (data.tab === 'federated') return { kind: 'feedType', feedType: 'instance' }
-		if (data.tab === 'personal') return { kind: 'followed', followIds: new Set(data.followIds ?? []) }
+		if (data.tab === 'personal') return { kind: 'followed' }
 		return null
 	})
 
