@@ -1910,3 +1910,233 @@ fix the **local** projection gap (item 3 above) regardless of federation —
 it's valuable on its own and required either way — then treat emission and
 consumption as two separately-scoped follow-on decisions, consumption being
 the one that actually needs the brainstorm.
+
+---
+
+## Readable permalinks — the UUID is load-bearing everywhere; the bigger SEO defect is one hardcoded `<title>`
+
+**Status:** ⭐ draft — investigated 2026-07-27, not yet specced. The URL-slug
+ask is real and buildable, but the investigation surfaced a **larger,
+cheaper, independent defect** worth fixing regardless of what happens to the
+URL shape — recorded first because it changes the priority order.
+
+**The actual biggest SEO problem today has nothing to do with the URL.**
+Every single post-detail page in the entire site emits the **identical**
+`<title>` tag: `web/src/routes/post/[id]/+page.svelte:60` — hardcoded
+`<svelte:head><title>Conversation — RSC</title></svelte:head>` — regardless
+of what the post says. The post's real title/content is loaded and used two
+lines later for the on-page `<h2>` (`:102`, `{root.title}`), so the data is
+right there; it's just never reaching `<head>`. A `grep -rn "og:\|twitter:\|
+rel=.canonical"` across all of `web/src/routes` returns **zero** — no Open
+Graph tags, no Twitter Card tags, no canonical link anywhere on the site.
+Search engines and social-share unfurlers rely on `<title>`/meta description/
+OG tags far more heavily than on URL keyword matching (a widely-documented,
+near-negligible modern ranking factor) — thousands of pages sharing one
+title is a textbook large-site indexing defect, plausibly causing search
+engines to *deduplicate or ignore* post pages as apparent copies of each
+other. **This is a smaller, safer, higher-value fix than anything about the
+URL, and it's independent of the slug question** — per-post `<title>`/
+description/OG tags touch zero identity, zero threading, zero federation.
+
+**The permalink question: why the UUID is there, and how deep it goes.**
+Traced fresh: a post's id is `randomUUID()`, minted once, at
+`core/src/logical/local.ts:159` (local) / `core/src/logical/reconcile.ts:366`
+(remote item mirrors — see below). For a **local** post that same id is,
+simultaneously: the `posts`/`logical_items_v2` **primary key**
+(`local.ts:11`, "a local logical item has id === post.id"); the **absolute
+permalink** (`url = `${publicUrl}/post/${id}``, `local.ts:167`); the
+**outbound RSS/JSON-Feed `<guid>`** (`localGuid`, `feed.ts:62-63`, no
+`isPermaLink` attribute — a real permalink guid); and the **cross-instance
+threading match key** — `parentReplyRef` (`local.ts:47-56`) stores exactly
+this string as `source:inReplyTo`, and a peer instance threads a reply by
+**string-matching** it against the parent's own `<guid>`. One string, four
+jobs, minted once, read forever. This is the same "never drift" invariant
+[[Linkblog posts]] already cites from walkable-feeds spec:51 — the permalink
+*is* the identity.
+
+**Remote items get their own, separate UUID mirror — worth naming
+explicitly.** The user's second example (`rsc.rmdes.be/post/<uuid>` for an
+*rss.chat* item) confirmed something non-obvious: ingested remote items also
+mint a fresh `randomUUID()` (`reconcile.ts:366`, `createRemoteItem`) as their
+**own** `logical_items_v2.id`, entirely unrelated to the origin's real guid
+or URL. `/post/<our-uuid>` is **our own local mirror/conversation-anchor
+page** for someone else's content — the actual origin link is shown
+separately, as the `.source` hostname chip (`+page.svelte:231`,
+`href={post.url}`). Two consequences: (a) a slug for a remote item has even
+less natural material to work from than a local one — we're titling content
+we don't own; (b) with **zero canonical-link tag anywhere**, our mirror page
+and the origin's real page are, to a search engine, two URLs serving
+overlapping/duplicate content with no signal about which is authoritative —
+arguably a second, distinct SEO defect from the missing `<title>`, and one a
+`rel="canonical" href={post.url}` tag on the remote branch would fix in one
+line, again with zero identity risk.
+
+**Local posts have no title field, by design** (see [[Anchor links in
+headings — two rehype plugins, one sanitizer decision, one id-collision
+problem]] — `Post.title` exists but local posts hardcode `title: null`,
+`service.ts`); a local-post slug has no source except deriving one from the
+markdown itself (first line / first N words) — a real, common pattern
+(several minimalist "notes" blogs do exactly this), but it raises the same
+stability question [[Handle history]] already raised for handles: if a slug
+derives from content and the post is later edited (Live edits ships this),
+does the slug change (breaking every link already shared) or freeze at
+creation (drifting from what the post now says)? Not a new question — the
+codebase already has an answer for the analogous case (durable link >
+freshness), worth reusing rather than re-deciding.
+
+**Three options, increasing risk, mirroring the [[Handle history]] pattern
+(never break what the guid already commits to):**
+1. **Purely cosmetic suffix, zero identity risk.** `/post/<uuid>/<slug>` —
+   the route still resolves on the UUID segment alone; the slug is decorative
+   and can be wrong, stale, or absent with no functional consequence
+   (reddit-style). No migration, no new table, no threading/guid change.
+   Cheapest genuinely-shippable cut, and the honest one to try first.
+2. **A real alias, mirroring Handle history exactly** — a `slug → id` lookup
+   (own table), the slug becomes a real alternate route that **301**s to the
+   canonical UUID URL. Needs slug uniqueness handling and an explicit answer
+   to the edit-drift question above. Real but bounded work, same shape
+   already scoped for handles.
+3. **Replace the UUID as the primary permalink.** The high-risk option: it
+   touches the exact string used as the outbound wire guid and the
+   cross-instance thread-match key. Slug collisions (two posts, same derived
+   title), remote items with no title to derive from, and every already-
+   federated `source:inReplyTo` reference minted under the old scheme would
+   need the same alias-forwarding Handle history already designs for the
+   handle case — but here the stakes are threading correctness, not just a
+   404. Not recommended without the brainstorm treating it as seriously as
+   [[Bring your back-catalog]]'s "identity and live URL are the same string"
+   tradeoff.
+
+**Grounding index.** `web/src/routes/post/[id]/+page.svelte:60,102` (the
+hardcoded title vs. the unused `root.title`) · `web/src` (zero OG/Twitter/
+canonical tags anywhere) · `web/static/robots.txt` (crawling is wide open —
+`Disallow:` empty — so this is actually being crawled) ·
+`core/src/logical/local.ts:11,47-56,159,167` (id mint, permalink
+construction, the threading match key) · `core/src/logical/reconcile.ts:366`
+(`createRemoteItem`'s own separate UUID) · `core/src/domain/feed.ts:62-63`
+(`localGuid`) · `core/src/api/logical-routes.ts:400,411` (`/post/:id` and
+`/post/:id/thread`, both bare id lookups, no slug support today) ·
+`core/src/domain/service.ts` (`title: null` for local posts) ·
+[[Handle history]] (the directly analogous alias+301 pattern, already scoped
+for `/u/:handle`) · [[Linkblog posts]] (cites the same "guid/link/permalink
+share one source, never drift" invariant this touches).
+
+**Tradeoff.** The `<title>`/OG/canonical fix is nearly free and should not
+wait on a slug decision. The slug question itself is a genuine SEO/UX want,
+but its *direct* ranking value is modest (URL keyword matching is a minor,
+well-documented signal) — its real value is human shareability and trust
+("this link looks like what it is" rather than a bare UUID), which option 1
+delivers in full without touching the permalink-is-the-guid invariant at
+all. Options 2 and 3 buy progressively more "the URL alone tells you what
+it is" at progressively higher cost against threading correctness across the
+whole federated graph — decide how much of that is actually wanted before
+reaching past option 1.
+
+---
+
+## OpenGraph, admin-configurable, with a site default — the plumbing is trivial; the layering has one real trap
+
+**Status:** candidate (2026-07-27) — direct follow-on to [[Readable
+permalinks — the UUID is load-bearing everywhere; the bigger SEO defect is
+one hardcoded `<title>`]], which already established zero OG/Twitter/
+canonical tags exist anywhere in `web/src`. This entry is that gap, scoped:
+per-post OG when there's a post, site-wide default otherwise (explicitly
+including the root `/` itself).
+
+**The storage/admin-API half is already fully built — reuse it verbatim.**
+`instance_settings (key, value)` is a generic key/value table with
+`getSetting`/`setSetting` (`core/src/domain/repository.ts:13-14`,
+`service.ts:147-148`), already admin-gated at `GET`/`PATCH /admin/settings`
+(`core/src/api/app.ts:421,424`) and already extended once before for exactly
+this shape (`max_subs_per_user`). Three new keys — `og_site_title`,
+`og_site_description`, `og_image_url` — are the entire backend surface.
+Zero migration, zero new table, same validated-PATCH pattern the settings
+route already uses.
+
+**The image is a URL field, not an upload feature — deliberately.** The
+maintainer will craft the image externally (Claude Design) and only needs to
+*reference* it. Confirmed fresh: no upload/blob-storage path exists anywhere
+in `core/src` (`grep -niE "multipart|formData\(\)|upload"` = zero — the same
+finding [[Paste an image into the composer]] made). Building blob storage
+just to host one admin-set image would duplicate infrastructure that idea
+already scopes properly; an `og_image_url` string setting (admin pastes a URL
+to an image hosted anywhere) is the correct-sized answer today. If/when
+paste-to-upload ships, the admin could point this setting at a
+locally-hosted image instead — same field, no rework.
+
+**Getting the default to every page needs one new public read, not an admin
+one.** `/admin/settings` is admin-only; an ordinary visitor's page load can't
+call it. The precedent already exists: `web/src/routes/+layout.server.ts`'s
+`getMailEnabled` calls `GET /health` (`core/src/api/app.ts:130`) **wholly
+unauthenticated**, server-side, and fails soft to a safe default on any core
+hiccup. A `GET /site-meta`-shaped public endpoint (or an addition to
+`/health`) returning the three OG keys, read the same way by the root
+`+layout.server.ts` and threaded into `data`, is the natural fit — same
+fail-soft posture (a core hiccup should degrade to no OG tags, never crash
+the layout, exactly like `getMailEnabled`'s `catch { return false }`).
+
+**The one real trap: OG meta tags cannot be layered the way the existing
+feed-link comment implies they can be.** `+layout.svelte:9-15` already has a
+convention for cascading `<svelte:head>` content — its own comment says "add
+their own link BEFORE this one via their own `svelte:head`" for the
+`rel="alternate"` feed autodiscovery link. That works because **multiple
+`<link rel="alternate">` elements coexist safely** — a crawler/reader picks
+whichever it wants. **`<meta property="og:*">` does not have that property**:
+each `og:` property is supposed to appear **once**; if the layout
+unconditionally emits `og:title`/`og:description` as a site-wide fallback
+*and* a post page also emits its own for the same property, Svelte renders
+**both** (`<svelte:head>` blocks across the component tree all get hoisted
+into one `<head>` — none suppress the others), leaving two competing
+`og:title` tags with undefined crawler behavior on which wins. **The
+resolution must happen server-side, once, per page** — each page's load
+computes ONE final value per OG property (its own post/publisher title if
+present, else the site default already threaded through `data`) and emits
+exactly one tag per property from that page's own `<svelte:head>`; the
+layout must NOT also unconditionally emit `og:*` — only the safe-to-duplicate
+elements (favicon, the RSS alternate link) stay where they are.
+
+**Root page — the explicit case the maintainer named.** `+page.svelte:132`
+today is `<svelte:head><title>RSC</title></svelte:head>`, nothing else. For
+`/` itself, the resolved OG values **are** the site defaults, verbatim — no
+merge logic needed, simplest of the three surfaces (root / post / publisher).
+A sensible fallback default before any admin ever sets one: the About page
+already carries site-descriptive prose ("RSC — Really Simple Conversations —
+is a feeds-native social timeline…", `about/+page.svelte`) — reusing that
+line as the hardcoded `og_site_description` default satisfies "a reasonable
+default" with zero new copywriting.
+
+**Per-post and per-publisher pages ride the [[Readable permalinks]] fix,
+don't duplicate it.** Once that entry's `<title>` fix lands (post pages
+compute a real per-post title from `root.title`/content), the OG values for
+`/post/:id` are the same computation, just also emitted as `og:title`/
+`og:description`/`og:url`, plus `rel="canonical"` — and for a **remote**
+item, canonical should point at `post.url` (the origin), not our own mirror
+page, per that entry's finding that our `/post/:uuid` is a local
+conversation-anchor, not the authoritative copy. `p/[publisherId]/+page.svelte:14`
+already computes a per-entity `<title>` (`{data.publisher.displayName} —
+RSC`) — same extension point, already proven.
+
+**Grounding index.** `core/src/domain/repository.ts:13-14` +
+`service.ts:147-148` (`getSetting`/`setSetting`) · `core/src/api/app.ts:421,424`
+(admin settings route, the pattern to extend) · `core/src/api/app.ts:130`
+(`/health`, the public-unauthenticated-read precedent) ·
+`web/src/routes/+layout.server.ts` (`getMailEnabled`, the fail-soft
+server-side fetch pattern to copy) · `web/src/routes/+layout.svelte:9-15`
+(the cascading-head convention, and why it doesn't extend to `og:*`
+verbatim) · `web/src/routes/+page.svelte:132` (root page, currently bare) ·
+`web/src/routes/p/[publisherId]/+page.svelte:14` (existing per-entity title,
+the extension point) · `web/src/routes/about/+page.svelte` (default
+description source) · [[Readable permalinks — the UUID is load-bearing
+everywhere; the bigger SEO defect is one hardcoded `<title>`]] (the sibling
+entry this depends on for per-post values and the canonical-link finding) ·
+[[Paste an image into the composer]] (why the image field stays a URL, not
+an upload).
+
+**Tradeoff.** Almost none, if scoped as above — no new storage shape, no
+identity/threading risk, reuses three existing patterns exactly (generic
+settings, public health-style read, per-entity title). The only design
+discipline required is the layering trap above: resolve once per page,
+server-side, never let the layout and a page both emit the same `og:`
+property. Image *hosting* durability is the one soft edge — an admin-pasted
+external URL can go stale or disappear with no local copy, which is exactly
+the gap [[Paste an image into the composer]] would close later if picked up.
