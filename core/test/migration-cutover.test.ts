@@ -428,14 +428,18 @@ test('the flip is core-only: /capabilities reports V2 exact enabled shape — V4
 // Step 4 — the permanent reserved-handle redirect (spec §3.5)
 // =============================================================================
 
-// RIDER 3: the end-to-end proof that a converted instance handle's /u/:handle →
-// /p/:publisherId resolves 200 — §3.5 as SHIPPED, not as assumed. The fixture
-// needs exactly two things beyond conversion: the source must be `allowed` (an
-// unconfirmed instance is quarantined, and resolvePublisher only serves a
-// publisher supported by a claim on an ALLOWED source), and it must carry at
-// least one converted post (that is what mints the claim — since Task 6
-// conversion writes claims itself, so no post-cutover reconcile is required).
-// A manifest approval gives the first; one legacy post gives the second.
+// RIDER 3, REVERSED 2026-07-28 (spec rev 2): this fixture converts an
+// `instance`/aggregate source, manifest-approved to `allowed` governance. The
+// 2026-07-24 adjudication had this case end-to-end redirect through a real
+// handle reservation to a resolving publisher page — "§3.5 as SHIPPED". The
+// reversal in convert.ts (prior commit) removes both: an aggregate mints
+// `source_scoped_fallback`, gets no handle reservation, and resolvePublisher
+// refuses anything that isn't `feed_anchored`. The tests below now pin the
+// opposite: no reservation, and the publisher page 404s even for a caller who
+// already has the id. The `allowed`-governance setup stays (still exercises
+// the manifest-approval path), and one legacy post still gives conversion a
+// claim to write, but neither survives to matter for this identity's
+// unreachable publisher page.
 function approvedInstanceManifest(): string {
   const dir = mkdtempSync(join(tmpdir(), 'rsc-cutover-manifest-'))
   const path = join(dir, 'manifest.json')
@@ -454,35 +458,49 @@ async function convertedInstance() {
   seedPost(ctx.raw)
   activate(ctx.db, { manifestPath: approvedInstanceManifest() })
   expect(ctx.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'u1'`).get()).toEqual({ governance: 'allowed' })
-  const publisherId = (ctx.raw.prepare(`SELECT publisher_id AS p FROM handle_reservations_v2 WHERE handle = 'alice'`).get() as { p: string }).p
+  // alice's source is manifest-approved to 'aggregate', so post-reversal
+  // (2026-07-28, spec rev 2) it gets NO handle_reservations_v2 row — read the
+  // publisher id straight off remote_publishers_v2 instead, which conversion
+  // always writes regardless of identity level.
+  const publisherId = (ctx.raw.prepare(`SELECT id AS p FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(FEED) as { p: string }).p
   return { ...ctx, publisherId }
 }
 
-test('the lookup answers a reserved handle and 404s an unreserved one', async () => {
-  const { app, repo, publisherId } = await convertedInstance()
-  const res = await app.request('/handles/alice')
-  expect(res.status).toBe(200)
-  expect(await res.json()).toEqual({ model: 'logical-v2', handle: 'alice', reserved: true, publisherId })
-
+test('the lookup 404s an aggregate handle that has no reservation, same as any other unreserved one', async () => {
+  const { app, repo } = await convertedInstance()
+  // REVERSED 2026-07-28 (spec rev 2): alice's source is manifest-approved to
+  // 'aggregate', so it gets no handle_reservations_v2 row — the lookup 404s
+  // exactly like a handle with no source behind it at all. (A genuinely
+  // reserved single_publisher handle is still covered earlier in this file,
+  // e.g. 'never-activated + no marker: ONE transaction commits...'.)
+  expect((await app.request('/handles/alice')).status).toBe(404)
   expect((await app.request('/handles/localuser')).status).toBe(404) // a live LOCAL handle renders as today
   expect((await app.request('/handles/nobody')).status).toBe(404)
   repo.close()
 })
 
-test('RIDER 3 — end to end: a converted instance handle redirects to a publisher page that resolves 200', async () => {
+test('RIDER 3, REVERSED — an aggregate instance handle has no working redirect: no reservation, and its publisher page 404s too', async () => {
   const { app, repo, publisherId } = await convertedInstance()
-  // /u/alice → (lookup) → /p/<publisherId> → core's publisher lens
+  // alice's source is manifest-approved to 'aggregate' — post-reversal there is
+  // no reservation to redirect through, and even a caller who already has the
+  // publisher id (as this test does, straight off remote_publishers_v2) gets
+  // refused: resolvePublisher only serves a feed_anchored identity.
+  expect((await app.request('/handles/alice')).status).toBe(404)
   const res = await app.request(`/timeline?publisher=${encodeURIComponent(publisherId)}`)
-  expect(res.status).toBe(200)
-  const body = await res.json() as { lens: { kind: string; publisher: { id: string; identityLevel: string } }; timeline: { id: string }[] }
-  expect(body.lens.kind).toBe('publisher')
-  expect(body.lens.publisher).toMatchObject({ id: publisherId, identityLevel: 'feed_anchored' })
-  expect(body.timeline.map((i) => i.id)).toEqual(['p1'])
+  expect(res.status).toBe(404)
   repo.close()
 })
 
-test('the reservation OUTLIVES its target: after purge the lookup still answers and the publisher page 404s ordinarily', async () => {
+test('a purged aggregate source leaves no reservation to outlive it — the handle 404s before and after', async () => {
   const { app, repo, raw, store, publisherId } = await convertedInstance()
+  // REVERSED 2026-07-28 (spec rev 2): alice's source is manifest-approved to
+  // 'aggregate', so it never got a handle reservation — there is nothing for a
+  // purge to leave outliving it. The handle 404s before the purge exactly as
+  // after; what the purge DOES still do is delete the now fully-unreferenced
+  // publisher row, same as for any other source.
+  expect((await app.request('/handles/alice')).status).toBe(404)
+  expect(count(raw, 'handle_reservations_v2')).toBe(0)
+
   // block, then purge through the ordinary V3 command (block is a prerequisite).
   raw.prepare(`UPDATE remote_sources_v2 SET governance = 'blocked' WHERE id = 'u1'`).run()
   const result = store.purgeSource({
@@ -492,11 +510,7 @@ test('the reservation OUTLIVES its target: after purge the lookup still answers 
   expect(result.kind).toBe('purged')
   expect(count(raw, 'remote_publishers_v2', `WHERE id = '${publisherId}'`)).toBe(0) // fully unreferenced → deleted
 
-  // the reservation has no FKs: it survives, so the redirect still fires …
-  const res = await app.request('/handles/alice')
-  expect(res.status).toBe(200)
-  expect(await res.json()).toMatchObject({ reserved: true, publisherId })
-  // … and its target 404s through the ORDINARY not-found path. No post-purge branch.
+  expect((await app.request('/handles/alice')).status).toBe(404) // unchanged
   expect((await app.request(`/timeline?publisher=${encodeURIComponent(publisherId)}`)).status).toBe(404)
   repo.close()
 })

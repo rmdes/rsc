@@ -200,15 +200,12 @@ test('ON: one pass through the runbook step-6 verify list composes end to end', 
   expect(perma.status).toBe(200)
   expect(await perma.json()).toMatchObject({ model: 'logical-v2', item: { id: 'p1', origin: 'remote' } })
 
-  // (4) the reserved-handle redirect data web's /u/:handle asks for, and a
-  // publisher page that actually resolves behind it.
+  // (4) u3 is manifest-approved to 'aggregate' — post-reversal (2026-07-28,
+  // spec rev 2) an aggregate gets NO handle reservation and no navigable
+  // publisher identity, so web's /u/:handle lookup 404s ordinarily rather than
+  // promising a publisher page resolvePublisher would refuse anyway.
   const lookup = await app.request('/handles/peer')
-  expect(lookup.status).toBe(200)
-  const reserved = await lookup.json() as { reserved: boolean; publisherId: string }
-  expect(reserved.reserved).toBe(true)
-  const publisher = await app.request(`/timeline?publisher=${encodeURIComponent(reserved.publisherId)}`)
-  expect(publisher.status).toBe(200)
-  expect((await publisher.json() as { timeline: { id: string }[] }).timeline.map((i) => i.id).sort()).toEqual(['p3', 'p4'])
+  expect(lookup.status).toBe(404)
 
   // (5) the marker's per-kind finding counts are sane: every legacy feed_type
   // landed on its intended outcome, the over-cap follower is grandfathered, the
