@@ -1,7 +1,17 @@
 # Remote publisher identity fix — aggregate sources & stranded verification
 
-**Date:** 2026-07-27
-**Status:** draft rev 1 — ready for spec review.
+**Date:** 2026-07-27 (rev 2: 2026-07-28)
+**Status:** draft rev 2 — ready for spec review.
+**Rev 2 change:** reverses the 2026-07-24 adjudication in `convert.ts` that
+kept aggregate publishers `feed_anchored` everywhere to protect a legacy
+conversion's permanent handle redirect. Maintainer call (2026-07-28): this
+project is ~2 weeks old; the thing that adjudication protected — a bookmarked
+v1-era URL for a whole federated instance masquerading as one profile — is
+already a vanishingly unlikely case to matter on any of these self-hosted
+instances, converted or not. Rev 1 scoped C to exclude
+`handle_reservations_v2`-backed rows to preserve that adjudication; rev 2
+instead reverses it outright and updates `convert.ts` to match, closing the
+"two regimes" gap for good rather than freezing it.
 **Trigger:** `docs/superpowers/ideas.md`'s "V4 migration follow-ups (Task 5
 adjudication, 2026-07-24)" entry — "§2.4 attribution fix must MIGRATE existing
 publisher rows" — logged as `backlog, blocked on the §2.4 fix being specced`.
@@ -79,7 +89,28 @@ justified by what the live data shows (1 stuck item out of 58, and it belongs
 to an author who has other, successfully-verified items). Left as a
 documented non-goal, not silently dropped.
 
-## Mechanics
+## The convert.ts adjudication, and why this spec reverses it
+
+`core/src/migration/convert.ts:291-294` mints a publisher for every converted
+legacy source, unconditionally `feed_anchored` — including aggregates — and
+`convert.ts:303-307` unconditionally writes a `handle_reservations_v2` row
+pointing at it, backing a **permanent** `/u/:handle` → `/p/:publisherId`
+redirect. `convert.ts:280-290`'s comment ("ADJUDICATED 2026-07-24") explains
+why: `resolvePublisher` (`projector.ts:647`) refuses anything that isn't
+`feed_anchored`, so a `source_scoped_fallback` row would make that redirect
+404 forever, and the same comment explicitly framed this as accepting one
+uniform (if wrong) population to migrate later rather than two regimes to
+reconcile.
+
+This spec reverses that call. `identityLevelFor` now governs `convert.ts`'s
+mint too, and `convert.ts` skips writing a `handle_reservations_v2` row when
+the resulting identity is `source_scoped_fallback` — there is no real
+identity there to permanently protect a redirect for, so writing one anyway
+would just ship an unreachable redirect from the moment the row is created,
+which is strictly worse than not promising one. The migration for existing
+data (below) also removes any `handle_reservations_v2` row left pointing at a
+publisher it is about to relabel, for the same reason: a reservation whose
+target the projector will now refuse to resolve serves nobody by lingering.
 
 ### C — identity_level correctness
 
@@ -108,12 +139,18 @@ export function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, identity
 Call sites:
 - `reconcile.ts:257`: `getOrCreatePublisher(tx, source.canonical_url, identityLevelFor(source.attribution_mode), now)`.
 - `verification.ts`'s call (currently its own copy, line 262): `getOrCreatePublisher(tx, batchKey, 'feed_anchored', now)` — literal, never `aggregate` at this call site, since it only ever runs for a freshly found/created `single_publisher` origin source.
+- `convert.ts:291-294`: mint with `identityLevelFor(mode)` instead of the
+  hardcoded `'feed_anchored'` literal, where `mode` is the same
+  `attribution_mode` value already resolved earlier in that function for the
+  source insert. `convert.ts:303-307`'s `handle_reservations_v2` insert moves
+  inside an `if (identityLevelFor(mode) === 'feed_anchored')` guard — skipped
+  for aggregates, unchanged for everything else.
 
-No collision risk between the two call sites' URL spaces: `reconcile.ts`
-always calls with a source's *own* `canonical_url`; `verification.ts` always
-calls with an *individually asserted author's* URL from a freshly-found
-`origin_verification` source. An aggregate instance's own firehose URL is
-never a real person's feed URL.
+No collision risk between the two `core/src/logical/` call sites' URL spaces:
+`reconcile.ts` always calls with a source's *own* `canonical_url`;
+`verification.ts` always calls with an *individually asserted author's* URL
+from a freshly-found `origin_verification` source. An aggregate instance's
+own firehose URL is never a real person's feed URL.
 
 **Migration** (tail-appended to `MIGRATIONS` in `core/src/storage/sqlite.ts`,
 pure SQL, no DDL — the `identity_level` `CHECK` already allows the target
@@ -123,13 +160,26 @@ value):
 UPDATE remote_publishers_v2
 SET identity_level = 'source_scoped_fallback'
 WHERE identity_level = 'feed_anchored'
-  AND canonical_feed_url IN (SELECT canonical_url FROM remote_sources_v2 WHERE attribution_mode = 'aggregate')
+  AND canonical_feed_url IN (SELECT canonical_url FROM remote_sources_v2 WHERE attribution_mode = 'aggregate');
+
+DELETE FROM handle_reservations_v2
+WHERE publisher_id IN (
+  SELECT id FROM remote_publishers_v2
+  WHERE identity_level = 'source_scoped_fallback'
+    AND canonical_feed_url IN (SELECT canonical_url FROM remote_sources_v2 WHERE attribution_mode = 'aggregate')
+);
 ```
 
-Idempotent (a second run no-ops), touches only a `CHECK`-constrained TEXT
-column, no FK/rowid involved, no cascading consequence for
-`publisher_claims_v2`/`logical_items_v2.selected_publisher_id` (they keep
-referencing the same row id — only its label changes). Current
+The `DELETE` runs after the `UPDATE` (same migration step, in order) so it
+catches rows the `UPDATE` just relabeled in this same pass, not only
+already-`source_scoped_fallback` rows from some earlier run. Idempotent (a
+second run no-ops both statements), no FK cascade involved
+(`handle_reservations_v2` has no foreign keys by design — the table
+survives source removal — so this delete is the only way to retire a stale
+reservation). No consequence for `publisher_claims_v2`/
+`logical_items_v2.selected_publisher_id` (they keep referencing the same
+row id — only its label changes, and a *different* row,
+`handle_reservations_v2`, loses a now-meaningless entry). Current
 `MIGRATIONS.length` is 17, pinned in four places in
 `core/test/migrations.test.ts` (lines 19, 99, 135, 246 as of this writing —
 re-verify against the file at implementation time) — this becomes migration
@@ -169,11 +219,19 @@ best made against the real column's other uses at plan time, not guessed here.
   source's own URL, `feed_anchored` for a `single_publisher` source's URL and
   for verification's own origin-source mint.
 - A migration test: a pre-migration fixture DB with an aggregate source's
-  publisher row labeled `feed_anchored` — after migration, relabeled to
-  `source_scoped_fallback`; a `single_publisher` source's publisher row is
-  untouched. Idempotency: running the migration logic twice leaves the same
-  end state (guards against a future refactor accidentally making it
-  non-idempotent).
+  publisher row labeled `feed_anchored` AND a `handle_reservations_v2` row
+  pointing at it (the exact shape a real legacy conversion produced pre-fix)
+  — after migration, the publisher is relabeled to `source_scoped_fallback`
+  AND the reservation is gone; a `single_publisher` source's publisher row
+  and its reservation are both untouched. Idempotency: running the migration
+  logic twice leaves the same end state.
+- `migration-convert.test.ts:129-132,309-334`'s existing assertions (aggregate
+  conversion mints `feed_anchored`; the live reconcile-onto-converted-row
+  convergence test) update to assert `source_scoped_fallback` and no
+  `handle_reservations_v2` row for the aggregate case — these are the exact
+  tests this spec's rev 1→rev 2 change deliberately reverses, not
+  incidental collateral, so the diff should read as an intentional flip, not
+  a quiet deletion.
 - The money test for A, replaying the real shape found in dev: item 1's
   verification resolves `unverified` (fetch succeeds, no containment match);
   item 2's verification later succeeds against the *same* batch URL — assert
