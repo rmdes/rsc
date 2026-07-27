@@ -126,10 +126,11 @@ test('an unconfirmed instance is quarantined, aggregate, and federation pending'
   expect(raw.prepare(`SELECT * FROM federation_relationships_v2 WHERE source_id = 'u1'`).get()).toMatchObject({ status: 'pending', provenance_note: null })
   expect(counts.instance_quarantined).toBe(1)
   expect(counts.manifest_approved).toBe(0)
-  // ADJUDICATED (2026-07-24): an aggregate's publisher is feed_anchored on the
-  // source's canonical URL too — §3.6 governs over §3.2, see the convergence
-  // test at the foot of this file.
-  expect(raw.prepare(`SELECT * FROM remote_publishers_v2`).get()).toMatchObject({ canonical_feed_url: 'https://a.test/feed.xml', identity_level: 'feed_anchored' })
+  // REVERSED 2026-07-28 (spec rev 2): an aggregate's publisher is now
+  // source_scoped_fallback, matching live reconcile — see the convergence
+  // test at the foot of this file, also updated.
+  expect(raw.prepare(`SELECT * FROM remote_publishers_v2`).get()).toMatchObject({ canonical_feed_url: 'https://a.test/feed.xml', identity_level: 'source_scoped_fallback' })
+  expect(count(raw, 'handle_reservations_v2')).toBe(0)
 })
 
 test('NO manifest means EVERY instance takes the unconfirmed default', async () => {
@@ -298,20 +299,20 @@ test('a reservation survives deletion of its source (no FK by design)', async ()
 })
 
 // ── post-cutover convergence with the live reconcile ─────────────────────
-// The permanent pin for the 2026-07-24 adjudication. reconcile.ts's
-// getOrCreatePublisher finds-or-creates by `canonical_feed_url` alone and mints
-// 'feed_anchored'; conversion mints on exactly that key, so the FIRST
-// post-cutover reconcile of a converted source finds the converted row instead
-// of minting a second identity beside it (which would fork the items, orphan
-// handle_reservations_v2.publisher_id, and make §3.5's permanent /u/:handle
-// redirect point at a publisher projector.ts refuses to resolve).
+// The permanent pin for the 2026-07-28 reversal (spec rev 2). reconcile.ts's
+// getOrCreatePublisher finds-or-creates by `canonical_feed_url` alone and
+// mints identityLevelFor(attribution_mode); conversion mints on exactly that
+// key with the same rule, so the FIRST post-cutover reconcile of a converted
+// source finds the converted row instead of minting a second identity beside
+// it (which would fork the items and make the FIRST reconcile drift from
+// the identity conversion chose).
 
 test('a converted AGGREGATE source reconciles onto its converted publisher — zero new mints', async () => {
   const raw = await fresh()
   seedRemote(raw, { feed_type: 'instance' }) // quarantined aggregate: the §3.2 fallback case
   convert(raw)
   const minted = raw.prepare(`SELECT id, canonical_feed_url, identity_level FROM remote_publishers_v2`).get() as { id: string; canonical_feed_url: string | null; identity_level: string }
-  expect(minted).toMatchObject({ canonical_feed_url: 'https://a.test/feed.xml', identity_level: 'feed_anchored' })
+  expect(minted).toMatchObject({ canonical_feed_url: 'https://a.test/feed.xml', identity_level: 'source_scoped_fallback' })
 
   // ...now the live path, unchanged: acquire the source and drain the queue.
   const db = createDatabaseContext(raw)
@@ -329,8 +330,9 @@ test('a converted AGGREGATE source reconciles onto its converted publisher — z
   expect(count(raw, 'remote_publishers_v2')).toBe(1)
   expect((raw.prepare(`SELECT id FROM remote_publishers_v2`).get() as { id: string }).id).toBe(minted.id)
   expect((raw.prepare(`SELECT publisher_id FROM publisher_claims_v2`).get() as { publisher_id: string }).publisher_id).toBe(minted.id)
-  // and the permanent reservation still points at the identity the reader serves
-  expect((raw.prepare(`SELECT publisher_id FROM handle_reservations_v2`).get() as { publisher_id: string }).publisher_id).toBe(minted.id)
+  // no handle reservation for an aggregate's source_scoped_fallback identity —
+  // there's no real identity here to permanently protect a redirect for.
+  expect(count(raw, 'handle_reservations_v2')).toBe(0)
 })
 
 // ── zero rows + atomicity ────────────────────────────────────────────────
