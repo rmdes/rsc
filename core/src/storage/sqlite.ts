@@ -8,7 +8,7 @@ import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
-import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, assertHandleUnreserved } from '../logical/schema.ts'
+import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
@@ -1008,7 +1008,7 @@ export class SqliteRepository implements Repository, SourceRepository {
 }
 
 // index N-1 holds the statements that bring the schema to version N.
-const MIGRATIONS: string[][] = [
+export const MIGRATIONS: string[][] = [
   [
     `CREATE TABLE users (
       id text PRIMARY KEY,
@@ -1207,6 +1207,11 @@ const MIGRATIONS: string[][] = [
   // columns (13 tables) that SQLite left as full SCANs; results unchanged, plans
   // only. Kept exhaustive by the FK-coverage guardrail. Defined in logical/schema.ts.
   LOGICAL_PERF_INDEXES_2,
+  // Aggregate-publisher identity fix (migration #18). Appended at the TAIL,
+  // AFTER LOGICAL_PERF_INDEXES_2 — mid-array insertion corrupts user_version
+  // on live databases. Pure data UPDATE/DELETE, no DDL. Defined in
+  // logical/schema.ts; see the 2026-07-27/28 spec rev 2.
+  AGGREGATE_PUBLISHER_IDENTITY_FIX,
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

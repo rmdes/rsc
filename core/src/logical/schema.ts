@@ -369,6 +369,31 @@ export const LOGICAL_PERF_INDEXES_2: string[] = [
   `CREATE INDEX tombstone_aliases_v2_tombstone ON tombstone_aliases_v2(tombstone_id)`,
 ]
 
+// Aggregate-publisher identity fix (2026-07-27/28 spec, rev 2). ONE migration
+// entry, appended strictly at the TAIL of MIGRATIONS in sqlite.ts, AFTER
+// LOGICAL_PERF_INDEXES_2 — mid-array insertion corrupts user_version on live
+// databases. Pure data UPDATE/DELETE, no DDL, no table rebuilt.
+//
+// Relabels every aggregate source's publisher row from feed_anchored (wrong
+// — it represents a whole instance, not a person) to source_scoped_fallback,
+// and deletes any handle_reservations_v2 row left pointing at one of those
+// rows (a reservation whose target the projector will now refuse to resolve
+// protects nothing by lingering). Reverses the 2026-07-24 convert.ts
+// adjudication (spec rev 2, maintainer call) — see convert.ts's own updated
+// comment for why. Idempotent: a second run of either statement no-ops.
+export const AGGREGATE_PUBLISHER_IDENTITY_FIX: string[] = [
+  `UPDATE remote_publishers_v2
+   SET identity_level = 'source_scoped_fallback'
+   WHERE identity_level = 'feed_anchored'
+     AND canonical_feed_url IN (SELECT canonical_url FROM remote_sources_v2 WHERE attribution_mode = 'aggregate')`,
+  `DELETE FROM handle_reservations_v2
+   WHERE publisher_id IN (
+     SELECT id FROM remote_publishers_v2
+     WHERE identity_level = 'source_scoped_fallback'
+       AND canonical_feed_url IN (SELECT canonical_url FROM remote_sources_v2 WHERE attribution_mode = 'aggregate')
+   )`,
+]
+
 // The permanent legacy-handle reservation guard (V4 §3.5): a handle converted
 // from a legacy remote feed can never be claimed again, even after the source
 // row is removed or purged (the table has no FKs precisely so the reservation

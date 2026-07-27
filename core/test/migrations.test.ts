@@ -3,7 +3,7 @@ import Database from 'better-sqlite3'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { createSqliteRepository, MIGRATIONS } from '../src/storage/sqlite.ts'
 
 function tempDb(): string {
   return join(mkdtempSync(join(tmpdir(), 'txc-mig-')), 'test.db')
@@ -16,7 +16,7 @@ test('a fresh database migrates to the current version and works', async () => {
   expect((await repo.getRecentLocalPosts(10)).length).toBe(0)
   expect(u.handle).toBe('alice')
   const raw = new Database(file, { readonly: true })
-  expect(raw.pragma('user_version', { simple: true })).toBe(17)
+  expect(raw.pragma('user_version', { simple: true })).toBe(18)
   raw.close()
 })
 
@@ -96,7 +96,7 @@ test('a version-1 database upgrades in place to version 2 with data preserved', 
   expect((await repo.getRecentLocalPosts(10)).map((e) => e.content)).toEqual(['kept'])
   await repo.upsertSubscription({ id: 'x1', protocol: 'websub', topic: 't', callback: 'c', callbackHost: 'h', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(17)
+  expect(check.pragma('user_version', { simple: true })).toBe(18)
   check.close()
 })
 
@@ -132,7 +132,7 @@ test('a version-2 database upgrades in place to version 3 with data preserved', 
   // reads it); only the repository accessors for it were retired, so write raw.
   repo.raw.prepare("INSERT INTO push_subscriptions VALUES ('p1','u1','websub','e','t2','tok',NULL,'pending','2027-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run()
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(17)
+  expect(check.pragma('user_version', { simple: true })).toBe(18)
   check.close()
 })
 
@@ -243,6 +243,50 @@ test('migration 11: feed_type classified by content_markdown, UNIQUE(feed_url), 
   await expect(repo.createRemoteUser({ handle: 'dup', displayName: 'Dup', feedUrl: 'https://blog/f' })).rejects.toThrow()
 
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(17)
+  expect(check.pragma('user_version', { simple: true })).toBe(18)
   check.close()
+})
+
+test('migration 18 relabels an aggregate source publisher and drops its stale handle reservation', async () => {
+  // Build a DB at user_version 17 using the REAL first-17 migrations (not a
+  // hand-replicated schema — the current v2/v3/v4 schema is too large to
+  // duplicate by hand, unlike the small v1-era schemas the older tests in
+  // this file replicate), then seed the exact shape a real 2026-07-24-era
+  // legacy conversion produced: an aggregate source, its feed_anchored
+  // publisher, and a handle_reservations_v2 row pointing at it.
+  const file = tempDb()
+  const raw = new Database(file)
+  for (const stmt of MIGRATIONS.slice(0, 17).flat()) raw.exec(stmt)
+  raw.pragma('user_version = 17')
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, policy_generation, created_at)
+     VALUES ('s1', 'https://instance.test/users/rss.xml', 'aggregate', 'enabled', 'quarantined', 'migration', NULL, 0, 0, '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES ('p1', 'https://instance.test/users/rss.xml', 'feed_anchored', '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO handle_reservations_v2 (handle, source_id, publisher_id, created_at) VALUES ('theinstance', 's1', 'p1', '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, policy_generation, created_at)
+     VALUES ('s2', 'https://blog.test/feed.xml', 'single_publisher', 'enabled', 'allowed', 'migration', NULL, 0, 0, '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES ('p2', 'https://blog.test/feed.xml', 'feed_anchored', '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO handle_reservations_v2 (handle, source_id, publisher_id, created_at) VALUES ('blogger', 's2', 'p2', '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.close()
+
+  // Re-open through the real repository constructor, which runs migrate()
+  // from version 17 up to current (18).
+  const repo = await createSqliteRepository(file)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(18)
+  expect((repo.raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE id = 'p1'`).get() as { identity_level: string }).identity_level).toBe('source_scoped_fallback')
+  expect(repo.raw.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE publisher_id = 'p1'`).get()).toBeUndefined()
+  // single_publisher untouched
+  expect((repo.raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE id = 'p2'`).get() as { identity_level: string }).identity_level).toBe('feed_anchored')
+  expect(repo.raw.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE publisher_id = 'p2'`).get()).toBeTruthy()
 })
