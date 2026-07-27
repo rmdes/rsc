@@ -1,6 +1,5 @@
 import { fail } from '@sveltejs/kit'
-import { env } from '$env/dynamic/private'
-import { authedFetch, cookieHeader } from '$lib/server/session'
+import { authedFetch, base, cookieHeader } from '$lib/server/session'
 import { listTombstones, unblockTombstone } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
@@ -11,13 +10,6 @@ import type { Actions, PageServerLoad } from './$types'
 // evidence, no subscriptions come back). Kept here (testable) beside the load.
 const TOMBSTONE_CONSEQUENCE =
 	'Unblocking this tombstone lifts the URL reservation so the URL can be created again as a fresh source. Nothing is restored — no items, evidence, or subscriptions come back; a new source starts empty.'
-
-// ponytail: the two v2 admin calls live here, not in $lib/api.ts, because this
-// task's scope is this page and nothing else consumes them yet — which costs a
-// third copy of `base()` (api.ts and server/session.ts already have one).
-// Upgrade path: move them beside the other v2 wrappers the moment a second
-// surface needs them.
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
 async function coreError(res: Response, fallback: string): Promise<string> {
 	try {

@@ -1,7 +1,5 @@
 import type { RequestHandler } from './$types'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base } from '$lib/server/session'
 
 // Browser-facing feed address for local users — the feed icon's href must be
 // subscribable from a feed reader, and core is not exposed to browsers, so

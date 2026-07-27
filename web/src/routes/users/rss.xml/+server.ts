@@ -1,7 +1,5 @@
 import type { RequestHandler } from './$types'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base } from '$lib/server/session'
 
 // The all-users firehose on the WEB origin (Dave's /users/rss.xml
 // convention) — the autodiscovery link in the layout points here, so a feed

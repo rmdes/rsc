@@ -1,7 +1,5 @@
 import type { Actions } from './$types'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base } from '$lib/server/session'
 
 export const actions = {
 	forgot: async ({ request, fetch, url, getClientAddress }) => {

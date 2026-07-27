@@ -1,9 +1,6 @@
 import type { LayoutServerLoad } from './$types'
 import { getMe } from '$lib/api'
-import { authedFetch, cookieHeader, hasSession } from '$lib/server/session'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { authedFetch, base, cookieHeader, hasSession } from '$lib/server/session'
 
 // Fail-soft to false: a core hiccup here should hide email UI, not crash the layout.
 async function getMailEnabled(f: typeof fetch): Promise<boolean> {

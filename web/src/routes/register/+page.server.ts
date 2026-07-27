@@ -1,9 +1,6 @@
 import type { Actions } from './$types'
 import { fail } from '@sveltejs/kit'
-import { cookieHeader, relaySetCookies } from '$lib/server/session'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base, cookieHeader, relaySetCookies } from '$lib/server/session'
 
 export const actions = {
 	register: async ({ request, fetch, cookies, url, getClientAddress }) => {

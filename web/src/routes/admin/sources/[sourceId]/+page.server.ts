@@ -1,6 +1,5 @@
 import { error, fail } from '@sveltejs/kit'
-import { env } from '$env/dynamic/private'
-import { authedFetch, cookieHeader } from '$lib/server/session'
+import { authedFetch, base, cookieHeader } from '$lib/server/session'
 import { refreshSource, listSourceRuns, listSourceItems, purgeSource } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
@@ -18,11 +17,8 @@ const PURGE_CONSEQUENCE =
 // It exposes NO evidence-review navigation (deliveries, conflicts, findings,
 // previews) — that is Vertical 3.
 
-// ponytail: the V1 source-detail read (governance for quarantined labeling) is one
-// inline call here; the v2 run/status calls live in $lib/logical-api.ts. base() is
-// duplicated the same way the feeds page duplicates it — a third copy only if a
-// second surface needs the V1 read.
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+// The V1 source-detail read (governance for quarantined labeling) is one inline
+// call here; the v2 run/status calls live in $lib/logical-api.ts.
 
 interface SourceGovernance {
 	id: string

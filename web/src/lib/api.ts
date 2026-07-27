@@ -1,7 +1,5 @@
-import { env } from '$env/dynamic/private'
+import { base } from '$lib/server/session'
 import type { OwnerFollowingView, TimelineEntry } from './types.ts'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
 	try {

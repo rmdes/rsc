@@ -2,10 +2,8 @@
 // the `model: 'logical-v2'` envelope and FAILS CLOSED (throws LogicalContractError)
 // on any mismatch — it never falls back to or casts a v1 shape (spec §5.6 carve 2).
 
-import { env } from '$env/dynamic/private'
+import { base } from '$lib/server/session'
 import { asLogicalTimeline, asLogicalThread, asLogicalHistory, logicalToEntry, placeholderToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
 // Exactly one lens selector (spec §3.5). Built with encodeURIComponent, never
 // URLSearchParams (the cursor wire format `<ts>~<id>` mangles under form-encoding).

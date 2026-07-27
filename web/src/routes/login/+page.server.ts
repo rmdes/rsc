@@ -1,9 +1,6 @@
 import type { PageServerLoad, Actions } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
-import { cookieHeader, relaySetCookies } from '$lib/server/session'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base, cookieHeader, relaySetCookies } from '$lib/server/session'
 
 export const load: PageServerLoad = async ({ url }) => {
 	return { resetDone: url.searchParams.get('reset') === '1' }

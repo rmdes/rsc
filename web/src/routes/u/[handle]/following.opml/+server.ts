@@ -1,7 +1,5 @@
 import type { RequestHandler } from './$types'
-import { env } from '$env/dynamic/private'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base } from '$lib/server/session'
 
 export const GET: RequestHandler = async ({ params, fetch }) => {
 	const upstream = await fetch(`${base()}/users/${encodeURIComponent(params.handle)}/following.opml`)

@@ -1,8 +1,5 @@
 import type { RequestHandler } from './$types'
-import { env } from '$env/dynamic/private'
-import { relaySetCookies } from '$lib/server/session'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
+import { base, relaySetCookies } from '$lib/server/session'
 
 // C1 (final review): better-auth's baseURL is the WEB origin, so every emailed
 // link — verify, magic-link, password-reset — points at `<web>/api/auth/*`.

@@ -1,9 +1,7 @@
 import type { RequestHandler } from './$types'
-import { env } from '$env/dynamic/private'
+import { base } from '$lib/server/session'
 import { renderPostHtml } from '$lib/server/render'
 import { asStreamEvent, logicalToEntry } from '$lib/logical-types'
-
-const base = () => env.CORE_API_URL ?? 'http://localhost:8787'
 
 const RESET_FRAME = 'event: reset\ndata: {"model":"logical-v2","kind":"reset"}\n\n'
 
