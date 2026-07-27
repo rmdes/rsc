@@ -174,15 +174,13 @@ test('an unreserved handle is unaffected by the guard', async () => {
 // Reservations only EXIST once conversion has run, and service.updateUserProfile
 // always routes to the LOGICAL store in production (server.ts passes it
 // unconditionally), not the repository. So the rename guard has to hold there
-// too, with the identical error (and therefore the identical 409) whichever
-// implementation runs — `logical` stays optional here only so this test can
-// parametrize both.
-async function renameApp(v2: boolean) {
+// with the identical error (and therefore the identical 409).
+async function renameApp() {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
-  const service = createService(repo, bus, null, v2 ? store : undefined)
+  const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
     sources: { service: createSourceService(repo, null), repo },
@@ -195,7 +193,7 @@ const patchMe = (app: Awaited<ReturnType<typeof renameApp>>['app'], cookie: stri
   app.request('/me', { method: 'PATCH', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) })
 
 test('PATCH /me refuses a reserved handle after the converted source row is removed', async () => {
-  const { repo, app } = await renameApp(true)
+  const { repo, app } = await renameApp()
   // A converted legacy remote feed: conversion reserves its handle …
   const converted = await repo.createRemoteUser({ handle: 'newsbot', displayName: 'Newsbot', feedUrl: 'https://ex.com/n.xml' })
   reserve(repo, 'newsbot')
@@ -213,7 +211,7 @@ test('PATCH /me refuses a reserved handle after the converted source row is remo
 })
 
 test('an ordinary rename still succeeds — the guard does not over-block', async () => {
-  const { repo, app } = await renameApp(true)
+  const { repo, app } = await renameApp()
   reserve(repo, 'newsbot')
   const cookie = await anonSession(app)
   const res = await patchMe(app, cookie, { handle: 'freehandle', displayName: 'Free' })
@@ -223,7 +221,7 @@ test('an ordinary rename still succeeds — the guard does not over-block', asyn
 })
 
 test('with v2 ON the logical store raises the same HandleTakenError as the repository', async () => {
-  const { repo, service } = await renameApp(true)
+  const { repo, service } = await renameApp()
   reserve(repo, 'newsbot')
   const user = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
   // The v2 implementation is synchronous, so it THROWS where v1 rejects; the
