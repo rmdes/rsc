@@ -1,7 +1,7 @@
 # Repository v1 posts/threading chain retirement — design
 
 **Date:** 2026-07-27
-**Status:** rev 2 — corrections below, ready for plan once this rev is accepted
+**Status:** rev 3 — corrections below, ready for plan once this rev is accepted
 **Trigger:** the "Dead client/service surface sweep" backlog entry
 (`docs/superpowers/ideas.md`, added `f929245`) deliberately deferred one item
 out of its mechanical bundle (landed as `ea99e71`): "the core-side v1
@@ -24,6 +24,37 @@ never in either list, and understated the test-suite blast radius of
 making `logical` a required parameter. All of that is corrected below.
 Every number in this document was independently re-verified against
 current source during this correction, not carried forward from rev 1.
+
+## Correction (rev 3)
+
+A second independent review (a parallel session, re-deriving every claim
+from source rather than trusting rev 2 or this document's own framing)
+found rev 2 repeated the same *class* of error on a different axis: not
+"which methods are dead" this time, but "which test files break once
+`logical` becomes required." Rev 2 estimated "roughly 20" such call sites
+and enumerated only the 4 that needed special handling (3 deletions + 1
+repair), waving the rest through as a generic "~16, just add a store."
+The parallel review found 9 more files never mentioned anywhere in rev 2
+at all. Verifying that finding turned up a further problem: the parallel
+review's own list of 9 was *also* incomplete (missed 3 more: `auth.test.ts`,
+`moderation.test.ts`, `posts-edit.test.ts`) — three consecutive attempts at
+hand-enumerating this one axis, three consecutive undercounts. The same
+review also confirmed Design item 5's 16-file list had **5 false
+positives** (not the 4 it explicitly named): `federation-threading.test.ts`,
+`feed.test.ts`, and `logical-reconcile.test.ts` all call `LogicalStore`'s
+own live `adoptOrphans` (a name collision with the deleted `Repository`
+method, the exact same trap rev 1 was caught making on the method-inventory
+itself), `api-follows.test.ts` has zero genuine doomed-method hits, and
+this correction independently found a 5th — `logical-policy-events.test.ts`
+— which belongs only in Design item 1's list (it's one of the 3 confirmed
+OFF-path deletions), not item 5's.
+
+**Given three consecutive rounds of hand-enumeration undercounting the same
+axis, this rev stops trying to hand-curate a longer list and replaces it
+with an exhaustive mechanical sweep, quoted below verbatim, plus a
+requirement that the plan re-run the identical commands itself rather than
+trust this document's list as final.** Both axes are corrected below with
+the full, mechanically-derived file sets.
 
 ## What actually changed since the inventory was written
 
@@ -128,42 +159,64 @@ condition. The stale doc comment at `service.ts:24-27` ("`logical` stays
 optional here only so tests that don't need v2 wiring can omit it") must be
 deleted — it describes a design this change removes.
 
-**Test-suite consequence rev 1 didn't confront.** Roughly 20 `createService`
-call sites across `core/test/` currently omit `logical` (it's optional
-today); every one becomes a `tsc --noEmit` error the moment it's required,
-and `core/tsconfig.json` includes `test`, so this is a hard build break, not
-a runtime one. Three of these exist *specifically* to exercise the OFF path
-and cannot be repaired by simply adding a logical store — they test a state
-that can no longer occur:
+**Test-suite consequence — corrected via exhaustive mechanical sweep (rev
+3), not hand enumeration.** Every one of these becomes a `tsc --noEmit`
+error the moment `logical` is required, and `core/tsconfig.json` includes
+`test`, so this is a hard build break, not a runtime one. The authoritative
+list was produced by listing every `createService(` call site in
+`core/test/*.ts` and classifying each by whether a real (non-`undefined`,
+non-`null`) 4th argument is present, given the real signature
+`createService(repo, bus, publicUrl?, logical?)`:
 
-- `core/test/logical-vertical.test.ts:104-111` — `'disabled: a service
-  built WITHOUT the logical store writes NO v2 rows (flag-off
-  byte-identical)'`
-- `core/test/logical-policy-events.test.ts:283-292` — `'with v2 OFF the
-  same service writes NO journal row (flag-off isolation)'`
-- `core/test/service.test.ts:170-190` — `renameApp`, `test.each([false,
-  true])` parametrizing both branches
+```
+grep -n "createService(" core/test/*.ts
+```
 
-**Decision: delete these three outright, don't port them.** This is the
-same disposition this release gave every other flag-off test once the
-flag itself was retired (Task 10) — there is no "OFF" state left to assert
-against. For `service.test.ts:170-190`, delete only the `false` half of the
-parametrization; the `true` half survives as an ordinary (non-parametrized)
-test.
+**16 distinct files have at least one call site with `logical` omitted or
+`null`**, not "roughly 20" naming only 4. Three call sites are outright
+deletions, one is a repair rev 2 already correctly identified, and 12 are
+newly-enumerated files needing a real logical store added, most never
+mentioned in rev 2 at all:
 
-`core/test/push.test.ts:14` (`createService(repo, bus)`, no `logical`) is
-different in kind: it's not testing the OFF path on purpose, it's the ONLY
-test coverage of `push.ts`'s call pattern into `createLocalPostAs` — and
-`push.ts` is confirmed live (it's the reason 3 methods moved to the
-survivor list above). **This one must be repaired, not deleted**: give it a
-real logical store so its coverage of `push.ts`'s production behavior
-continues under the new unconditional-v2 reality.
+- **Delete outright** (test a state that can no longer occur — no "OFF"
+  left to assert against, same disposition this release gave every other
+  flag-off test once Task 10 retired the flag itself):
+  - `core/test/logical-vertical.test.ts:106` — `'disabled: a service built
+    WITHOUT the logical store writes NO v2 rows (flag-off byte-identical)'`
+  - `core/test/logical-policy-events.test.ts:286` — `'with v2 OFF the same
+    service writes NO journal row (flag-off isolation)'`
+  - `core/test/service.test.ts:77` — builds a fake `{ addFollow }` repo to
+    test `followUnlessExcluded` directly; moot once that helper is deleted
+    (item 1, above)
+  - `core/test/service.test.ts:178` — `test.each([false, true])`
+    parametrizing both branches of a rename test; delete only the `false`
+    half, the `true` half survives as an ordinary (non-parametrized) test
+- **Repair, don't delete** (this is the only test coverage of a
+  confirmed-*live* production call pattern):
+  - `core/test/push.test.ts:14` — `push.ts`'s call into
+    `createLocalPostAs`; give it a real logical store so coverage of
+    `push.ts`'s production behavior continues under the new
+    unconditional-v2 reality
+- **Add a real logical store** (not OFF-path-specific, just used the
+  parameter's optionality for convenience; none of these needs deletion on
+  this basis alone, though several are also directly affected by the
+  method deletions in item 2/5, handled there): `core/test/admin.test.ts`,
+  `admin-users.test.ts`, `admin-overview.test.ts`,
+  `logical-admin-api.test.ts`, `logical-review-api.test.ts`,
+  `logical-routes.test.ts`, `logical-feeds.test.ts`, `multi-session.test.ts`,
+  `auth.test.ts`, `moderation.test.ts`, `posts-edit.test.ts`,
+  `smoke.test.ts`. Plus `service.test.ts`'s own remaining non-OFF-path call
+  sites (lines 18, 53, 100, 107, 114 — the same file also has the two
+  deletions above; it needs mixed treatment internally, not one disposition
+  for the whole file).
 
-The remaining ~16 `core/test/` call sites that omit `logical` (enumerated in
-Design item 5 below) are not OFF-path-specific tests — they just used the
-parameter's optionality for convenience. Each needs a real logical store
-added; none needs deletion on this basis alone (though several are also
-directly affected by the method deletions in item 2, handled there).
+**Required plan step, not optional:** given three consecutive rounds of
+hand-enumeration undercounting this exact axis (rev 2's own attempt, a
+parallel review's follow-up, and this correction's discovery that even the
+follow-up missed 3 more), the plan's first task must **re-run the grep
+above itself** against the then-current `core/test/`, not trust this list
+as final — commits landing between this spec and plan execution could add
+or remove call sites.
 
 **2. Delete the 21 methods** from three places together, in the same
 commit(s) — deleting only one layer at a time would leave the interface or
@@ -232,26 +285,52 @@ drift further as earlier tasks land more commits) rather than trust these
 counts as gospel — the same citation-drift discipline every other task
 this release has needed.
 
-**5. `repository-contract.ts` has exactly ONE consumer, not two — and 16
-other test files use the doomed methods directly, unaccounted for by rev
-1.** Rev 1 claimed `core/test/api.test.ts` and
+**5. `repository-contract.ts` has exactly ONE consumer, not two — and 12
+other test files use the doomed methods directly (corrected from rev 2's
+16 — 4 were name collisions with `LogicalStore`'s own live `adoptOrphans`
+or had zero genuine hits, and a 5th belongs only in item 1's list, not
+here).** Rev 1 claimed `core/test/api.test.ts` and
 `core/test/sqlite-repository.test.ts` both consume `runRepositoryContract`
 and need no other changes. Verified: `grep -rn "runRepositoryContract"
 core/src core/test` returns exactly the definition
 (`repository-contract.ts:6`) and one import+call, both in
 `sqlite-repository.test.ts`. `api.test.ts` never imports or calls it, and
 has zero direct dead-method usage — rev 1's claim about it was simply
-wrong, not a gap to leave to the plan.
+wrong.
 
-The real fan-out is 16 other test files, each calling one or more of the
-21 dead methods (or `followUnlessExcluded`) directly, none named by rev 1:
-`service.test.ts`, `sqlite-edits.test.ts`, `per-user-feeds-repo.test.ts`,
-`moderation.test.ts`, `feed.test.ts`, `logical-policy-events.test.ts`,
+**The real fan-out, verified via exhaustive mechanical sweep (not hand
+enumeration — rev 2's own 16-file list had 5 false positives, caught by a
+second independent review plus this correction's own check):**
+
+```
+DOOMED='insertPost|getThread\(|adoptOrphans|recordEdit|updateUserProfile|addFollow|removeFollow|deletePost\(|countRepliesByPostIds|countThreadRepliesByRootIds|getTimeline\(|getTimelineAfter|getRevisions|listRepliesByPostId|listRemoteUsers|countRemoteSubscriptions|getRemoteUserByFeedUrl|hasPostsByAuthor|backfillItemExtras|findPostByRef|updateDisplayNameIfUnset|getEditableByGuid'
+grep -lrE "repo\.(${DOOMED})" core/test/*.ts
+```
+
+This returns exactly **12 files**: `service.test.ts`, `sqlite-edits.test.ts`,
+`per-user-feeds-repo.test.ts`, `moderation.test.ts`,
 `unfollow-cleanup.test.ts`, `delete-cascade.test.ts`, `migrations.test.ts`,
-`posts-edit.test.ts`, `api-follows.test.ts`, `federation-threading.test.ts`,
-`auth.test.ts`, `logical-reconcile.test.ts`, `source-capability-api.test.ts`,
-`source-following.test.ts`. Two specific hard blockers the plan must solve,
-not just discover:
+`posts-edit.test.ts`, `auth.test.ts`, `source-capability-api.test.ts`,
+`source-following.test.ts`, `sqlite-repository.test.ts` (the last has its
+own direct `repo.updateUserProfile` calls at `:18,24`, separate from its
+role as `runRepositoryContract`'s sole consumer).
+
+**Removed from rev 2's 16, confirmed as false positives:**
+`federation-threading.test.ts`, `feed.test.ts`, `logical-reconcile.test.ts`
+all call `LogicalStore`'s own live `adoptOrphans` (`store.adoptOrphans(...)`,
+not `repo.adoptOrphans(...)`) — the identical name-collision trap the
+method-inventory correction (rev 2) already had to catch once on the
+inventory itself, recurring here in the file-list; `api-follows.test.ts`
+has zero genuine doomed-method hits at all; `logical-policy-events.test.ts`
+does call `createService` without `logical` (correctly relevant to item 1)
+but has zero doomed-*method* calls — it belongs only in item 1's deletion
+list, not here.
+
+**Required plan step, same as item 1:** re-run the grep above against the
+then-current `core/test/` before trusting this 12-file list — the same
+three-rounds-of-undercounting lesson applies to both axes.
+
+Two specific hard blockers the plan must solve, not just discover:
 
 - `source-following.test.ts:64` and `per-user-feeds-repo.test.ts:23-26,34-35`
   call `repo.addFollow(...)` as their only way to seed a `follows` row.
@@ -333,11 +412,14 @@ this spec's own first draft, wired it live at
   1. Delete all callers first, together: `service.ts`'s wrapper functions,
      `repository-contract.ts` (its ~60 direct calls to the doomed methods,
      confirmed at e.g. `:44` `insertPost`, plus `getThread`/`adoptOrphans`/
-     `addFollow`/etc.), and the 16 affected `core/test/` files from Design
-     item 5. `repository-contract.ts` lives in `core/src/domain/` and is
-     typed against `Repository` — it is a caller, not downstream cleanup,
-     and `core/tsconfig.json` includes both `src` and `test`, so it and
-     every affected test file are in `tsc`'s scope at every step.
+     `addFollow`/etc.), and the 12 affected `core/test/` files from Design
+     item 5 (a distinct set from item 1's 16 `createService`-required-arg
+     files — some files appear on both lists, e.g. `service.test.ts`, but
+     the two axes are independent and both must be swept). `repository-
+     contract.ts` lives in `core/src/domain/` and is typed against
+     `Repository` — it is a caller, not downstream cleanup, and
+     `core/tsconfig.json` includes both `src` and `test`, so it and every
+     affected test file are in `tsc`'s scope at every step.
   2. Only once every caller is gone: delete from `repository.ts` (the
      interface) and `sqlite.ts` (the implementation) together, in the same
      commit — an interface member with no implementation, or vice versa, is
@@ -352,11 +434,13 @@ this spec's own first draft, wired it live at
      interface rather than a caller of it.
 - The plan should size this as multiple small tasks — e.g., one per
   `service.ts` branch site's caller-side cleanup, one for
-  `repository-contract.ts` + the 16 affected test files' caller-side
-  cleanup, one for the `repository.ts`+`sqlite.ts` interface+implementation
-  deletion, one for the two new v2 tests in item 6 — rather than one giant
-  commit, consistent with how every other multi-file task this release was
-  sequenced, and it keeps each task's diff reviewable.
+  `repository-contract.ts` + the 12 affected test files' caller-side
+  cleanup (item 5), one for the ~16 `createService`-required-arg test
+  files (item 1), one for the `repository.ts`+`sqlite.ts`
+  interface+implementation deletion, one for the two new v2 tests in item
+  6 — rather than one giant commit, consistent with how every other
+  multi-file task this release was sequenced, and it keeps each task's
+  diff reviewable.
 
 ## Grounding index
 
@@ -371,7 +455,11 @@ code) · `core/src/domain/push.ts` (`:226,235,253,255` — the live caller
 rev 1 missed entirely) · `core/test/push.test.ts` (`:14` needs a real
 logical store; `:179-190` the existing v2-union regression test) ·
 `core/src/api/logical-routes.ts` (`:169,193` — `AdminRefreshResult`,
-already resolved, out of scope) · the 16 test files named in Design item 5
+already resolved, out of scope) · the 16 test files named in Design item 1
+(`createService`-required-arg fallout) and the 12 named in Design item 5
+(direct doomed-method callers) — two distinct, overlapping sets, both
+produced by the mechanical greps quoted in their respective sections, both
+requiring the plan to re-run those greps rather than trust this document
 · `docs/superpowers/ideas.md`'s "Dead client/service surface sweep" entry
 (the deferred item this spec resolves).
 
