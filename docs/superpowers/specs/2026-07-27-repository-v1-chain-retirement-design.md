@@ -1,7 +1,7 @@
 # Repository v1 posts/threading chain retirement — design
 
 **Date:** 2026-07-27
-**Status:** rev 3 — corrections below, ready for plan once this rev is accepted
+**Status:** rev 4 — corrections below, ready for plan once this rev is accepted
 **Trigger:** the "Dead client/service surface sweep" backlog entry
 (`docs/superpowers/ideas.md`, added `f929245`) deliberately deferred one item
 out of its mechanical bundle (landed as `ea99e71`): "the core-side v1
@@ -55,6 +55,100 @@ with an exhaustive mechanical sweep, quoted below verbatim, plus a
 requirement that the plan re-run the identical commands itself rather than
 trust this document's list as final.** Both axes are corrected below with
 the full, mechanically-derived file sets.
+
+## Correction (rev 4)
+
+A third independent review, checking rev 3 with the same re-derive-from-
+source discipline, confirmed rev 3's own corrections held up (the 21-method
+recount, the 8 branch sites, the staging-order fix, the 38-test bucket
+mapping) but found 5 more real issues — every one independently
+re-verified against current source during this correction:
+
+1. **Critical, a fixture bug, not a citation issue:** `push.test.ts`'s `O5`
+   test (`'self mode fat ping counts a REMOTE logical reply (v2) so the
+   push body matches the pull'`) manually inserts a `logical_items_v2` row
+   for `root.id` to simulate what a real logical store would write. Once
+   `push.test.ts` gets a REAL logical store (per Design item 1's repair
+   instruction), `service.createLocalPostAs` will go through the v2 path,
+   and `logical/local.ts:182`'s `createLocalPost` calls
+   `materializeLocalItem(tx, { id, ... })` using the post's own id —
+   confirmed by reading `local.ts` directly. That write and the test's own
+   manual insert target the SAME primary key (`root.id`), so simply adding
+   a logical store to this test (as Design item 1 currently says) throws on
+   a PK collision. The test's manual `local`-origin insert for `root.id`
+   must be DROPPED once a real store is wired in; only the second insert
+   (the remote reply row) is still needed.
+2. **Citation gap:** Design item 1's "delete outright" list named
+   `service.test.ts:178`'s `test.each([false, true])` singular, but
+   `renameApp` (the shared helper at `service.test.ts:173`) feeds TWO
+   separate `test.each([false, true])` blocks (currently `:190` and `:208`)
+   — both need their `false` half deleted, not just one.
+3. **Withdraw a claim, don't just soften it.** Design item 6 claimed follow
+   idempotency has "no test anywhere" once `repository-contract.ts:227`
+   and `service.test.ts:58-65` are deleted. `grep -rn "addLocalFollow"
+   core/test` (the check rev 2/3 used) only matches the literal function
+   name and missed real existing coverage:
+   `logical-policy-events.test.ts:258-268` calls `svc.addFollow` twice with
+   an explicit `// idempotent → no new edge → no reset` comment, asserting
+   the reset count doesn't move on the second call. This test survives
+   Design item 1 untouched (it already passes a real logical store). Follow
+   idempotency is NOT an uncovered behavior — drop this bullet from item 6
+   entirely.
+4. **Important — a real design gap, not a test problem.** `addFollow`'s
+   current v2 branch (`service.ts:163-168`) only implements the "proceed"
+   case (`if (logical && target.feedType !== 'instance' && target.id !==
+   follower.id) { logical.addLocalFollow(...); return true }`) and
+   delegates EVERY rejection case to `followUnlessExcluded(repo,
+   follower.id, target)`'s own guard (`service.ts:18-22`: `if
+   (target.feedType === 'instance' || target.id === followerId) return
+   false`). Design item 1 deletes `followUnlessExcluded` entirely on the
+   premise that "its exclusion semantics are already correctly reproduced
+   by the v2 branch's own condition" — that premise is WRONG: the v2
+   branch's condition only decides when to WRITE; the reject-and-return-
+   false behavior lives exclusively inside the function being deleted, with
+   no replacement. Deleting it as rev 2/3 specified would leave
+   `addFollow` with no way to reject a self-follow or instance-follow
+   target — a real behavior regression, not a test gap. **Fix:** fold the
+   guard inline into `addFollow` itself:
+   ```typescript
+   async addFollow(follower: User, target: User): Promise<boolean> {
+     if (follower.kind !== 'local') throw new DomainError('follower must be a local user')
+     if (target.feedType === 'instance' || target.id === follower.id) return false
+     logical.addLocalFollow({ followerId: follower.id, followedId: target.id, now: new Date().toISOString() })
+     return true
+   }
+   ```
+   This drops the dependency on `repo` inside `addFollow` entirely (correct,
+   since `repo.addFollow` is deleted) while preserving the exact external
+   behavior. Its test, `service.test.ts:74-86` ("addFollow refuses
+   self-follow and instance targets, minting nothing" — currently line 74,
+   not 77 as rev 3 cited), must be **preserved, not deleted** — Design item
+   1 wrongly listed it in the "delete outright" bucket. It uses a fake
+   `Repository` stub and `createService(repo, createEventBus())` with no
+   `logical` — once `logical` is required, this test needs a fake/stub
+   `LogicalStore` too (only `addLocalFollow` needs to exist on the stub,
+   to prove the guard rejects before ever calling it), not deletion.
+5. **Repository-contract.ts's mixed-method tests generalize beyond the one
+   test rev 3 already flagged.** Item 3 already identified `:407` and
+   `:422` as interleaving a surviving method's assertions with a dead
+   method's in the same test body. The same pattern exists at `:227`
+   (`'addFollow is idempotent and listFollowing returns follows in
+   created_at order'` — uses the dying `repo.addFollow` purely as SETUP to
+   test the SURVIVING `listFollowing`'s created_at ordering and dedup
+   behavior) and `:241` (`'removeFollow is idempotent...'` — same shape,
+   `repo.removeFollow`/`repo.addFollow` as setup, `listFollowing` as the
+   real assertion). **None of these five (`:227`, `:241`, `:254`, `:407`,
+   `:422`) can be handled by the blanket "delete outright" instruction in
+   item 4's 23-test bucket** — each needs the surviving method's assertion
+   preserved (with its setup re-pointed to seed via `logical.addLocalFollow`
+   /`LogicalStore.createLocalPost` instead of the dying `Repository`
+   methods), and only the dead-method-specific assertions actually deleted.
+   `:254` ("self-follow is allowed and needs no special-casing") is
+   different in kind — its own comment says it deliberately documents the
+   REPO layer's permissiveness in contrast to the SERVICE layer's guard
+   (finding 4, above); once `Repository.addFollow` is gone, that contrast
+   has nothing left to describe on the repo side, so this one is a genuine
+   delete, not a split.
 
 ## What actually changed since the inventory was written
 
@@ -183,20 +277,35 @@ mentioned in rev 2 at all:
   flag-off test once Task 10 retired the flag itself):
   - `core/test/logical-vertical.test.ts:106` — `'disabled: a service built
     WITHOUT the logical store writes NO v2 rows (flag-off byte-identical)'`
-  - `core/test/logical-policy-events.test.ts:286` — `'with v2 OFF the same
-    service writes NO journal row (flag-off isolation)'`
-  - `core/test/service.test.ts:77` — builds a fake `{ addFollow }` repo to
-    test `followUnlessExcluded` directly; moot once that helper is deleted
-    (item 1, above)
-  - `core/test/service.test.ts:178` — `test.each([false, true])`
-    parametrizing both branches of a rename test; delete only the `false`
-    half, the `true` half survives as an ordinary (non-parametrized) test
+  - `core/test/logical-policy-events.test.ts:283-291` — `'with v2 OFF the
+    same service writes NO journal row (flag-off isolation)'`
+  - `core/test/service.test.ts:190` **and** `:208` — TWO separate
+    `test.each([false, true])` blocks, not one, both fed by the shared
+    `renameApp` helper (`:173`); delete only the `false` half of each, the
+    `true` halves survive as ordinary (non-parametrized) tests
+- **Preserve, don't delete** (rev 3 wrongly bucketed this as a deletion —
+  see Correction rev 4, finding 4 — its behavior is a real design gap, not
+  a moot test):
+  - `core/test/service.test.ts:74-86` — `'addFollow refuses self-follow and
+    instance targets, minting nothing'`. Once `addFollow`'s exclusion guard
+    moves inline (finding 4's code fix), this test still needs to exist to
+    cover it — update its fake `Repository` stub to also provide a fake
+    `LogicalStore` stub (only `addLocalFollow` needs to exist on it, to
+    prove the guard rejects before ever reaching it) rather than deleting
+    the test.
 - **Repair, don't delete** (this is the only test coverage of a
-  confirmed-*live* production call pattern):
+  confirmed-*live* production call pattern — and needs a fixture edit, not
+  just a parameter add, per Correction rev 4 finding 1):
   - `core/test/push.test.ts:14` — `push.ts`'s call into
-    `createLocalPostAs`; give it a real logical store so coverage of
-    `push.ts`'s production behavior continues under the new
-    unconditional-v2 reality
+    `createLocalPostAs`; give it a real logical store. **Also required:**
+    in the `O5` test specifically (`'self mode fat ping counts a REMOTE
+    logical reply (v2)...'`), delete the manual `INSERT INTO
+    logical_items_v2` for `root.id` — once a real logical store is wired
+    in, `service.createLocalPostAs` writes that exact row itself via
+    `materializeLocalItem` (`local.ts:182`), and the test's own duplicate
+    insert would violate the `logical_items_v2` primary key. Only the
+    second manual insert (the remote reply row, a genuinely synthetic
+    fixture with no production equivalent) stays.
 - **Add a real logical store** (not OFF-path-specific, just used the
   parameter's optionality for convenience; none of these needs deletion on
   this basis alone, though several are also directly affected by the
@@ -206,9 +315,9 @@ mentioned in rev 2 at all:
   `logical-routes.test.ts`, `logical-feeds.test.ts`, `multi-session.test.ts`,
   `auth.test.ts`, `moderation.test.ts`, `posts-edit.test.ts`,
   `smoke.test.ts`. Plus `service.test.ts`'s own remaining non-OFF-path call
-  sites (lines 18, 53, 100, 107, 114 — the same file also has the two
-  deletions above; it needs mixed treatment internally, not one disposition
-  for the whole file).
+  sites (lines 18, 53, 100, 107, 114 — the same file also has the deletions
+  and the one preservation above; it needs mixed treatment internally, not
+  one disposition for the whole file).
 
 **Required plan step, not optional:** given three consecutive rounds of
 hand-enumeration undercounting this exact axis (rev 2's own attempt, a
@@ -263,27 +372,56 @@ and didn't yet know about the 3 reinstated survivors):
   lists it among remotes only" — drops its `listRemoteUsers`-specific
   assertion (`:29-30`), keeps its `createRemoteUser` assertions (`kind`,
   `feedUrl`, `:27-28`).
-- **23 tests deleted outright** (not ~24) — every test whose primary
-  subject is one of the 21 genuinely-dead methods: `getThread` ×3,
-  `adoptOrphans` ×2, `countThreadRepliesByRootIds` (not
-  `countRepliesByPostIds` — that one's a survivor now, its 2 tests are in
-  the next bucket), `backfillItemExtras`, `findPostByRef` ×2, the
-  reply-fields-round-trip test, all `getTimeline`/`getTimelineAfter` tests,
-  `addFollow`/`removeFollow`/self-follow tests, `insertPost`/`recordEdit`/
-  `updateUserProfile`/`deletePost` tests where those are the primary
-  subject. None of this needs a replacement test in this file — see item 6
-  below for the two specific behaviors (follow idempotency, timeline
-  ordering) that need more than a shrug here.
-- **4 tests need item 3's decision, not automatic deletion:** `:215`
-  (`getPostsByAuthor`), `:407` + `:422` (`countRepliesByPostIds`), `:435`
-  (`getRecentLocalPosts`) — these test now-reinstated-survivor methods.
-  Resolve per item 3's instruction (verify `push.test.ts` coverage first).
+- **19 tests deleted outright** (down from 23 — see the next bullet for the
+  4 that move) — every test whose primary subject is one of the 21
+  genuinely-dead methods AND whose setup doesn't also carry a surviving
+  method's real assertion: `getThread` ×3, `adoptOrphans` ×2,
+  `backfillItemExtras`, `findPostByRef` ×2, the reply-fields-round-trip
+  test, all `getTimeline`/`getTimelineAfter` tests, `insertPost`/
+  `recordEdit`/`updateUserProfile`/`deletePost` tests where those are the
+  primary subject, and `:254` (`'self-follow is allowed and needs no
+  special-casing'` — its own comment documents the REPO layer's
+  permissiveness in contrast to the SERVICE layer's guard; once
+  `Repository.addFollow` is gone there's nothing left on the repo side for
+  that contrast to describe). None of this needs a replacement test in this
+  file — see item 6 below for the one specific behavior (timeline
+  ordering) that needs more than a shrug here.
+- **4 tests need SPLITTING, not blanket deletion or blanket keeping**
+  (Correction rev 4, finding 5) — each interleaves a dying method's call
+  with a surviving method's real behavioral assertion in the same test
+  body, so the dead-method assertion is deleted but the surviving one's
+  coverage must be preserved (setup re-pointed to
+  `logical.addLocalFollow`/`LogicalStore.createLocalPost` instead of the
+  dying `Repository` methods):
+  - `:227` `'addFollow is idempotent and listFollowing returns follows in
+    created_at order'` — `addFollow` (dying) is pure setup;
+    `listFollowing`'s created_at ordering and dedup behavior (surviving)
+    is the real assertion.
+  - `:241` `'removeFollow is idempotent...'` — same shape,
+    `removeFollow`/`addFollow` (dying) as setup, `listFollowing`
+    (surviving) as the real assertion.
+  - `:407` `'countRepliesByPostIds and listRepliesByPostId key on resolved
+    ids only'` — `countRepliesByPostIds` (surviving) and
+    `listRepliesByPostId` (dying) both asserted in one test body. Its
+    surviving half is also one of the tests item 3's decision applies to.
+  - `:422` `'conversation counts include every descendant while direct
+    counts stay direct'` — `countRepliesByPostIds` (surviving) and
+    `countThreadRepliesByRootIds` (dying) both asserted in one test body.
+    Its surviving half is also one of the tests item 3's decision applies
+    to.
+- **Also needing item 3's decision** (not automatic deletion, not a split —
+  these are standalone survivor-method tests): `:215` (`getPostsByAuthor`),
+  `:435` (`getRecentLocalPosts`).
 
-10 + 1 + 23 + 4 = 38. The plan must re-verify every one of these bucket
-assignments test-by-test against the now-current file (line numbers will
-drift further as earlier tasks land more commits) rather than trust these
-counts as gospel — the same citation-drift discipline every other task
-this release has needed.
+**On the exact totals: this document is not the source of truth for them
+anymore.** Every one of the last three revisions has shipped a bucket
+count that didn't survive independent re-verification — the pattern itself
+is the finding. Rather than assert a fourth precise sum, the plan's actual
+first step for this file must be to read every one of the 38 tests fresh,
+tag each as untouched / simplified / delete-outright / split / needs-item-3
+by its ACTUAL body (not this document's characterization of it), and treat
+whatever total that produces as authoritative. The categories above are a
+strong prior, not a checklist to transcribe.
 
 **5. `repository-contract.ts` has exactly ONE consumer, not two — and 12
 other test files use the doomed methods directly (corrected from rev 2's
@@ -353,20 +491,19 @@ since it's a survivor whose wrapper might still contain now-dead branching
 logic worth simplifying even though the underlying `Repository` method
 stays).
 
-**6. Two behaviors have NO v2-equivalent test today — the plan must ADD a
+**6. One behavior has NO v2-equivalent test today — the plan must ADD a
 test, not just delete the v1 one.** Rev 1's Non-goals section assumed the
 plan would find and cite existing `logical-*.test.ts` coverage for
 everything being deleted. That holds for orphan adoption and thread-root
-derivation (`logical-threading.test.ts` has 9+ dedicated tests) — but two
-specific behaviors currently covered ONLY by tests this spec deletes have
-**no replacement anywhere**:
+derivation (`logical-threading.test.ts` has 9+ dedicated tests) — and, per
+Correction rev 4 finding 3, for follow idempotency too:
+`logical-policy-events.test.ts:258-268` already asserts `svc.addFollow`
+called twice produces no second reset (`// idempotent → no new edge → no
+reset`), a real behavioral pin on `logical.addLocalFollow` reached through
+the service layer rather than by that literal function name — a prior
+draft of this spec wrongly claimed this had zero coverage; it does not, and
+nothing needs to be added for it. One gap remains real:
 
-- **Follow idempotency.** `grep -rn "addLocalFollow" core/test` returns
-  zero hits. The only existing idempotency coverage is
-  `repository-contract.ts:227` (deleted by this spec) and
-  `service.test.ts:58-65` (tests the v1 branch directly, also deleted by
-  item 1). Once both are gone, `logical.addLocalFollow`'s idempotency has
-  no test anywhere. The plan must write one.
 - **Timeline cursor / tie-break ordering.** `repository-contract.ts:86,99,111`
   test the `(published_at, id)` tuple-cursor pagination and its tie-break
   semantics. `logical-feeds.test.ts` tests feed transport and visibility,
