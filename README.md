@@ -201,20 +201,17 @@ Standards-forward, few dependencies, no framework lock-in:
   running RSC without Docker (npm workspaces directly), the full env
   var reference, and identity/session/email details.
 
-## Credits and lineage
+## Credits
 
 RSC stands on ideas and standards it did not invent:
 
 - **Dave Winer** and [textcasting.org](https://textcasting.org) — the
   Textcasting manifesto, RSS, OPML, rssCloud, and
-  [rss.chat](https://github.com/scripting/rss.chat), whose conversations RSC
-  interops with.
+  [rss.chat](https://github.com/scripting/rss.chat)
 - **The IndieWeb community** — Micropub, Webmention, IndieAuth, and
   microformats2.
 - **JSON Feed** — Manton Reece and Brent Simmons.
 - **WebSub** and the broader open-feed ecosystem.
-
-RSC's job is to make these work together, credited, in one place.
 
 ![Alt](https://repobeats.axiom.co/api/embed/99fbb2c4ea3c4c4dd2475e42953a4c1379d1a0f8.svg "Repobeats analytics image")
 

@@ -1520,105 +1520,162 @@ safe where `class` is not.
   (bounded, SSRF-gated like acquisition) and a discovery-failure error
   path. Status: backlog — promote via brainstorm→spec.
 
-- **HTML `rel=alternate` feed autodiscovery for v2 subscribe (GAP 2, V4
-  Task 11 parity audit)** — pasting a site homepage into Subscribe worked
-  under v1 (`ingestViaDiscovery`: one-hop follow + URL rewrite onto the
-  discovered feed) and silently delivers nothing under v2 today
-  (`extractRawItems` falls back only to h-feed, with no `rel=alternate`
-  discovery step). Already live since the v2 cutover — not caused by this
-  retirement, found while auditing v1/v2 parity during V1 retirement.
-  Mechanism: not a simple rewiring — the fix has to touch source identity
-  (`canonicalUrl`, since the URL a user pastes and the feed URL discovery
-  resolves to are different identities), redirect-proof/alias rules (so a
-  re-paste of the same homepage doesn't mint a duplicate source), and the
-  tombstone gate (a previously-purged source shouldn't silently reappear
-  via rediscovery). Why: closes a real, live capability regression from
-  the v1→v2 transition — subscribing by homepage URL is a common,
-  expected UX. Grounding: `ingestViaDiscovery`'s one-hop-follow pattern is
-  the known-working precedent (deleted this release, but its shape is the
-  reference); `extractRawItems`'s h-feed-only fallback and `canonicalUrl`
-  as the identity key are today's real code. Tradeoff: needs its own
-  brainstorm→spec, not a drop-in — source identity and the tombstone gate
-  are both correctness-sensitive surfaces. Status: backlog — promote via
-  brainstorm→spec.
+---
 
-- **Dead client/service surface sweep (from V1 retirement's final
-  whole-branch review, 2026-07-27)** — a structural "exported, zero
-  importers" sweep (as opposed to the name-based v1-flavored greps this
-  release relied on elsewhere) turned up real residue the release's own
-  tasks didn't own, plus items each task's reviewer explicitly deferred
-  here. Mechanism: none of this is design work — it's inventory plus
-  careful deletion, one PR. Grounding, itemized:
-  - `web/src/lib/api.ts`: `addRemoteUser`, `listAdminFeeds`,
-    `removeRemoteFeed` — zero production callers (their core endpoints
-    `POST /users`, `GET /admin/feeds`, `DELETE /users/:handle` were
-    deleted in the retirement's Task 5); `getCapabilities` — zero
-    production callers since Task 11e. Deleting all four drags ~6 tests
-    in `api.test.ts:63-115` that mock them.
-  - `web/src/lib/api.ts`: `importOpml`, `getThread` — zero references
-    ANYWHERE, including tests (the same class as `peekCapabilities`,
-    already deleted in this release's final cleanup — these two were
-    found by the same sweep but not deleted alongside it since they
-    weren't yet confirmed at review time).
-  - `web/src/lib/api.ts`'s `getTimeline`, `getRevisions`, and
-    `web/src/lib/logical-api.ts`'s `getLogicalItem` — production-dead,
-    test-only.
-  - `web/src/lib/tabs.ts`'s `tabFilter`, `web/src/lib/api.ts`'s
-    `subscribeToFeed` — production-dead, test-only (found during Tasks
-    11b/11c's reviews).
-  - `web/src/routes/admin/feeds/+page.server.ts`'s `mode: 'v2' as const`
-    load field — no component reads it, only 3 test assertions do.
-  - core-side: the entire v1 timeline/thread READ chain in
-    `core/src/domain/service.ts` — `getTimeline`, `getTimelineAfter`,
-    `getRevisions`, `getThread`, `listRepliesByPostId`,
-    `listRemoteUsers`, `countRemoteSubscriptions`, `getRemoteUserByFeedUrl`
-    — plus their `Repository` interface declarations and
-    `core/src/storage/sqlite.ts` implementations. Zero production
-    callers (confirmed no `core/src` handler calls any of them); only
-    `core/test` and `repository-contract.ts`'s shared suite exercise
-    them. This is the one item here that ISN'T a one-line deletion —
-    removing it means editing the `Repository` interface, the SQLite
-    class, and the shared contract-test suite together, so it's real
-    surgery, not sweep cleanup.
-  - `core/src/logical/types.ts:256`'s `AdminRefreshResult` — zero
-    references anywhere; medium confidence on whether it's deliberate
-    (a v2-era admin projection type someone meant to wire up, not v1
-    residue) rather than dead.
-  - Dead `isCap`/`capFetch` test-mock scaffolding (~19+ inert branches)
-    across `web/src/routes/page.actions.test.ts`,
-    `admin/items/[id]/item-review.test.ts`,
-    `admin/sources/[sourceId]/source-detail.test.ts`,
-    `admin/feeds/source-actions.test.ts` — harmless (the mocked
-    `/capabilities` branch these `if (isCap(url))` guards check for is
-    provably unreachable, since no page calls that endpoint anymore) but
-    every one is a false "sourceModelV2 still lives here" signal to a
-    future grep.
-  - `core/test/subscribe.test.ts` — a 1-test file misnamed for a subject
-    (`subscribe.ts`) deleted in this release's Task 7; a `git mv` into
-    wherever its surviving test now belongs is a cosmetic fix.
-  - 12 unresolvable `push-in.ts:NNN` line citations scattered across
-    `core/src` comments (the file itself was deleted in Task 6) — lower
-    value than the rest here, harder to sweep mechanically (each needs
-    manual retargeting to whatever replaced the cited logic).
-  Why: every one of these is inert-but-misleading — code or comments
-  that read as "this might still matter" to the next person who greps
-  for `sourceModelV2` or traces a caller, when it provably doesn't.
-  Tradeoff: none of it is urgent (nothing here is reachable, so nothing
-  here is a correctness risk) — pure debt-interest reduction. The
-  Repository-interface item is the only piece that needs a real plan
-  rather than a mechanical PR. Status: backlog — bundle the mechanical
-  items into one PR; the Repository-interface item may want its own,
-  smaller spec if it turns out `repository-contract.ts` assumes any of
-  these methods exist for reasons beyond legacy coverage.
+## Pin a post (admin only) — one settings row; the cost is pagination, not storage
 
-  **Addendum (2026-07-27, the release's own final cleanup-commit
-  review):** 3 more stale-flag sites the cleanup commit's itemized scope
-  didn't reach, same class as above: `web/src/routes/admin/feeds/
-  +page.server.ts:135,204` (two more "the flag is on" comments in a file
-  the cleanup batch never touched); `core/test/opml.test.ts:34` and
-  `core/test/service.test.ts:146` (stale flag language in test-file
-  comments, outside the batch's stated `core/src`/`web/src` scope);
-  `core/test/logical-v4-vertical.test.ts:138` passes an inert
-  `RSC_SOURCE_MODEL_V2: 'on'` key into `loadConfig` (harmless — the key
-  isn't read — not worth a special fix, just noting it's the last
-  remaining string literal of the flag anywhere in a test fixture).
+**Status:** candidate (2026-07-25). Genuinely small — **if** scoped to one pin,
+web-only. `grep -niE "pinned|is_pinned"` over `core/src` + `web/src` = zero; no
+pin concept exists.
+
+**Mechanism (the lazy rung, and it's unusually low).** Everything needed is
+already built:
+- **Storage: no migration, no new table.** `instance_settings (key text PRIMARY
+  KEY, value text)` exists (`core/src/storage/sqlite.ts:1424`) with
+  `getSetting`/`setSetting` (`:319-325`). A single pinned post is **one row**:
+  `pinned_post_id`.
+- **API: no new route.** `GET /admin/settings` + `PATCH /admin/settings` already
+  exist and are already admin-gated (`core/src/api/app.ts:486-498`); the PATCH is
+  a hand-rolled validator in the house style. Pinning is one more validated key in
+  that body (id must be a string that resolves to an existing **local** post) —
+  plus `null` to unpin.
+- **Admin affordance: an existing pattern.** The timeline already renders an
+  admin-only per-post form (`web/src/routes/+page.svelte:241-245`, the `Remove`
+  button behind `data.me?.isAdmin && post.source === 'local'`). "Pin"/"Unpin" is
+  the same shape.
+
+**The real cost is ordering, in three places.** A pin is an *exception to sort
+order*, and sort order here is a keyset-pagination contract:
+1. **Two keyset queries, both tuple-based.** v1 orders on
+   `(posts.published_at, posts.id)` with a `<` tuple cursor
+   (`core/src/storage/sqlite.ts:368,372`); v2 orders on
+   `sort_at DESC, id DESC` with the equivalent `(sort_at < ? OR (sort_at = ? AND
+   id < ?))` predicate (`core/src/logical/projector.ts:701-702`). A pinned row
+   hoisted to the top of page 1 **still sits at its natural position** in the
+   keyset walk, so it renders **twice** — once pinned, once in place — unless it
+   is excluded from the page query. Both engines need the same treatment while
+   the v2 flag rollout is in flight.
+2. **Live prepend.** New posts arrive over SSE and are merged as
+   `posts = [...live, ...data.timeline]` (`web/src/routes/+page.svelte:30`), with
+   `pageIds` as the dedup set feeding `applyRiverEvent`/`applyLiveEvent`
+   (`:43,79`). A pinned post must stay **above** `live` (so an incoming post never
+   pushes it down) and must be in the dedup set (so a live event for the pinned
+   post doesn't re-insert it in the river). Both are small, but neither is free.
+3. **Which surfaces pin?** Four tabs exist (Local / Federated / Personal /
+   Public). An instance-level admin pin plausibly belongs on the instance's own
+   surfaces, not inside a user's Personal river. Cheapest honest answer: pin
+   renders on the **Local tab only**; anything wider is a per-lens decision the
+   spec must make explicitly.
+
+**Keep it off the wire.** `renderLocalHtml` feeds RSS `<description>`
+(`core/src/domain/feed.ts:116`) and JSON Feed `content_html` (`:284`), and feed
+items are ordered by publication — RSS has no pin concept, and re-ordering or
+re-dating an item to fake one would corrupt the guid/date contract that walkable
+feeds and edit-detection depend on. **A pin is presentation on our own pages,
+full stop.** A peer ingesting our feed sees an ordinary post, which is correct.
+
+**Scope questions for the spec (each one doubles the work).**
+- **One pin or many?** One is a settings row. Many is a `posts.pinned_at` column
+  (migration) plus an explicit pin order. YAGNI says one.
+- **Local posts only, or remote too?** Pinning a *remote* item means the pinned
+  content can be edited or withdrawn upstream (Live edits already updates bodies
+  in place), and under V3 moderation it can be hidden — so a pinned card could
+  turn into a tombstone. Local-only sidesteps all of it.
+- **What happens when the pinned post is deleted?** SP3 hard removal
+  (`deletePost`) would leave a dangling `pinned_post_id`. `instance_settings` has
+  no FK, so the read path must tolerate a missing target (render nothing) — or
+  deletion must clear the setting. Cheapest: tolerate it on read.
+
+**Grounding index.** `core/src/storage/sqlite.ts:1424` (`instance_settings` table)
++ `:319-325` (`getSetting`/`setSetting`) · `core/src/api/app.ts:486-498`
+(admin-gated settings GET/PATCH, the validator pattern to extend) ·
+`core/src/storage/sqlite.ts:368,372` (v1 keyset) ·
+`core/src/logical/projector.ts:701-702` (v2 keyset) ·
+`web/src/routes/+page.svelte:30,43,79` (live merge + dedup seam) + `:241-245`
+(existing admin per-post form) · `core/src/domain/feed.ts:116,284` (why the wire
+stays untouched).
+
+**Tradeoff.** A pin is the first place where **the instance overrides
+chronology** — the one ordering guarantee a river makes. That is exactly what
+makes it useful (an announcement, a welcome post, a status notice) and exactly
+what makes it a small trust cost: a reader can no longer assume top-of-page means
+newest. Mitigate with an explicit "Pinned" label on the card rather than a silent
+hoist, which is also what keeps it honest against the no-JS-first rule (the label
+is server-rendered; nothing about a pin needs JS).
+
+---
+
+## Like button + a "Popular" widget (most-liked / most-replied)
+
+**Status:** candidate (2026-07-25). **This is CS-3 from [[The card is the identity
+surface]]**, arriving independently and now with a concrete first consumer (the
+widget) — recorded here as its own entry since it's being scoped standalone, but
+it is the same card-action slot, not a second design.
+
+**What half of this already exists.** `grep -niE "\blike\b|u-like-of"` (excluding
+prose) over `core/src`+`web/src` still returns zero — likes are unbuilt. But the
+**"most-replied" half of the widget needs no new counting at all**:
+`directReplyCount` is already a first-class field on the v2 projection
+(`core/src/logical/types.ts:86`, computed in `replyCounts()` at
+`projector.ts:411`, surfaced at `:539,573`), and v1 computes the same
+`replyCount` per timeline batch (`core/src/api/app.ts:811`). A "Most replied"
+rail is a **query, not a feature** — `ORDER BY reply_count DESC LIMIT N` over data
+already on every card. Likes are the actual net-new piece.
+
+**Mechanism for likes.** A `likes (post_id, user_id, created_at)` table
+(composite PK, `UNIQUE(post_id, user_id)` — the countActiveSubscriptions-style cap
+pattern already used elsewhere), `POST/DELETE /posts/:id/like` (`authed`, house
+`jsonWrite` pattern), a denormalized `like_count` read either by `COUNT(*)` per
+card (fine at RSC's scale, matches the existing `replyCounts()` per-item query
+shape) or maintained incrementally if the widget query needs an index anyway —
+that's an implementation-time call, not a design one.
+
+**Scope questions the spec must answer (this is where the real design work is).**
+- **Who can like?** `POST /posts` is `authed` only — **not** `registeredOnly()`
+  — so anonymous guests can already post. If liking is `authed` too, a guest's
+  like is FK'd to a row the idle sweep GCs ([[Lantern posts]]); the like must
+  cascade-delete with the user (same pattern SP3 already established for posts).
+  If liking is `registeredOnly()`, guests can post but not like — an odd asymmetry
+  worth naming explicitly rather than falling into by default.
+- **Like a remote item, or local only?** Mirrors the CS-4/repost question this
+  entry's sibling ([[The card is the identity surface]] CS-4) already raised:
+  liking a *remote* post is local-only interaction data about someone else's
+  content — fine (a like never republishes anything, unlike a repost), but the
+  count is **per-instance**, not global — three instances federating the same
+  rss.chat item each keep their own tally. The widget must be scoped "popular
+  *here*," not framed as popularity in any absolute sense.
+- **Does a like touch the wire?** No. Unlike Syndication/repost, a like has no
+  RSS analog worth emitting (mf2 has `u-like-of` for the *liker's own* post
+  pointing outward, which is a different shape — "I liked X" as your own post —
+  not a counter on X). Keep likes as instance-local interaction state; this
+  avoids the whole federation-count problem above by construction.
+- **Does liking a moderated/tombstoned item make sense?** V3 moderation can hide
+  a remote item; a like on a since-hidden post is dead weight the read path must
+  tolerate (same "tolerate on read" posture as the pin entry above), not a
+  cascade to build now.
+
+**The widget's real cost is the query shape, not the button.** "Most liked" /
+"Most replied" needs a **time window** (all-time popularity on a growing feed
+converges to "oldest posts win" — a widget with no decay is a widget that never
+changes) — e.g. rank over the last 7 days, which is a `WHERE published_at > ?`
+addition to an otherwise ordinary aggregate query, cheap, but a real product
+decision (what window? per-tab, i.e. Local vs Personal, or instance-wide?)
+deferred to the spec rather than picked here.
+
+**Grounding index.** `core/src/logical/types.ts:86` + `projector.ts:411,539,573`
+(existing `directReplyCount`) · `core/src/api/app.ts:811` (v1 per-batch
+`replyCount`) · `core/src/api/app.ts:198` (`POST /posts` is `authed`, not
+`registeredOnly` — the guest-post asymmetry) · `web/src/routes/+page.svelte:150,276-295`
+(existing `aside.meta`/`aside.tools` panel pattern — the widget's natural home,
+no new layout primitive needed) · [[The card is the identity surface]] CS-3/CS-4
+(the card-action-slot design this shares) · [[Lantern posts]] (guest GC — the
+FK-cascade question) · [[Syndication links]] / mf2 `u-like-of` (why likes don't
+belong on the wire).
+
+**Tradeoff.** This is RSC's first **per-viewer interaction state** that isn't a
+post — new write traffic on every card render path, a table that grows unbounded
+with engagement (no natural GC the way guest posts have one), and a "popularity"
+signal that is inherently per-instance and must be labeled as such or it
+overclaims. The lazy first cut: likes only (skip the widget), instance-scoped,
+local-posts-only, `authed` (accept the guest-GC cascade) — ship the button, defer
+the rail until there's enough like volume for "popular" to mean anything.
