@@ -389,10 +389,12 @@ Expected: whatever count Task 3 ended at (recorded in its own commit).
 - [ ] **Step 2: Re-run the mechanical sweep**
 
 ```bash
-DOOMED='insertPost|getThread\(|adoptOrphans|recordEdit|updateUserProfile|addFollow|removeFollow|deletePost\(|countRepliesByPostIds|countThreadRepliesByRootIds|getTimeline\(|getTimelineAfter|getRevisions|listRepliesByPostId|listRemoteUsers|countRemoteSubscriptions|getRemoteUserByFeedUrl|hasPostsByAuthor|backfillItemExtras|findPostByRef|updateDisplayNameIfUnset|getEditableByGuid'
+DOOMED='insertPost|getThread\(|adoptOrphans|recordEdit|updateUserProfile|addFollow|removeFollow|deletePost\(|countThreadRepliesByRootIds|getTimeline\(|getTimelineAfter|getRevisions|listRepliesByPostId|listRemoteUsers|countRemoteSubscriptions|getRemoteUserByFeedUrl|hasPostsByAuthor|backfillItemExtras|findPostByRef|updateDisplayNameIfUnset|getEditableByGuid'
 grep -lrE "repo\.(${DOOMED})" core/test/*.ts
 ```
 Expected: the same 12 files. If a 13th appears, stop and re-scope.
+
+**Correction, found during this task's own execution:** the `DOOMED` regex above (and its copy in Task 5) originally included `countRepliesByPostIds` — that method is a SURVIVOR (reinstated in spec rev 2, confirmed dead-vs-alive corrected in every subsequent rev), not one of the 21 dead methods. Including it would falsely flag `push.ts`'s two live callers and any surviving test coverage of it as leftover doomed-method calls. It has been removed from the regex above; if you're resuming this plan and see the old 22-alternative version elsewhere, drop `countRepliesByPostIds` from it before running the grep.
 
 - [ ] **Step 3: `source-following.test.ts` and `per-user-feeds-repo.test.ts` — the two known hard blockers**
 
@@ -456,10 +458,12 @@ developed with the help of AI tools"
 Run:
 ```bash
 docker compose exec -T core npm run -w core test
-DOOMED='insertPost|getThread\(|adoptOrphans|recordEdit|updateUserProfile|addFollow|removeFollow|deletePost\(|countRepliesByPostIds|countThreadRepliesByRootIds|getTimeline\(|getTimelineAfter|getRevisions|listRepliesByPostId|listRemoteUsers|countRemoteSubscriptions|getRemoteUserByFeedUrl|hasPostsByAuthor|backfillItemExtras|findPostByRef|updateDisplayNameIfUnset|getEditableByGuid'
+DOOMED='insertPost|getThread\(|adoptOrphans|recordEdit|updateUserProfile|addFollow|removeFollow|deletePost\(|countThreadRepliesByRootIds|getTimeline\(|getTimelineAfter|getRevisions|listRepliesByPostId|listRemoteUsers|countRemoteSubscriptions|getRemoteUserByFeedUrl|hasPostsByAuthor|backfillItemExtras|findPostByRef|updateDisplayNameIfUnset|getEditableByGuid'
 grep -rlE "\.(${DOOMED})" core/src core/test | grep -v "core/src/logical/" | grep -v "core/src/domain/repository.ts" | grep -v "core/src/storage/sqlite.ts"
 ```
 Expected: the second grep returns nothing outside `repository.ts`'s own declarations and `sqlite.ts`'s own implementations (the two files this task is about to edit) — confirming every caller was actually cleared by Tasks 2-4. If anything else shows up, STOP — do not proceed with this task until it's resolved (this is the compile-safety gate the spec's corrected staging order exists to protect).
+
+**Note the `DOOMED` regex here deliberately excludes `countRepliesByPostIds`** — Task 4's implementer found it wrongly included in this plan's original regex (copied forward from an earlier miscount); it's a survivor with live callers in `push.ts`, not one of the 21 methods this task deletes. Do not add it back.
 
 - [ ] **Step 2: Delete the 21 method declarations from `repository.ts`**
 
