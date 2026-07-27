@@ -2,7 +2,7 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID, createHash } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, TimelineCursor, TimelineFilter, Subscription, PushProtocol, FeedType } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
@@ -170,38 +170,6 @@ function joinedRowToEntry(r: JoinedRow): TimelineEntry {
   })
 }
 
-// A flat thread must never show a reply before the post it replies to. RSS's
-// pubDate (RFC-822) truncates sub-second precision, so a reply that round-trips
-// through a feed can carry a published_at that sorts EARLIER than its own,
-// finer-grained parent even though it was written later — a plain ORDER BY
-// published_at inverts that pair. Walk the resolved reply graph (inReplyToPostId)
-// depth-first instead: entries arrive pre-sorted by (published_at, id) from the
-// query below, so that ordering still governs SIBLINGS, but a child can never
-// sort before its parent regardless of clock/precision skew.
-function orderThread(entries: TimelineEntry[], rootId: string): TimelineEntry[] {
-  const byId = new Map(entries.map((e) => [e.id, e]))
-  const childrenOf = new Map<string, TimelineEntry[]>()
-  for (const e of entries) {
-    // cycle-breaker: the root is never a child, so any adoption-formed
-    // mutual-reply cycle breaks here — do not remove.
-    // ponytail: walk recursion depth = conversation depth (Node stack
-    // ~10k); iterative stack if a pathological chain ever matters.
-    if (e.id === rootId) continue
-    const parentId = e.inReplyToPostId && byId.has(e.inReplyToPostId) ? e.inReplyToPostId : rootId
-    const siblings = childrenOf.get(parentId)
-    if (siblings) siblings.push(e)
-    else childrenOf.set(parentId, [e])
-  }
-  const out: TimelineEntry[] = []
-  const walk = (id: string) => {
-    const node = byId.get(id)
-    if (node) out.push(node)
-    for (const child of childrenOf.get(id) ?? []) walk(child.id)
-  }
-  walk(rootId)
-  return out
-}
-
 export class SqliteRepository implements Repository, SourceRepository {
   private db: Kysely<DB>
   private sqlite: InstanceType<typeof Database>
@@ -240,11 +208,6 @@ export class SqliteRepository implements Repository, SourceRepository {
     await this.db.updateTable('users').set({ feed_url: feedUrl }).where('id', '=', userId).execute()
   }
 
-  async updateDisplayNameIfUnset(userId: string, name: string) {
-    // Only while display_name still equals feed_url (the subscribe-seeded value) — never clobber a chosen name.
-    await this.db.updateTable('users').set({ display_name: name }).where('id', '=', userId).whereRef('display_name', '=', 'feed_url').execute()
-  }
-
   async getUser(id: string) {
     const r = await this.db.selectFrom('users').selectAll().where('id', '=', id).executeTakeFirst()
     return r ? rowToUser(r) : undefined
@@ -260,39 +223,6 @@ export class SqliteRepository implements Repository, SourceRepository {
   async setAuthUserId(userId: string, authUserId: string) {
     await this.db.updateTable('users').set({ auth_user_id: authUserId }).where('id', '=', userId).execute()
   }
-  async updateUserProfile(userId: string, patch: { handle?: string; displayName?: string }) {
-    if (patch.handle !== undefined) assertHandleUnreserved(this.sqlite, patch.handle)
-    try {
-      const r = await this.db
-        .updateTable('users')
-        .set({ ...(patch.handle !== undefined ? { handle: patch.handle } : {}), ...(patch.displayName !== undefined ? { display_name: patch.displayName } : {}) })
-        .where('id', '=', userId)
-        .returningAll()
-        .executeTakeFirstOrThrow()
-      return rowToUser(r)
-    } catch (err) {
-      if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE') throw new HandleTakenError('handle already taken')
-      throw err
-    }
-  }
-  async listRemoteUsers() {
-    const rs = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').execute()
-    return rs.map(rowToUser)
-  }
-  async getRemoteUserByFeedUrl(url: string) {
-    const r = await this.db.selectFrom('users').selectAll().where('kind', '=', 'remote').where('feed_url', '=', url).executeTakeFirst()
-    return r ? rowToUser(r) : undefined
-  }
-  async countRemoteSubscriptions(userId: string) {
-    const r = await this.db
-      .selectFrom('follows')
-      .innerJoin('users', 'users.id', 'follows.followed_id')
-      .select(({ fn }) => fn.countAll().as('n'))
-      .where('follows.follower_id', '=', userId)
-      .where('users.feed_type', 'in', ['person', 'webfeed']) // excludes vestigial instance follows
-      .executeTakeFirst()
-    return Number(r?.n ?? 0)
-  }
   async countFollowers(userId: string) {
     const r = await this.db.selectFrom('follows').select(({ fn }) => fn.countAll().as('n')).where('followed_id', '=', userId).executeTakeFirst()
     return Number(r?.n ?? 0)
@@ -303,17 +233,6 @@ export class SqliteRepository implements Repository, SourceRepository {
   }
   async setSetting(key: string, value: string) {
     await this.db.insertInto('instance_settings').values({ key, value }).onConflict((oc) => oc.column('key').doUpdateSet({ value })).execute()
-  }
-  async addFollow(followerId: string, followedId: string) {
-    await this.db
-      .insertInto('follows')
-      .values({ follower_id: followerId, followed_id: followedId, created_at: new Date().toISOString() })
-      // follows has only the PK constraint, so bare doNothing() targets it.
-      .onConflict((oc) => oc.doNothing())
-      .execute()
-  }
-  async removeFollow(followerId: string, followedId: string) {
-    await this.db.deleteFrom('follows').where('follower_id', '=', followerId).where('followed_id', '=', followedId).execute()
   }
   async listFollowing(followerId: string): Promise<User[]> {
     const rows = await this.db
@@ -326,79 +245,9 @@ export class SqliteRepository implements Repository, SourceRepository {
       .execute()
     return rows.map(rowToUser)
   }
-  async insertPost(p: Post) {
-    const [result] = await this.db
-      .insertInto('posts')
-      .values({ id: p.id, author_id: p.authorId, source: p.source, guid: p.guid, title: p.title, content: p.content, url: p.url, published_at: p.publishedAt, created_at: p.createdAt, in_reply_to: p.inReplyTo ?? null, in_reply_to_post_id: p.inReplyToPostId ?? null, thread_root_id: p.threadRootId ?? null, source_name: p.sourceName ?? null, source_feed_url: p.sourceFeedUrl ?? null, content_markdown: p.contentMarkdown ?? null, reply_context_author: p.replyContextAuthor ?? null, reply_context_snippet: p.replyContextSnippet ?? null })
-      // Relies on posts_author_guid_uq being the ONLY unique constraint on posts;
-      // a future second unique constraint would need an explicit conflict target.
-      .onConflict((oc) => oc.doNothing())
-      .execute()
-    return (result?.numInsertedOrUpdatedRows ?? 0n) > 0n
-  }
-  async hasPostsByAuthor(authorId: string) {
-    const r = await this.db.selectFrom('posts').select('id').where('author_id', '=', authorId).executeTakeFirst()
-    return r !== undefined
-  }
-  async getTimeline(limit: number, before?: TimelineCursor, filter?: TimelineFilter): Promise<TimelineEntry[]> {
-    let q = this.db
-      .selectFrom('posts')
-      .innerJoin('users', 'users.id', 'posts.author_id')
-      .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id', 'users.feed_type as u_feed_type'])
-      .orderBy('posts.published_at', 'desc')
-      .orderBy('posts.id', 'desc')
-      .limit(limit)
-    if (before) {
-      q = q.where((eb) => eb(eb.refTuple('posts.published_at', 'posts.id'), '<', eb.tuple(before.publishedAt, before.id)))
-    }
-    if (filter?.source) q = q.where('posts.source', '=', filter.source)
-    if (filter?.feedType) q = q.where('users.feed_type', '=', filter.feedType)
-    if (filter?.followedBy) {
-      const followerId = filter.followedBy
-      // Personal river includes its owner — no self-follow edge exists (SP2 rev 1).
-      q = q.where((eb) =>
-        eb.or([
-          eb('posts.author_id', '=', followerId),
-          eb('posts.author_id', 'in', eb.selectFrom('follows').select('followed_id').where('follower_id', '=', followerId)),
-        ])
-      )
-      q = q.where((eb) => eb.or([eb('users.feed_type', 'is', null), eb('users.feed_type', '!=', 'instance')])) // Decision B: personal river never shows instances
-    }
-    if (filter?.authorId) {
-      q = q.where('posts.author_id', '=', filter.authorId)
-    }
-    if (filter?.topLevel) q = q.where('posts.in_reply_to_post_id', 'is', null)
-    const rows = await q.execute()
-    return rows.map(joinedRowToEntry)
-  }
-
-  async getTimelineAfter(sinceCreatedAt: string, limit: number): Promise<TimelineEntry[]> {
-    const rows = await this.db
-      .selectFrom('posts')
-      .innerJoin('users', 'users.id', 'posts.author_id')
-      .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id', 'users.feed_type as u_feed_type'])
-      .where('posts.created_at', '>=', sinceCreatedAt)
-      .orderBy('posts.created_at', 'asc')
-      .orderBy('posts.id', 'asc')
-      .limit(limit)
-      .execute()
-    return rows.map(joinedRowToEntry)
-  }
-
   async getPost(id: string): Promise<Post | undefined> {
     const r = await this.db.selectFrom('posts').selectAll().where('id', '=', id).executeTakeFirst()
     return r ? rowToPost(r) : undefined
-  }
-
-  async deletePost(id: string): Promise<void> {
-    // Clear the post's revisions first — post_revisions.post_id is a plain RESTRICT
-    // FK to posts(id) (foreign_keys=ON), so deleting an edited post is refused otherwise.
-    await this.db.transaction().execute(async (trx) => {
-      await trx.deleteFrom('post_revisions').where('post_id', '=', id).execute()
-      await trx.deleteFrom('posts').where('id', '=', id).execute()
-    })
   }
 
   async getPostsByAuthor(authorId: string, limit: number): Promise<Post[]> {
@@ -418,106 +267,6 @@ export class SqliteRepository implements Repository, SourceRepository {
       .limit(limit)
       .execute()
     return rows.map(joinedRowToEntry)
-  }
-
-  async findPostByRef(ref: string): Promise<Post | undefined> {
-    // Pinned rule (spec H2 + Hole A): each arm matches ONLY when exactly one
-    // row holds the ref — ambiguity resolves to nothing, never to an arbitrary row.
-    const byUrl = await this.db.selectFrom('posts').selectAll().where('url', '=', ref).limit(2).execute()
-    if (byUrl.length === 1) return rowToPost(byUrl[0])
-    if (byUrl.length > 1) return undefined
-    const byGuid = await this.db.selectFrom('posts').selectAll().where('guid', '=', ref).limit(2).execute()
-    return byGuid.length === 1 ? rowToPost(byGuid[0]) : undefined
-  }
-
-  async getThread(rootId: string): Promise<TimelineEntry[]> {
-    const rows = await this.db
-      .selectFrom('posts')
-      .innerJoin('users', 'users.id', 'posts.author_id')
-      .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id', 'users.feed_type as u_feed_type'])
-      .where((eb) => eb.or([eb('posts.id', '=', rootId), eb('posts.thread_root_id', '=', rootId)]))
-      .orderBy('posts.published_at', 'asc')
-      .orderBy('posts.id', 'asc')
-      .execute()
-    return orderThread(rows.map(joinedRowToEntry), rootId)
-  }
-
-  async adoptOrphans(parent: Post) {
-    const newRoot = parent.threadRootId ?? parent.id
-    for (const ref of [parent.url, parent.guid]) {
-      if (!ref) continue
-      // Exactly-one guard (both arms): adopt via this ref only when the parent is its sole holder.
-      const urlHolders = await this.db.selectFrom('posts').select('id').where('url', '=', ref).limit(2).execute()
-      const guidHolders = await this.db.selectFrom('posts').select('id').where('guid', '=', ref).limit(2).execute()
-      const holders = new Set([...urlHolders, ...guidHolders].map((r) => r.id))
-      if (holders.size > 1) continue
-      const orphans = await this.db
-        .selectFrom('posts').select('id')
-        .where('in_reply_to', '=', ref)
-        .where('in_reply_to_post_id', 'is', null)
-        .where('id', '!=', parent.id)
-        .execute()
-      if (orphans.length === 0) continue
-      // ponytail: not transactional — a crash mid-loop can leave a partially
-      // re-rooted subtree until the thread is next touched; wrap in a
-      // transaction if that residual ever bites.
-      await this.db.updateTable('posts')
-        .set({ in_reply_to_post_id: parent.id, thread_root_id: newRoot })
-        .where('id', 'in', orphans.map((o) => o.id))
-        .execute()
-      // One re-root UPDATE per adopted orphan — a loop, not a single second UPDATE.
-      // Each sweep catches the orphan's WHOLE subtree because thread_root_id always
-      // points at the top root, never an intermediate node.
-      for (const o of orphans) {
-        await this.db.updateTable('posts').set({ thread_root_id: newRoot }).where('thread_root_id', '=', o.id).execute()
-      }
-    }
-  }
-
-  async backfillItemExtras(authorId: string, guid: string, sourceName: string | null, sourceFeedUrl: string | null, contentMarkdown: string | null, url: string | null) {
-    // Pre-existing rows never re-insert (dedup), so extras fill in place —
-    // PER COLUMN (COR-1): a post attributed at migration 6 must still gain
-    // markdown at migration 7 and its permalink-guid url later. COALESCE
-    // keeps the first-seen value (no flapping).
-    await this.db.updateTable('posts')
-      .set((eb) => ({
-        source_name: eb.fn.coalesce('source_name', eb.val(sourceName)),
-        source_feed_url: eb.fn.coalesce('source_feed_url', eb.val(sourceFeedUrl)),
-        content_markdown: eb.fn.coalesce('content_markdown', eb.val(contentMarkdown)),
-        url: eb.fn.coalesce('url', eb.val(url)),
-      }))
-      .where('author_id', '=', authorId)
-      .where('guid', '=', guid)
-      .execute()
-  }
-  async getEditableByGuid(authorId: string, guid: string) {
-    const r = await this.db.selectFrom('posts').select(['id', 'title', 'content', 'content_markdown'])
-      .where('author_id', '=', authorId).where('guid', '=', guid).executeTakeFirst()
-    return r ? { id: r.id, title: r.title, content: r.content, contentMarkdown: r.content_markdown } : undefined
-  }
-
-  async recordEdit(postId: string, next: { title: string | null; content: string; contentMarkdown: string | null; editedAt: string }) {
-    // Atomic: snapshot the CURRENT stored version, then overwrite. seen_at on the
-    // snapshot = the moment it was superseded (this edit's time).
-    await this.db.transaction().execute(async (trx) => {
-      const cur = await trx.selectFrom('posts').select(['title', 'content', 'content_markdown'])
-        .where('id', '=', postId).executeTakeFirst()
-      if (!cur) return
-      await trx.insertInto('post_revisions').values({
-        id: randomUUID(), post_id: postId, title: cur.title, content: cur.content,
-        content_markdown: cur.content_markdown, seen_at: next.editedAt,
-      }).execute()
-      await trx.updateTable('posts').set({
-        title: next.title, content: next.content, content_markdown: next.contentMarkdown, edited_at: next.editedAt,
-      }).where('id', '=', postId).execute()
-    })
-  }
-
-  async getRevisions(postId: string) {
-    const rows = await this.db.selectFrom('post_revisions').selectAll()
-      .where('post_id', '=', postId).orderBy('seen_at', 'asc').orderBy('id', 'asc').execute()
-    return rows.map((r) => ({ id: r.id, postId: r.post_id, title: r.title, content: r.content, contentMarkdown: r.content_markdown, seenAt: r.seen_at }))
   }
 
   async countRepliesByPostIds(ids: string[]): Promise<Map<string, number>> {
@@ -547,31 +296,6 @@ export class SqliteRepository implements Repository, SourceRepository {
     ).all(...ids) as { pid: string; n: number }[]
     for (const r of remote) counts.set(r.pid, (counts.get(r.pid) ?? 0) + Number(r.n))
     return counts
-  }
-
-  async countThreadRepliesByRootIds(rootIds: string[]): Promise<Map<string, number>> {
-    if (rootIds.length === 0) return new Map()
-    const rows = await this.db
-      .selectFrom('posts')
-      .select('thread_root_id')
-      .select(({ fn }) => fn.countAll().as('n'))
-      .where('thread_root_id', 'in', rootIds)
-      .groupBy('thread_root_id')
-      .execute()
-    return new Map(rows.map((r) => [r.thread_root_id as string, Number(r.n)]))
-  }
-
-  async listRepliesByPostId(id: string): Promise<TimelineEntry[]> {
-    const rows = await this.db
-      .selectFrom('posts')
-      .innerJoin('users', 'users.id', 'posts.author_id')
-      .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id', 'users.feed_type as u_feed_type'])
-      .where('in_reply_to_post_id', '=', id)
-      .orderBy('posts.published_at', 'asc')
-      .orderBy('posts.id', 'asc')
-      .execute()
-    return rows.map(joinedRowToEntry)
   }
 
   async upsertSubscription(s: Subscription) {

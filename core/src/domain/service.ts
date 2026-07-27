@@ -1,7 +1,7 @@
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
-import type { NewLocalUser, TimelineEntry, TimelineCursor, TimelineFilter, User, Post } from './types.ts'
+import type { NewLocalUser, TimelineEntry, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
@@ -52,9 +52,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       bus.emitNewPost(entry)
       return entry
     },
-    getTimeline(limit = 100, before?: TimelineCursor, filter?: TimelineFilter) {
-      return repo.getTimeline(limit, before, filter)
-    },
     // The reply-target resolver: a reply may target a remote item that exists
     // ONLY in logical_items_v2 (posts holds local content only), so the posts
     // lookup alone would 404 every reply to an RSS/instance item. The returned
@@ -68,23 +65,8 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     getPost(id: string) {
       return repo.getPost(id)
     },
-    getRevisions(id: string) {
-      return repo.getRevisions(id)
-    },
-    getThread(rootId: string) {
-      return repo.getThread(rootId)
-    },
     countRepliesByPostIds(ids: string[]) {
       return repo.countRepliesByPostIds(ids)
-    },
-    countThreadRepliesByRootIds(rootIds: string[]) {
-      return repo.countThreadRepliesByRootIds(rootIds)
-    },
-    listRepliesByPostId(id: string) {
-      return repo.listRepliesByPostId(id)
-    },
-    getTimelineAfter(sinceCreatedAt: string, limit: number) {
-      return repo.getTimelineAfter(sinceCreatedAt, limit)
     },
     getUserByHandle(handle: string) {
       return repo.getUserByHandle(handle)
@@ -136,9 +118,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     listFollowing(userId: string) {
       return repo.listFollowing(userId)
     },
-    listRemoteUsers() {
-      return repo.listRemoteUsers()
-    },
     instanceStats(v2: boolean) { return repo.instanceStats(v2) },
     listUsers() { return repo.listUsers() },
     async removeRemoteFeed(handle: string): Promise<{ ok: true } | { error: 'unknown' | 'local' }> {
@@ -167,8 +146,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     },
     getSetting(key: string) { return repo.getSetting(key) },
     setSetting(key: string, value: string) { return repo.setSetting(key, value) },
-    countRemoteSubscriptions(userId: string) { return repo.countRemoteSubscriptions(userId) },
-    getRemoteUserByFeedUrl(url: string) { return repo.getRemoteUserByFeedUrl(url) },
   }
 }
 
