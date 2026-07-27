@@ -1784,3 +1784,129 @@ the rail until there's enough like volume for "popular" to mean anything.
   `RSC_SOURCE_MODEL_V2: 'on'` key into `loadConfig` (harmless — the key
   isn't read — not worth a special fix, just noting it's the last
   remaining string literal of the flag anywhere in a test fixture).
+
+---
+
+## Delete propagation — an origin-side tombstone already exists; nothing broadcasts it and nothing consumes it
+
+**Status:** ⭐ draft — investigated 2026-07-27, **not yet specced**. Traced fresh
+against current HEAD (`6e45e3e`, post-flag-removal — v2/logical is the only
+model now, in prod and in local dev; no v1 branch exists to reason about
+anymore). Recorded here as an investigation summary + open design questions,
+per the maintainer's request to study before committing to a mechanism.
+
+**The origin already has a real tombstone — it just never leaves the instance.**
+`deleteLocalPost` → `terminallyDelete` (`core/src/logical/local.ts:217-236`,
+spec §2.6) drops a post's content, revisions, and origin-bridge row, but
+**keeps the `logical_items_v2` row alive** and writes a permanent marker —
+`logical_deleted_local_v2 (logical_item_id, canonical_permalink, deleted_at)`
+— explicitly because "its descendants may reference it." That marker has
+exactly one live consumer today: `localPermalinkOwner`
+(`core/src/logical/reconcile.ts:201-209`), which stops the **same instance**
+from ever resurrecting a fresh item on a permalink it once owned and deleted.
+It never reaches `feed.ts` — feed generation reads only live posts, so a
+deleted post simply stops appearing; there is no element, marker, or field on
+the wire signaling *why*.
+
+**A second, deliberately separate tombstone mechanism already exists — for a
+different case.** `structural_tombstone` on `logical_items_v2`
+(`core/src/logical/threading.ts:293-311`) is what a **remote** item becomes
+when its *source* is blocked/purged (V3 governance) — content stripped, row
+kept so children don't orphan, and — unlike `deleted_local` —
+**auto-collapsed upward** by `sweepStructuralTombstones` once it has no
+remaining child edge. The code calls this "**the anchor asymmetry, spec
+§5.3**" and is explicit that local items never get a `structural_tombstone`;
+only `deleted_local`, which is **permanent regardless of children** (no
+sweep). Two real tombstone shapes, two different lifetimes, on purpose — any
+delete-propagation design has to say which one a *cross-instance* signal
+should resemble, not blur them.
+
+**A gap exists even before federation enters the picture.** `projectItem`
+(`core/src/logical/projector.ts:624-628`) tries `posts` first; once
+`terminallyDelete` has removed that row, it falls through to the
+`logical_items_v2` branch, which is gated `li.origin !== 'remote'` — a
+`deleted_local` item has `origin === 'local'`, so that guard is true and
+`projectItem` **returns `undefined`**. The marker the comment says exists "so
+descendants may reference it" is not, today, surfaced by the one function
+that would let a reply render "in reply to a deleted post." This is worth
+fixing on its own, independent of any federation work.
+
+**On the consuming side, nothing detects a remote deletion at all.** Read
+fresh, function-by-function: every function in `reconcile.ts` and
+`acquisition.ts` is additive — claim/reconcile/apply/commit a *new*
+observation. None compares "present last poll, absent this poll" or reacts to
+an item vanishing from a source's window. A subscriber's stored copy of a
+since-deleted remote post is untouched forever; this matches what the
+maintainer suspected going in.
+
+**The RSS/Atom/JSON Feed spec landscape.** RSS 2.0 has no deletion concept.
+JSON Feed has none either. Atom does: **RFC 6721**, the `<at:deleted-entry>`
+element (`xmlns:at="http://purl.org/atompub/tombstones/1.0"`, carrying `ref`,
+`when`, optional `<at:by>`/`<at:comment>`) — built for AtomPub collection
+sync, obscure, not adopted by mainstream RSS readers, but the closest thing to
+a standard for this exact problem. Not a reach for us: we already ride the
+Atom namespace per item for Live-edits (`atom: { updated: p.editedAt }`,
+native via feedsmith, `feed.ts:151,192`), and the injector that already
+handles a namespaced element feedsmith can't serialize natively
+(`injectItemElements`, `feed.ts:203-220`, used today for `source:comments`) is
+the proven mechanism an `at:deleted-entry`-shaped element would ride.
+
+**Open design questions (deliberately unresolved — this needs a brainstorm,
+not a spec draft yet).**
+1. **Emission** needs new query surface: `feed.ts` has nothing today reading
+   `logical_deleted_local_v2`, since deleted posts are physically gone from
+   `posts`. A recent-deletions window, spliced in like `source:comments`, is
+   the shape — but "how far back" is a real retention/window decision.
+2. **Consumption is the harder question, and it's a bigger version of an
+   already-logged tradeoff.** [[Live edits over the wire]] deliberately chose
+   "trust the source's edits" over "freeze at first-seen," and named the
+   risk explicitly: a bad-faith source can bait-and-switch content after
+   it's been shared/replied to. A delete signal is the same risk, sharper —
+   it's not "content changed," it's "make this vanish," possibly out from
+   under replies other people already made. **Blindly hard-deleting our own
+   stored copy because a remote instance said so is very likely the wrong
+   default.**
+3. **`hidden_at` (V3 moderation, `moderation.ts` + `item_audit_v2`) looks like
+   the right consumer-side primitive to converge on instead of a second hard
+   delete** — reversible, audited (actor/category/note trail already built),
+   and `ORDINARY_ITEM_VISIBLE_SQL` already excludes hidden items from
+   ordinary rendering. "Origin signaled deletion → we hide our copy, with an
+   audit entry recording why, reversible" reuses infrastructure built for a
+   different reason rather than inventing a new erasure path. This is an
+   observation to test in the brainstorm, not a decision already made.
+4. **Does a consumer's hide cascade to grandchildren the way
+   `structural_tombstone` auto-collapses, or does it stay a leaf-level
+   marker like `deleted_local`?** The two existing mechanisms disagree on
+   this by design (§5.3's "anchor asymmetry") — a cross-instance case is
+   arguably closer to the remote/governance shape (structural) than the
+   local/author shape (permanent marker), since the *reason* is external to
+   this instance, but that's exactly the kind of call the brainstorm should
+   make deliberately, not inherit by accident.
+5. **What does the reply UI actually render** for a hidden/deleted-upstream
+   parent? Nothing today (`ReplyTree.svelte`/`PostBody.svelte` have zero
+   `deleted`/`structural_tombstone` handling) — item 4 above and the display
+   question are the same missing piece from two different angles.
+
+**Grounding index.** `core/src/logical/local.ts:217-246` (`terminallyDelete`,
+`deleteLocalPost`) · `core/src/logical/reconcile.ts:201-209`
+(`localPermalinkOwner`, the marker's one consumer today) ·
+`core/src/logical/threading.ts:293-311` (`convertToStructuralTombstone`,
+`sweepStructuralTombstones`, the "anchor asymmetry" comment) ·
+`core/src/logical/projector.ts:624-628` (`projectItem`'s undefined
+fallthrough for a deleted local item) · `core/src/logical/moderation.ts` +
+`item_audit_v2` (the reversible/audited hide primitive) ·
+`core/src/domain/feed.ts:151,192,203-220` (existing Atom-namespace emission +
+the injector pattern to reuse) · [[Live edits over the wire]] (the sibling
+trust tradeoff — read that entry's Tradeoff section alongside this one) ·
+RFC 6721 (`at:deleted-entry`, the nearest real spec analog).
+
+**Tradeoff (provisional — genuinely open until specced).** Any propagation
+mechanism turns a unilateral local action (an author deleting their own post)
+into a signal other instances act on — which is the entire point, but it also
+means the trust boundary [[Verified bylines]] and [[Live edits over the
+wire]] already worry about now extends to *erasure*, not just *content* and
+*authorship*. The lazy, honest first cut this investigation points toward:
+fix the **local** projection gap (item 3 above) regardless of federation —
+it's valuable on its own and required either way — then treat emission and
+consumption as two separately-scoped follow-on decisions, consumption being
+the one that actually needs the brainstorm.
