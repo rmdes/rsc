@@ -7,7 +7,7 @@ import {
   type FetchCtx, type FetchResult,
 } from './acquisition.ts'
 import type { ResolveVerificationInput, VerificationFeedItem, NewObservationVersion, PermanentRedirectProof, ProjectionViewer } from './types.ts'
-import { applyPresentation, applySelectionHints, recordReconciliationFailure } from './reconcile.ts'
+import { applyPresentation, applySelectionHints, getOrCreatePublisher, recordReconciliationFailure } from './reconcile.ts'
 import { projectItem } from './projector.ts'
 import { appendJournal } from './journal.ts'
 import { appendItemAudit } from './moderation.ts'
@@ -259,7 +259,7 @@ export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerification
     }
     if (originSourceId === null) {
       originSourceId = findOrCreateOriginSource(tx, batchKey, check.source_id, now)
-      originPublisherId = getOrCreatePublisher(tx, batchKey, now)
+      originPublisherId = getOrCreatePublisher(tx, batchKey, 'feed_anchored', now)
     }
     persistVerifiedDelivery(tx, { itemId: check.logical_item_id, sourceId: originSourceId, publisherId: originPublisherId!, match, commandId: `verify:${claim.jobId}:${check.id}`, batchKey, now })
     tx.prepare(`UPDATE verification_checks_v2 SET state = 'verified', resolved_at = ? WHERE id = ?`).run(now, check.id)
@@ -300,15 +300,6 @@ function findOrCreateOriginSource(tx: WriteTx, url: string, assertingSourceId: s
     `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
      VALUES (?, ?, 'single_publisher', 'enabled', ?, 'origin_verification', NULL, 0, ?)`,
   ).run(id, url, gov, now)
-  return id
-}
-
-// find-or-create a publisher by canonical feed url (mirrors reconcile.ts).
-function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, now: string): string {
-  const r = tx.prepare(`SELECT id FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string } | undefined
-  if (r) return r.id
-  const id = randomUUID()
-  tx.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`).run(id, canonicalUrl, now)
   return id
 }
 

@@ -182,16 +182,18 @@ function recordConflict(tx: WriteTx, itemId: string | null, versionId: string, k
     .run(randomUUID(), itemId, versionId, kind, JSON.stringify(evidence), now)
 }
 
-// ponytail: keys on canonical_feed_url and hardcodes feed_anchored, ignoring
-// attribution_mode (the accepted §2.4 debt). The V4 cutover now DEPENDS on this
-// uniformity — conversion mints the same way (spec §3.2 amendment 2026-07-24) —
-// so the eventual §2.4 fix must migrate publisher rows, not just change this
-// function.
-function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, now: string): string {
+// The §2.4 attribution fix (2026-07-27/28 spec, rev 2): an aggregate source's
+// own URL never gets a real navigable identity — only a genuinely-resolved
+// per-author URL (via origin verification) does.
+export function identityLevelFor(attributionMode: string): 'feed_anchored' | 'source_scoped_fallback' {
+  return attributionMode === 'aggregate' ? 'source_scoped_fallback' : 'feed_anchored'
+}
+
+export function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, identityLevel: 'feed_anchored' | 'source_scoped_fallback', now: string): string {
   const r = tx.prepare(`SELECT id FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string } | undefined
   if (r) return r.id
   const id = randomUUID()
-  tx.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`).run(id, canonicalUrl, now)
+  tx.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, ?, ?)`).run(id, canonicalUrl, identityLevel, now)
   return id
 }
 
@@ -254,7 +256,7 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   const raw = JSON.parse(v.raw_evidence_json) as { title: unknown; sourceName: unknown }
   const asName = (x: unknown): string | null => (typeof x === 'string' ? x : null)
   const arrival = v.committed_at
-  const publisherId = getOrCreatePublisher(tx, source.canonical_url, now)
+  const publisherId = getOrCreatePublisher(tx, source.canonical_url, identityLevelFor(source.attribution_mode), now)
 
   // ---- convergence (spec §2.5) --------------------------------------------
   let targetId: string

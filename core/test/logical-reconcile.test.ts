@@ -398,6 +398,19 @@ test('an aggregate item WITH <source> still names its publisher from the attribu
   expect(name.normalized_name).toBe('Alice')
 })
 
+test('getOrCreatePublisher mints source_scoped_fallback for an aggregate source, feed_anchored for single_publisher', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://instance.test/users/rss.xml', { mode: 'aggregate' })
+  seedSource(raw, 's_bound', 'https://blog.test/feed.xml', { mode: 'single_publisher' })
+  await acquire(db, raw, 's_agg', 'https://instance.test/users/rss.xml', RSS(guidItem('g-agg')))
+  await acquire(db, raw, 's_bound', 'https://blog.test/feed.xml', RSS(guidItem('g-bound')))
+  drain(store)
+  const aggPub = raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get('https://instance.test/users/rss.xml') as { identity_level: string }
+  const boundPub = raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get('https://blog.test/feed.xml') as { identity_level: string }
+  expect(aggPub.identity_level).toBe('source_scoped_fallback')
+  expect(boundPub.identity_level).toBe('feed_anchored')
+})
+
 // ---- orphan adoption is WIRED: a reply arriving before its parent attaches ---
 
 test('a reply reconciled BEFORE its parent attaches once the parent lands', async () => {

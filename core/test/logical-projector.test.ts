@@ -415,6 +415,14 @@ test('resolvePublisher returns a feed-anchored descriptor for an evidence-backed
   expect(db.read((tx) => resolvePublisher(tx, 'no-such-publisher'))).toBeUndefined()
 })
 
+test('resolvePublisher refuses a source_scoped_fallback publisher — no publisher page for an unresolved aggregate identity', async () => {
+  const { raw, db } = await fresh()
+  const pub = 'pub-fallback'
+  raw.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'source_scoped_fallback', ?)`).run(pub, 'https://instance.test/users/rss.xml', NOW)
+  const result = db.read((tx) => resolvePublisher(tx, pub))
+  expect(result).toBeUndefined()
+})
+
 // ---- feeds use the central projector (spec §4.6) ----------------------------
 
 test('projectLocalActivity returns local items (roots AND replies) newest-first, remote excluded', async () => {

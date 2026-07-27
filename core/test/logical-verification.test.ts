@@ -299,6 +299,19 @@ test('containment match by opaque id → check verified + a direct-origin verifi
   expect(audit).toEqual([{ actor_kind: 'system', actor_id: null }])
 })
 
+test('a verified origin source always gets feed_anchored, even though the aggregate that asserted it does not', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f', { mode: 'aggregate' })
+  await acquire(db, raw, 's_agg', 'https://agg.test/f', RSS(guidItem('g1', ORIGIN)))
+  const cf = countingFetch({ [ORIGIN]: () => ok(RSS(guidItem('g1'))) })
+  const runner = createVerificationRunner({ db, store, fetchFn: cf.fn, lookupFn: publicLookup, now: () => NOW })
+  await drainReconciliationAsync({ store, now: () => NOW, runVerificationBatch: (i) => runner.runVerificationBatch(i.claim, i.now) })
+  const aggPub = raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = 'https://agg.test/f'`).get() as { identity_level: string }
+  const originPub = raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(ORIGIN) as { identity_level: string }
+  expect(aggPub.identity_level).toBe('source_scoped_fallback')
+  expect(originPub.identity_level).toBe('feed_anchored')
+})
+
 test('containment match by exact normalized permalink → verified', async () => {
   const { raw, store } = await fresh()
   seedSource(raw, 's_agg', 'https://agg.test/f')
