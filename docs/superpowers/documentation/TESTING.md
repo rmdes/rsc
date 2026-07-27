@@ -5,9 +5,9 @@ script — this is an npm-workspaces monorepo):
 
 | Workspace | Command | What it is |
 |---|---|---|
-| core | `npm test -w core` | `vitest run` — 27 files under `core/test/` |
+| core | `npm test -w core` | `vitest run` — 92 files under `core/test/` |
 | core | `npm run typecheck -w core` | `tsc --noEmit` (the ground truth; ignore stale LSP diagnostics) |
-| web | `npm test -w web` | `vitest run` — 15 files under `web/src/**` |
+| web | `npm test -w web` | `vitest run` — 37 files under `web/src/**` |
 | web | `npm run check -w web` | `svelte-kit sync && svelte-check` (types + Svelte diagnostics) |
 
 ## What each suite covers (map)
@@ -50,7 +50,9 @@ npm test -w core -- test/feed.test.ts
 ### When the dev Docker stack IS running — run tests INSIDE the container
 
 Two gotchas make host-side `npm test` fail while `docker compose up` is live.
-Run the tests inside the container instead:
+Run the tests inside the container instead — but see Gotcha 3 below before
+adapting these commands, since running vitest directly instead of through the
+workspace script fails differently, and more confusingly:
 
 ```bash
 docker exec rsc-web  sh -c "cd /app && env -u CORE_API_URL npm test -w web  -- src/routes/stream/server.test.ts"
@@ -67,12 +69,27 @@ stack (`docker compose down`) before running host-side.
 
 **Gotcha 2 — `CORE_API_URL` collision (web only).** The container sets
 `CORE_API_URL=http://core:8787`, but several web tests assert the
-`http://localhost:8787` fallback (`base()` in `web/src/lib/api.ts` and the SSE
-proxy). With the env var set, those assertions see `http://core:8787` and fail
-(e.g. `stream/server.test.ts` "proxies … with the right headers"). Prefix web
-test runs in-container with **`env -u CORE_API_URL`** so `base()` uses the
-localhost fallback the tests expect. Core tests don't read `CORE_API_URL`, so
-they don't need it.
+`http://localhost:8787` fallback (`base()`, now the single shared export in
+`web/src/lib/server/session.ts`, and the SSE proxy). With the env var set,
+those assertions see `http://core:8787` and fail (e.g. `stream/server.test.ts`
+"proxies … with the right headers"). Prefix web test runs in-container with
+**`env -u CORE_API_URL`** so `base()` uses the localhost fallback the tests
+expect. Core tests don't read `CORE_API_URL`, so they don't need it.
+
+**Gotcha 3 — a bare `vitest`/`npx vitest run` silently drops the web
+aliases.** `docker exec`/`docker compose exec` into the `web` container lands
+you in `/app` (the monorepo root, not `/app/web`), and vitest resolves its
+config relative to CWD. Always go through the workspace script —
+`npm test -w web -- <path>` (as in every example on this page) — never invoke
+`vitest`/`npx vitest run` directly from `/app`. A direct invocation silently
+misses `web/vitest.config.ts` and its `$lib`/`$env/dynamic/private` aliases,
+so ordinary aliased imports fail with a misleading
+`Error: Cannot find module '$lib/...'` — indistinguishable at a glance from a
+real broken import, but it reproduces identically on a fully clean,
+unmodified checkout (confirmed via `git stash`) and disappears the moment the
+same file is run through `npm test -w web` instead. `npm test -w <workspace>`
+always resolves the right config regardless of the shell's starting CWD; a
+bare `vitest`/`npx vitest` does not.
 
 ## Notes
 
