@@ -1679,3 +1679,108 @@ signal that is inherently per-instance and must be labeled as such or it
 overclaims. The lazy first cut: likes only (skip the widget), instance-scoped,
 local-posts-only, `authed` (accept the guest-GC cascade) — ship the button, defer
 the rail until there's enough like volume for "popular" to mean anything.
+
+---
+
+- **HTML `rel=alternate` feed autodiscovery for v2 subscribe (GAP 2, V4
+  Task 11 parity audit)** — pasting a site homepage into Subscribe worked
+  under v1 (`ingestViaDiscovery`: one-hop follow + URL rewrite onto the
+  discovered feed) and silently delivers nothing under v2 today
+  (`extractRawItems` falls back only to h-feed, with no `rel=alternate`
+  discovery step). Already live since the v2 cutover — not caused by this
+  retirement, found while auditing v1/v2 parity during V1 retirement.
+  Mechanism: not a simple rewiring — the fix has to touch source identity
+  (`canonicalUrl`, since the URL a user pastes and the feed URL discovery
+  resolves to are different identities), redirect-proof/alias rules (so a
+  re-paste of the same homepage doesn't mint a duplicate source), and the
+  tombstone gate (a previously-purged source shouldn't silently reappear
+  via rediscovery). Why: closes a real, live capability regression from
+  the v1→v2 transition — subscribing by homepage URL is a common,
+  expected UX. Grounding: `ingestViaDiscovery`'s one-hop-follow pattern is
+  the known-working precedent (deleted this release, but its shape is the
+  reference); `extractRawItems`'s h-feed-only fallback and `canonicalUrl`
+  as the identity key are today's real code. Tradeoff: needs its own
+  brainstorm→spec, not a drop-in — source identity and the tombstone gate
+  are both correctness-sensitive surfaces. Status: backlog — promote via
+  brainstorm→spec.
+
+- **Dead client/service surface sweep (from V1 retirement's final
+  whole-branch review, 2026-07-27)** — a structural "exported, zero
+  importers" sweep (as opposed to the name-based v1-flavored greps this
+  release relied on elsewhere) turned up real residue the release's own
+  tasks didn't own, plus items each task's reviewer explicitly deferred
+  here. Mechanism: none of this is design work — it's inventory plus
+  careful deletion, one PR. Grounding, itemized:
+  - `web/src/lib/api.ts`: `addRemoteUser`, `listAdminFeeds`,
+    `removeRemoteFeed` — zero production callers (their core endpoints
+    `POST /users`, `GET /admin/feeds`, `DELETE /users/:handle` were
+    deleted in the retirement's Task 5); `getCapabilities` — zero
+    production callers since Task 11e. Deleting all four drags ~6 tests
+    in `api.test.ts:63-115` that mock them.
+  - `web/src/lib/api.ts`: `importOpml`, `getThread` — zero references
+    ANYWHERE, including tests (the same class as `peekCapabilities`,
+    already deleted in this release's final cleanup — these two were
+    found by the same sweep but not deleted alongside it since they
+    weren't yet confirmed at review time).
+  - `web/src/lib/api.ts`'s `getTimeline`, `getRevisions`, and
+    `web/src/lib/logical-api.ts`'s `getLogicalItem` — production-dead,
+    test-only.
+  - `web/src/lib/tabs.ts`'s `tabFilter`, `web/src/lib/api.ts`'s
+    `subscribeToFeed` — production-dead, test-only (found during Tasks
+    11b/11c's reviews).
+  - `web/src/routes/admin/feeds/+page.server.ts`'s `mode: 'v2' as const`
+    load field — no component reads it, only 3 test assertions do.
+  - core-side: the entire v1 timeline/thread READ chain in
+    `core/src/domain/service.ts` — `getTimeline`, `getTimelineAfter`,
+    `getRevisions`, `getThread`, `listRepliesByPostId`,
+    `listRemoteUsers`, `countRemoteSubscriptions`, `getRemoteUserByFeedUrl`
+    — plus their `Repository` interface declarations and
+    `core/src/storage/sqlite.ts` implementations. Zero production
+    callers (confirmed no `core/src` handler calls any of them); only
+    `core/test` and `repository-contract.ts`'s shared suite exercise
+    them. This is the one item here that ISN'T a one-line deletion —
+    removing it means editing the `Repository` interface, the SQLite
+    class, and the shared contract-test suite together, so it's real
+    surgery, not sweep cleanup.
+  - `core/src/logical/types.ts:256`'s `AdminRefreshResult` — zero
+    references anywhere; medium confidence on whether it's deliberate
+    (a v2-era admin projection type someone meant to wire up, not v1
+    residue) rather than dead.
+  - Dead `isCap`/`capFetch` test-mock scaffolding (~19+ inert branches)
+    across `web/src/routes/page.actions.test.ts`,
+    `admin/items/[id]/item-review.test.ts`,
+    `admin/sources/[sourceId]/source-detail.test.ts`,
+    `admin/feeds/source-actions.test.ts` — harmless (the mocked
+    `/capabilities` branch these `if (isCap(url))` guards check for is
+    provably unreachable, since no page calls that endpoint anymore) but
+    every one is a false "sourceModelV2 still lives here" signal to a
+    future grep.
+  - `core/test/subscribe.test.ts` — a 1-test file misnamed for a subject
+    (`subscribe.ts`) deleted in this release's Task 7; a `git mv` into
+    wherever its surviving test now belongs is a cosmetic fix.
+  - 12 unresolvable `push-in.ts:NNN` line citations scattered across
+    `core/src` comments (the file itself was deleted in Task 6) — lower
+    value than the rest here, harder to sweep mechanically (each needs
+    manual retargeting to whatever replaced the cited logic).
+  Why: every one of these is inert-but-misleading — code or comments
+  that read as "this might still matter" to the next person who greps
+  for `sourceModelV2` or traces a caller, when it provably doesn't.
+  Tradeoff: none of it is urgent (nothing here is reachable, so nothing
+  here is a correctness risk) — pure debt-interest reduction. The
+  Repository-interface item is the only piece that needs a real plan
+  rather than a mechanical PR. Status: backlog — bundle the mechanical
+  items into one PR; the Repository-interface item may want its own,
+  smaller spec if it turns out `repository-contract.ts` assumes any of
+  these methods exist for reasons beyond legacy coverage.
+
+  **Addendum (2026-07-27, the release's own final cleanup-commit
+  review):** 3 more stale-flag sites the cleanup commit's itemized scope
+  didn't reach, same class as above: `web/src/routes/admin/feeds/
+  +page.server.ts:135,204` (two more "the flag is on" comments in a file
+  the cleanup batch never touched); `core/test/opml.test.ts:34` and
+  `core/test/service.test.ts:146` (stale flag language in test-file
+  comments, outside the batch's stated `core/src`/`web/src` scope);
+  `core/test/logical-v4-vertical.test.ts:138` passes an inert
+  `RSC_SOURCE_MODEL_V2: 'on'` key into `loadConfig` (harmless — the key
+  isn't read — not worth a special fix, just noting it's the last
+  remaining string literal of the flag anywhere in a test fixture).
