@@ -8,7 +8,7 @@ function healthResponse(mailEnabled: boolean) {
 test('load returns me: null and the mail flag, without calling /me, when there is no session cookie', async () => {
 	const fetch = vi.fn(async (..._args: unknown[]) => healthResponse(true))
 	const result = await load({ fetch, cookies: { getAll: () => [] }, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ me: null, mailEnabled: true })
+	expect(result).toEqual({ me: null, mailEnabled: true, tab: 'public' })
 	expect(fetch).toHaveBeenCalledTimes(1)
 	expect(String(fetch.mock.calls[0][0])).toContain('/health')
 })
@@ -21,7 +21,7 @@ test('load forwards the session cookie and returns getMe() alongside the mail fl
 	})
 	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 	const result = await load({ fetch, cookies, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ me: { user: { id: 'u1', handle: 'a' }, isAnonymous: true }, mailEnabled: false })
+	expect(result).toEqual({ me: { user: { id: 'u1', handle: 'a' }, isAnonymous: true }, mailEnabled: false, tab: 'public' })
 	const [, init] = fetch.mock.calls.find((c) => !String(c[0]).includes('/health')) as [string, RequestInit]
 	expect(new Headers(init.headers).get('cookie')).toBe('rsc.session_token=s1')
 })
@@ -32,7 +32,7 @@ test('load degrades to me: null, mailEnabled: false when the core is unreachable
 	})
 	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 	const result = await load({ fetch, cookies, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ me: null, mailEnabled: false })
+	expect(result).toEqual({ me: null, mailEnabled: false, tab: 'public' })
 })
 
 test('healthz is a trivial liveness answer that never touches core', async () => {

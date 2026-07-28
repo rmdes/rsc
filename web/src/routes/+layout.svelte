@@ -2,6 +2,9 @@
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import type { LayoutData } from './$types';
+	import ThemeToggle from '$lib/ThemeToggle.svelte'
+	import { TABS } from '$lib/tabs'
+	import { page } from '$app/state'
 
 	let { data, children }: { data: LayoutData; children: import('svelte').Snippet } = $props();
 </script>
@@ -34,6 +37,15 @@
 		</div>
 	{/if}
 </div>
+
+<nav class="nav" aria-label="Timeline">
+	<a class="nav-brand" href="/">RSC</a>
+	{#each TABS as t (t)}
+		<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
+	{/each}
+	<a class="spacer" href="/users/rss.xml" target="_blank" rel="noreferrer">Firehose</a>
+	<ThemeToggle />
+</nav>
 
 {@render children()}
 

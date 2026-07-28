@@ -1,6 +1,7 @@
 import type { LayoutServerLoad } from './$types'
 import { getMe } from '$lib/api'
 import { authedFetch, base, cookieHeader, hasSession } from '$lib/server/session'
+import { resolveTab } from '$lib/tabs'
 
 // Fail-soft to false: a core hiccup here should hide email UI, not crash the layout.
 async function getMailEnabled(f: typeof fetch): Promise<boolean> {
@@ -16,10 +17,12 @@ async function getMailEnabled(f: typeof fetch): Promise<boolean> {
 
 export const load: LayoutServerLoad = async ({ fetch, cookies, url }) => {
 	const mailEnabled = await getMailEnabled(fetch)
-	if (!hasSession(cookies)) return { me: null, mailEnabled }
+	const tab = (me: Parameters<typeof resolveTab>[1]) => resolveTab(url.searchParams.get('tab'), me)
+	if (!hasSession(cookies)) return { me: null, mailEnabled, tab: tab(null) }
 	try {
-		return { me: await getMe(authedFetch(fetch, url.origin, cookieHeader(cookies))), mailEnabled }
+		const me = await getMe(authedFetch(fetch, url.origin, cookieHeader(cookies)))
+		return { me, mailEnabled, tab: tab(me) }
 	} catch {
-		return { me: null, mailEnabled }
+		return { me: null, mailEnabled, tab: tab(null) }
 	}
 }
