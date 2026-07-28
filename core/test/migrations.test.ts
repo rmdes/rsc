@@ -290,3 +290,118 @@ test('migration 18 relabels an aggregate source publisher and drops its stale ha
   expect((repo.raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE id = 'p2'`).get() as { identity_level: string }).identity_level).toBe('feed_anchored')
   expect(repo.raw.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE publisher_id = 'p2'`).get()).toBeTruthy()
 })
+
+test('migration 19 heals instance-governed members: clears overridden, syncs governance, and omits blocked instances', async () => {
+  // Build a DB at user_version 18 using the real first-18 migrations, then
+  // seed instances and members: an approved instance A with hand-approved and
+  // stuck members; a blocked instance B with a member (should not be touched);
+  // two approved same-prefix aggregates C1/C2 (C1 earlier created_at) with
+  // members that should sync to C1's governance (earliest wins).
+  const file = tempDb()
+  const raw = new Database(file)
+  for (const stmt of MIGRATIONS.slice(0, 18).flat()) raw.exec(stmt)
+  raw.pragma('user_version = 18')
+
+  // Instance A: approved, allowed governance
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('a-inst', 'https://a.example.com/', 'aggregate', 'enabled', 'allowed', 'migration', 0, '2026-02-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, created_at, updated_at)
+     VALUES ('a-inst', 'approved', '2026-02-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z')`,
+  ).run()
+
+  // Instance A, Member 1: hand-approved (allowed) — should stay allowed
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('a-m1', 'https://a.example.com/user1', 'single_publisher', 'enabled', 'allowed', 'origin_verification', 0, '2026-02-01T00:01:00.000Z')`,
+  ).run()
+
+  // Instance A, Member 2: stuck (quarantined) — should heal to A's allowed
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('a-m2', 'https://a.example.com/user2', 'single_publisher', 'enabled', 'quarantined', 'origin_verification', 0, '2026-02-01T00:02:00.000Z')`,
+  ).run()
+
+  // Instance B: blocked governance (should be skipped by heal)
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('b-inst', 'https://b.example.com/', 'aggregate', 'enabled', 'blocked', 'migration', 0, '2026-02-01T01:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, created_at, updated_at)
+     VALUES ('b-inst', 'approved', '2026-02-01T01:00:00.000Z', '2026-02-01T01:00:00.000Z')`,
+  ).run()
+
+  // Instance B, Member 1: governance should NOT change (B is blocked, skipped)
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('b-m1', 'https://b.example.com/user1', 'single_publisher', 'enabled', 'allowed', 'origin_verification', 0, '2026-02-01T01:01:00.000Z')`,
+  ).run()
+
+  // Instance C1: approved, allowed, earliest created_at on c.example.com
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('c1-inst', 'https://c.example.com/', 'aggregate', 'enabled', 'quarantined', 'migration', 0, '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, created_at, updated_at)
+     VALUES ('c1-inst', 'approved', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+  ).run()
+
+  // Instance C1, Member 1: should heal to C1's quarantined
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('c1-m1', 'https://c.example.com/user1', 'single_publisher', 'enabled', 'allowed', 'origin_verification', 0, '2026-01-01T00:01:00.000Z')`,
+  ).run()
+
+  // Instance C2: approved, allowed, later created_at on same prefix (c.example.com)
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('c2-inst', 'https://c.example.com/other/', 'aggregate', 'enabled', 'allowed', 'migration', 0, '2026-01-02T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, created_at, updated_at)
+     VALUES ('c2-inst', 'approved', '2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`,
+  ).run()
+
+  // Instance C2, Member 1: has quarantined but C1M already healed it to C1's
+  // quarantined (earliest instance wins), so C2 won't change it
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('c2-m1', 'https://c.example.com/other/user1', 'single_publisher', 'enabled', 'allowed', 'origin_verification', 0, '2026-01-02T00:01:00.000Z')`,
+  ).run()
+
+  raw.close()
+
+  // Re-open through the real repository constructor, which runs migrate()
+  // from version 18 up to current (19), calling healMembers once when crossing 19.
+  const repo = await createSqliteRepository(file)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(19)
+
+  // All origin_verification rows should have overridden = 0 (cleared by the heal)
+  const verifyRows = repo.raw.prepare(`SELECT id, overridden FROM remote_sources_v2 WHERE provenance = 'origin_verification'`).all() as { id: string; overridden: number }[]
+  expect(verifyRows).toHaveLength(5)
+  for (const row of verifyRows) {
+    expect(row.overridden).toBe(0)
+  }
+
+  // Instance A's members: both should have A's allowed governance
+  const a_m1 = repo.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'a-m1'`).get() as { governance: string }
+  expect(a_m1.governance).toBe('allowed')
+  const a_m2 = repo.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'a-m2'`).get() as { governance: string }
+  expect(a_m2.governance).toBe('allowed')
+
+  // Instance B's member: should NOT be touched (B is blocked, skipped)
+  const b_m1 = repo.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'b-m1'`).get() as { governance: string }
+  expect(b_m1.governance).toBe('allowed')
+
+  // Instance C1's member: should be healed to C1's governance (quarantined)
+  const c1_m1 = repo.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'c1-m1'`).get() as { governance: string }
+  expect(c1_m1.governance).toBe('quarantined')
+
+  // Instance C2's member: should also be healed to C1's governance (quarantined, earliest instance wins)
+  const c2_m1 = repo.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'c2-m1'`).get() as { governance: string }
+  expect(c2_m1.governance).toBe('quarantined')
+})

@@ -12,7 +12,7 @@ import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_I
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
-import { memberRows } from '../logical/membership.ts'
+import { memberRows, healMembers } from '../logical/membership.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
 // These source-command methods run whenever the source-control plane is wired
@@ -1283,6 +1283,10 @@ function migrate(sqlite: InstanceType<typeof Database>): void {
       sqlite.pragma(`user_version = ${v}`)
     })()
   }
+  // 19 — instance-governed members: members adopt their instance NOW, once,
+  // the first time this DB crosses migration 19. healMembers wraps its own
+  // transaction — safe even if the process dies mid-heal.
+  if (version < 19) healMembers(sqlite)
 }
 
 export async function createSqliteRepository(filename: string): Promise<SqliteRepository> {
