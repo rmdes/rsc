@@ -337,23 +337,45 @@ test('operator reap refuses verified-origin evidence without force, but force re
 })
 
 // Highest-risk regression check for this task: admin_retained and
-// source_audit_v2 moved OUT of the shared reapSource into
-// reapSourceIfOrphaned's own wrapper. Confirms both halves at once — auto-reap
-// (force always false) still refuses in this exact state, while the operator
-// route bypasses both unconditionally (they are not gated behind `force`
-// itself; force only ever affects the verified-origin-evidence guard above).
-test('operator reap bypasses admin_retained + audit history unconditionally, while auto-reap still refuses in the identical state', async () => {
+// source_audit_v2 are gated INSIDE the shared reapSource on `!opts.force` —
+// they are NOT unconditionally bypassed by the operator route. force: false
+// (or omitted) refuses on either signal, exactly like auto-reap; force: true
+// lifts both.
+test('operator reap refuses an admin_retained source without force, force lifts it', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-retained.test/feed', adminRetained: true })
+
+  const keptByAutoReap = raw.transaction(() => reapSourceIfOrphaned(raw, src, NOW))()
+  expect(keptByAutoReap).toBe(false)
+
+  const refused = await repo.reapSource({ command: reapCmd('r5a', src), sourceId: src, force: false, now: NOW })
+  expect(refused).toEqual({ kind: 'refused', reason: 'admin_retained' })
+  expect(countRows(raw, 'remote_sources_v2')).toBe(1)
+
+  const forced = await repo.reapSource({ command: reapCmd('r5b', src), sourceId: src, force: true, now: NOW })
+  expect(forced).toEqual({ kind: 'reaped' })
+  expect(countRows(raw, 'remote_sources_v2')).toBe(0)
+
+  repo.close()
+})
+
+test('operator reap refuses a source with audit history without force, force lifts it', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-audited.test/feed' })
   insertAudit(raw, src)
 
   const keptByAutoReap = raw.transaction(() => reapSourceIfOrphaned(raw, src, NOW))()
   expect(keptByAutoReap).toBe(false)
-  expect(countRows(raw, 'remote_sources_v2')).toBe(1)
 
-  const result = await repo.reapSource({ command: reapCmd('r5', src), sourceId: src, force: false, now: NOW })
-  expect(result).toEqual({ kind: 'reaped' })
+  const refused = await repo.reapSource({ command: reapCmd('r5c', src), sourceId: src, force: false, now: NOW })
+  expect(refused).toEqual({ kind: 'refused', reason: 'audit_history' })
+  expect(countRows(raw, 'remote_sources_v2')).toBe(1)
+  expect(countRows(raw, 'source_audit_v2')).toBe(1)
+
+  const forced = await repo.reapSource({ command: reapCmd('r5d', src), sourceId: src, force: true, now: NOW })
+  expect(forced).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(0)
   expect(countRows(raw, 'source_audit_v2')).toBe(0) // cascade-deleted with the source row
 
