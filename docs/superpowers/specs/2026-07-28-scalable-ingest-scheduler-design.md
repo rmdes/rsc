@@ -1,6 +1,11 @@
 # Scalable ingest scheduler
 
-Status: rev 1 (2026-07-28)
+Status: rev 2 (2026-07-28) — folds the ponytail-review findings
+(`docs/superpowers/reviews/2026-07-28-scalable-ingest-scheduler-spec-review.md`,
+verdict ready to proceed): pushes the push-lease exclusion into the staleness
+SQL query instead of a JS-side filter with a headroom multiplier (§1, §2), and
+derives the two cycle-stats `/admin/overview` fields from durable
+`acquisition_runs_v2` data instead of new scheduler-closure mutable state (§4).
 
 ## Motivation
 
@@ -120,15 +125,20 @@ one that:
   `ORDER BY id ASC` risks starving sources that sort late in ID order once a
   catalog is large enough that not everyone fits in one tick's batch, which is
   now true by design (see below).
-- Is `LIMIT`-bounded to a small multiple of the tick's batch size (see §2),
-  not the whole catalog.
+- Is `LIMIT`-bounded to exactly the tick's batch size (see §2), not the whole
+  catalog.
 
 New index: `source_health_v2(last_poll_at)`, needed to keep this query
 index-supported (not a full-table sort) at any catalog size.
 
-The push-lease check (`hasActivePush`) and the `inFlightMap` in-flight check
-stay as a final, cheap JS filter applied to the small candidate batch the SQL
-query returns — not to the whole catalog.
+The push-lease exclusion is a `NOT EXISTS` clause against
+`push_subscriptions_v2` (`WHERE source_id = s.id AND state = 'active' AND
+expires_at > :now`) inside this same query — not a separate JS-side filter.
+`hasActivePush`'s underlying lookup (`store.findPushRow`, `push.ts:213-215`)
+is already a plain indexed `better-sqlite3` query with no round-trip cost, so
+there's no benefit to computing it outside SQL. Only the `inFlightMap`
+in-flight check (genuinely in-process state, `acquisition.ts:671`) stays a
+final JS filter applied to the batch the query returns.
 
 ### 2. Self-pacing batch size + bounded concurrency
 
@@ -139,9 +149,9 @@ catalogSize   = COUNT(*) of schedulable sources          // cheap, indexed
 ticksPerCycle = ceil(RSC_INGEST_CYCLE_MINUTES * 60 / RSC_POLL_SECONDS)
 batchSize     = max(1, ceil(catalogSize / ticksPerCycle)) // self-adjusts, no hardcoded count
 
-due = staleness-ordered query above, LIMIT batchSize * 2  // headroom for the
-      push-lease/in-flight filter below without a second query round-trip
-      → filter push-lease + in-flight → take first `batchSize`
+due = staleness-ordered query above (push-lease already excluded in SQL),
+      LIMIT batchSize → filter inFlightMap (in-process, bounded by
+      RSC_INGEST_CONCURRENCY, rarely shrinks the batch)
 
 run `due` through a bounded pool:
   - at most RSC_INGEST_CONCURRENCY in flight at once
@@ -186,11 +196,24 @@ pattern in `core/src/config.ts`.
 ### 4. Observability
 
 `/admin/overview` (`core/src/api/app.ts:425`, already exists) gains a small
-scheduler-stats block: last cycle's actual wall-clock duration, sources
-attempted last tick, catalog size, and the most-overdue source's staleness
-(`now - oldest last_poll_at` among schedulable sources). This is the signal
-that turns "cadence silently stretched" from an invisible degradation into
-something an operator can act on.
+scheduler-stats block, keeping every field on the same footing the endpoint
+already uses — a live query computed fresh per request from durable state
+(`service.instanceStats` → `repository.ts:17` → `sqlite.ts:410`), no new
+in-memory bookkeeping in the scheduler:
+
+- **Catalog size** and **most-overdue source's staleness** (`now - oldest
+  last_poll_at` among schedulable sources) — one indexed query each, using
+  the new `last_poll_at` index.
+- **Sources attempted in the last `RSC_POLL_SECONDS` window** and **that
+  window's actual span** — both derived from `acquisition_runs_v2
+  started_at`/`completed_at` for rows in that window, not tracked as new
+  scheduler-closure state. (A dedicated in-memory "last cycle duration"
+  counter would be a new state category none of the endpoint's other fields
+  need, and would reset silently on restart — the durable table already has
+  what's needed to reconstruct both numbers.)
+
+This is the signal that turns "cadence silently stretched" from an invisible
+degradation into something an operator can act on.
 
 ### 5. Orphaned-run heal
 
@@ -235,6 +258,10 @@ construction.
   to one host) under a batch that exceeds both.
 - New test: `healOrphanedRuns` terminalizes every `processing` row
   unconditionally and is a no-op when none exist.
+- New test: the staleness query correctly excludes a source with an active,
+  unexpired push lease (and includes one with an expired lease).
+- New test: `/admin/overview`'s derived cycle-stats fields (sources attempted,
+  window span) compute correctly from a fixture of `acquisition_runs_v2` rows.
 
 ## Rollout
 
