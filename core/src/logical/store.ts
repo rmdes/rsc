@@ -331,6 +331,14 @@ function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
   }
 }
 
+// The schedulability predicate (spec §1.3): enabled, not blocked, and either
+// actively subscribed or federated. Shared by listSchedulableSources (the full
+// membership-check list push.ts uses), countSchedulableSources, and
+// listDueSources (both below) — one predicate, never re-expressed.
+const SCHEDULABLE_SOURCE_WHERE = `s.operation = 'enabled' AND s.governance != 'blocked'
+  AND (EXISTS (SELECT 1 FROM source_subscriptions_v2 sub WHERE sub.source_id = s.id AND sub.state = 'active')
+       OR EXISTS (SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = s.id))`
+
 // The local-mutation write seam (Task 3): each command runs inside ONE db.write()
 // so local storage, logical metadata, and journal effects commit atomically (spec
 // §2.6). service.ts routes v2-on local mutations here; later tasks widen the store
@@ -671,11 +679,7 @@ export function createLogicalStore(db: DatabaseContext) {
     listSchedulableSources(): string[] {
       return db.read((tx) => {
         const rows = tx.prepare(
-          `SELECT s.id FROM remote_sources_v2 s
-           WHERE s.operation = 'enabled' AND s.governance != 'blocked'
-             AND (EXISTS (SELECT 1 FROM source_subscriptions_v2 sub WHERE sub.source_id = s.id AND sub.state = 'active')
-                  OR EXISTS (SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = s.id))
-           ORDER BY s.id ASC`,
+          `SELECT s.id FROM remote_sources_v2 s WHERE ${SCHEDULABLE_SOURCE_WHERE} ORDER BY s.id ASC`,
         ).all() as { id: string }[]
         return rows.map((r) => r.id)
       })
@@ -705,6 +709,38 @@ export function createLogicalStore(db: DatabaseContext) {
         } else {
           tx.prepare(`UPDATE source_health_v2 SET last_poll_at = ? WHERE source_id = ?`).run(now, sourceId)
         }
+      })
+    },
+    countSchedulableSources(): number {
+      return db.read((tx) => (tx.prepare(
+        `SELECT COUNT(*) AS n FROM remote_sources_v2 s WHERE ${SCHEDULABLE_SOURCE_WHERE}`,
+      ).get() as { n: number }).n)
+    },
+    // Staleness-ordered (oldest last_poll_at first, NULLs first — never-polled
+    // is maximally overdue), LIMIT-bounded due-query (spec 2026-07-28 §1). A
+    // source with an active, unexpired push lease needs pollSeconds ×
+    // pushPollFactor elapsed instead of pollSeconds — same rule scheduler.ts
+    // used to apply per-source in JS, now index-supported SQL so this stays
+    // O(limit), never O(catalog size).
+    listDueSources(input: { now: string; pollSeconds: number; pushPollFactor: number; limit: number }): { id: string; canonicalUrl: string }[] {
+      return db.read((tx) => {
+        const nowMs = Date.parse(input.now)
+        const baseCutoff = new Date(nowMs - input.pollSeconds * 1000).toISOString()
+        const pushCutoff = new Date(nowMs - input.pollSeconds * 1000 * input.pushPollFactor).toISOString()
+        const rows = tx.prepare(
+          `SELECT s.id AS id, s.canonical_url AS canonical_url FROM remote_sources_v2 s
+           LEFT JOIN source_health_v2 h ON h.source_id = s.id
+           WHERE ${SCHEDULABLE_SOURCE_WHERE}
+             AND (
+               h.last_poll_at IS NULL
+               OR h.last_poll_at < CASE
+                    WHEN EXISTS (SELECT 1 FROM push_subscriptions_v2 p WHERE p.source_id = s.id AND p.state = 'active' AND p.expires_at > ?)
+                    THEN ? ELSE ? END
+             )
+           ORDER BY h.last_poll_at ASC, s.id ASC
+           LIMIT ?`,
+        ).all(input.now, pushCutoff, baseCutoff, input.limit) as { id: string; canonical_url: string }[]
+        return rows.map((r) => ({ id: r.id, canonicalUrl: r.canonical_url }))
       })
     },
   }

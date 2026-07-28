@@ -52,6 +52,65 @@ function stubEngine(opts: { order?: string[]; outcomeFor?: (id: string) => Admin
 
 const CONFIG = { pollSeconds: 60 }
 
+// --- store: listDueSources / countSchedulableSources (spec 2026-07-28) -------
+// Staleness-ordered, LIMIT-bounded due-query + a cheap catalog-size count — the
+// two primitives the self-pacing scheduler (below) composes into a batch size.
+// Tested directly against the store here, independent of the scheduler.
+
+test('countSchedulableSources matches listSchedulableSources().length', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'a')
+  await seedSubscribed(raw, repo, 'b')
+  seedSource(raw, 'lonely') // no subscriber, no federation — not schedulable
+  expect(store.countSchedulableSources()).toBe(2)
+  expect(store.listSchedulableSources().length).toBe(2)
+  raw.close()
+})
+
+test('listDueSources: never-polled sources are due, ordered by id when equally stale', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'c')
+  await seedSubscribed(raw, repo, 'a')
+  await seedSubscribed(raw, repo, 'b')
+  const due = store.listDueSources({ now: NOW, pollSeconds: 60, pushPollFactor: 10, limit: 10 })
+  expect(due.map((d) => d.id)).toEqual(['a', 'b', 'c'])
+  expect(due[0]).toEqual({ id: 'a', canonicalUrl: 'https://feed.test/a' })
+  raw.close()
+})
+
+test('listDueSources: a source polled within pollSeconds is excluded', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  raw.prepare(`INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures) VALUES ('s1', ?, ?, NULL, 0)`).run(NOW, NOW)
+  expect(store.listDueSources({ now: at(30), pollSeconds: 60, pushPollFactor: 10, limit: 10 })).toEqual([])
+  expect(store.listDueSources({ now: at(61), pollSeconds: 60, pushPollFactor: 10, limit: 10 }).map((d) => d.id)).toEqual(['s1'])
+  raw.close()
+})
+
+test('listDueSources: an active push lease widens the interval to pollSeconds × pushPollFactor', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  raw.prepare(`INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures) VALUES ('s1', ?, ?, NULL, 0)`).run(NOW, NOW)
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok-1', NULL, 'active', ?, ?)`,
+  ).run(at(100000), NOW)
+  // 61s elapsed: past the base interval, still inside the 10x push interval
+  expect(store.listDueSources({ now: at(61), pollSeconds: 60, pushPollFactor: 10, limit: 10 })).toEqual([])
+  // 601s elapsed: past 10 × 60s
+  expect(store.listDueSources({ now: at(601), pollSeconds: 60, pushPollFactor: 10, limit: 10 }).map((d) => d.id)).toEqual(['s1'])
+  raw.close()
+})
+
+test('listDueSources: LIMIT bounds the result to the most-overdue N', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'a')
+  await seedSubscribed(raw, repo, 'b')
+  await seedSubscribed(raw, repo, 'c')
+  expect(store.listDueSources({ now: NOW, pollSeconds: 60, pushPollFactor: 10, limit: 2 }).map((d) => d.id)).toEqual(['a', 'b'])
+  raw.close()
+})
+
 test('one pass polls every schedulable source once, in stable sourceId order', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 'c')
