@@ -99,6 +99,13 @@ test('overridden: DEFAULT 1, mint writes 0, CHECK enforces the bit', async () =>
                VALUES ('s1', 'https://a.test/f', 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, '2026-07-25T00:00:00.000Z')`).run()
   expect((raw.prepare(`SELECT overridden FROM remote_sources_v2 WHERE id = 's1'`).get() as { overridden: number }).overridden).toBe(1)
   expect(() => raw.prepare(`UPDATE remote_sources_v2 SET overridden = 2 WHERE id = 's1'`).run()).toThrow()
-  expect(raw.pragma('user_version', { simple: true })).toBe(19)
+  expect(raw.pragma('user_version', { simple: true })).toBe(20)
   repo.close()
+})
+
+test('migration 20 adds source_health_v2(last_poll_at) for the self-pacing scheduler', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const idx = indexNames(repo.raw)
+  expect([...idx].some((n) => n.includes('source_health_v2'))).toBe(true)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(20)
 })

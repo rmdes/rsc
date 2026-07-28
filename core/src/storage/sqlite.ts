@@ -1305,6 +1305,12 @@ export const MIGRATIONS: string[][] = [
   // DEFAULT 1: every existing INSERT omits the column and every non-mint row
   // is a deliberate act; the origin_verification mint writes an explicit 0.
   [`ALTER TABLE remote_sources_v2 ADD COLUMN overridden INTEGER NOT NULL DEFAULT 1 CHECK (overridden IN (0,1))`],
+  // 20 — scalable ingest scheduler (spec 2026-07-28): the self-pacing scheduler's
+  // staleness-ordered due-query needs this index to stay index-supported (not a
+  // full scan+sort) at any catalog size. Appended at the TAIL, AFTER migration
+  // #19 (the overridden column) — mid-array insertion corrupts user_version on
+  // live databases. Pure additive CREATE INDEX, no table rebuilt.
+  [`CREATE INDEX source_health_v2_last_poll ON source_health_v2(last_poll_at)`],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
