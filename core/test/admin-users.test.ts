@@ -70,3 +70,27 @@ test('GET /admin/users: admin 200 with the list; non-admin 403; anon 403; no ses
   expect((await app.request('/admin/users', { headers: { cookie: await anonSession(app) } })).status).toBe(403)
   expect((await app.request('/admin/users')).status).toBe(401)
 })
+
+test('GET /admin/users?cursor=&limit= paginates over HTTP with no dupes/gaps, exercising pageArgs\' real query-string decode', async () => {
+  const { app, repo } = await makeApp()
+  await repo.createRemoteUser({ handle: 'feedA', displayName: 'A', feedUrl: 'https://e/a.xml' })
+  await repo.createRemoteUser({ handle: 'feedB', displayName: 'B', feedUrl: 'https://e/b.xml' })
+  const admin = await registeredSession(app, 'boss@x.test', repo)
+  // Authenticating the admin session itself mints the admin's OWN local users
+  // row (sessionAuth's ensureCoreUser runs on every protected request, not
+  // just /me) — so the list holds 3 rows total, not just the 2 explicit ones.
+  const total = (await (await app.request('/admin/users?limit=100', { headers: { cookie: admin } })).json()).items.length
+
+  const page1 = await (await app.request(`/admin/users?limit=${total - 1}`, { headers: { cookie: admin } })).json()
+  expect(page1.items).toHaveLength(total - 1)
+  expect(page1.nextCursor).not.toBeNull()
+
+  const page2 = await (await app.request(`/admin/users?limit=${total - 1}&cursor=${encodeURIComponent(page1.nextCursor)}`, { headers: { cookie: admin } })).json()
+  expect(page2.items).toHaveLength(1)
+  expect(page2.nextCursor).toBeNull()
+
+  const handles = new Set([...page1.items, ...page2.items].map((u: { handle: string }) => u.handle))
+  expect(handles.has('feedA')).toBe(true)
+  expect(handles.has('feedB')).toBe(true)
+  expect(handles.size).toBe(total)
+})

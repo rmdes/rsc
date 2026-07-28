@@ -101,7 +101,6 @@ export async function getAdminOverview(f: typeof fetch): Promise<{
 }
 
 export interface AdminUserRow {
-	id: string
 	handle: string
 	displayName: string
 	kind: string

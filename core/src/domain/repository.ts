@@ -16,7 +16,7 @@ export interface Repository {
   deleteUserCascade(id: string): void
   deleteAuthRows(authUserId: string): void
   instanceStats(v2: boolean): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
-  listUsers(cursor: Cursor | undefined, limit: number): Page<{ id: string; handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
+  listUsers(cursor: Cursor | undefined, limit: number): Page<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
   close(): void
   listFollowing(followerId: string): Promise<User[]>
   getPost(id: string): Promise<Post | undefined>

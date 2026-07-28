@@ -424,7 +424,7 @@ export class SqliteRepository implements Repository, SourceRepository {
     ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   }
 
-  listUsers(cursor: Cursor | undefined, limit: number): Page<{ id: string; handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
+  listUsers(cursor: Cursor | undefined, limit: number): Page<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
     const lim = clampLimit(limit)
     const where = `(u.kind = 'remote' OR (u.kind = 'local' AND (au.isAnonymous = 0 OR au.isAnonymous IS NULL)))`
     const rows = (cursor
@@ -446,7 +446,6 @@ export class SqliteRepository implements Repository, SourceRepository {
     const { page, nextCursor } = this.splitPage(rows, lim)
     return {
       items: page.map((r) => ({
-        id: r.id,
         handle: r.handle,
         displayName: r.displayName,
         kind: r.kind,
@@ -510,8 +509,11 @@ export class SqliteRepository implements Repository, SourceRepository {
             AND NOT EXISTS(SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id)
             AND NOT EXISTS(SELECT 1 FROM source_subscriptions_v2 s WHERE s.source_id = remote_sources_v2.id))`
         : '1=1'
-    const qClause = q ? ` AND canonical_url LIKE '%'||?||'%'` : ''
-    const qParams = q ? [q] : []
+    // Escape LIKE's own wildcards in the user's literal search text — otherwise
+    // a search for e.g. '%' or '_' matches far more than the substring typed.
+    const qEscaped = q?.replace(/[\\%_]/g, (m) => `\\${m}`)
+    const qClause = q ? ` AND canonical_url LIKE '%'||?||'%' ESCAPE '\\'` : ''
+    const qParams = q ? [qEscaped] : []
     const rows = (cursor
       ? this.raw.prepare(
           `SELECT * FROM remote_sources_v2 WHERE ${where}${qClause} AND ((created_at < ?) OR (created_at = ? AND id < ?))

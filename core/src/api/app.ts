@@ -333,7 +333,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
     if (force !== undefined && typeof force !== 'boolean') return c.json({ error: 'force invalid' }, 400)
     const actorId = c.get('coreUser').id
-    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId, requestFingerprint: fingerprintRequest(['reap', id]) }
+    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId, requestFingerprint: fingerprintRequest(['reap', id, actorId]) }
     const result = await v2repo.reapSource({ command, sourceId: id, force: force === true, now: new Date().toISOString() })
     if (result.kind === 'reaped') return c.json(result, 200)
     if (result.kind === 'unknown') return c.json({ error: 'unknown source' }, 404)

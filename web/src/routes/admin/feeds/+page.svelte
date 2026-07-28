@@ -48,6 +48,20 @@
 			.join('&')
 	}
 
+	// Refusal reasons from core's reapSource guard chain read as raw machine
+	// identifiers (e.g. 'has_subscribers') — every other action's error on this
+	// page is already a human-phrased string from core, so this lookup only
+	// rewrites these six known reap reasons and falls through to the raw
+	// string for anything else (a network error, an unrecognized action, etc.).
+	const REAP_REFUSAL_LABEL: Record<string, string> = {
+		has_subscribers: 'This source still has active subscribers.',
+		not_allowed: 'This source is not in allowed governance — quarantine or block it via the moderation actions instead.',
+		federated: 'This source has an active federation relationship.',
+		admin_retained: 'This source is marked admin-retained.',
+		audit_history: 'This source has audit history.',
+		verified_origin_evidence: 'This source backs verified-origin evidence for a logical item.'
+	}
+
 	const RETENTION_LABEL: Record<string, string> = {
 		verified_origin: 'Verified-origin evidence — retained',
 		admin_retained: 'Admin-retained — retained',
@@ -122,7 +136,7 @@
 
 <h2>Sources</h2>
 
-{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
+{#if form?.error}<p class="error" role="alert">{REAP_REFUSAL_LABEL[form.error] ?? form.error}</p>{/if}
 {#if form && 'done' in form && form.done}<p class="notice confirm" role="status">{LABEL[form.done] ?? form.done} applied.</p>{/if}
 {#if form && 'established' in form && form.established}<p class="notice confirm" role="status">Federation established — the source is now approved.</p>{/if}
 {#if form && 'unblocked' in form && form.unblocked}<p class="notice confirm" role="status">Tombstone unblocked — the URL can be created again. Nothing was restored.</p>{/if}
