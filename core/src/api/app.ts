@@ -275,6 +275,17 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ following: await v2.publicFollowing(user.id) })
   })
 
+  app.get('/users/:handle/stats', async (c) => {
+    const user = await resolveUser(c.req.param('handle') ?? '')
+    if (!user) return c.json({ error: 'unknown user' }, 404)
+    const [posts, followers, following] = await Promise.all([
+      service.countPostsByAuthor(user.id),
+      service.countFollowers(user.id),
+      v2.publicFollowing(user.id).then((f) => f.length)
+    ])
+    return c.json({ posts, followers, following })
+  })
+
   app.get('/users/:handle/following.opml', async (c) => {
     const user = await resolveUser(c.req.param('handle') ?? '')
     if (!user) return c.json({ error: 'unknown user' }, 404)

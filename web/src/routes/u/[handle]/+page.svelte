@@ -73,6 +73,14 @@
 		</p>
 	</header>
 
+	{#if data.stats}
+		<dl class="lens-stats">
+			<div><dd class="n">{data.stats.posts}</dd><dt class="k">Posts</dt></div>
+			<div><dd class="n">{data.stats.following}</dd><dt class="k">Following</dt></div>
+			<div><dd class="n">{data.stats.followers}</dd><dt class="k">Followers</dt></div>
+		</dl>
+	{/if}
+
 	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 
 	<ul class="timeline">

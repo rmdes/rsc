@@ -7,9 +7,11 @@ import { load } from './+page.server.ts'
 // handle is never reserved, so it just 404s as any unreserved handle would).
 
 const isHandle = (u: unknown) => String(u).includes('/handles/')
+const isStats = (u: unknown) => String(u).includes('/stats')
 const reserved = (publisherId: string) =>
 	new Response(JSON.stringify({ model: 'logical-v2', handle: 'alice', reserved: true, publisherId }), { status: 200 })
 const notReserved = () => new Response(JSON.stringify({ error: 'not found' }), { status: 404 })
+const stats = () => new Response(JSON.stringify({ posts: 0, followers: 0, following: 0 }), { status: 200 })
 
 const item = {
 	kind: 'logical_item',
@@ -49,14 +51,14 @@ const call = (load: unknown, fetch: unknown) =>
 	(load as (e: never) => Promise<unknown>)({ fetch, params: { handle: 'alice' }, url: new URL('http://x/u/alice') } as never)
 
 test('a reserved handle 308-redirects to its publisher page', async () => {
-	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? reserved('pub1') : river()))
+	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? reserved('pub1') : isStats(u) ? stats() : river()))
 	await expect(call(load, fetch)).rejects.toMatchObject({ status: 308, location: '/p/pub1' })
 	// the lookup is asked before the river — a page we are about to leave is never fetched
 	expect(fetch.mock.calls.some((c) => String(c[0]).includes('/handles/alice'))).toBe(true)
 })
 
 test('a live local handle renders as today — no redirect', async () => {
-	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? notReserved() : river()))
+	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? notReserved() : isStats(u) ? stats() : river()))
 	const out = (await call(load, fetch)) as {
 		handle: string
 		timeline: Array<{ id: string; contentHtml?: string }>
@@ -72,12 +74,12 @@ test('a live local handle renders as today — no redirect', async () => {
 test('the redirect still fires after the target is purged — no post-purge branch (spec WP5)', async () => {
 	// The reservation outlives source removal and purge; core keeps answering the
 	// lookup, and /p/:publisherId 404s through the ordinary not-found path.
-	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? reserved('gone1') : river()))
+	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? reserved('gone1') : isStats(u) ? stats() : river()))
 	await expect(call(load, fetch)).rejects.toMatchObject({ status: 308, location: '/p/gone1' })
 })
 
 test('a lookup failure degrades to the ordinary page instead of a redirect', async () => {
-	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? new Response('boom', { status: 500 }) : river()))
+	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? new Response('boom', { status: 500 }) : isStats(u) ? stats() : river()))
 	const out = (await call(load, fetch)) as { timeline: unknown[]; coreDown?: boolean }
 	expect(out.coreDown).toBeUndefined()
 	expect(out.timeline).toHaveLength(1)

@@ -96,6 +96,12 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     getPostsByAuthor(authorId: string, limit: number) {
       return repo.getPostsByAuthor(authorId, limit)
     },
+    countFollowers(userId: string) {
+      return repo.countFollowers(userId)
+    },
+    countPostsByAuthor(authorId: string) {
+      return repo.countPostsByAuthor(authorId)
+    },
     getRecentLocalPosts(limit: number) {
       return repo.getRecentLocalPosts(limit)
     },

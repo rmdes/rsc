@@ -133,6 +133,29 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository & Pick<
       expect(posts.map((p) => p.id)).toEqual([mine[2].id, mine[1].id])
     })
 
+    test('countPostsByAuthor counts only that author\'s posts', async () => {
+      const { repo, logical } = await makeRepoAndStore()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      const b = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
+      ;[1, 2, 3].forEach((i) => logical.createLocalPost({ author: a, content: `alice ${i}`, replyToId: null, now: `2026-01-0${i}T00:00:00.000Z` }))
+      logical.createLocalPost({ author: b, content: 'bob 1', replyToId: null, now: '2026-01-09T00:00:00.000Z' })
+      expect(await repo.countPostsByAuthor(a.id)).toBe(3)
+      expect(await repo.countPostsByAuthor(b.id)).toBe(1)
+      expect(await repo.countPostsByAuthor('no-such-id')).toBe(0)
+    })
+
+    test('countFollowers counts followed_id edges and reflects removeLocalFollow', async () => {
+      const { repo, logical } = await makeRepoAndStore()
+      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+      const b = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
+      const c = await repo.createLocalUser({ handle: 'carol', displayName: 'Carol' })
+      logical.addLocalFollow({ followerId: b.id, followedId: a.id, now: '2026-01-01T00:00:00.000Z' })
+      logical.addLocalFollow({ followerId: c.id, followedId: a.id, now: '2026-01-02T00:00:00.000Z' })
+      expect(await repo.countFollowers(a.id)).toBe(2)
+      logical.removeLocalFollow({ followerId: b.id, followedId: a.id, now: '2026-01-03T00:00:00.000Z' })
+      expect(await repo.countFollowers(a.id)).toBe(1)
+    })
+
     test('listFollowing returns follows in created_at order and duplicate follows are idempotent', async () => {
       const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })

@@ -3,6 +3,7 @@ import { redirect, isRedirect } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { getLogicalRiverOrEmpty } from '$lib/logical-api'
 import { enrichEntries } from '$lib/server/render'
+import { getHandleStats } from '$lib/api'
 
 // The permanent reserved-handle redirect (V4 §3.5). A legacy remote handle
 // converted from a single_publisher source is reserved at conversion (an
@@ -22,6 +23,9 @@ async function reservedPublisher(f: typeof fetch, handle: string): Promise<strin
 export const load: PageServerLoad = async ({ fetch, params, url }) => {
 	const before = url.searchParams.get('before') ?? undefined
 	const isFirstPage = !before
+	// A stats failure must not down the whole page — same pattern as the home
+	// page's getPeers(fetch).catch(() => []).
+	const stats = await getHandleStats(fetch, params.handle).catch(() => null)
 	try {
 		// The reservation lookup is a converted-instance fact; asking before the
 		// river avoids rendering a page we are about to leave. 308 keeps the
@@ -29,11 +33,11 @@ export const load: PageServerLoad = async ({ fetch, params, url }) => {
 		const publisherId = await reservedPublisher(fetch, params.handle)
 		if (publisherId) throw redirect(308, `/p/${publisherId}`)
 		const { entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, author: params.handle })
-		return { handle: params.handle, timeline: enrichEntries(timeline), nextCursor, isFirstPage }
+		return { handle: params.handle, timeline: enrichEntries(timeline), nextCursor, isFirstPage, stats }
 	} catch (e) {
 		// A redirect is control flow, not a core failure — it must not be swallowed
 		// into the coreDown fallback below.
 		if (isRedirect(e)) throw e
-		return { handle: params.handle, timeline: [], nextCursor: null, isFirstPage, coreDown: true }
+		return { handle: params.handle, timeline: [], nextCursor: null, isFirstPage, coreDown: true, stats }
 	}
 }

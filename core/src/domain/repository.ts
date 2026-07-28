@@ -10,6 +10,7 @@ export interface Repository {
   getUserByAuthUserId(authUserId: string): Promise<User | undefined>
   setAuthUserId(userId: string, authUserId: string): Promise<void>
   countFollowers(userId: string): Promise<number>
+  countPostsByAuthor(authorId: string): Promise<number>
   getSetting(key: string): Promise<string | undefined>
   setSetting(key: string, value: string): Promise<void>
   deleteUserCascade(id: string): void

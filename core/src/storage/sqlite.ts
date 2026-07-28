@@ -254,6 +254,10 @@ export class SqliteRepository implements Repository, SourceRepository {
     const r = await this.db.selectFrom('follows').select(({ fn }) => fn.countAll().as('n')).where('followed_id', '=', userId).executeTakeFirst()
     return Number(r?.n ?? 0)
   }
+  async countPostsByAuthor(authorId: string) {
+    const r = await this.db.selectFrom('posts').select(({ fn }) => fn.countAll().as('n')).where('author_id', '=', authorId).executeTakeFirst()
+    return Number(r?.n ?? 0)
+  }
   async getSetting(key: string) {
     const r = await this.db.selectFrom('instance_settings').select('value').where('key', '=', key).executeTakeFirst()
     return r?.value
