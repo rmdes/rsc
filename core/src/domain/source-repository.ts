@@ -136,6 +136,12 @@ export interface SourceRepository {
   // (reapSourceIfOrphaned), store, commit.
   unsubscribe(input: { command: CommandEnvelope; ownerId: string; sourceId: string; now: string }): Promise<UnsubscribeResult>
 
+  // Task 2 (admin-governance-visibility): the operator override of
+  // reapSourceIfOrphaned's guard chain. force can lift the admin_retained and
+  // source_audit_v2 holds (and, only when explicit, the verified-origin
+  // evidence hold); it never lifts subscriber/governance/federation.
+  reapSource(input: { command: CommandEnvelope; sourceId: string; force: boolean; now: string }): Promise<ReapCommandResult>
+
   // Two more ledger-backed BEGIN IMMEDIATE transactions (Task 6). Each writes
   // exactly one audit row and one ledger row on success; a conflict writes
   // nothing at all, not even to the ledger.
@@ -229,25 +235,52 @@ export function checkCommand<T>(tx: Db, command: CommandEnvelope): LedgerCheck<T
 // structural tombstones, unreferenced publishers delete — then deletes the source
 // row. It writes NO block tombstone (cleanup is not a moderation action) and
 // appends ONE journal reset only when an ordinary item was actually affected.
-export function reapSourceIfOrphaned(tx: Db, sourceId: string, now: string = new Date().toISOString()): boolean {
+export type ReapResult = { kind: 'reaped' } | { kind: 'refused'; reason: 'has_subscribers' | 'not_allowed' | 'federated' | 'verified_origin_evidence' }
+// The command-layer outcome adds the two idempotency-ledger cases (source
+// not found, replayed command fingerprint mismatch) that only apply once
+// reapSource is wrapped behind checkCommand/storeCommand in sqlite.ts —
+// reapSource itself (the raw guard chain below) only ever returns ReapResult.
+export type ReapCommandResult = ReapResult | { kind: 'unknown' } | { kind: 'conflict' }
+
+// The full operator-reap command (Task 2, admin-governance-visibility): every
+// guard reapSourceIfOrphaned always enforced, PLUS an operator override for
+// the two guards auto-reap has no way to bypass (source_audit_v2 row,
+// admin_retained). governance/subscription/federation/verified-origin-evidence
+// stay always-enforced regardless of force -- force only lifts the audit/
+// admin_retained holds, and even verified-origin evidence requires force
+// explicitly (never silently).
+export function reapSource(tx: Db, sourceId: string, opts: { force: boolean }, now: string = new Date().toISOString()): ReapResult {
   const { n } = tx.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(sourceId) as { n: number }
-  if (n > 0) return false
-  const source = tx.prepare(`SELECT governance, admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { governance: SourceGovernance; admin_retained: 0 | 1 } | undefined
-  if (!source || source.governance !== 'allowed' || source.admin_retained !== 0) return false
-  if (tx.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId)) return false
-  if (tx.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
+  if (n > 0) return { kind: 'refused', reason: 'has_subscribers' }
+  const source = tx.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { governance: SourceGovernance } | undefined
+  if (!source || source.governance !== 'allowed') return { kind: 'refused', reason: 'not_allowed' }
+  if (tx.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId)) return { kind: 'refused', reason: 'federated' }
   // Verification-evidence retention guard (spec §2.4/§7): a source whose
   // deliveries are CURRENT verification evidence for any logical item — i.e. they
-  // back a verified_origin publisher claim — is never removed. Such sources carry
-  // no subscription, so this condition (not provenance) is the guard that keeps
-  // them; it replaces V1's deferred provenance='origin_verification' branch.
-  if (tx.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)) return false
+  // back a verified_origin publisher claim — is never removed UNLESS force is
+  // explicitly set (this is the one guard force CAN lift, but never silently).
+  const hasVerifiedOrigin = tx.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)
+  if (hasVerifiedOrigin && !opts.force) return { kind: 'refused', reason: 'verified_origin_evidence' }
+  // admin_retained and source_audit_v2 are the two guards force overrides;
+  // NOT checked at all here (auto-reap's version checks both and refuses).
   // Evidence-aware cleanup: remove the source's evidence under the shared step-4
   // rules and delete the source row. NO block tombstone; ONE reset iff an ordinary
   // item was affected (a zero-effect cleanup appends nothing).
   const { ordinaryAffected } = removeSourceEvidence(tx, { sourceId, now })
   if (ordinaryAffected) appendJournal(tx, { kind: 'reset', changeMask: 'barrier' }, now)
-  return true
+  return { kind: 'reaped' }
+}
+
+// Auto-reap (unsubscribe, account deletion): every guard enforced, force
+// never available. Byte-for-byte the same refusals reapSourceIfOrphaned
+// always had -- admin_retained and source_audit_v2 still block it here,
+// checked BEFORE calling the shared reapSource (which no longer knows about
+// either guard), since force needs a way to skip them.
+export function reapSourceIfOrphaned(tx: Db, sourceId: string, now: string = new Date().toISOString()): boolean {
+  const source = tx.prepare(`SELECT admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { admin_retained: 0 | 1 } | undefined
+  if (source?.admin_retained !== 0) return false
+  if (tx.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return false
+  return reapSource(tx, sourceId, { force: false }, now).kind === 'reaped'
 }
 
 export function storeCommand<T>(tx: Db, command: CommandEnvelope, result: T, now: string): void {

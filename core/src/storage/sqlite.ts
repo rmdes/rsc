@@ -6,8 +6,8 @@ import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscripti
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState, SourceGovernance, SourceOperation } from '../domain/types.ts'
-import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
-import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes, ReapCommandResult } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, reapSource as reapSourceFn, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
@@ -936,6 +936,28 @@ export class SqliteRepository implements Repository, SourceRepository {
       if (sub.state === 'active') journalPolicyReset(raw, input.now) // active removal changes Personal membership
       storeCommand(raw, input.command, result, input.now)
       return result
+    }).immediate()
+  }
+
+  // Task 2 (admin-governance-visibility): the operator override of
+  // reapSourceIfOrphaned. Same ledger-backed BEGIN IMMEDIATE shape as every
+  // other command here; the guard chain itself lives in reapSource (shared
+  // domain function) — this method only wraps it with the command ledger and
+  // the unknown-source 404 case.
+  async reapSource(input: { command: CommandEnvelope; sourceId: string; force: boolean; now: string }): Promise<ReapCommandResult> {
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<ReapCommandResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' as const }
+      if (!raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(input.sourceId)) {
+        const result = { kind: 'unknown' as const }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+      const outcome = reapSourceFn(raw, input.sourceId, { force: input.force }, input.now)
+      storeCommand(raw, input.command, outcome, input.now)
+      return outcome
     }).immediate()
   }
 

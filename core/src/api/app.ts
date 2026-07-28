@@ -8,10 +8,10 @@ import { mountLogicalRoutes, mountLogicalReadRoutes } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { buildFollowingOpml } from '../domain/opml.ts'
-import { decodeCursor, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import { decodeCursor, fingerprintRequest, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import type { Cursor, SourceRepository, SourceTransitionAction } from '../domain/source-repository.ts'
 import type { SourceService } from '../domain/source-service.ts'
-import type { AttributionMode, AuditCategory, User } from '../domain/types.ts'
+import type { AttributionMode, AuditCategory, CommandEnvelope, User } from '../domain/types.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import type { Service } from '../domain/service.ts'
 import type { EventBus } from '../domain/bus.ts'
@@ -317,6 +317,27 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const args = pageArgs(c)
     if (args instanceof Response) return args
     return c.json(await v2repo.listSourceAudit(c.req.param('id') ?? '', args.cursor, args.limit))
+  })
+
+  // Task 2 (admin-governance-visibility): the operator override of
+  // reapSourceIfOrphaned's guard chain. Registered here, BEFORE the
+  // /admin/sources/:id/:action catch-all below, mirroring the existing
+  // mountLogicalRoutes /refresh and /purge precedent — otherwise :action='reap'
+  // would be swallowed as an invalid transition.
+  app.post('/admin/sources/:id/reap', jsonWrite, async (c) => {
+    const id = c.req.param('id') ?? ''
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { commandId, force } = body
+    if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+    if (force !== undefined && typeof force !== 'boolean') return c.json({ error: 'force invalid' }, 400)
+    const actorId = c.get('coreUser').id
+    const command: CommandEnvelope = { actorScope: 'administrator', actorId, commandId, requestFingerprint: fingerprintRequest(['reap', id]) }
+    const result = await v2repo.reapSource({ command, sourceId: id, force: force === true, now: new Date().toISOString() })
+    if (result.kind === 'reaped') return c.json(result, 200)
+    if (result.kind === 'unknown') return c.json({ error: 'unknown source' }, 404)
+    if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
+    return c.json({ error: result.reason }, 409)
   })
 
   // Task 5 (instance-governed-members): same empty-not-404 posture as the two
