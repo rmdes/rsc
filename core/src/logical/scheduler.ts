@@ -99,9 +99,11 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
     const due = store.listDueSources({ now: nowStr, pollSeconds: config.pollSeconds, pushPollFactor: PUSH_POLL_FACTOR, limit: batchSize })
       .filter((s) => !acquisition.inFlight(s.id))
     // ponytail: a lane that finds nothing startable (every remaining item is
-    // host-capped) exits without waiting for a host slot to free — the
-    // overflow is still the most-overdue set and is first in line again next
-    // tick, rather than this tick blocking to squeeze it in.
+    // host-capped) doesn't defer — another lane is still in flight holding that
+    // host's count and will free it, and this lane loops right back to pick the
+    // item up within the SAME pollDue call. A host-heavy batch just makes one
+    // tick's pass take longer (harmless — busy prevents overlapping passes),
+    // not "wait for next tick."
     const queue = due.map((s) => ({ id: s.id, host: hostOf(s.canonicalUrl) }))
     const hostCounts = new Map<string, number>()
     let polled = 0
@@ -119,6 +121,15 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
             polled++
             if (SUCCESS_OUTCOMES.has(run.outcome) && deps.push) await deps.push.maybeRegister(item.id, deps.push.latestClaim(item.id))
           }
+        } catch (err) {
+          // One bad source must not corrupt the whole batch: without this catch,
+          // the throw propagates out of lane() and rejects the Promise.all below,
+          // but the OTHER lanes are not cancelled — they keep looping over the
+          // shared queue even after tick() has already caught the rejection and
+          // moved on, orphaning them (busy no longer covers them, stop() can't
+          // halt them, and this pass's polled count / trailing renewDue+purge
+          // never happen).
+          console.error('poll: source failed:', item.id, err instanceof Error ? err.message : err)
         } finally {
           hostCounts.set(item.host, (hostCounts.get(item.host) ?? 1) - 1)
         }

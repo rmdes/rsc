@@ -479,3 +479,36 @@ test('RSC_INGEST_MAX_PER_HOST caps simultaneous fetches to the same remote host'
   expect(maxConcurrentOnSharedHost).toBe(1) // never more than RSC_INGEST_MAX_PER_HOST on shared.test at once
   raw.close()
 })
+
+// --- a throwing acquisition must not orphan the lane (review finding 1) -----
+// Without a catch around acquireSource/recordHealth/maybeRegister, a throw
+// propagates out of lane() and rejects pollDue's Promise.all — but the OTHER
+// lanes keep running (looping over the shared queue) after tick() has already
+// caught the rejection and moved on. One bad source must not corrupt the pass.
+
+test('an acquireSource throw does not orphan the lane — pollDue resolves and the other source is still processed', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  await seedSubscribed(raw, repo, 's2')
+  const order: string[] = []
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const engine: AcquisitionEngine = {
+    async acquireSource(sourceId: string) {
+      order.push(sourceId)
+      if (sourceId === 's1') throw new Error('boom')
+      return { runId: `run-${sourceId}`, sourceId, status: 'terminal', outcome: 'parsed' }
+    },
+    inFlight: () => false,
+  }
+  // Single lane so s1 and s2 are necessarily processed by the same lane loop,
+  // sequentially — the orphan bug shows up as s2 never being attempted.
+  const CONFIG1 = { pollSeconds: 60, ingestCycleMinutes: 1, ingestConcurrency: 1, ingestMaxPerHost: 8 }
+  const sched = createScheduler({ store, acquisition: engine, config: CONFIG1, drainVerification: undefined, push: undefined, breather: undefined })
+
+  await expect(sched.pollDue(NOW)).resolves.toBe(1) // s1 threw (uncounted), s2 succeeded
+  expect(order).toEqual(['s1', 's2']) // s2 still attempted despite s1's throw
+  const h = raw.prepare(`SELECT last_success_at FROM source_health_v2 WHERE source_id = 's2'`).get() as { last_success_at: string } | undefined
+  expect(h?.last_success_at).toBe(NOW)
+  spy.mockRestore()
+  raw.close()
+})
