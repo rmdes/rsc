@@ -295,8 +295,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const args = pageArgs(c)
     if (args instanceof Response) return args
     const filter = c.req.query('filter')
-    if (filter !== undefined && filter !== 'governance') return c.json({ error: 'filter invalid' }, 400)
-    return c.json(await v2repo.listSourceSummaries(args.cursor, args.limit, filter))
+    if (filter !== undefined && filter !== 'governance' && filter !== 'orphan') return c.json({ error: 'filter invalid' }, 400)
+    const q = c.req.query('q')
+    if (q !== undefined && q.length > 256) return c.json({ error: 'q invalid' }, 400)
+    return c.json(await v2repo.listSourceSummaries(args.cursor, args.limit, filter as 'governance' | 'orphan' | undefined, q))
   })
 
   app.get('/admin/sources/:id', async (c) => {

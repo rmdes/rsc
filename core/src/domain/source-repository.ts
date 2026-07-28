@@ -94,7 +94,7 @@ export const CATEGORY_OPTIONAL_ACTIONS: ReadonlySet<SourceTransitionAction> = ne
 
 export interface SourceRepository {
   getSource(id: string): Promise<RemoteSource | undefined>
-  listSourceSummaries(cursor: Cursor | undefined, limit: number, filter?: 'governance'): Promise<Page<SourceSummary>>
+  listSourceSummaries(cursor: Cursor | undefined, limit: number, filter?: 'governance' | 'orphan', q?: string): Promise<Page<SourceSummary>>
   // The "Connected instances" widget's read (bug fix, 2026-07): approved
   // federation instances, not legacy markdown-post authorship — the retired
   // listTextcastingPeers, which this now wholly supersedes.

@@ -161,6 +161,8 @@ export interface SourceSummary {
   // V1-deferred, first written here. Null throughout while the v2 push tables
   // are empty; the lease itself lands in V4 Task 2/3.
   push: PushSummary
+  retention: 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' | null
+  addedBy: { handle: string; displayName: string }[]
 }
 export interface PushSummary {
   mode: PushProtocol | null
