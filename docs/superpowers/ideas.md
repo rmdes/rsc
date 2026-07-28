@@ -2140,3 +2140,59 @@ server-side, never let the layout and a page both emit the same `og:`
 property. Image *hosting* durability is the one soft edge — an admin-pasted
 external URL can go stale or disappear with no local copy, which is exactly
 the gap [[Paste an image into the composer]] would close later if picked up.
+
+---
+
+## Observation-version churn has no cap or circuit-breaker — the 2026-07-25 incident's mechanism, not the incident itself
+
+**Status:** ⭐ candidate — 2026-07-28, backlog companion to the
+`2026-07-25-admin-governance-visibility-design.md` rev 2 fold (that spec's
+own review flagged this as more urgent than either spec it touched, and the
+maintainer's call on task-now-vs-backlog is still open).
+
+**What happened:** one per-user Gutenberg feed on `rsc.rmendes.net` churned
+763k `observation_versions_v2` rows / 2.6GB before anyone noticed (found via
+an ad hoc DB size check, not any built-in signal). Hand-purged via the app's
+own tested `purgeSource` path (block → cascade → tombstone), DB dropped
+2.6GB → 423MB. Root cause: an identity-key collision on that particular feed
+(each poll's items kept re-registering as "new" observation versions instead
+of converging onto the same delivery) combined with no per-delivery version
+cap and no automatic signal that a source's version count was growing
+abnormally.
+
+**Why this is a backlog entry, not a fix here:** the mechanism is armed on
+every instance against every feed — any future feed with a similar
+identity-key collision (or any misbehaving origin server that changes
+content on every fetch) can reproduce this on any of the 4 live instances,
+with no guard rail today.
+
+**Candidate mechanisms (not yet chosen):**
+- A per-delivery `observation_versions_v2` retention cap — once a delivery's
+  version count crosses N, either prune the oldest versions past what
+  presentation/audit actually needs, or stop accepting new ones and surface
+  it as a finding.
+- An `acquisition_findings_v2` "churn" finding + auto-pause: when a single
+  source's version-creation rate crosses a threshold within a window, record
+  a finding and flip the source's `operation` to paused, surfacing it in the
+  admin governance UI rather than letting it run unbounded.
+
+**Promotion trigger:** any single source's `observation_versions_v2` row
+count crosses a concrete threshold (e.g. 10k) without a corresponding cap —
+that's the signal this stops being theoretical. Given it already happened
+once for real, at 763k, the trigger may already be satisfied; this is
+recorded as backlog rather than actioned immediately because the maintainer
+has not yet made that call.
+
+**Grounding:** `core/src/logical/acquisition.ts` (observation-version
+creation path), `core/src/logical/tombstones.ts` (`removeSourceEvidence`,
+the existing purge cascade used to hand-fix this incident), per-instance
+operational memory recording the 2026-07-25 purge
+(2.6GB → 423MB on `rsc.rmendes.net`).
+
+**Tradeoff:** a retention cap risks losing presentation history a moderator
+might want; an auto-pause risks silently stopping a legitimate high-volume
+feed (a very active news wire, say) rather than a misbehaving one — the
+right mechanism needs to distinguish "this source posts a lot" from "this
+source's delivery keys are colliding and re-registering the same content."
+Not solved here; flagged as the open design question whoever picks this up
+needs to answer first.
