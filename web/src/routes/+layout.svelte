@@ -3,6 +3,7 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import type { LayoutData } from './$types';
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
+	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import { TABS } from '$lib/tabs'
 	import { page } from '$app/state'
 
@@ -38,14 +39,60 @@
 	{/if}
 </div>
 
-<nav class="nav" aria-label="Timeline">
-	<a class="nav-brand" href="/">RSC</a>
-	{#each TABS as t (t)}
-		<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
-	{/each}
-	<a class="spacer" href="/users/rss.xml" target="_blank" rel="noreferrer">Firehose</a>
-	<ThemeToggle />
-</nav>
+<details class="nav-menu">
+	<nav class="nav" aria-label="Timeline">
+		<a class="nav-brand" href="/">RSC</a>
+		{#each TABS as t (t)}
+			<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
+		{/each}
+		{#if page.url.pathname === '/'}<a class="spacer btn btn-primary" href="#compose">New post</a>{/if}
+		<summary class="nav-menu-toggle">Menu</summary>
+	</nav>
+
+	<div class="nav-menu-panel">
+		<div class="nav-menu-group nav-menu-rivers">
+			<h6>Rivers</h6>
+			{#each TABS as t (t)}
+				<a href="/?tab={t}" aria-current={data.tab === t ? 'page' : undefined}>
+					{t}<span class="n">{data.tab === t ? 'here' : ''}</span>
+				</a>
+			{/each}
+		</div>
+
+		{#if page.url.pathname === '/' && data.me && !data.me.isAnonymous}
+			<div class="nav-menu-group" id="compose">
+				<h6>New post</h6>
+				<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" />
+			</div>
+			<div class="nav-menu-group">
+				<h6>Subscribe to a feed</h6>
+				<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
+					<label class="visually-hidden" for="menu-sub-url">Feed URL</label>
+					<input id="menu-sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
+					<input type="hidden" name="commandId" value={data.subscribeCommandId} />
+					<button>Subscribe</button>
+				</form>
+			</div>
+		{/if}
+
+		<div class="nav-menu-group">
+			<h6>Signed in</h6>
+			{#if data.me}
+				<div class="nav-menu-identity">{data.me.user.displayName}</div>
+				<div class="nav-menu-list">
+					<a href="/u/{data.me.user.handle}">Your lens</a>
+					<a href="/settings">Settings</a>
+					{#if data.me.isAdmin}<a href="/admin">Admin</a>{/if}
+					{#if !data.me.isAnonymous}<a class="destructive" href="/login?/logout">Log out</a>{/if}
+				</div>
+			{:else}
+				<p class="auth-note"><a href="/login">Log in</a> · <a href="/register">Register</a></p>
+			{/if}
+		</div>
+
+		<div class="nav-menu-group"><ThemeToggle variant="segmented" /></div>
+	</div>
+</details>
 
 {@render children()}
 
