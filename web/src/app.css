@@ -724,7 +724,7 @@ textarea {
 
 /* Labels are FLUSH LEFT, including inside a button wider than its label. This
    is the rule most likely to look wrong if skipped. */
-button {
+.btn, button {
 	display: inline-flex;
 	align-items: center;
 	justify-content: flex-start;
@@ -742,15 +742,15 @@ button {
 	transition: background-color 200ms ease;
 }
 
-button:hover {
+.btn:hover, button:hover {
 	background: var(--color-accent-hover);
 }
 
-button:active {
+.btn:active, button:active {
 	background: var(--color-accent-hover);
 }
 
-button:disabled {
+.btn:disabled, button:disabled {
 	opacity: 0.45;
 	cursor: not-allowed;
 }
