@@ -5,13 +5,14 @@ import type { Repository } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscription, PushProtocol, FeedType } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
-import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState } from '../domain/types.ts'
+import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState, SourceGovernance, SourceOperation } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
 import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import { memberRows } from '../logical/membership.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
 // These source-command methods run whenever the source-control plane is wired
@@ -37,6 +38,31 @@ function advancePolicyGeneration(raw: Database.Database, sourceId: string, now: 
   const r = raw.prepare(`UPDATE remote_sources_v2 SET policy_generation = policy_generation + 1 WHERE id = ? RETURNING policy_generation`).get(sourceId) as { policy_generation: number }
   scheduleFanout(raw, { sourceId, generation: r.policy_generation, now })
   return r.policy_generation
+}
+
+// The instance-governed-members cascade (spec 2026-07-25 rev 3): re-run the
+// instance's ACTION through SOURCE_TRANSITIONS against each member's own axes
+// (action, not value — value→cell has no legal unblock mapping). Members have
+// no federation axis. Ordinary actions skip overridden members; block/unblock
+// hit ALL (absolute both directions). Returns members MOVED.
+function cascadeInstanceAction(raw: Database.Database, instance: { id: string; canonical_url: string }, action: SourceTransitionAction | 'establish', now: string): number {
+  const effective = action === 'establish' || action === 'approve' ? 'allow' : action
+  if (effective !== 'allow' && effective !== 'quarantine' && effective !== 'block' && effective !== 'unblock') return 0
+  const absolute = effective === 'block' || effective === 'unblock'
+  let moved = 0
+  for (const m of memberRows(raw, instance)) {
+    if (!absolute && m.overridden === 1) continue
+    const patch = SOURCE_TRANSITIONS[effective]({ operation: m.operation as SourceOperation, governance: m.governance as SourceGovernance, federation: 'none' })
+    if (!patch || patch.governance === undefined || patch.governance === m.governance) continue
+    raw.prepare(`UPDATE remote_sources_v2 SET governance = ? WHERE id = ?`).run(patch.governance, m.id)
+    if (patch.governance === 'allowed') {
+      const row = raw.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(m.id) as RemoteSourceV2Row
+      activatePendingSubscriptions(raw, row)
+    }
+    advancePolicyGeneration(raw, m.id, now) // members do NOT append their own reset
+    moved++
+  }
+  return moved
 }
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
@@ -888,6 +914,8 @@ export class SqliteRepository implements Repository, SourceRepository {
       const result: EstablishFederationResult = { kind: 'established', source, federation }
       advancePolicyGeneration(raw, row.id, input.now) // federation is a source-policy change
       journalPolicyReset(raw, input.now)
+      const moved = cascadeInstanceAction(raw, { id: row.id, canonical_url: row.canonical_url }, 'establish', input.now)
+      if (moved > 0) insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: 'system', action: 'instance_cascade', category: input.category, note: null, result: { moved }, now: input.now })
       insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: input.actorKind, action: 'establish_federation', category: input.category, note: input.note, result, now: input.now })
       storeCommand(raw, input.command, result, input.now)
       return result
@@ -926,6 +954,11 @@ export class SqliteRepository implements Repository, SourceRepository {
       if (operation !== row.operation || governance !== row.governance || attributionMode !== row.attribution_mode) {
         raw.prepare(`UPDATE remote_sources_v2 SET operation = ?, governance = ?, attribution_mode = ? WHERE id = ?`).run(operation, governance, attributionMode, row.id)
       }
+      // A direct administrator GOVERNANCE change on a member is a sticky
+      // override; pause/resume/set_attribution_mode are not judgments.
+      if (input.actorKind === 'administrator' && governance !== row.governance && row.provenance === 'origin_verification') {
+        raw.prepare(`UPDATE remote_sources_v2 SET overridden = 1 WHERE id = ?`).run(row.id)
+      }
       if (patch.federation === 'none') raw.prepare(`DELETE FROM federation_relationships_v2 WHERE source_id = ?`).run(row.id)
       else if (patch.federation) raw.prepare(`UPDATE federation_relationships_v2 SET status = ?, updated_at = ? WHERE source_id = ?`).run(patch.federation, input.now, row.id)
 
@@ -945,6 +978,17 @@ export class SqliteRepository implements Repository, SourceRepository {
       if (governance !== row.governance || patch.federation !== undefined || attributionMode !== row.attribution_mode) {
         advancePolicyGeneration(raw, row.id, input.now)
         journalPolicyReset(raw, input.now)
+      }
+
+      // The instance-governed-members cascade (spec 2026-07-25 rev 3): an
+      // instance's governance transition, or its federation being newly
+      // approved, re-runs the same action against every member underneath it.
+      if (governance !== row.governance || input.action === 'approve') {
+        const fedNow = patch.federation === 'approved' || (fed?.status === 'approved' && patch.federation === undefined)
+        if (fedNow) {
+          const moved = cascadeInstanceAction(raw, { id: row.id, canonical_url: row.canonical_url }, input.action, input.now)
+          if (moved > 0) insertAudit(raw, { sourceId: row.id, command: input.command, actorKind: 'system', action: 'instance_cascade', category: input.category, note: null, result: { moved }, now: input.now })
+        }
       }
 
       const source = rowToRemoteSourceV2(updated)
