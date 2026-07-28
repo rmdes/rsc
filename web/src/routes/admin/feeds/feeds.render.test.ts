@@ -335,30 +335,55 @@ test('the orphan group paginates independently: its next link carries orphanCurs
 	expect(ordinaryLink).not.toContain('orphanCursor=')
 })
 
-test('a verified_origin refusal on the plain reap form surfaces the force-confirm form for THAT row only, with a DISTINCT freshly-minted commandId', () => {
-	const data = orphanData({
-		orphanRows: [
-			orphanRow({ id: 'orph1', url: 'https://orph1.test/feed.xml', retention: 'verified_origin' }),
-			orphanRow({ id: 'orph2', url: 'https://orph2.test/feed.xml', retention: 'reapable' })
-		]
+// The three refusal reasons core's reapSource will actually lift for
+// force:true (admin_retained/audit_history/verified_origin_evidence — the
+// operator-reap feature's whole point per the spec's motivation). Same
+// fixture/assertion shape for all three, plus a reason-specific consequence
+// copy check so the three forms are never accidentally rendered with the
+// same generic sentence.
+const REASON_COPY_NEEDLE: Record<string, string> = {
+	verified_origin_evidence: 'verified-origin evidence',
+	admin_retained: 'marked retained by an admin',
+	audit_history: 'audit history'
+}
+for (const reason of ['verified_origin_evidence', 'admin_retained', 'audit_history']) {
+	test(`a ${reason} refusal on the plain reap form surfaces the force-confirm form for THAT row only, with a DISTINCT freshly-minted commandId and reason-specific copy`, () => {
+		const data = orphanData({
+			orphanRows: [
+				orphanRow({ id: 'orph1', url: 'https://orph1.test/feed.xml', retention: 'verified_origin' }),
+				orphanRow({ id: 'orph2', url: 'https://orph2.test/feed.xml', retention: 'reapable' })
+			]
+		})
+		const form = { error: reason, sourceId: 'orph1', commandId: 'orph-cmd-1', force: false }
+		const { body } = render(Page, { props: { data, form } } as never)
+
+		// orph1's force-confirm form is present, carrying force=true and a DIFFERENT
+		// commandId than the one that just got refused (row.forceCommandId, never
+		// 'orph-cmd-1' again — replaying that id would just replay the ledgered refusal).
+		// The plain form (still present, for a legitimate network-blip retry) keeps
+		// echoing its OWN original id — that's expected, so the scope below is
+		// narrowed to just the force-confirm <form>, not the whole row.
+		const orph1Chunk = body.slice(body.indexOf('https://orph1.test'), body.indexOf('https://orph2.test'))
+		expect(orph1Chunk).toContain('name="commandId" value="orph-cmd-1"') // the plain form's own retry id, unchanged
+		const forceFormChunk = orph1Chunk.slice(orph1Chunk.indexOf('name="force"'))
+		expect(forceFormChunk).toContain('name="force" value="true"')
+		expect(forceFormChunk).toContain('name="commandId" value="orph-force-cmd-1"')
+		expect(forceFormChunk).not.toContain('name="commandId" value="orph-cmd-1"')
+		// The consequence copy is THIS reason's own sentence, not one of the other two's.
+		expect(forceFormChunk).toContain(REASON_COPY_NEEDLE[reason])
+		for (const [otherReason, needle] of Object.entries(REASON_COPY_NEEDLE)) {
+			if (otherReason !== reason) expect(forceFormChunk).not.toContain(needle)
+		}
+
+		// orph2 never failed — it gets no force-confirm form at all.
+		const orph2Chunk = body.slice(body.indexOf('https://orph2.test'))
+		expect(orph2Chunk).not.toContain('name="force" value="true"')
 	})
-	const form = { error: 'verified_origin_evidence', sourceId: 'orph1', commandId: 'orph-cmd-1', force: false }
+}
+
+test('a refusal reason core never force-lifts (e.g. has_subscribers) shows the plain error banner but NO force-confirm form', () => {
+	const data = orphanData()
+	const form = { error: 'has_subscribers', sourceId: 'orph1', commandId: 'orph-cmd-1', force: false }
 	const { body } = render(Page, { props: { data, form } } as never)
-
-	// orph1's force-confirm form is present, carrying force=true and a DIFFERENT
-	// commandId than the one that just got refused (row.forceCommandId, never
-	// 'orph-cmd-1' again — replaying that id would just replay the ledgered refusal).
-	// The plain form (still present, for a legitimate network-blip retry) keeps
-	// echoing its OWN original id — that's expected, so the scope below is
-	// narrowed to just the force-confirm <form>, not the whole row.
-	const orph1Chunk = body.slice(body.indexOf('https://orph1.test'), body.indexOf('https://orph2.test'))
-	expect(orph1Chunk).toContain('name="commandId" value="orph-cmd-1"') // the plain form's own retry id, unchanged
-	const forceFormChunk = orph1Chunk.slice(orph1Chunk.indexOf('name="force"'))
-	expect(forceFormChunk).toContain('name="force" value="true"')
-	expect(forceFormChunk).toContain('name="commandId" value="orph-force-cmd-1"')
-	expect(forceFormChunk).not.toContain('name="commandId" value="orph-cmd-1"')
-
-	// orph2 never failed — it gets no force-confirm form at all.
-	const orph2Chunk = body.slice(body.indexOf('https://orph2.test'))
-	expect(orph2Chunk).not.toContain('name="force" value="true"')
+	expect(body).not.toContain('name="force" value="true"')
 })

@@ -522,17 +522,23 @@ test('a plain (no-force) reap posts {commandId} with no force key, and succeeds 
 	expect(JSON.parse(String(init.body))).toEqual({ commandId: 'cmd-1' })
 })
 
-test("a verified_origin refusal on the plain reap 409s and echoes sourceId/commandId/force:false so the page can offer the SEPARATE force-confirm form", async () => {
-	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: 'verified_origin_evidence' }), { status: 409 }))
-	const res = await actions.reap(formEvent('reap', { sourceId: 's1', commandId: 'cmd-1' }, fetch) as never)
-	expect(res).toMatchObject({ status: 400 })
-	expect((res as { data: { error: string; sourceId: string; commandId: string; force: boolean } }).data).toEqual({
-		error: 'verified_origin_evidence',
-		sourceId: 's1',
-		commandId: 'cmd-1',
-		force: false
+// The three reasons core's reapSource will actually lift when force:true is
+// sent (see source-repository.ts's `!opts.force &&` guards) — the operator-
+// reap feature's whole point. Same fixture/assertion shape for all three:
+// the action is reason-agnostic, it just echoes whatever core said verbatim.
+for (const reason of ['verified_origin_evidence', 'admin_retained', 'audit_history']) {
+	test(`a ${reason} refusal on the plain reap 409s and echoes sourceId/commandId/force:false so the page can offer the SEPARATE force-confirm form`, async () => {
+		const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: reason }), { status: 409 }))
+		const res = await actions.reap(formEvent('reap', { sourceId: 's1', commandId: 'cmd-1' }, fetch) as never)
+		expect(res).toMatchObject({ status: 400 })
+		expect((res as { data: { error: string; sourceId: string; commandId: string; force: boolean } }).data).toEqual({
+			error: reason,
+			sourceId: 's1',
+			commandId: 'cmd-1',
+			force: false
+		})
 	})
-})
+}
 
 test('the confirm-with-force reap posts {commandId, force: true} with a DIFFERENT commandId than the refused attempt, and succeeds', async () => {
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 }))

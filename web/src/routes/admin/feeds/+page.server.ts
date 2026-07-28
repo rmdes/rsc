@@ -357,12 +357,13 @@ export const actions: Actions = {
 	},
 	// Task 2's operator-override reap. `force` is read as a plain 'true' string
 	// (a hidden input, never a checkbox) so a no-JS confirm form can carry it.
-	// The two-step verified_origin confirm lives entirely in the .svelte: this
-	// action is agnostic to WHICH refusal reason came back — it echoes
-	// sourceId/commandId/force so the page can decide whether to show a plain
-	// retry or the separate force-confirm form (gated on `error ===
-	// 'verified_origin_evidence' && !force`). commandId is never minted here,
-	// same reasoning as every other action on this page.
+	// The two-step confirm (covering all three force-liftable reasons —
+	// verified_origin_evidence, admin_retained, audit_history) lives entirely
+	// in the .svelte: this action is agnostic to WHICH refusal reason came
+	// back — it echoes sourceId/commandId/force verbatim so the page can
+	// decide whether to show a plain retry or the separate force-confirm
+	// form. commandId is never minted here, same reasoning as every other
+	// action on this page.
 	reap: async (event) => {
 		const form = await event.request.formData()
 		const sourceId = String(form.get('sourceId') ?? '').trim()
