@@ -127,7 +127,11 @@ const toRow = (s: SourceSummary, isMember: boolean) => ({
 	operation: s.source.operation,
 	attributionMode: s.source.attributionMode,
 	federationStatus: s.federationStatus,
-	overridden: s.source.overridden,
+	// The bit is meaningful only for a currently-governed member (it protects
+	// FROM a covering instance's cascades) — every pre-existing row defaults
+	// to overridden=1 at the schema level (migration 19), which is noise for
+	// anything that was never a cascade candidate in the first place.
+	overridden: isMember && s.source.overridden,
 	isInstanceMember: isMember,
 	viaVerification: s.source.provenance === 'origin_verification',
 	memberCounts: undefined as { members: number; overridden: number; instanceGoverned: number } | undefined,

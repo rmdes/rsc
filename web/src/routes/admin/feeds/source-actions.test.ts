@@ -410,6 +410,24 @@ test('a verification-minted row whose host has no approved instance stays in use
 	expect(row?.isInstanceMember).toBe(false)
 })
 
+// The `overridden` bit defaults to 1 at the schema level for every pre-existing
+// row (migration 19) — it's noise unless the row is actually a governed member.
+test('overridden is suppressed for a non-member row even when the raw source carries overridden=true', async () => {
+	const independentInstance = govSummary('inst1', 'https://inst-a.test/feed.xml', 'user_subscription', 'approved', true)
+	const soloVerification = govSummary('solo1', 'https://standalone.test/origin/a.xml', 'origin_verification', 'none', true)
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/members/counts')) return new Response(JSON.stringify({ members: 0, overridden: 0 }), { status: 200 })
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [independentInstance], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [soloVerification], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch)
+	const instRow = result.groups?.find((g) => g.key === 'federation')?.rows.find((r) => r.id === 'inst1')
+	const soloRow = result.groups?.find((g) => g.key === 'user')?.rows.find((r) => r.id === 'solo1')
+	expect(instRow?.overridden).toBe(false)
+	expect(soloRow?.overridden).toBe(false)
+})
+
 test('a core outage still throws to the error page — never an empty admin list', async () => {
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response('gateway down', { status: 502 }))
 	await expect(loadAdminWith(fetch)).rejects.toThrow()
