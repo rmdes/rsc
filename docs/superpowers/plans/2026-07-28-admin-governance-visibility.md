@@ -25,6 +25,7 @@ Hono, SvelteKit 5 (web), vitest.
 
 ## Global Constraints
 
+- **Sequencing with `docs/superpowers/plans/2026-07-25-instance-governed-members.md`.** That plan should land FIRST, in full (all 6 tasks) — it's the more foundational layer (defines the `overridden`/membership model) and is already through two review passes. Once it has landed, its Task 5 will have added `listSourceMembers()` to `SqliteRepository`, which builds its own `SourceSummary` object literals independently of this plan's Task 1. Task 1 Step 4 below includes a step to find and patch that method too — don't skip it just because it isn't mentioned elsewhere in this plan. If instance-governed-members has NOT landed yet when this plan executes, skip that step (there's nothing to patch) but re-check for it before merging this plan's Task 1, since a `tsc --noEmit` clean run at patch-time is not proof no such method exists on a later `main`.
 - **Container-only test commands.** `docker compose exec -T core npm run -w core test -- <files>` / `docker compose exec -T core npm run -w core typecheck` for core. `docker compose exec -T web env -u CORE_API_URL npm test -w web -- <files>` / `docker compose exec -T web npm run -w web check` for web. Never bare `vitest`/`npx vitest` — the container's default CWD is `/app` (repo root), which silently drops web's `$lib`/`$env` aliases and produces a misleading "Cannot find module" error (a documented gotcha, `docs/superpowers/documentation/TESTING.md`).
 - **Baseline (re-verify before Task 1):** core suite green, `tsc --noEmit` 0 errors; web suite green, `svelte-check` 0/0. This plan was written against a specific point in time — re-verify counts fresh.
 - **Never `git add -A`** — shared checkout; a parallel session may commit to `main` concurrently. Stage explicit paths.
@@ -203,10 +204,10 @@ app.get('/admin/sources', async (c) => {
 })
 ```
 
-- [ ] **Step 8: Typecheck**
+- [ ] **Step 8: Typecheck, and patch any other `SourceSummary`-building site**
 
 Run: `docker compose exec -T core npm run -w core typecheck`
-Expected: 0 errors.
+Expected: 0 errors. If this fails on a method other than `listSourceSummaries` (most likely `listSourceMembers`, added by the instance-governed-members plan's Task 5 if it has landed) with a "missing properties `retention`, `addedBy`" error, that method builds a `SourceSummary` literal of its own — patch it the same way, calling the same two helpers: `retention: this.retentionFor(source.id)` (this helper computes a real answer for any source, not only orphans — safe to call unconditionally, unlike Step 3's guarded `isOrphan ? ... : null` which is specific to `listSourceSummaries`'s own orphan-vs-ordinary distinction) and `addedBy: this.addedByFor(source.id)`. Don't guess the exact call site — `grep -n "SourceSummary\[\]\|: SourceSummary =" core/src/storage/sqlite.ts` and fix every hit tsc flags.
 
 - [ ] **Step 9: Fix the frozen-shape test in `core/test/source-reads.test.ts`**
 
