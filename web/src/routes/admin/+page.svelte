@@ -2,6 +2,15 @@
 	import type { PageData } from './$types'
 
 	let { data }: { data: PageData } = $props()
+
+	// Raw seconds in, a human duration out. Local to this page — it's a
+	// one-off readout, not a shared utility.
+	function formatDuration(seconds: number): string {
+		if (seconds < 90) return `${Math.round(seconds)}s`
+		const minutes = seconds / 60
+		if (minutes < 90) return `${Math.round(minutes)}m`
+		return `${Math.round(minutes / 60)}h`
+	}
 </script>
 
 <svelte:head><title>Admin — RSC</title></svelte:head>
@@ -26,6 +35,28 @@
 		<dd>{data.overview.counts.posts}</dd>
 	</div>
 </dl>
+
+<section aria-labelledby="admin-scheduler-heading">
+	<h3 id="admin-scheduler-heading">Poll scheduler</h3>
+	<dl class="stat-grid">
+		<div class="stat-card">
+			<dt>Schedulable sources</dt>
+			<dd>{data.overview.scheduler.catalogSize}</dd>
+		</div>
+		<div class="stat-card">
+			<dt>Most overdue</dt>
+			<dd>{data.overview.scheduler.mostOverdueSeconds === null ? 'never polled' : formatDuration(data.overview.scheduler.mostOverdueSeconds)}</dd>
+		</div>
+		<div class="stat-card">
+			<dt>Attempted last window</dt>
+			<dd>{data.overview.scheduler.attemptedLastWindow}</dd>
+		</div>
+		<div class="stat-card">
+			<dt>Window span</dt>
+			<dd>{data.overview.scheduler.windowSpanSeconds === null ? 'no data yet' : formatDuration(data.overview.scheduler.windowSpanSeconds)}</dd>
+		</div>
+	</dl>
+</section>
 
 <section aria-labelledby="admin-federation-heading">
 	<h3 id="admin-federation-heading">Federation</h3>
