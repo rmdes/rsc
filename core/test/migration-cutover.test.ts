@@ -359,7 +359,7 @@ test('the first post-cutover renewal happens on the ORDINARY poll-pass sweep', a
   }) as unknown as typeof fetch
   const acquisition = { acquireSource: async () => ({ kind: 'unavailable' as const, reason: 'unscheduled' }), inFlight: () => false }
   const push = createLogicalPush({ db, store, config: loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test' }), acquisition, fetchFn, lookupFn: publicLookup })
-  const scheduler = createScheduler({ store, acquisition, config: { pollSeconds: 9999 }, now: () => NOW, drainVerification: undefined, push, breather: undefined })
+  const scheduler = createScheduler({ store, acquisition, config: { pollSeconds: 9999, ingestCycleMinutes: 1, ingestConcurrency: 8, ingestMaxPerHost: 8 }, now: () => NOW, drainVerification: undefined, push, breather: undefined })
 
   await scheduler.pollDue(NOW) // no separate renewal timer exists — this IS the sweep
 

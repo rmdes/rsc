@@ -50,7 +50,7 @@ function stubEngine(opts: { order?: string[]; outcomeFor?: (id: string) => Admin
   }
 }
 
-const CONFIG = { pollSeconds: 60 }
+const CONFIG = { pollSeconds: 60, ingestCycleMinutes: 1, ingestConcurrency: 8, ingestMaxPerHost: 8 }
 
 // --- store: listDueSources / countSchedulableSources (spec 2026-07-28) -------
 // Staleness-ordered, LIMIT-bounded due-query + a cheap catalog-size count — the
@@ -111,7 +111,7 @@ test('listDueSources: LIMIT bounds the result to the most-overdue N', async () =
   raw.close()
 })
 
-test('one pass polls every schedulable source once, in stable sourceId order', async () => {
+test('one pass polls every schedulable source once — staleness order ties on id when all are equally never-polled', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 'c')
   await seedSubscribed(raw, repo, 'a')
@@ -324,8 +324,12 @@ test('a failed poll registers nothing, and the sweep still ends the pass', async
 test('an active push lease reduces the cadence to 10 × the base interval — durable, no tick state', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok-1', NULL, 'active', ?, ?)`,
+  ).run(at(100000), NOW) // expires far beyond every timestamp this test checks
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: stubPush({ active: new Set(['s1']) }), breather: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1)
   expect(await sched.pollDue(at(61))).toBe(0) // past the base interval, inside the push one
@@ -338,8 +342,11 @@ test('an active push lease reduces the cadence to 10 × the base interval — du
 test('a pending push row does not reduce the cadence', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
-  // hasActivePush is false for a pending row (see logical-push.test.ts) → base cadence
-  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push: stubPush({ active: new Set() }), breather: undefined })
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok-1', NULL, 'pending', ?, ?)`,
+  ).run(at(100000), NOW)
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1)
   expect(await sched.pollDue(at(61))).toBe(1)
@@ -413,5 +420,62 @@ test('start/stop/wake are present and stop halts the loop', async () => {
   expect(typeof sched.stop).toBe('function')
   expect(typeof sched.wake).toBe('function')
   sched.stop() // idempotent before start
+  raw.close()
+})
+
+// --- self-pacing batch size (spec 2026-07-28 §2) -----------------------------
+
+test('self-pacing batch size: a full cycle is spread evenly across ticks regardless of catalog size', async () => {
+  const { raw, store, repo } = await fresh()
+  for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) await seedSubscribed(raw, repo, id)
+  const order: string[] = []
+  // ticksPerCycle = ceil(6*60/60) = 6 → batchSize = ceil(6/6) = 1 per tick
+  const CONFIG6 = { pollSeconds: 60, ingestCycleMinutes: 6, ingestConcurrency: 8, ingestMaxPerHost: 8 }
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG6, drainVerification: undefined, push: undefined, breather: undefined })
+
+  for (let i = 0; i < 6; i++) {
+    expect(await sched.pollDue(at(i * 60))).toBe(1)
+  }
+  expect(order).toEqual(['a', 'b', 'c', 'd', 'e', 'f']) // each polled exactly once, oldest-due first
+  raw.close()
+})
+
+// --- per-host concurrency cap (spec 2026-07-28 §2) ---------------------------
+
+async function seedSubscribedUrl(raw: Raw, repo: { createLocalUser: (u: { handle: string; displayName: string }) => Promise<{ id: string }> }, id: string, url: string): Promise<void> {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+  ).run(id, url, NOW)
+  const owner = await repo.createLocalUser({ handle: `owner-${id}`, displayName: id })
+  raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, 'active', ?)`)
+    .run(`sub-${id}`, owner.id, id, NOW)
+}
+
+test('RSC_INGEST_MAX_PER_HOST caps simultaneous fetches to the same remote host', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribedUrl(raw, repo, 's1', 'https://shared.test/a.xml')
+  await seedSubscribedUrl(raw, repo, 's2', 'https://shared.test/b.xml')
+  await seedSubscribedUrl(raw, repo, 's3', 'https://other.test/c.xml')
+
+  let concurrentOnSharedHost = 0
+  let maxConcurrentOnSharedHost = 0
+  const engine: AcquisitionEngine = {
+    async acquireSource(sourceId: string) {
+      if (sourceId === 's1' || sourceId === 's2') {
+        concurrentOnSharedHost++
+        maxConcurrentOnSharedHost = Math.max(maxConcurrentOnSharedHost, concurrentOnSharedHost)
+        await new Promise((r) => setTimeout(r, 5))
+        concurrentOnSharedHost--
+      }
+      return { runId: `run-${sourceId}`, sourceId, status: 'terminal', outcome: 'parsed' }
+    },
+    inFlight: () => false,
+  }
+  const CONFIG_HOST = { pollSeconds: 60, ingestCycleMinutes: 1, ingestConcurrency: 8, ingestMaxPerHost: 1 }
+  const sched = createScheduler({ store, acquisition: engine, config: CONFIG_HOST, drainVerification: undefined, push: undefined, breather: undefined })
+
+  expect(await sched.pollDue(NOW)).toBe(3)
+  expect(maxConcurrentOnSharedHost).toBe(1) // never more than RSC_INGEST_MAX_PER_HOST on shared.test at once
   raw.close()
 })
