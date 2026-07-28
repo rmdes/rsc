@@ -35,7 +35,11 @@ const CATEGORY_OPTIONAL: ReadonlySet<string> = new Set(['pause', 'resume'])
 // Only the SourceSummary fields this page renders, plus the two core sends
 // that are read here ONLY to derive booleans (never forwarded raw, F1):
 // provenance drives isInstanceMember/viaVerification; overridden is already a
-// boolean on the wire. Retention flag and subscription counts stay ignored.
+// boolean on the wire. Task 4 (admin-governance-visibility) widens this on
+// purpose for the first time: retention (orphan reap-reason label) and
+// addedBy (first-3 subscriber handles) are now deliberately rendered, and
+// subscriptionCounts is read only to turn addedBy's first-3 into a "+N" tail
+// — never forwarded raw either.
 interface SourceSummary {
 	source: {
 		id: string
@@ -47,6 +51,9 @@ interface SourceSummary {
 		overridden: boolean
 	}
 	federationStatus: 'none' | 'pending' | 'approved'
+	subscriptionCounts: { active: number; pending: number; pendingReview: number }
+	retention: 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' | null
+	addedBy: { handle: string; displayName: string }[]
 }
 
 // ONE membership predicate, client-side mirror of core's membership.ts
@@ -120,6 +127,9 @@ const availableActions = (s: SourceSummary): SourceAction[] => [
 // F1: isInstanceMember/viaVerification are the only derived signals carried
 // forward from provenance — the raw string itself never reaches this object.
 // memberCounts starts undefined; the load fills it in for federation rows only.
+// addedBy is passed through as-is (already capped to 3 by core); subscriberTotal
+// is the raw sum used ONLY to derive the "+N" tail in the .svelte — never
+// rendered itself.
 const toRow = (s: SourceSummary, isMember: boolean) => ({
 	id: s.source.id,
 	url: s.source.canonicalUrl,
@@ -132,11 +142,31 @@ const toRow = (s: SourceSummary, isMember: boolean) => ({
 	viaVerification: s.source.provenance === 'origin_verification',
 	memberCounts: undefined as { members: number; overridden: number; instanceGoverned: number } | undefined,
 	group: groupOf(s, isMember),
+	addedBy: s.addedBy,
+	subscriberTotal: s.subscriptionCounts.active + s.subscriptionCounts.pending + s.subscriptionCounts.pendingReview,
 	actions: availableActions(s).map((action) => ({ action, commandId: crypto.randomUUID() }))
 })
 
-async function listSources(f: typeof fetch, cursor: string | null, filter?: 'governance'): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {
-	const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', filter ? `filter=${filter}` : ''].filter(Boolean).join('&')
+// Orphan rows (Task 4): shown in their own always-visible, independently
+// paginated group. They carry `retention` (the display-oriented ladder,
+// verified_origin > admin_retained > audit_history > reapable — Task 1's
+// retentionFor) instead of the ordinary transition-action list, plus TWO
+// command ids: `commandId` for the plain (no-force) reap attempt, and
+// `forceCommandId` for the separate confirm-with-force form — kept in
+// distinct namespaces so a force retry can never replay the plain attempt's
+// (already-ledgered) refusal. An orphan by definition has zero subscriptions
+// (the core WHERE clause enforces it), so addedBy is always empty here — no
+// point rendering it.
+const toOrphanRow = (s: SourceSummary) => ({
+	id: s.source.id,
+	url: s.source.canonicalUrl,
+	retention: s.retention,
+	commandId: crypto.randomUUID(),
+	forceCommandId: crypto.randomUUID()
+})
+
+async function listSources(f: typeof fetch, cursor: string | null, filter?: 'governance' | 'orphan', q?: string): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {
+	const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', filter ? `filter=${filter}` : '', q ? `q=${encodeURIComponent(q)}` : ''].filter(Boolean).join('&')
 	const res = await f(`${base()}/admin/sources${qs ? `?${qs}` : ''}`)
 	if (!res.ok) throw new Error(await coreError(res, `listAdminSources ${res.status}`))
 	return (await res.json()) as { items: SourceSummary[]; nextCursor: string | null }
@@ -160,6 +190,14 @@ async function memberCountsFor(f: typeof fetch, instanceId: string): Promise<{ m
 export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
 	const cursor = url.searchParams.get('cursor')
+	// No-JS search box (Task 4): a plain ?q= GET param, filtering only the
+	// ordinary paginated list — same posture as `cursor` itself, which the
+	// federation/review union below deliberately does NOT depend on either.
+	const q = url.searchParams.get('q') || undefined
+	// The orphan group paginates INDEPENDENTLY of the ordinary list: its own
+	// query param, its own cursor, never sharing `cursor` above — a search or
+	// a page-2 view of ordinary sources must not shift which orphans are shown.
+	const orphanCursor = url.searchParams.get('orphanCursor')
 	// The federation/review sections must not depend on WHICH page of the
 	// created_at pagination is being viewed (a bulk OPML import buried three
 	// approved federations behind "None." — found dogfooding 2026-07-25). The
@@ -167,7 +205,11 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	// fetch keeps paginating ordinary subscriptions. Union, governance first,
 	// deduped by id — grouping below then sees the complete governance set on
 	// every page.
-	const [page, governance] = await Promise.all([listSources(f, cursor), listSources(f, null, 'governance')])
+	const [page, governance, orphan] = await Promise.all([
+		listSources(f, cursor, undefined, q),
+		listSources(f, null, 'governance'),
+		listSources(f, orphanCursor, 'orphan')
+	])
 	const governanceIds = new Set(governance.items.map((s) => s.source.id))
 	const merged = [...governance.items, ...page.items.filter((s) => !governanceIds.has(s.source.id))]
 	// The governance fetch is unpaginated and always carries every approved
@@ -206,6 +248,13 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 		// cursor for the page AFTER this one.
 		cursor,
 		nextCursor: page.nextCursor,
+		// Search echo — binds the box's value and drives the "clear" link.
+		q: q ?? null,
+		// The orphan group: its own rows, its own cursor pair, entirely
+		// independent of `cursor`/`nextCursor` above.
+		orphanRows: orphan.items.map(toOrphanRow),
+		orphanCursor,
+		orphanNextCursor: orphan.nextCursor,
 		establishCommandId: crypto.randomUUID()
 	}
 }
@@ -305,5 +354,36 @@ export const actions: Actions = {
 		if (outcome.kind === 'unavailable') return fail(404, { error: 'This tombstone is unavailable.', tombstoneId, commandId }) // neutral
 		if (outcome.kind === 'conflict') return fail(409, { error: outcome.error, tombstoneId, commandId }) // e.g. 'source not blocked', verbatim
 		return { unblocked: true, commandId }
+	},
+	// Task 2's operator-override reap. `force` is read as a plain 'true' string
+	// (a hidden input, never a checkbox) so a no-JS confirm form can carry it.
+	// The two-step verified_origin confirm lives entirely in the .svelte: this
+	// action is agnostic to WHICH refusal reason came back — it echoes
+	// sourceId/commandId/force so the page can decide whether to show a plain
+	// retry or the separate force-confirm form (gated on `error ===
+	// 'verified_origin_evidence' && !force`). commandId is never minted here,
+	// same reasoning as every other action on this page.
+	reap: async (event) => {
+		const form = await event.request.formData()
+		const sourceId = String(form.get('sourceId') ?? '').trim()
+		const commandId = String(form.get('commandId') ?? '').trim()
+		const force = form.get('force') === 'true'
+		if (!sourceId) return fail(400, { error: 'sourceId is required' })
+		if (!commandId) return fail(400, { error: 'commandId is required' })
+		try {
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/reap`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ commandId, ...(force ? { force: true } : {}) })
+			})
+			// sourceId/commandId/force echoed so the re-rendered page can pin this
+			// exact form's hidden commandId to the one just submitted, and tell
+			// the plain form from the force-confirm form apart.
+			if (!res.ok) return fail(400, { error: await coreError(res, `reap failed`), sourceId, commandId, force })
+		} catch (err) {
+			return fail(400, { error: err instanceof Error ? err.message : 'reap failed', sourceId, commandId, force })
+		}
+		return { reaped: true }
 	}
 }

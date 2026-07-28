@@ -27,6 +27,8 @@ function baseRow(over: Record<string, unknown> = {}) {
 		viaVerification: false,
 		memberCounts: { members: 1, overridden: 0, instanceGoverned: 1 },
 		group: 'federation',
+		addedBy: [],
+		subscriberTotal: 0,
 		actions: [{ action: 'quarantine', commandId: 'inst-cmd-1' }],
 		...over
 	}
@@ -45,10 +47,19 @@ function memberRow(over: Record<string, unknown> = {}) {
 		viaVerification: true,
 		memberCounts: undefined,
 		group: 'member',
+		addedBy: [],
+		subscriberTotal: 0,
 		actions: [{ action: 'quarantine', commandId: 'mem-cmd-1' }],
 		...over
 	}
 }
+
+// Every `data` object below stands in for +page.server.ts's load() return —
+// Task 4 added four fields (`q`, `orphanRows`, `orphanCursor`,
+// `orphanNextCursor`) the template now reads unconditionally, so every
+// existing fixture needs the empty-orphan-group defaults or `data.orphanRows.length`
+// throws on a plain object that never had the key.
+const NO_ORPHANS = { q: null, orphanRows: [], orphanCursor: null, orphanNextCursor: null }
 
 test('a member row nested under ?expand= renders a Manage panel whose quarantine form posts to ?/source with the MEMBER\'s own id', () => {
 	const data = {
@@ -60,6 +71,7 @@ test('a member row nested under ?expand= renders a Manage panel whose quarantine
 		categories: ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other'],
 		cursor: null,
 		nextCursor: null,
+		...NO_ORPHANS,
 		establishCommandId: 'establish-1'
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
@@ -86,6 +98,7 @@ test('acting on a member (?/source) carries the expand param forward so its inst
 		categories: ['spam'],
 		cursor: null,
 		nextCursor: null,
+		...NO_ORPHANS,
 		establishCommandId: 'establish-1'
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
@@ -134,6 +147,7 @@ test('a blocked member renders twice (flat + nested) with distinct DOM ids to av
 		categories: ['spam'],
 		cursor: null,
 		nextCursor: null,
+		...NO_ORPHANS,
 		establishCommandId: 'establish-1'
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
@@ -171,4 +185,180 @@ test('a blocked member renders twice (flat + nested) with distinct DOM ids to av
 
 	flatLabelFor.forEach((label) => expect(body).toContain(label))
 	nestedLabelFor.forEach((label) => expect(body).toContain(label))
+})
+
+// --- Task 4: search box, addedBy, the orphan group, the two-step reap confirm ---
+
+test('the search box echoes the current q and offers a Clear link only when q is set', () => {
+	const dataWithQ = {
+		groups: [],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		q: 'example.test',
+		orphanRows: [],
+		orphanCursor: null,
+		orphanNextCursor: null,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data: dataWithQ, form: null } } as never)
+	expect(body).toContain('name="q"')
+	expect(body).toContain('value="example.test"')
+	expect(body).toContain('Clear')
+
+	const { body: bodyNoQ } = render(Page, { props: { data: { ...dataWithQ, q: null }, form: null } } as never)
+	expect(bodyNoQ).not.toContain('>Clear<')
+})
+
+test("a row with subscribers renders 'Added by @handle (+N)' — first 3 handles, N = remaining subscribers", () => {
+	const row = baseRow({
+		group: 'user',
+		federationStatus: 'none',
+		memberCounts: undefined,
+		addedBy: [
+			{ handle: 'alice', displayName: 'Alice' },
+			{ handle: 'bob', displayName: 'Bob' },
+			{ handle: 'carol', displayName: 'Carol' }
+		],
+		subscriberTotal: 5
+	})
+	const data = {
+		groups: [{ key: 'user', title: 'Allowed user sources', blurb: '', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('Added by @alice, @bob, @carol (+2)')
+})
+
+test('a row with 3 or fewer subscribers renders addedBy with no (+N) tail', () => {
+	const row = baseRow({
+		group: 'user',
+		federationStatus: 'none',
+		memberCounts: undefined,
+		addedBy: [{ handle: 'alice', displayName: 'Alice' }],
+		subscriberTotal: 1
+	})
+	const data = {
+		groups: [{ key: 'user', title: 'Allowed user sources', blurb: '', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('Added by @alice')
+	expect(body).not.toContain('(+')
+})
+
+function orphanRow(over: Record<string, unknown> = {}) {
+	return {
+		id: 'orph1',
+		url: 'https://orph.test/feed.xml',
+		retention: 'reapable',
+		commandId: 'orph-cmd-1',
+		forceCommandId: 'orph-force-cmd-1',
+		...over
+	}
+}
+
+function orphanData(over: Record<string, unknown> = {}) {
+	return {
+		groups: [],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		q: null,
+		orphanCursor: null,
+		orphanNextCursor: null,
+		establishCommandId: 'establish-1',
+		orphanRows: [orphanRow()],
+		...over
+	}
+}
+
+test('the orphan group is shown even when the ordinary groups are all empty, with the retention reason as a label and a Reap form', () => {
+	const { body } = render(Page, { props: { data: orphanData(), form: null } } as never)
+	expect(body).toContain('Orphaned sources')
+	expect(body).toContain('https://orph.test/feed.xml')
+	expect(body).toContain('action="?/reap')
+	expect(body).toContain('name="sourceId" value="orph1"')
+	expect(body).toContain('name="commandId" value="orph-cmd-1"')
+	// No force-confirm form absent a prior 409 — only the plain reap form.
+	expect(body).not.toContain('name="force"')
+})
+
+test('the orphan group renders a distinct retention label per reason', () => {
+	const labels: Record<string, string> = {
+		verified_origin: 'Verified-origin',
+		admin_retained: 'Admin-retained',
+		audit_history: 'audit history',
+		reapable: 'reapable'
+	}
+	for (const [retention, needle] of Object.entries(labels)) {
+		const { body } = render(Page, { props: { data: orphanData({ orphanRows: [orphanRow({ retention })] }), form: null } } as never)
+		expect(body.toLowerCase()).toContain(needle.toLowerCase())
+	}
+})
+
+test('the orphan group paginates independently: its next link carries orphanCursor, and the ordinary "More sources" link carries cursor — never crossed', () => {
+	const { body } = render(
+		Page,
+		{ props: { data: orphanData({ cursor: 'page2', nextCursor: 'page3', orphanNextCursor: 'orph-page2' }), form: null } } as never
+	)
+	const orphanLink = body.slice(body.indexOf('<a class="older" href="/admin/feeds?orphanCursor'), body.indexOf('More orphaned sources'))
+	expect(orphanLink).toContain('orphanCursor=orph-page2')
+	expect(orphanLink).not.toContain('&cursor=page3') // the ordinary list's OWN next cursor, not this link's axis
+
+	const ordinaryLink = body.slice(body.indexOf('<a class="older" href="/admin/feeds?cursor'), body.indexOf('More sources'))
+	expect(ordinaryLink).toContain('cursor=page3')
+	expect(ordinaryLink).not.toContain('orphanCursor=')
+})
+
+test('a verified_origin refusal on the plain reap form surfaces the force-confirm form for THAT row only, with a DISTINCT freshly-minted commandId', () => {
+	const data = orphanData({
+		orphanRows: [
+			orphanRow({ id: 'orph1', url: 'https://orph1.test/feed.xml', retention: 'verified_origin' }),
+			orphanRow({ id: 'orph2', url: 'https://orph2.test/feed.xml', retention: 'reapable' })
+		]
+	})
+	const form = { error: 'verified_origin_evidence', sourceId: 'orph1', commandId: 'orph-cmd-1', force: false }
+	const { body } = render(Page, { props: { data, form } } as never)
+
+	// orph1's force-confirm form is present, carrying force=true and a DIFFERENT
+	// commandId than the one that just got refused (row.forceCommandId, never
+	// 'orph-cmd-1' again — replaying that id would just replay the ledgered refusal).
+	// The plain form (still present, for a legitimate network-blip retry) keeps
+	// echoing its OWN original id — that's expected, so the scope below is
+	// narrowed to just the force-confirm <form>, not the whole row.
+	const orph1Chunk = body.slice(body.indexOf('https://orph1.test'), body.indexOf('https://orph2.test'))
+	expect(orph1Chunk).toContain('name="commandId" value="orph-cmd-1"') // the plain form's own retry id, unchanged
+	const forceFormChunk = orph1Chunk.slice(orph1Chunk.indexOf('name="force"'))
+	expect(forceFormChunk).toContain('name="force" value="true"')
+	expect(forceFormChunk).toContain('name="commandId" value="orph-force-cmd-1"')
+	expect(forceFormChunk).not.toContain('name="commandId" value="orph-cmd-1"')
+
+	// orph2 never failed — it gets no force-confirm form at all.
+	const orph2Chunk = body.slice(body.indexOf('https://orph2.test'))
+	expect(orph2Chunk).not.toContain('name="force" value="true"')
 })
