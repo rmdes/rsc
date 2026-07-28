@@ -1,6 +1,7 @@
 import type { DatabaseContext, ReadTx, WriteTx } from './database.ts'
 import type { LogicalStore } from './store.ts'
 import type { AcquisitionEngine } from './acquisition.ts'
+import { healOrphanedRuns } from './acquisition.ts'
 import type { LogicalItemDto, ProjectionViewer, ReplyCountOverlay, SourceModelV2Activation } from './types.ts'
 import {
   getJournalMetadata, readJournalBatch, appendJournal, reconstructJournal,
@@ -438,6 +439,8 @@ export function createLogicalRuntime(input: {
     // read off the same Config the push lifecycle above uses.
     activateLogicalV2(db, now(), { manifestPath: config.migrationManifestPath })
     trace('activate')
+    healOrphanedRuns(db, now())
+    trace('heal-orphaned-runs')
     // Startup drain: pick up pending/retrying jobs and pending orphan work a crash
     // may have left, then start the serial poll loop. NOTHING here awaits network
     // I/O — server.ts awaits this promise BEFORE it listens, so a crash-left

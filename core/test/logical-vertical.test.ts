@@ -118,7 +118,7 @@ test('enabled: capability is unavailable until activation commits (activate stri
   const runtime = mkRuntime(deps, stubEngine, order)
   await runtime.ready
   order.push('listen') // server.ts accepts traffic (→ reports capability) only after ready
-  expect(order).toEqual(['journal', 'projector', 'scheduler', 'reconcile', 'orphan', 'activate', 'listen'])
+  expect(order).toEqual(['journal', 'projector', 'scheduler', 'reconcile', 'orphan', 'activate', 'heal-orphaned-runs', 'listen'])
   expect(deps.store.snapshot((tx) => tx.getActivation()).state).toBe('active')
   await runtime.stop()
 })
@@ -212,7 +212,7 @@ test('crash recovery: the startup drain picks up a pending reconciliation job a 
   expect(count(deps.raw, 'logical_items_v2', "WHERE origin = 'remote'")).toBe(1)
 })
 
-test('crash recovery: a crashed `processing` run is NOT resumed; the in-flight flag clears with the process', async () => {
+test('crash recovery: a crashed `processing` run is healed to terminal; the in-flight flag clears with the process', async () => {
   const deps = await fresh()
   seedSource(deps.raw, 's1', 'https://feed.test/s1')
   // a run the crash left mid-flight (nonterminal history)
@@ -221,9 +221,12 @@ test('crash recovery: a crashed `processing` run is NOT resumed; the in-flight f
   // state, an in-memory Map — it died with the crashed process, NOT the DB row).
   const engine = createAcquisition({ db: deps.db, fetchFn: fakeFetch({}), lookupFn: publicLookup, now: () => NOW })
   expect(engine.inFlight('s1')).toBe(false)
-  // starting the runtime never resumes the crashed run — it stays nonterminal history.
+  // starting the runtime heals the orphaned run — it transitions to terminal.
   const runtime = mkRuntime(deps, stubEngine); await runtime.ready; await runtime.stop()
-  expect((deps.raw.prepare(`SELECT status FROM acquisition_runs_v2 WHERE id = 'crashed'`).get() as { status: string }).status).toBe('processing')
+  const row = deps.raw.prepare(`SELECT status, outcome, failure_category FROM acquisition_runs_v2 WHERE id = 'crashed'`).get() as { status: string; outcome: string; failure_category: string }
+  expect(row.status).toBe('terminal')
+  expect(row.outcome).toBe('operational_failure')
+  expect(row.failure_category).toBe('interrupted')
 })
 
 // ============================================================================
