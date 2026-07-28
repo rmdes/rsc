@@ -39,9 +39,12 @@
 					{/if}
 				</dl>
 				{#if u.kind === 'local'}
+					<!-- Carries the current page's cursor forward, same convention as
+					     admin/feeds' mutating forms — otherwise deleting a user on
+					     page 2 would bounce the reload back to page 1. -->
 					<form
 						method="POST"
-						action="?/deleteUser"
+						action="?/deleteUser{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}"
 						class="delete-form"
 						use:enhance={confirmSubmit(`Delete @${u.handle} and all their posts? This can't be undone.`)}
 					>
@@ -52,6 +55,10 @@
 			</li>
 		{/each}
 	</ul>
+{/if}
+
+{#if data.nextCursor}
+	<a class="older" href="/admin/users?cursor={encodeURIComponent(data.nextCursor)}">More users</a>
 {/if}
 
 <style>

@@ -5,7 +5,9 @@ import type { Actions, PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
-	return { users: await listAdminUsers(f) }
+	const cursor = url.searchParams.get('cursor') ?? undefined
+	const page = await listAdminUsers(f, cursor)
+	return { users: page.items, cursor, nextCursor: page.nextCursor }
 }
 
 export const actions: Actions = {

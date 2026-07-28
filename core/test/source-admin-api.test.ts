@@ -203,13 +203,14 @@ test('the admin reads paginate and project summary/detail/subresources', async (
   expect(page2.items).toHaveLength(1)
   expect(page2.items[0].source.id).not.toBe(page1.items[0].source.id)
   expect([page1.items[0].source.id, page2.items[0].source.id].sort()).toEqual([first, second].sort())
-  // 'push' / 'pushExpiresAt' joined the DTOs in V4 Task 1 (all-null until a lease exists).
-  expect(Object.keys(page1.items[0]).sort()).toEqual(['federationStatus', 'push', 'source', 'subscriptionCounts'])
+  // 'push' / 'pushExpiresAt' joined the DTOs in V4 Task 1 (all-null until a lease exists);
+  // 'retention' / 'addedBy' joined in admin-governance-visibility Task 1.
+  expect(Object.keys(page1.items[0]).sort()).toEqual(['addedBy', 'federationStatus', 'push', 'retention', 'source', 'subscriptionCounts'])
 
   const detail = await app.request(`/admin/sources/${first}`, { headers: { cookie } })
   expect(detail.status).toBe(200)
   const detailJson = await detail.json()
-  expect(Object.keys(detailJson).sort()).toEqual(['federationStatus', 'latestAudit', 'push', 'pushExpiresAt', 'source', 'subscriptionCounts'])
+  expect(Object.keys(detailJson).sort()).toEqual(['addedBy', 'federationStatus', 'latestAudit', 'push', 'pushExpiresAt', 'retention', 'source', 'subscriptionCounts'])
   expect(detailJson.subscriptionCounts).toEqual({ active: 1, pending: 0, pendingReview: 0 })
   expect((await app.request(`/admin/sources/${randomUUID()}`, { headers: { cookie } })).status).toBe(404)
 
@@ -255,7 +256,7 @@ test('GET /admin/sources/:id/members and /members/counts page and count members,
   expect(page1.items.map((i: { source: { id: string } }) => i.source.id)).toEqual([m3, m2]) // created_at DESC, id DESC
   expect(page1.nextCursor).toEqual(expect.any(String))
   // per-row shape matches listSourceSummaries's own projection
-  expect(Object.keys(page1.items[0]).sort()).toEqual(['federationStatus', 'push', 'source', 'subscriptionCounts'])
+  expect(Object.keys(page1.items[0]).sort()).toEqual(['addedBy', 'federationStatus', 'push', 'retention', 'source', 'subscriptionCounts'])
 
   const page2 = await (await app.request(`/admin/sources/${instanceId}/members?limit=2&cursor=${encodeURIComponent(page1.nextCursor)}`, { headers: { cookie } })).json()
   expect(page2.items.map((i: { source: { id: string } }) => i.source.id)).toEqual([m1])

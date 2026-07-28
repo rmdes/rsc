@@ -32,7 +32,35 @@ function insertAudit(raw: Raw, id: string, sourceId: string, createdAt: string) 
   ).run(id, sourceId, `cmd-${id}`, createdAt)
 }
 
-test('listSourceSummaries paginates stably across equal timestamps and SourceSummary carries only the four DTO keys', async () => {
+// A verified_origin publisher claim needs real logical_items_v2/deliveries_v2/
+// observation_versions_v2/remote_publishers_v2 rows underneath it — every FK
+// column on publisher_claims_v2 is NOT NULL and foreign_keys=ON (sqlite.ts).
+// Mirrors source-cleanup.test.ts's seedEvidence helper (verified branch).
+function insertVerifiedOriginClaim(raw: Raw, sourceId: string) {
+  const itemId = randomUUID()
+  const deliveryId = randomUUID()
+  const versionId = randomUUID()
+  const pub = randomUUID()
+  raw.prepare(
+    `INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at)
+     VALUES (?, 'remote', ?, 'none', NULL, ?, NULL, ?)`,
+  ).run(itemId, T, deliveryId, T)
+  raw.prepare(
+    `INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, 'opaque', ?, ?, ?, ?, 1)`,
+  ).run(deliveryId, sourceId, itemId, T, T, randomUUID())
+  raw.prepare(
+    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+     VALUES (?, ?, 1, ?, ?, ?, ?, 0, ?, ?, 1, '{}', '{}')`,
+  ).run(versionId, deliveryId, randomUUID(), Buffer.from('m'), T, randomUUID(), T, randomUUID())
+  raw.prepare(
+    `INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, 'feed_anchored', ?)`,
+  ).run(pub, `https://pub-${pub}.test/f`, T)
+  raw.prepare(
+    `INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, 'verified_origin', ?)`,
+  ).run(randomUUID(), itemId, pub, sourceId, versionId, T)
+}
+
+test('listSourceSummaries paginates stably across equal timestamps and SourceSummary carries the expected DTO keys', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
   const sourceA = randomUUID()
@@ -43,9 +71,12 @@ test('listSourceSummaries paginates stably across equal timestamps and SourceSum
   const first = await repo.listSourceSummaries(undefined, 1)
   expect(first.items).toHaveLength(1)
   expect(first.nextCursor).not.toBeNull()
-  // 'push' joined the DTO in V4 Task 1 (all-null until a lease exists).
-  expect(Object.keys(first.items[0]).sort()).toEqual(['federationStatus', 'push', 'source', 'subscriptionCounts'])
+  // 'push' joined the DTO in V4 Task 1 (all-null until a lease exists);
+  // 'retention'/'addedBy' joined in the admin-governance-visibility Task 1.
+  expect(Object.keys(first.items[0]).sort()).toEqual(['addedBy', 'federationStatus', 'push', 'retention', 'source', 'subscriptionCounts'])
   expect(first.items[0].push).toEqual({ mode: null, state: null, endpointFingerprint: null })
+  expect(first.items[0].retention).toBeNull()
+  expect(first.items[0].addedBy).toEqual([])
 
   const second = await repo.listSourceSummaries(decodeCursor(first.nextCursor!), 1)
   expect(second.items).toHaveLength(1)
@@ -144,5 +175,77 @@ test('limit is clamped to 1-100', async () => {
   expect(huge.items).toHaveLength(3)
   expect(huge.nextCursor).toBeNull()
 
+  repo.close()
+})
+
+test('q searches canonical_url; filter=orphan returns only zero-subscription allowed non-federated sources', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const orphanId = randomUUID()
+  const subscribedId = randomUUID()
+  insertSource(raw, orphanId)
+  insertSource(raw, subscribedId)
+  // owner_id is FK-checked (foreign_keys=ON) — a real user row is required.
+  const owner = await repo.createLocalUser({ handle: 'owner1', displayName: 'Owner1' })
+  insertSubscription(raw, randomUUID(), owner.id, subscribedId, 'active')
+
+  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  expect(orphans.items.map((i) => i.source.id)).toEqual([orphanId])
+  expect(orphans.items[0].retention).toBe('reapable')
+
+  const searched = await repo.listSourceSummaries(undefined, 50, undefined, orphanId)
+  expect(searched.items.map((i) => i.source.id)).toEqual([orphanId])
+  const noMatch = await repo.listSourceSummaries(undefined, 50, undefined, 'no-such-substring-xyz')
+  expect(noMatch.items).toEqual([])
+  repo.close()
+})
+
+test('a pending_review-only source is NOT an orphan (C1 regression)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const sourceId = randomUUID()
+  insertSource(raw, sourceId)
+  const owner = await repo.createLocalUser({ handle: 'owner2', displayName: 'Owner2' })
+  insertSubscription(raw, randomUUID(), owner.id, sourceId, 'pending_review')
+  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  expect(orphans.items.map((i) => i.source.id)).not.toContain(sourceId)
+  repo.close()
+})
+
+test('retention ladder: verified_origin beats admin_retained beats audit_history beats reapable', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const reapableId = randomUUID()
+  const auditedId = randomUUID()
+  const retainedId = randomUUID()
+  const verifiedId = randomUUID()
+  insertSource(raw, reapableId)
+  insertSource(raw, auditedId)
+  insertSource(raw, retainedId)
+  insertSource(raw, verifiedId)
+  insertAudit(raw, randomUUID(), auditedId, T)
+  raw.prepare(`UPDATE remote_sources_v2 SET admin_retained = 1 WHERE id = ?`).run(retainedId)
+  insertVerifiedOriginClaim(raw, verifiedId)
+  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  const byId = new Map(orphans.items.map((i) => [i.source.id, i.retention]))
+  expect(byId.get(reapableId)).toBe('reapable')
+  expect(byId.get(auditedId)).toBe('audit_history')
+  expect(byId.get(retainedId)).toBe('admin_retained')
+  expect(byId.get(verifiedId)).toBe('verified_origin')
+  repo.close()
+})
+
+test('addedBy resolves the first 3 subscriber handles in created_at order, empty for orphans', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const sourceId = randomUUID()
+  insertSource(raw, sourceId)
+  raw.prepare(`INSERT INTO users (id, kind, handle, display_name, created_at) VALUES ('u1', 'local', 'alice', 'Alice', ?)`).run(T)
+  raw.prepare(`INSERT INTO users (id, kind, handle, display_name, created_at) VALUES ('u2', 'local', 'bob', 'Bob', ?)`).run(T)
+  insertSubscription(raw, randomUUID(), 'u1', sourceId, 'active')
+  insertSubscription(raw, randomUUID(), 'u2', sourceId, 'active')
+  const page = await repo.listSourceSummaries(undefined, 50)
+  const row = page.items.find((i) => i.source.id === sourceId)!
+  expect(row.addedBy.map((a) => a.handle)).toEqual(['alice', 'bob'])
   repo.close()
 })

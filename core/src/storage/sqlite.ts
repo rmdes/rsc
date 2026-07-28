@@ -6,8 +6,8 @@ import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscripti
 import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState, SourceGovernance, SourceOperation } from '../domain/types.ts'
-import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes } from '../domain/source-repository.ts'
-import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes, ReapCommandResult } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, reapSource as reapSourceFn, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
@@ -424,16 +424,38 @@ export class SqliteRepository implements Repository, SourceRepository {
     ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   }
 
-  listUsers(): Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
-    const rows = this.raw.prepare(
-      `SELECT u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
-              u.created_at AS createdAt, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
-       FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
-       WHERE u.kind = 'remote'
-          OR (u.kind = 'local' AND (au.isAnonymous = 0 OR au.isAnonymous IS NULL))
-       ORDER BY u.created_at DESC`,
-    ).all() as Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; createdAt: string; feedUrl: string | null; emailVerified: number | null }>
-    return rows.map((r) => ({ ...r, emailVerified: r.emailVerified === null ? null : r.emailVerified === 1 }))
+  listUsers(cursor: Cursor | undefined, limit: number): Page<{ id: string; handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
+    const lim = clampLimit(limit)
+    const where = `(u.kind = 'remote' OR (u.kind = 'local' AND (au.isAnonymous = 0 OR au.isAnonymous IS NULL)))`
+    const rows = (cursor
+      ? this.raw.prepare(
+          `SELECT u.id AS id, u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
+                  u.created_at AS created_at, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
+           FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
+           WHERE ${where} AND ((u.created_at < ?) OR (u.created_at = ? AND u.id < ?))
+           ORDER BY u.created_at DESC, u.id DESC LIMIT ?`,
+        ).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(
+          `SELECT u.id AS id, u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
+                  u.created_at AS created_at, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
+           FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
+           WHERE ${where}
+           ORDER BY u.created_at DESC, u.id DESC LIMIT ?`,
+        ).all(lim + 1)
+    ) as Array<{ id: string; created_at: string; handle: string; displayName: string; kind: 'local' | 'remote'; feedUrl: string | null; emailVerified: number | null }>
+    const { page, nextCursor } = this.splitPage(rows, lim)
+    return {
+      items: page.map((r) => ({
+        id: r.id,
+        handle: r.handle,
+        displayName: r.displayName,
+        kind: r.kind,
+        createdAt: r.created_at,
+        feedUrl: r.feedUrl,
+        emailVerified: r.emailVerified === null ? null : r.emailVerified === 1,
+      })),
+      nextCursor,
+    }
   }
 
   // --- v2 source-control plane administrative reads (served by the
@@ -472,26 +494,43 @@ export class SqliteRepository implements Repository, SourceRepository {
     return row ? rowToRemoteSourceV2(row) : undefined
   }
 
-  async listSourceSummaries(cursor: Cursor | undefined, limit: number, filter?: 'governance'): Promise<Page<SourceSummary>> {
+  async listSourceSummaries(cursor: Cursor | undefined, limit: number, filter?: 'governance' | 'orphan', q?: string): Promise<Page<SourceSummary>> {
     const lim = clampLimit(limit)
     // 'governance' narrows to the administratively load-bearing rows — any
     // federation relationship (approved OR pending) or a quarantined source —
     // so the admin page's federation/review sections can be built independent
     // of where bulk subscriptions push them in the created_at pagination.
+    // 'orphan' mirrors reapSourceIfOrphaned's own predicate verbatim: allowed,
+    // no federation relationship, zero subscriptions of any state (including
+    // pending_review — a source under review is never an orphan).
     const where = filter === 'governance'
       ? `(EXISTS(SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id) OR governance = 'quarantined')`
-      : '1=1'
+      : filter === 'orphan'
+        ? `(governance = 'allowed'
+            AND NOT EXISTS(SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id)
+            AND NOT EXISTS(SELECT 1 FROM source_subscriptions_v2 s WHERE s.source_id = remote_sources_v2.id))`
+        : '1=1'
+    const qClause = q ? ` AND canonical_url LIKE '%'||?||'%'` : ''
+    const qParams = q ? [q] : []
     const rows = (cursor
       ? this.raw.prepare(
-          `SELECT * FROM remote_sources_v2 WHERE ${where} AND ((created_at < ?) OR (created_at = ? AND id < ?))
+          `SELECT * FROM remote_sources_v2 WHERE ${where}${qClause} AND ((created_at < ?) OR (created_at = ? AND id < ?))
            ORDER BY created_at DESC, id DESC LIMIT ?`,
-        ).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
-      : this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT ?`).all(lim + 1)
+        ).all(...qParams, cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE ${where}${qClause} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...qParams, lim + 1)
     ) as RemoteSourceV2Row[]
     const { page, nextCursor } = this.splitPage(rows, lim)
     const items: SourceSummary[] = page.map((r) => {
       const source = rowToRemoteSourceV2(r)
-      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id), push: this.pushFor(source.id).push }
+      const isOrphan = filter === 'orphan'
+      return {
+        source,
+        federationStatus: this.federationStatusFor(source.id),
+        subscriptionCounts: this.subscriptionCountsFor(source.id),
+        push: this.pushFor(source.id).push,
+        retention: isOrphan ? this.retentionFor(source.id) : null,
+        addedBy: this.addedByFor(source.id),
+      }
     })
     return { items, nextCursor }
   }
@@ -529,6 +568,8 @@ export class SqliteRepository implements Repository, SourceRepository {
       federationStatus: this.federationStatusFor(id),
       subscriptionCounts: this.subscriptionCountsFor(id),
       latestAudit: auditRow ? rowToSourceAuditV2(auditRow) : null,
+      retention: this.retentionFor(id),
+      addedBy: this.addedByFor(id),
       ...this.pushFor(id),
     }
   }
@@ -539,7 +580,7 @@ export class SqliteRepository implements Repository, SourceRepository {
   // endpoint is NEVER shipped — only a stable non-secret digest of it — and the
   // callback token and secret are not read at all, so they cannot reach any body.
   // ponytail: one small indexed lookup per listed source (the page is clamped to
-  // ≤50); fold into the list query only if a page read ever shows up in a profile.
+  // ≤100, via clampLimit); fold into the list query only if a page read ever shows up in a profile.
   private pushFor(sourceId: string): { push: PushSummary; pushExpiresAt: string | null } {
     const row = this.raw.prepare(
       `SELECT mode, state, endpoint, expires_at FROM push_subscriptions_v2 WHERE source_id = ?
@@ -550,6 +591,36 @@ export class SqliteRepository implements Repository, SourceRepository {
       push: { mode: row.mode, state: row.state, endpointFingerprint: createHash('sha256').update(row.endpoint).digest('hex').slice(0, 16) },
       pushExpiresAt: row.expires_at,
     }
+  }
+
+  // A display-only retention-reason label for ANY source (getSourceDetail and
+  // listSourceMembers call this unconditionally, not just for orphans) — first
+  // match wins, in priority order: verified_origin > admin_retained >
+  // audit_history > reapable. This checks only those 3 signals, NOT the full
+  // reapSourceIfOrphaned guard chain (which also checks subscribers/governance/
+  // federation first). Trap: 'reapable' means "nothing here is retaining it,"
+  // NOT "safe to reap" — a source with active subscriptions still shows
+  // 'reapable' when rendered via getSourceDetail/listSourceMembers, since
+  // neither pre-filters to orphans the way listSourceSummaries's orphan
+  // filter does.
+  private retentionFor(sourceId: string): 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' {
+    if (this.raw.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)) return 'verified_origin'
+    const source = this.raw.prepare(`SELECT admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { admin_retained: 0 | 1 } | undefined
+    if (source?.admin_retained === 1) return 'admin_retained'
+    if (this.raw.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return 'audit_history'
+    return 'reapable'
+  }
+
+  // ponytail: one small indexed lookup per listed source (the page is clamped
+  // to ≤100, matching pushFor's own accepted shape); fold into the list query
+  // only if a page read ever shows up in a profile.
+  private addedByFor(sourceId: string): { handle: string; displayName: string }[] {
+    const rows = this.raw.prepare(
+      `SELECT u.handle AS handle, u.display_name AS displayName
+       FROM source_subscriptions_v2 s JOIN users u ON u.id = s.owner_id
+       WHERE s.source_id = ? ORDER BY s.created_at ASC LIMIT 3`,
+    ).all(sourceId) as { handle: string; displayName: string }[]
+    return rows
   }
 
   async listSourceSubscriptions(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSubscription>> {
@@ -601,7 +672,14 @@ export class SqliteRepository implements Repository, SourceRepository {
     const { rows, nextCursor } = memberRowsPage(this.raw, instRow, cursor, limit)
     const items: SourceSummary[] = rows.map((r) => {
       const source = rowToRemoteSourceV2(r)
-      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id), push: this.pushFor(source.id).push }
+      return {
+        source,
+        federationStatus: this.federationStatusFor(source.id),
+        subscriptionCounts: this.subscriptionCountsFor(source.id),
+        push: this.pushFor(source.id).push,
+        retention: this.retentionFor(source.id),
+        addedBy: this.addedByFor(source.id),
+      }
     })
     return { items, nextCursor }
   }
@@ -887,6 +965,31 @@ export class SqliteRepository implements Repository, SourceRepository {
       if (sub.state === 'active') journalPolicyReset(raw, input.now) // active removal changes Personal membership
       storeCommand(raw, input.command, result, input.now)
       return result
+    }).immediate()
+  }
+
+  // Task 2 (admin-governance-visibility): the operator override of
+  // reapSourceIfOrphaned. Same ledger-backed BEGIN IMMEDIATE shape as every
+  // other command here; the guard chain itself lives in reapSource (shared
+  // domain function) — this method only wraps it with the command ledger and
+  // the unknown-source 404 case.
+  async reapSource(input: { command: CommandEnvelope; sourceId: string; force: boolean; now: string }): Promise<ReapCommandResult> {
+    const raw = this.raw
+    return raw.transaction(() => {
+      const check = checkCommand<ReapCommandResult>(raw, input.command)
+      if (check.kind === 'replay') return check.result
+      if (check.kind === 'conflict') return { kind: 'conflict' as const }
+      if (!raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(input.sourceId)) {
+        const result = { kind: 'unknown' as const }
+        storeCommand(raw, input.command, result, input.now)
+        return result
+      }
+      const outcome = reapSourceFn(raw, input.sourceId, { force: input.force }, input.now)
+      // Only a 'reaped' outcome is ledgered — like every sibling admin command,
+      // a refusal writes nothing so a retry with the same commandId
+      // re-evaluates against live state instead of replaying a stale refusal.
+      if (outcome.kind === 'reaped') storeCommand(raw, input.command, outcome, input.now)
+      return outcome
     }).immediate()
   }
 

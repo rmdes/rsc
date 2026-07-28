@@ -29,7 +29,20 @@ const summary = (
 ) => ({
 	source: { id, canonicalUrl: `https://ex.test/${id}.xml`, attributionMode, operation, governance, provenance: 'user_subscription', adminRetained: false },
 	federationStatus,
-	subscriptionCounts: { active: 1, pending: 0, pendingReview: 0 }
+	subscriptionCounts: { active: 1, pending: 0, pendingReview: 0 },
+	retention: null,
+	addedBy: [] as { handle: string; displayName: string }[]
+})
+
+// An orphan-filter row: core only fills in `retention` (non-null) for
+// `filter=orphan` results — addedBy is always empty here too, since an
+// orphan by definition has zero subscriptions of any kind.
+const orphanSummary = (id: string, retention: 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable') => ({
+	source: { id, canonicalUrl: `https://orphan.test/${id}.xml`, attributionMode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'user_subscription', adminRetained: false },
+	federationStatus: 'none',
+	subscriptionCounts: { active: 0, pending: 0, pendingReview: 0 },
+	retention,
+	addedBy: [] as { handle: string; displayName: string }[]
 })
 
 type Row = {
@@ -42,8 +55,11 @@ type Row = {
 	isInstanceMember: boolean
 	viaVerification: boolean
 	memberCounts?: { members: number; overridden: number; instanceGoverned: number }
+	addedBy: { handle: string; displayName: string }[]
+	subscriberTotal: number
 	actions: Array<{ action: string; commandId: string }>
 }
+type OrphanRow = { id: string; url: string; retention: string | null; commandId: string; forceCommandId: string }
 type Group = { key: string; title: string; blurb: string; rows: Row[] }
 type LoadResult = {
 	groups?: Group[]
@@ -52,6 +68,10 @@ type LoadResult = {
 	establishCommandId?: string
 	expand?: string | null
 	expandedMembers?: Row[]
+	q?: string | null
+	orphanRows?: OrphanRow[]
+	orphanCursor?: string | null
+	orphanNextCursor?: string | null
 }
 
 // Every load case takes a FRESH +page.server.ts import (vi.resetModules) purely
@@ -307,7 +327,9 @@ test("a tombstone unblock that core answers 409 'not blocked' reaches the admin 
 const govSummary = (id: string, canonicalUrl: string, provenance: string, federationStatus: string, overridden = false) => ({
 	source: { id, canonicalUrl, attributionMode: 'aggregate', operation: 'enabled', governance: 'allowed', provenance, adminRetained: false, overridden },
 	federationStatus,
-	subscriptionCounts: { active: 0, pending: 0, pendingReview: 0 }
+	subscriptionCounts: { active: 0, pending: 0, pendingReview: 0 },
+	retention: null,
+	addedBy: [] as { handle: string; displayName: string }[]
 })
 
 test('a verification-minted member nests out of user/review; an approved-federated row governs itself even when another approved instance shares its host prefix (F14)', async () => {
@@ -447,4 +469,111 @@ test('the federation and review sections come from the governance fetch, not fro
 	expect(result.groups?.find((g) => g.key === 'federation')?.rows.map((r) => r.id)).toEqual(['fed-buried'])
 	expect(result.groups?.find((g) => g.key === 'review')?.rows.map((r) => r.id)).toEqual(['quar-buried'])
 	expect(result.groups?.find((g) => g.key === 'user')?.rows.map((r) => r.id)).toEqual(['bulk1', 'bulk2'])
+})
+
+// --- Task 4: search, the orphan group, and operator reap ---------------------
+
+test('?q= is threaded into the ordinary sources fetch and echoed back on the load result', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('filter=orphan') || u.includes('filter=governance')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [summary('bulk1', 'allowed', 'none')], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch, '?q=example.test')
+	expect(result.q).toBe('example.test')
+	// The ordinary (unfiltered/ungoverned) sources fetch carries q= — the
+	// governance and orphan fetches (and the unrelated tombstones read) are
+	// independent reads and never receive it.
+	const ordinaryCall = urlsOf(fetch).find((u) => u.includes('/admin/sources') && !u.includes('filter='))
+	expect(ordinaryCall).toContain('q=example.test')
+	expect(urlsOf(fetch).filter((u) => u.includes('filter=')).some((u) => u.includes('q='))).toBe(false)
+})
+
+test('no ?q= on the request omits it from every fetch and echoes result.q as null', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 }))
+	const result = await loadAdminWith(fetch)
+	expect(result.q).toBeNull()
+	expect(urlsOf(fetch).some((u) => u.includes('q='))).toBe(false)
+})
+
+test('the orphan group is fetched with filter=orphan, maps retention/commandId/forceCommandId per row, and paginates on its OWN ?orphanCursor= param, independent of ?cursor=', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('filter=orphan')) return new Response(JSON.stringify({ items: [orphanSummary('orph1', 'verified_origin'), orphanSummary('orph2', 'reapable')], nextCursor: 'orph-next' }), { status: 200 })
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch, '?cursor=ordinary-page2&orphanCursor=orph-page2')
+	expect(result.orphanRows?.map((r) => [r.id, r.url, r.retention])).toEqual([
+		['orph1', 'https://orphan.test/orph1.xml', 'verified_origin'],
+		['orph2', 'https://orphan.test/orph2.xml', 'reapable']
+	])
+	expect(result.orphanCursor).toBe('orph-page2') // echoed back like `cursor`, not conflated with it
+	expect(result.orphanNextCursor).toBe('orph-next')
+	// Distinct, well-formed command ids per row, and commandId !== forceCommandId.
+	for (const r of result.orphanRows ?? []) {
+		expect(r.commandId).toMatch(/^[0-9a-f]{8}-/)
+		expect(r.forceCommandId).toMatch(/^[0-9a-f]{8}-/)
+		expect(r.commandId).not.toBe(r.forceCommandId)
+	}
+	// The orphan fetch used ITS OWN cursor param, never the ordinary list's.
+	const orphanCall = urlsOf(fetch).find((u) => u.includes('filter=orphan'))
+	expect(orphanCall).toContain('cursor=orph-page2')
+	expect(orphanCall).not.toContain('cursor=ordinary-page2')
+})
+
+test('the reap action refuses a missing sourceId/commandId without calling core', async () => {
+	const fetch = vi.fn()
+	expect(await actions.reap(formEvent('reap', { commandId: 'c' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(await actions.reap(formEvent('reap', { sourceId: 's1' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(await actions.reap(formEvent('reap', { sourceId: 's1', commandId: '' }, fetch) as never)).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('a plain (no-force) reap posts {commandId} with no force key, and succeeds on {kind: reaped}', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 }))
+	const res = await actions.reap(formEvent('reap', { sourceId: 's1', commandId: 'cmd-1' }, fetch) as never)
+	expect(res).toEqual({ reaped: true })
+	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
+	expect(url).toContain('/admin/sources/s1/reap')
+	expect(init.method).toBe('POST')
+	expect(JSON.parse(String(init.body))).toEqual({ commandId: 'cmd-1' })
+})
+
+// The three reasons core's reapSource will actually lift when force:true is
+// sent (see source-repository.ts's `!opts.force &&` guards) — the operator-
+// reap feature's whole point. Same fixture/assertion shape for all three:
+// the action is reason-agnostic, it just echoes whatever core said verbatim.
+for (const reason of ['verified_origin_evidence', 'admin_retained', 'audit_history']) {
+	test(`a ${reason} refusal on the plain reap 409s and echoes sourceId/commandId/force:false so the page can offer the SEPARATE force-confirm form`, async () => {
+		const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: reason }), { status: 409 }))
+		const res = await actions.reap(formEvent('reap', { sourceId: 's1', commandId: 'cmd-1' }, fetch) as never)
+		expect(res).toMatchObject({ status: 400 })
+		expect((res as { data: { error: string; sourceId: string; commandId: string; force: boolean } }).data).toEqual({
+			error: reason,
+			sourceId: 's1',
+			commandId: 'cmd-1',
+			force: false
+		})
+	})
+}
+
+test('the confirm-with-force reap posts {commandId, force: true} with a DIFFERENT commandId than the refused attempt, and succeeds', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 }))
+	const res = await actions.reap(formEvent('reap', { sourceId: 's1', commandId: 'force-cmd-2', force: 'true' }, fetch) as never)
+	expect(res).toEqual({ reaped: true })
+	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
+	expect(url).toContain('/admin/sources/s1/reap')
+	expect(JSON.parse(String(init.body))).toEqual({ commandId: 'force-cmd-2', force: true })
+	// This is a genuinely different id than any plain-attempt commandId would
+	// have been — the action itself never re-derives or reuses one.
+	expect(init.body).not.toContain('cmd-1')
+})
+
+test('a network error on reap echoes sourceId/commandId/force so a retry can replay the exact same command', async () => {
+	const throwingFetch = vi.fn(async () => {
+		throw new Error('response lost')
+	})
+	const res = await actions.reap(formEvent('reap', { sourceId: 's9', commandId: 'retry-me', force: 'true' }, throwingFetch) as never)
+	expect((res as { data: { sourceId: string; commandId: string; force: boolean } }).data).toMatchObject({ sourceId: 's9', commandId: 'retry-me', force: true })
 })

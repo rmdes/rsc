@@ -100,16 +100,22 @@ export async function getAdminOverview(f: typeof fetch): Promise<{
 	return await res.json()
 }
 
-export async function listAdminUsers(
-	f: typeof fetch
-): Promise<Array<{ handle: string; displayName: string; kind: string; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>> {
-	const res = await f(`${base()}/admin/users`)
+export interface AdminUserRow {
+	id: string
+	handle: string
+	displayName: string
+	kind: string
+	emailVerified: boolean | null
+	createdAt: string
+	feedUrl: string | null
+}
+
+// Cursor-paginated (Task 3): mirrors listAdminSources' shape ({items, nextCursor}).
+export async function listAdminUsers(f: typeof fetch, cursor?: string): Promise<{ items: AdminUserRow[]; nextCursor: string | null }> {
+	const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+	const res = await f(`${base()}/admin/users${qs}`)
 	if (!res.ok) throw new Error(await errorMessage(res, 'listAdminUsers failed'))
-	return (
-		(await res.json()) as {
-			users: Array<{ handle: string; displayName: string; kind: string; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
-		}
-	).users
+	return (await res.json()) as { items: AdminUserRow[]; nextCursor: string | null }
 }
 
 export async function deleteLocalAccount(f: typeof fetch, handle: string): Promise<void> {

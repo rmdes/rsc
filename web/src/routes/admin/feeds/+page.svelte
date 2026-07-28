@@ -14,12 +14,75 @@
 	// per-branch narrowing. Ceiling: a 4th action with a same-named, differently
 	// typed field could paper over a real mismatch here. Upgrade path: revisit
 	// if this page's action count grows past three.
-	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string }
+	// Task 4 adds `reap`'s `force` field: it never collides with `source`'s
+	// `action` or `tombstone`'s `tombstoneId`, since `reap`'s fail() sets
+	// neither — `'force' in retryFail` is what distinguishes a reap failure
+	// from the other three actions' shapes below.
+	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string; force?: boolean }
 	const retryFail = $derived(form as RetryFail | null)
 	// Retry id for the establish form specifically (no sourceId/tombstoneId of its
 	// own): was a template {@const}, which requires an enclosing block — hoisted
 	// here once the page's only {#if} (the dead v1 arm) was deleted.
 	const establishRetryCommandId = $derived(retryFail?.commandId && !retryFail.sourceId ? retryFail.commandId : undefined)
+	// establish's form isn't inside a block, so it can't use a template
+	// {@const} (same reason establishRetryCommandId above was hoisted) —
+	// otherParams() itself only reads reactive `data` fields, so this stays
+	// live across re-renders same as a {@const} would.
+	const establishQs = $derived(otherParams())
+
+	// Every mutating form/pagination link on this page now composes from FOUR
+	// independent view params (ordinary-list cursor, search, the orphan
+	// group's OWN cursor, and the lazy member-expand id) — carrying forward
+	// every one it doesn't itself change, same convention the pre-existing
+	// cursor+expand inline @consts already followed before Task 4 added the
+	// other two axes.
+	function otherParams(exclude: ReadonlySet<string> = new Set()): string {
+		return ([
+			['cursor', data.cursor],
+			['q', data.q],
+			['orphanCursor', data.orphanCursor],
+			['expand', data.expand]
+		] as const)
+			.filter(([k, v]) => v && !exclude.has(k))
+			.map(([k, v]) => `${k}=${encodeURIComponent(v as string)}`)
+			.join('&')
+	}
+
+	const RETENTION_LABEL: Record<string, string> = {
+		verified_origin: 'Verified-origin evidence — retained',
+		admin_retained: 'Admin-retained — retained',
+		audit_history: 'Has audit history — retained',
+		reapable: 'No retaining reason — reapable'
+	}
+
+	// Design §10 posture, extended to reap: the plain (no-force) attempt's
+	// consequence is stated up front; the SEPARATE force-confirm form (shown
+	// only once core has actually refused with one of the three force-liftable
+	// reasons — verified_origin_evidence, admin_retained, audit_history, per
+	// core's reapSource guard chain) states the sharper, reason-specific
+	// consequence of overriding THAT refusal — never the same sentence for all
+	// three, since the stakes differ per reason.
+	const REAP_CONSEQUENCE =
+		'Reaping permanently deletes this source and its evidence — items, publisher claims and any history of its own are removed for good. Only offered for sources with no subscribers and no federation relationship.'
+	// The three refusal reasons core's reapSource will actually lift when
+	// force:true is sent (admin_retained/audit_history/verified_origin_evidence
+	// — see reapSource's `!opts.force &&` guards); every other reason
+	// (has_subscribers/not_allowed/federated/idempotency conflict) is always
+	// enforced and gets no confirm form, just the plain error banner.
+	const FORCE_LIFTABLE = new Set(['verified_origin_evidence', 'admin_retained', 'audit_history'])
+	const FORCE_REAP_CONSEQUENCE: Record<string, string> = {
+		verified_origin_evidence:
+			'This source backs verified-origin evidence for a logical item. Reaping anyway removes that evidence permanently — the affected item loses its verified-origin claim. This cannot be undone.',
+		admin_retained:
+			'This source was marked retained by an admin. Reaping anyway overrides that retention permanently — the source and its evidence are removed for good.',
+		audit_history:
+			'This source has audit history (past moderation decisions). Reaping anyway removes the source AND that history permanently — nothing will be left to show what was decided or why.'
+	}
+	// Fallback only for the rare case where a force retry itself fails for a
+	// reason that ISN'T one of the three above (e.g. a subscriber appeared in
+	// between) — the confirm form stays open for the retry, just with generic
+	// wording instead of a stale reason-specific sentence.
+	const GENERIC_FORCE_CONSEQUENCE = 'Reaping anyway overrides the refusal above and permanently removes this source and its evidence. This cannot be undone.'
 
 	const LABEL: Record<string, string> = {
 		pause: 'Pause acquisition',
@@ -63,6 +126,19 @@
 {#if form && 'done' in form && form.done}<p class="notice confirm" role="status">{LABEL[form.done] ?? form.done} applied.</p>{/if}
 {#if form && 'established' in form && form.established}<p class="notice confirm" role="status">Federation established — the source is now approved.</p>{/if}
 {#if form && 'unblocked' in form && form.unblocked}<p class="notice confirm" role="status">Tombstone unblocked — the URL can be created again. Nothing was restored.</p>{/if}
+{#if form && 'reaped' in form && form.reaped}<p class="notice confirm" role="status">Source reaped — the source and its evidence are gone.</p>{/if}
+
+<!-- No-JS search: a plain GET submit replaces the whole querystring with
+     just this form's own field, so a fresh search always starts back at
+     page one — filters only the ordinary paginated list below, same
+     posture as `cursor` itself (the federation/review union is deliberately
+     independent of both). -->
+<form method="GET" class="admin-search" role="search">
+	<label class="visually-hidden" for="source-search">Search sources by URL</label>
+	<input id="source-search" name="q" type="search" placeholder="Search by URL…" value={data.q ?? ''} />
+	<button>Search</button>
+	{#if data.q}<a href="/admin/feeds">Clear</a>{/if}
+</form>
 
 {#each data.groups as group (group.key)}
 	<section>
@@ -89,10 +165,14 @@
 							     row came from — verification, not subscribe/OPML/admin — a nested
 							     member never reaches here at all (Task 6 exclusion). -->
 							{#if row.viaVerification}<p class="subnav hint">via verification</p>{/if}
+							{#if row.addedBy.length}
+								{@const extra = Math.max(0, row.subscriberTotal - row.addedBy.length)}
+								<p class="subnav hint">Added by {row.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
+							{/if}
 							<p class="subnav"><a href="/admin/sources/{encodeURIComponent(row.id)}">Details (run history, items, purge)</a></p>
 						</div>
 						{#if row.group === 'federation' && row.memberCounts}
-							{@const qs = [expanded ? '' : `expand=${row.id}`, data.cursor ? `cursor=${encodeURIComponent(data.cursor)}` : ''].filter(Boolean).join('&')}
+							{@const qs = [expanded ? '' : `expand=${row.id}`, otherParams(new Set(['expand']))].filter(Boolean).join('&')}
 							<p class="subnav member-rollup">
 								{row.memberCounts.members} member{row.memberCounts.members === 1 ? '' : 's'} ·
 								{row.memberCounts.overridden} overridden ·
@@ -113,6 +193,10 @@
 													{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
 												</span>
 												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
+												{#if m.addedBy.length}
+													{@const extra = Math.max(0, m.subscriberTotal - m.addedBy.length)}
+													<p class="subnav hint">Added by {m.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
+												{/if}
 												<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
 											</div>
 											{@render managePanel(m, 'm-')}
@@ -137,7 +221,7 @@
      N1 fix: a blocked member renders twice (flat + nested in expanded instance),
      so we add a scope discriminator to prevent duplicate DOM ids. -->
 {#snippet managePanel(row: Row, scope = '')}
-	{@const qs = [data.cursor ? `cursor=${encodeURIComponent(data.cursor)}` : '', data.expand ? `expand=${encodeURIComponent(data.expand)}` : ''].filter(Boolean).join('&')}
+	{@const qs = otherParams()}
 	<details class="panel">
 		<summary aria-label="Manage {row.url}">Manage</summary>
 		<div class="source-actions">
@@ -179,12 +263,74 @@
 {/snippet}
 
 {#if data.nextCursor}
-	<a class="older" href="/admin/feeds?cursor={encodeURIComponent(data.nextCursor)}">More sources</a>
+	{@const qs = [`cursor=${encodeURIComponent(data.nextCursor)}`, otherParams(new Set(['cursor']))].filter(Boolean).join('&')}
+	<a class="older" href="/admin/feeds?{qs}">More sources</a>
 {/if}
+
+<section>
+	<h3>Orphaned sources</h3>
+	<p class="subnav">
+		Allowed, unsubscribed, and not federated — kept only by whatever's still retaining them. Paginates independently of the list above.
+	</p>
+	{#if data.orphanRows.length === 0}
+		<p class="subnav">None.</p>
+	{:else}
+		<ul class="following-list source-list">
+			{#each data.orphanRows as row (row.id)}
+				{@const orphanQs = otherParams()}
+				<!-- Task 2's guard-refusal ladder (subscribers > governance >
+				     federation > admin_retained > audit_history >
+				     verified_origin_evidence) is NOT the same ladder as the
+				     `retention` label above (verified_origin first) — the two are
+				     computed for independent purposes, so `reapFail`/`forceReason`
+				     below are gated on core's ACTUAL 409 reason, never on the
+				     displayed retention. -->
+				{@const reapFail = retryFail && 'force' in retryFail && retryFail.sourceId === row.id ? retryFail : undefined}
+				{@const forceReason = form?.error && FORCE_LIFTABLE.has(form.error) ? form.error : undefined}
+				{@const showForceConfirm = !!reapFail && (forceReason !== undefined || reapFail.force === true)}
+				<li>
+					<div class="feed-info">
+						<strong class="feed-url">{row.url}</strong>
+						<span class="badge-kind">{RETENTION_LABEL[row.retention ?? 'reapable']}</span>
+					</div>
+					<form method="POST" action="?/reap{orphanQs ? `&${orphanQs}` : ''}" class="source-action" use:enhance={confirmSubmit(`${REAP_CONSEQUENCE} Continue?`)}>
+						<input type="hidden" name="sourceId" value={row.id} />
+						<input type="hidden" name="commandId" value={reapFail?.force === false ? reapFail.commandId : row.commandId} />
+						<p class="consequence">{REAP_CONSEQUENCE}</p>
+						<button aria-label="Reap {row.url}">Reap</button>
+					</form>
+					{#if showForceConfirm}
+						{@const forceConsequence = FORCE_REAP_CONSEQUENCE[forceReason ?? ''] ?? GENERIC_FORCE_CONSEQUENCE}
+						<!-- Distinct, freshly-minted commandId (row.forceCommandId), never
+						     the refused plain attempt's id — replaying THAT id would just
+						     replay its stored refusal from the ledger, not re-run the guard
+						     chain with force:true. -->
+						<form
+							method="POST"
+							action="?/reap{orphanQs ? `&${orphanQs}` : ''}"
+							class="source-action destructive"
+							use:enhance={confirmSubmit(`${forceConsequence} Continue?`)}
+						>
+							<input type="hidden" name="sourceId" value={row.id} />
+							<input type="hidden" name="force" value="true" />
+							<input type="hidden" name="commandId" value={reapFail?.force === true ? reapFail.commandId : row.forceCommandId} />
+							<p class="consequence">{forceConsequence}</p>
+							<button aria-label="Reap {row.url} anyway">Reap anyway</button>
+						</form>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+	{/if}
+	{#if data.orphanNextCursor}
+		{@const qs = [`orphanCursor=${encodeURIComponent(data.orphanNextCursor)}`, otherParams(new Set(['orphanCursor']))].filter(Boolean).join('&')}
+		<a class="older" href="/admin/feeds?{qs}">More orphaned sources</a>
+	{/if}
+</section>
 
 <details class="panel">
 	<summary>Establish federation with a source</summary>
-	<form method="POST" action="?/establish{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}" class="add-remote" use:enhance>
+	<form method="POST" action="?/establish{establishQs ? `&${establishQs}` : ''}" class="add-remote" use:enhance>
 		<label class="visually-hidden" for="fed-url">Source URL</label>
 		<input id="fed-url" name="url" type="url" placeholder="https://their-instance.example/feed.xml" required />
 		<label class="visually-hidden" for="fed-note">Note (optional)</label>
@@ -206,6 +352,7 @@
 		<ul class="following-list source-list">
 			{#each data.tombstones as t (t.id)}
 				{@const retryCommandId = retryFail?.tombstoneId === t.id ? retryFail.commandId : undefined}
+				{@const tombstoneQs = otherParams()}
 				<li>
 					<div class="feed-info">
 						<strong class="feed-url">{t.canonicalUrl}</strong>
@@ -217,7 +364,7 @@
 						{#if t.aliases.length}<span class="subnav feed-url">aliases: {t.aliases.join(', ')}</span>{/if}
 						{#if t.note}<span class="subnav">{t.note}</span>{/if}
 					</div>
-					<form method="POST" action="?/tombstone{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}" class="source-action" use:enhance={confirmSubmit(`${data.tombstoneConsequence} Continue?`)}>
+					<form method="POST" action="?/tombstone{tombstoneQs ? `&${tombstoneQs}` : ''}" class="source-action" use:enhance={confirmSubmit(`${data.tombstoneConsequence} Continue?`)}>
 						<input type="hidden" name="tombstoneId" value={t.id} />
 						<input type="hidden" name="commandId" value={retryCommandId ?? t.commandId} />
 						<p class="consequence">{data.tombstoneConsequence}</p>
@@ -318,5 +465,32 @@
 		margin: 0;
 		color: var(--color-secondary);
 		font-size: 0.8125rem;
+	}
+
+	/* A one-line search bar, not the stacked .add-remote layout: input grows,
+	   button and clear link stay their natural width. Reuses the global
+	   input/button tokens (border, radius, focus ring) — nothing new here but
+	   the row arrangement. */
+	.admin-search {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		max-width: 28rem;
+		margin-bottom: var(--space-lg);
+	}
+
+	.admin-search input {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.admin-search button {
+		flex-shrink: 0;
+	}
+
+	.admin-search a {
+		flex-shrink: 0;
+		color: var(--color-secondary);
+		font-size: 0.875rem;
 	}
 </style>
