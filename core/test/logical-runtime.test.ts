@@ -53,7 +53,7 @@ test('workers are constructed and ready before the ONE pre-listen activation, th
   await runtime.ready
   // The server accepts traffic (listen) only after activation completes.
   order.push('listen')
-  expect(order).toEqual(['journal', 'projector', 'scheduler', 'reconcile', 'orphan', 'activate', 'listen'])
+  expect(order).toEqual(['journal', 'projector', 'scheduler', 'reconcile', 'orphan', 'activate', 'heal-orphaned-runs', 'listen'])
   await runtime.stop()
 })
 
@@ -211,4 +211,25 @@ test('a v2 local post still fires the outbound-push channel AND a journal wake-u
   await service.createLocalPostAs('alice', 'Alice', 'hello')
   expect(outboundPush).toBe(true)
   expect(hinted).toBeGreaterThan(0)
+})
+
+// ---- startup heal for orphaned acquisition runs (spec §7.2) -----
+
+test('an orphaned processing acquisition run is healed to terminal before the scheduler starts', async () => {
+  const deps = await setup()
+  deps.repo.raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES ('s1', 'https://feed.test/s1', 'single_publisher', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+  ).run(NOW)
+  deps.repo.raw.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES ('orphan-1', 's1', 'scheduled', 'processing', ?, NULL, NULL, 'pending', '{}', NULL, NULL, NULL)`,
+  ).run(NOW)
+
+  const runtime = mkRuntime(deps)
+  await runtime.ready
+  await runtime.stop()
+
+  const row = deps.repo.raw.prepare(`SELECT status, outcome, failure_category, diagnostic FROM acquisition_runs_v2 WHERE id = 'orphan-1'`).get()
+  expect(row).toEqual({ status: 'terminal', outcome: 'operational_failure', failure_category: 'interrupted', diagnostic: 'orphaned by process restart' })
 })

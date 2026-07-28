@@ -50,9 +50,68 @@ function stubEngine(opts: { order?: string[]; outcomeFor?: (id: string) => Admin
   }
 }
 
-const CONFIG = { pollSeconds: 60 }
+const CONFIG = { pollSeconds: 60, ingestCycleMinutes: 1, ingestConcurrency: 8, ingestMaxPerHost: 8 }
 
-test('one pass polls every schedulable source once, in stable sourceId order', async () => {
+// --- store: listDueSources / countSchedulableSources (spec 2026-07-28) -------
+// Staleness-ordered, LIMIT-bounded due-query + a cheap catalog-size count — the
+// two primitives the self-pacing scheduler (below) composes into a batch size.
+// Tested directly against the store here, independent of the scheduler.
+
+test('countSchedulableSources matches listSchedulableSources().length', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'a')
+  await seedSubscribed(raw, repo, 'b')
+  seedSource(raw, 'lonely') // no subscriber, no federation — not schedulable
+  expect(store.countSchedulableSources()).toBe(2)
+  expect(store.listSchedulableSources().length).toBe(2)
+  raw.close()
+})
+
+test('listDueSources: never-polled sources are due, ordered by id when equally stale', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'c')
+  await seedSubscribed(raw, repo, 'a')
+  await seedSubscribed(raw, repo, 'b')
+  const due = store.listDueSources({ now: NOW, pollSeconds: 60, pushPollFactor: 10, limit: 10 })
+  expect(due.map((d) => d.id)).toEqual(['a', 'b', 'c'])
+  expect(due[0]).toEqual({ id: 'a', canonicalUrl: 'https://feed.test/a' })
+  raw.close()
+})
+
+test('listDueSources: a source polled within pollSeconds is excluded', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  raw.prepare(`INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures) VALUES ('s1', ?, ?, NULL, 0)`).run(NOW, NOW)
+  expect(store.listDueSources({ now: at(30), pollSeconds: 60, pushPollFactor: 10, limit: 10 })).toEqual([])
+  expect(store.listDueSources({ now: at(61), pollSeconds: 60, pushPollFactor: 10, limit: 10 }).map((d) => d.id)).toEqual(['s1'])
+  raw.close()
+})
+
+test('listDueSources: an active push lease widens the interval to pollSeconds × pushPollFactor', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  raw.prepare(`INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures) VALUES ('s1', ?, ?, NULL, 0)`).run(NOW, NOW)
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok-1', NULL, 'active', ?, ?)`,
+  ).run(at(100000), NOW)
+  // 61s elapsed: past the base interval, still inside the 10x push interval
+  expect(store.listDueSources({ now: at(61), pollSeconds: 60, pushPollFactor: 10, limit: 10 })).toEqual([])
+  // 601s elapsed: past 10 × 60s
+  expect(store.listDueSources({ now: at(601), pollSeconds: 60, pushPollFactor: 10, limit: 10 }).map((d) => d.id)).toEqual(['s1'])
+  raw.close()
+})
+
+test('listDueSources: LIMIT bounds the result to the most-overdue N', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'a')
+  await seedSubscribed(raw, repo, 'b')
+  await seedSubscribed(raw, repo, 'c')
+  expect(store.listDueSources({ now: NOW, pollSeconds: 60, pushPollFactor: 10, limit: 2 }).map((d) => d.id)).toEqual(['a', 'b'])
+  raw.close()
+})
+
+test('one pass polls every schedulable source once — staleness order ties on id when all are equally never-polled', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 'c')
   await seedSubscribed(raw, repo, 'a')
@@ -265,8 +324,12 @@ test('a failed poll registers nothing, and the sweep still ends the pass', async
 test('an active push lease reduces the cadence to 10 × the base interval — durable, no tick state', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok-1', NULL, 'active', ?, ?)`,
+  ).run(at(100000), NOW) // expires far beyond every timestamp this test checks
   const order: string[] = []
-  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: stubPush({ active: new Set(['s1']) }), breather: undefined })
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1)
   expect(await sched.pollDue(at(61))).toBe(0) // past the base interval, inside the push one
@@ -279,8 +342,11 @@ test('an active push lease reduces the cadence to 10 × the base interval — du
 test('a pending push row does not reduce the cadence', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
-  // hasActivePush is false for a pending row (see logical-push.test.ts) → base cadence
-  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push: stubPush({ active: new Set() }), breather: undefined })
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok-1', NULL, 'pending', ?, ?)`,
+  ).run(at(100000), NOW)
+  const sched = createScheduler({ store, acquisition: stubEngine(), config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
 
   expect(await sched.pollDue(NOW)).toBe(1)
   expect(await sched.pollDue(at(61))).toBe(1)
@@ -354,5 +420,140 @@ test('start/stop/wake are present and stop halts the loop', async () => {
   expect(typeof sched.stop).toBe('function')
   expect(typeof sched.wake).toBe('function')
   sched.stop() // idempotent before start
+  raw.close()
+})
+
+// --- self-pacing batch size (spec 2026-07-28 §2) -----------------------------
+
+test('self-pacing batch size: a full cycle is spread evenly across ticks regardless of catalog size', async () => {
+  const { raw, store, repo } = await fresh()
+  for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) await seedSubscribed(raw, repo, id)
+  const order: string[] = []
+  // ticksPerCycle = ceil(6*60/60) = 6 → batchSize = ceil(6/6) = 1 per tick
+  const CONFIG6 = { pollSeconds: 60, ingestCycleMinutes: 6, ingestConcurrency: 8, ingestMaxPerHost: 8 }
+  const sched = createScheduler({ store, acquisition: stubEngine({ order }), config: CONFIG6, drainVerification: undefined, push: undefined, breather: undefined })
+
+  for (let i = 0; i < 6; i++) {
+    expect(await sched.pollDue(at(i * 60))).toBe(1)
+  }
+  expect(order).toEqual(['a', 'b', 'c', 'd', 'e', 'f']) // each polled exactly once, oldest-due first
+  raw.close()
+})
+
+// --- per-host concurrency cap (spec 2026-07-28 §2) ---------------------------
+
+async function seedSubscribedUrl(raw: Raw, repo: { createLocalUser: (u: { handle: string; displayName: string }) => Promise<{ id: string }> }, id: string, url: string): Promise<void> {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+  ).run(id, url, NOW)
+  const owner = await repo.createLocalUser({ handle: `owner-${id}`, displayName: id })
+  raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, 'active', ?)`)
+    .run(`sub-${id}`, owner.id, id, NOW)
+}
+
+test('RSC_INGEST_MAX_PER_HOST caps simultaneous fetches to the same remote host', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribedUrl(raw, repo, 's1', 'https://shared.test/a.xml')
+  await seedSubscribedUrl(raw, repo, 's2', 'https://shared.test/b.xml')
+  await seedSubscribedUrl(raw, repo, 's3', 'https://other.test/c.xml')
+
+  let concurrentOnSharedHost = 0
+  let maxConcurrentOnSharedHost = 0
+  const engine: AcquisitionEngine = {
+    async acquireSource(sourceId: string) {
+      if (sourceId === 's1' || sourceId === 's2') {
+        concurrentOnSharedHost++
+        maxConcurrentOnSharedHost = Math.max(maxConcurrentOnSharedHost, concurrentOnSharedHost)
+        await new Promise((r) => setTimeout(r, 5))
+        concurrentOnSharedHost--
+      }
+      return { runId: `run-${sourceId}`, sourceId, status: 'terminal', outcome: 'parsed' }
+    },
+    inFlight: () => false,
+  }
+  const CONFIG_HOST = { pollSeconds: 60, ingestCycleMinutes: 1, ingestConcurrency: 8, ingestMaxPerHost: 1 }
+  const sched = createScheduler({ store, acquisition: engine, config: CONFIG_HOST, drainVerification: undefined, push: undefined, breather: undefined })
+
+  expect(await sched.pollDue(NOW)).toBe(3)
+  expect(maxConcurrentOnSharedHost).toBe(1) // never more than RSC_INGEST_MAX_PER_HOST on shared.test at once
+  raw.close()
+})
+
+// --- a throwing acquisition must not orphan the lane (review finding 1) -----
+// Without a catch around acquireSource/recordHealth/maybeRegister, a throw
+// propagates out of lane() and rejects pollDue's Promise.all — but the OTHER
+// lanes keep running (looping over the shared queue) after tick() has already
+// caught the rejection and moved on. One bad source must not corrupt the pass.
+
+test('an acquireSource throw does not orphan the lane — pollDue resolves and the other source is still processed', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  await seedSubscribed(raw, repo, 's2')
+  const order: string[] = []
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const engine: AcquisitionEngine = {
+    async acquireSource(sourceId: string) {
+      order.push(sourceId)
+      if (sourceId === 's1') throw new Error('boom')
+      return { runId: `run-${sourceId}`, sourceId, status: 'terminal', outcome: 'parsed' }
+    },
+    inFlight: () => false,
+  }
+  // Single lane so s1 and s2 are necessarily processed by the same lane loop,
+  // sequentially — the orphan bug shows up as s2 never being attempted.
+  const CONFIG1 = { pollSeconds: 60, ingestCycleMinutes: 1, ingestConcurrency: 1, ingestMaxPerHost: 8 }
+  const sched = createScheduler({ store, acquisition: engine, config: CONFIG1, drainVerification: undefined, push: undefined, breather: undefined })
+
+  await expect(sched.pollDue(NOW)).resolves.toBe(1) // s1 threw (uncounted), s2 succeeded
+  expect(order).toEqual(['s1', 's2']) // s2 still attempted despite s1's throw
+  const h = raw.prepare(`SELECT last_success_at FROM source_health_v2 WHERE source_id = 's2'`).get() as { last_success_at: string } | undefined
+  expect(h?.last_success_at).toBe(NOW)
+  spy.mockRestore()
+  raw.close()
+})
+
+// --- a throwing source must still get recordHealth (review finding 3) ------
+// listDueSources orders NULLs/oldest last_poll_at first. Without recordHealth
+// in the catch, a source whose acquireSource throws never advances its
+// last_poll_at, so it stays maximally-overdue and — combined with the
+// per-tick LIMIT this task introduced — permanently occupies one of a small
+// number of batch slots, starving every other source forever.
+
+test('a throwing source still gets recordHealth — its staleness advances instead of staying permanently head-of-line', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'a-throws')
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const order: string[] = []
+  const engine: AcquisitionEngine = {
+    async acquireSource(sourceId: string) {
+      order.push(sourceId)
+      if (sourceId === 'a-throws') throw new Error('boom')
+      return { runId: `run-${sourceId}`, sourceId, status: 'terminal', outcome: 'parsed' }
+    },
+    inFlight: () => false,
+  }
+  const sched1 = createScheduler({ store, acquisition: engine, config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
+  await sched1.pollDue(NOW)
+
+  // The core assertion: without recordHealth in the catch, this stays null
+  // forever and 'a-throws' would keep re-winning every future staleness
+  // ordering ahead of sources that have never been polled at all.
+  expect(store.getHealth('a-throws')?.lastPollAt).toBe(NOW)
+
+  // Seed a source that's genuinely never been polled, then advance past the
+  // base interval so 'a-throws' becomes due again too. With a per-tick LIMIT
+  // of 1, listDueSources' NULL-first ordering must pick the never-polled
+  // source, not re-pick 'a-throws' first ('a-throws' sorts before 'z-never'
+  // alphabetically, so a stale/never-advanced tie would wrongly favor it) —
+  // proving the throw didn't leave it permanently head-of-line.
+  await seedSubscribed(raw, repo, 'z-never')
+  const CONFIG2 = { pollSeconds: 60, ingestCycleMinutes: 2, ingestConcurrency: 8, ingestMaxPerHost: 8 }
+  const sched2 = createScheduler({ store, acquisition: engine, config: CONFIG2, drainVerification: undefined, push: undefined, breather: undefined })
+  order.length = 0
+  await sched2.pollDue(at(61))
+  expect(order).toEqual(['z-never'])
+
+  spy.mockRestore()
   raw.close()
 })

@@ -64,6 +64,7 @@ const app = createApp({
   feeds: { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud },
   websub: config.websub.mode,
   pushIn: config.pushIn,
+  pollSeconds: config.pollSeconds,
   sources,
   logical: { store: logicalStore, acquisition: runtime.acquisition },
   pushApi:

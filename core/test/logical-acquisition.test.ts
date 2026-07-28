@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
-import { createAcquisition, parseCandidates } from '../src/logical/acquisition.ts'
+import { createAcquisition, parseCandidates, healOrphanedRuns } from '../src/logical/acquisition.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import type { CommandEnvelope } from '../src/domain/types.ts'
 
@@ -198,4 +198,35 @@ test('a second acquisition for the same source is refused while one is in flight
   await first
   expect(eng.inFlight('s1')).toBe(false) // flag clears after the result transaction
   expect(count(raw, 'acquisition_runs_v2')).toBe(1) // only one fetch happened
+})
+
+test('healOrphanedRuns terminalizes every processing row unconditionally', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/s1')
+  raw.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES ('r1', 's1', 'scheduled', 'processing', ?, NULL, NULL, 'pending', '{}', NULL, NULL, NULL)`,
+  ).run(NOW)
+
+  const healed = healOrphanedRuns(db, LATER)
+  expect(healed).toBe(1)
+  const row = raw.prepare(`SELECT status, outcome, failure_category, diagnostic, completed_at FROM acquisition_runs_v2 WHERE id = 'r1'`).get()
+  expect(row).toEqual({ status: 'terminal', outcome: 'operational_failure', failure_category: 'interrupted', diagnostic: 'orphaned by process restart', completed_at: LATER })
+})
+
+test('healOrphanedRuns is a no-op when nothing is processing', async () => {
+  const { db } = await fresh()
+  expect(healOrphanedRuns(db, NOW)).toBe(0)
+})
+
+test('healOrphanedRuns never touches an already-terminal run', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/s1')
+  raw.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES ('r1', 's1', 'scheduled', 'terminal', ?, ?, ?, 'parsed', '{}', NULL, NULL, NULL)`,
+  ).run(NOW, NOW, NOW)
+  expect(healOrphanedRuns(db, LATER)).toBe(0)
+  const row = raw.prepare(`SELECT status, outcome FROM acquisition_runs_v2 WHERE id = 'r1'`).get()
+  expect(row).toEqual({ status: 'terminal', outcome: 'parsed' })
 })

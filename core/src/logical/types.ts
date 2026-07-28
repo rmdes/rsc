@@ -208,7 +208,7 @@ export type AdminFetchProjection = {
   httpStatus: number | null
   failureCategory:
     | 'network' | 'timeout' | 'http' | 'body_limit'
-    | 'feed_parse' | 'policy' | 'superseded' | null
+    | 'feed_parse' | 'policy' | 'superseded' | 'interrupted' | null
   diagnostic: string | null
 }
 

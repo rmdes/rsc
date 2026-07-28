@@ -111,13 +111,14 @@ export const STREAM_PROTOCOL_VERSION = 1
 
 // ponytail: deps.bus kept dead in the type to avoid touching every createApp
 // call site; remove when a call site changes anyway.
-export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; sources: { service: SourceService; repo: SourceRepository }; logical: LogicalRouteDeps }): Hono {
+export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; pollSeconds?: number; sources: { service: SourceService; repo: SourceRepository }; logical: LogicalRouteDeps }): Hono {
   const { service, token, sources } = deps
   const feeds: FeedContext = deps.feeds ?? { publicUrl: null, hubUrl: null, rssCloud: false }
   const mailEnabled = deps.mailEnabled ?? true
   const adminEmails = deps.adminEmails ?? new Set<string>()
   const websubMode = deps.websub ?? 'off'
   const pushInEnabled = deps.pushIn ?? false
+  const pollSeconds = deps.pollSeconds ?? 60
   const app = new Hono()
   const authed = sessionAuth(deps.auth, deps.users, adminEmails)
 
@@ -427,6 +428,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     federation: { websub: websubMode, rssCloud: feeds.rssCloud, pushIn: pushInEnabled, publicUrl: feeds.publicUrl },
     mailEnabled,
     adminEmails: [...adminEmails],
+    scheduler: deps.logical.store.schedulerStats({ now: new Date().toISOString(), pollSeconds }),
   }))
 
   app.get('/admin/users', (c) => c.json({ users: service.listUsers() }))

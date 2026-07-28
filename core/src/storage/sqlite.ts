@@ -1305,6 +1305,25 @@ export const MIGRATIONS: string[][] = [
   // DEFAULT 1: every existing INSERT omits the column and every non-mint row
   // is a deliberate act; the origin_verification mint writes an explicit 0.
   [`ALTER TABLE remote_sources_v2 ADD COLUMN overridden INTEGER NOT NULL DEFAULT 1 CHECK (overridden IN (0,1))`],
+  // 20 — scalable ingest scheduler (spec 2026-07-28, post-review): two indexes
+  // on acquisition_runs_v2, which grows one row per source per poll forever.
+  // NOT an index on source_health_v2(last_poll_at) as first shipped — EXPLAIN
+  // QUERY PLAN confirmed that never helps listDueSources's ORDER BY (the LEFT
+  // JOIN forces remote_sources_v2 as the outer loop, so no index on the inner
+  // table's sort column can satisfy it; SQLite always builds a temp B-tree
+  // there regardless — fine at any realistic catalog size, a sort is not the
+  // concern). These two DO have a real, growing table behind them: `started_at`
+  // backs schedulerStats's range scan (WHERE started_at >= ?), `status` backs
+  // healOrphanedRuns's lookup (WHERE status = 'processing') — a B-tree index
+  // lookup stays O(log n + matches) regardless of how skewed the status
+  // distribution is (nearly all rows are 'terminal'), so this doesn't degrade
+  // as the table grows the way the full scan would. Appended at the TAIL,
+  // AFTER migration #19 (the overridden column) — mid-array insertion corrupts
+  // user_version on live databases. Pure additive CREATE INDEX, no table rebuilt.
+  [
+    `CREATE INDEX acquisition_runs_v2_started_at ON acquisition_runs_v2(started_at)`,
+    `CREATE INDEX acquisition_runs_v2_status ON acquisition_runs_v2(status)`,
+  ],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

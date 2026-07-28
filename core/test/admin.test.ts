@@ -76,3 +76,22 @@ test('no admins configured: even a matching email is not admin (fail-closed)', a
   expect((await (await app.request('/me', { headers: { cookie } })).json()).isAdmin).toBe(false)
   expect((await app.request('/admin/overview', { headers: { cookie } })).status).toBe(403)
 })
+
+test('admin session: /admin/overview includes scheduler stats', async () => {
+  const { app, repo } = await makeApp(['boss@x.test'])
+  repo.raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES ('s1', 'https://feed.test/s1', 'single_publisher', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+  ).run('2026-07-28T00:00:00.000Z')
+  const owner = await repo.createLocalUser({ handle: 'owner1', displayName: 'Owner' })
+  repo.raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES ('sub1', ?, 's1', 'active', ?)`)
+    .run(owner.id, '2026-07-28T00:00:00.000Z')
+
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const res = await app.request('/admin/overview', { headers: { cookie } })
+  const body = await res.json()
+  expect(body.scheduler.catalogSize).toBe(1)
+  expect(body.scheduler.mostOverdueSeconds).toBeNull() // never polled = maximally overdue, reported as null
+  expect(body.scheduler.attemptedLastWindow).toBe(0)
+  expect(body.scheduler.windowSpanSeconds).toBeNull()
+})

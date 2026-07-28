@@ -20,7 +20,7 @@ export type Breather = () => Promise<void>
 export interface SchedulerDeps {
   store: LogicalStore
   acquisition: AcquisitionEngine
-  config: { pollSeconds: number }
+  config: { pollSeconds: number; ingestCycleMinutes: number; ingestConcurrency: number; ingestMaxPerHost: number }
   now?: () => string
   // The poll-tick breather (perf fix): every ~10th tick polls 100+ sources
   // back-to-back, and each source's synchronous parse+commit+drainSync slice
@@ -70,7 +70,8 @@ export interface LogicalScheduler {
   start(): void
   stop(): void
   wake(): void
-  // One deterministic serial pass over the due sources; returns the count polled.
+  // One deterministic pass over the due sources (bounded-concurrent, not
+  // serial); returns the count polled.
   // The loop and tests share it. Exposed so tests need no wall-clock timers.
   pollDue(now: string): Promise<number>
 }
@@ -82,37 +83,77 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
   let busy = false
   let stopped = true
 
+  function hostOf(canonicalUrl: string): string {
+    try { return new URL(canonicalUrl).host } catch { return canonicalUrl }
+  }
+
   async function pollDue(nowStr: string): Promise<number> {
-    const nowMs = Date.parse(nowStr)
-    const intervalMs = config.pollSeconds * 1000
-    let polled = 0
-    // Serial: await each source before the next (no overlap, stable id order).
-    for (const sourceId of store.listSchedulableSources()) {
-      const health = store.getHealth(sourceId)
-      const factor = deps.push?.hasActivePush(sourceId, nowStr) ? PUSH_POLL_FACTOR : 1
-      if (health?.lastPollAt && nowMs - Date.parse(health.lastPollAt) < intervalMs * factor) continue // skip-if-recent
-      if (acquisition.inFlight(sourceId)) continue // a run is already active for this source
-      const run = await acquisition.acquireSource(sourceId, { kind: 'scheduled' })
-      if (!('kind' in run)) {
-        store.recordHealth({ sourceId, outcome: run.outcome, now: nowStr })
-        polled++
-        // After a successful acquisition commit, register from that run's claim.
-        // A failed run committed no document, so it carries no fresh claim and an
-        // older run's is inert (spec §1.1).
-        if (SUCCESS_OUTCOMES.has(run.outcome) && deps.push) await deps.push.maybeRegister(sourceId, deps.push.latestClaim(sourceId))
-      }
-      // an 'unavailable' result (e.g. the source paused since listing) is skipped
-      // Breathe HERE — between per-source acquisitions, never mid-transaction.
-      // Each acquisition (its claim/commit/fail, the wrapped drainSync, recordHealth
-      // and maybeRegister) is its own set of transactions and all have committed and
-      // returned by this point, so the yield holds no SQLite lock. Yielding INSIDE an
-      // open transaction would trade event-loop starvation for lock-holding, which is
-      // strictly worse (it stalls every other writer, not just the loop). The
-      // cheap skips above (skip-if-recent, in-flight) `continue` past this — they did
-      // no blocking work, so there is nothing to interleave with.
-      if (deps.breather) await deps.breather()
+    const catalogSize = store.countSchedulableSources()
+    if (catalogSize === 0) {
+      await deps.push?.renewDue()
+      deps.push?.purgeExpired(nowStr)
+      return 0
     }
-    // The retired v1 poll-cycle tail, rebuilt over sources.
+    const ticksPerCycle = Math.max(1, Math.ceil((config.ingestCycleMinutes * 60) / config.pollSeconds))
+    const batchSize = Math.max(1, Math.ceil(catalogSize / ticksPerCycle))
+
+    const due = store.listDueSources({ now: nowStr, pollSeconds: config.pollSeconds, pushPollFactor: PUSH_POLL_FACTOR, limit: batchSize })
+      .filter((s) => !acquisition.inFlight(s.id))
+    // ponytail: a lane that finds nothing startable (every remaining item is
+    // host-capped) doesn't defer — it returns, giving up its slot for this
+    // pass. But nothing is lost: some OTHER lane is still in flight holding
+    // that host's count, and when it finishes it decrements the count and
+    // loops back to findIndex itself, picking the item up within the SAME
+    // pollDue call. A host-heavy batch just makes one tick's pass take longer
+    // (harmless — busy prevents overlapping passes), not "wait for next tick."
+    const queue = due.map((s) => ({ id: s.id, host: hostOf(s.canonicalUrl) }))
+    const hostCounts = new Map<string, number>()
+    let polled = 0
+
+    async function lane(): Promise<void> {
+      for (;;) {
+        const idx = queue.findIndex((item) => (hostCounts.get(item.host) ?? 0) < config.ingestMaxPerHost)
+        if (idx === -1) return
+        const [item] = queue.splice(idx, 1)
+        hostCounts.set(item.host, (hostCounts.get(item.host) ?? 0) + 1)
+        try {
+          const run = await acquisition.acquireSource(item.id, { kind: 'scheduled' })
+          if (!('kind' in run)) {
+            store.recordHealth({ sourceId: item.id, outcome: run.outcome, now: nowStr })
+            polled++
+            if (SUCCESS_OUTCOMES.has(run.outcome) && deps.push) await deps.push.maybeRegister(item.id, deps.push.latestClaim(item.id))
+          }
+        } catch (err) {
+          // One bad source must not corrupt the whole batch: without this catch,
+          // the throw propagates out of lane() and rejects the Promise.all below,
+          // but the OTHER lanes are not cancelled — they keep looping over the
+          // shared queue even after tick() has already caught the rejection and
+          // moved on, orphaning them (busy no longer covers them, stop() can't
+          // halt them, and this pass's polled count / trailing renewDue+purge
+          // never happen).
+          //
+          // Also record health here: without this, last_poll_at never advances
+          // for a source whose acquireSource call itself throws (distinct from
+          // acquireSource returning an operational_failure outcome normally,
+          // which already goes through recordHealth above). Left unrecorded,
+          // listDueSources' staleness ordering (oldest/NULL first) would put
+          // this source at the front of every future batch forever — and since
+          // this task introduced a per-tick LIMIT, a persistently-throwing
+          // source would permanently occupy one of a small number of slots.
+          store.recordHealth({ sourceId: item.id, outcome: 'operational_failure', now: nowStr })
+          console.error('poll: source failed:', item.id, err instanceof Error ? err.message : err)
+        } finally {
+          hostCounts.set(item.host, (hostCounts.get(item.host) ?? 1) - 1)
+        }
+        // Breathe HERE — between per-source acquisitions, never mid-transaction
+        // (each acquisition's claim/commit/fail, recordHealth and maybeRegister
+        // have all committed and returned by this point).
+        if (deps.breather) await deps.breather()
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(config.ingestConcurrency, queue.length) }, () => lane()))
+
     await deps.push?.renewDue()
     deps.push?.purgeExpired(nowStr)
     return polled

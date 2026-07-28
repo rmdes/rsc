@@ -88,6 +88,12 @@ export async function getAdminOverview(f: typeof fetch): Promise<{
 	federation: { websub: string; rssCloud: boolean; pushIn: boolean; publicUrl: string | null }
 	mailEnabled: boolean
 	adminEmails: string[]
+	scheduler: {
+		catalogSize: number
+		mostOverdueSeconds: number | null
+		attemptedLastWindow: number
+		windowSpanSeconds: number | null
+	}
 }> {
 	const res = await f(`${base()}/admin/overview`)
 	if (!res.ok) throw new Error(await errorMessage(res, 'getAdminOverview failed'))

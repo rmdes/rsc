@@ -505,6 +505,27 @@ function markTerminal(tx: WriteTx, input: { runId: string; now: string; outcome:
   ).run(input.outcome, JSON.stringify(input.counters), input.failureCategory, input.diagnostic, input.committedAt, input.now, input.pushCapabilityJson, input.runId)
 }
 
+// A process's in-flight guard (inFlightMap below) starts EMPTY on every boot,
+// so any acquisition_runs_v2 row still 'processing' at this exact moment (this
+// runs pre-listen, before any acquisition has started) cannot belong to this
+// process — it predates this boot and its owning process is gone. Certain by
+// construction, not a timeout heuristic. Harmless if left alone (claimAcquisition
+// never checks for an existing 'processing' row before starting a new one — only
+// the in-memory map guards a double-claim) but wrong bookkeeping for any future
+// admin "is this source stuck?" view. Self-contained transaction, same pattern
+// as membership.ts's healMembers.
+export function healOrphanedRuns(db: DatabaseContext, now: string): number {
+  return db.write((tx) => {
+    const result = tx.prepare(
+      `UPDATE acquisition_runs_v2
+       SET status = 'terminal', outcome = 'operational_failure', failure_category = 'interrupted',
+           diagnostic = 'orphaned by process restart', completed_at = ?
+       WHERE status = 'processing'`,
+    ).run(now)
+    return result.changes
+  })
+}
+
 export function failAcquisition(tx: WriteTx, input: { runId: string; sourceId: string; now: string; outcome: 'operational_failure' | 'cancelled' | 'superseded' | 'policy_rejected'; category: AdminFetchProjection['failureCategory']; diagnostic: string | null; redirects?: RedirectObservation[]; findings?: AcquisitionFinding[] }): AcquisitionRun {
   // A mid-chain rejected hop still retains its redirect evidence (spec §1.6); a
   // parse failure still records its finding — while committing NO aliases,

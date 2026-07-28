@@ -96,3 +96,24 @@ test('RSC_MIGRATION_MANIFEST defaults null and passes a path straight through, u
   expect(loadConfig({ ...base, RSC_MIGRATION_MANIFEST: 'not-a-file' }).migrationManifestPath).toBe('not-a-file')
   expect(loadConfig({ ...base, RSC_MIGRATION_MANIFEST: '' }).migrationManifestPath).toBeNull()
 })
+
+test('ingest scheduling knobs apply defaults', () => {
+  const c = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' })
+  expect(c.ingestCycleMinutes).toBe(30)
+  expect(c.ingestConcurrency).toBe(8)
+  expect(c.ingestMaxPerHost).toBe(2)
+})
+test('ingest scheduling knobs are tunable', () => {
+  const c = loadConfig({
+    RSC_TOKEN: 't', RSC_AUTH_SECRET: 's',
+    RSC_INGEST_CYCLE_MINUTES: '10', RSC_INGEST_CONCURRENCY: '20', RSC_INGEST_MAX_PER_HOST: '1',
+  })
+  expect(c.ingestCycleMinutes).toBe(10)
+  expect(c.ingestConcurrency).toBe(20)
+  expect(c.ingestMaxPerHost).toBe(1)
+})
+test('ingest scheduling knobs reject non-positive-integer values', () => {
+  expect(() => loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_INGEST_CYCLE_MINUTES: '0' })).toThrow('RSC_INGEST_CYCLE_MINUTES')
+  expect(() => loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_INGEST_CONCURRENCY: 'many' })).toThrow('RSC_INGEST_CONCURRENCY')
+  expect(() => loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_INGEST_MAX_PER_HOST: '-1' })).toThrow('RSC_INGEST_MAX_PER_HOST')
+})
