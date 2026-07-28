@@ -58,10 +58,19 @@ test('getAdminOverview returns the snapshot and GETs /admin/overview', async () 
 	expect((await getAdminOverview(f as unknown as typeof fetch)).counts.remoteFeeds).toBe(2)
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/overview')
 })
-test('listAdminUsers returns the users array', async () => {
-	const f = vi.fn(async () => new Response(JSON.stringify({ users: [{ handle: 'a', displayName: 'A', kind: 'local', emailVerified: true, createdAt: '', feedUrl: null }] }), { status: 200 }))
-	expect((await listAdminUsers(f as unknown as typeof fetch))[0].handle).toBe('a')
+test('listAdminUsers returns {items, nextCursor} and GETs /admin/users', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ items: [{ id: 'u1', handle: 'a', displayName: 'A', kind: 'local', emailVerified: true, createdAt: '', feedUrl: null }], nextCursor: null }), { status: 200 }))
+	const page = await listAdminUsers(f as unknown as typeof fetch)
+	expect(page.items[0].handle).toBe('a')
+	expect(page.nextCursor).toBeNull()
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/users')
+})
+
+test('listAdminUsers encodes the cursor as a query param', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ items: [], nextCursor: 'next 1' }), { status: 200 }))
+	const page = await listAdminUsers(f as unknown as typeof fetch, 'cur sor')
+	expect(page.nextCursor).toBe('next 1')
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/users?cursor=cur%20sor')
 })
 test('getAdminOverview surfaces the core error message', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'admin only' }), { status: 403 }))
