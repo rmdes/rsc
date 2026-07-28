@@ -3,6 +3,7 @@ import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
 import type { NewLocalUser, TimelineEntry, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import type { Cursor } from './source-repository.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 
@@ -119,7 +120,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       return repo.listFollowing(userId)
     },
     instanceStats(v2: boolean) { return repo.instanceStats(v2) },
-    listUsers() { return repo.listUsers() },
+    listUsers(cursor: Cursor | undefined, limit: number) { return repo.listUsers(cursor, limit) },
     async removeRemoteFeed(handle: string): Promise<{ ok: true } | { error: 'unknown' | 'local' }> {
       const user = await repo.getUserByHandle(normalizeHandle(handle))
       if (!user) return { error: 'unknown' }

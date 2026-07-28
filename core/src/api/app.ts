@@ -452,7 +452,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     adminEmails: [...adminEmails],
   }))
 
-  app.get('/admin/users', (c) => c.json({ users: service.listUsers() }))
+  app.get('/admin/users', (c) => {
+    const args = pageArgs(c)
+    if (args instanceof Response) return args
+    return c.json(service.listUsers(args.cursor, args.limit))
+  })
 
   app.get('/admin/settings', async (c) =>
     c.json({ maxSubsPerUser: Number(await service.getSetting('max_subs_per_user') ?? '500') }))

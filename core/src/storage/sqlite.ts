@@ -424,16 +424,38 @@ export class SqliteRepository implements Repository, SourceRepository {
     ).get() as { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
   }
 
-  listUsers(): Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
-    const rows = this.raw.prepare(
-      `SELECT u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
-              u.created_at AS createdAt, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
-       FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
-       WHERE u.kind = 'remote'
-          OR (u.kind = 'local' AND (au.isAnonymous = 0 OR au.isAnonymous IS NULL))
-       ORDER BY u.created_at DESC`,
-    ).all() as Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; createdAt: string; feedUrl: string | null; emailVerified: number | null }>
-    return rows.map((r) => ({ ...r, emailVerified: r.emailVerified === null ? null : r.emailVerified === 1 }))
+  listUsers(cursor: Cursor | undefined, limit: number): Page<{ id: string; handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }> {
+    const lim = clampLimit(limit)
+    const where = `(u.kind = 'remote' OR (u.kind = 'local' AND (au.isAnonymous = 0 OR au.isAnonymous IS NULL)))`
+    const rows = (cursor
+      ? this.raw.prepare(
+          `SELECT u.id AS id, u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
+                  u.created_at AS created_at, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
+           FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
+           WHERE ${where} AND ((u.created_at < ?) OR (u.created_at = ? AND u.id < ?))
+           ORDER BY u.created_at DESC, u.id DESC LIMIT ?`,
+        ).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(
+          `SELECT u.id AS id, u.handle AS handle, u.display_name AS displayName, u.kind AS kind,
+                  u.created_at AS created_at, u.feed_url AS feedUrl, au.emailVerified AS emailVerified
+           FROM users u LEFT JOIN user au ON au.id = u.auth_user_id
+           WHERE ${where}
+           ORDER BY u.created_at DESC, u.id DESC LIMIT ?`,
+        ).all(lim + 1)
+    ) as Array<{ id: string; created_at: string; handle: string; displayName: string; kind: 'local' | 'remote'; feedUrl: string | null; emailVerified: number | null }>
+    const { page, nextCursor } = this.splitPage(rows, lim)
+    return {
+      items: page.map((r) => ({
+        id: r.id,
+        handle: r.handle,
+        displayName: r.displayName,
+        kind: r.kind,
+        createdAt: r.created_at,
+        feedUrl: r.feedUrl,
+        emailVerified: r.emailVerified === null ? null : r.emailVerified === 1,
+      })),
+      nextCursor,
+    }
   }
 
   // --- v2 source-control plane administrative reads (served by the

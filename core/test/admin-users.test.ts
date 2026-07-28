@@ -8,6 +8,7 @@ import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
+import { decodeCursor } from '../src/domain/source-repository.ts'
 
 async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   const repo = await createSqliteRepository(':memory:')
@@ -30,7 +31,7 @@ test('listUsers: registered locals + remote feeds, excludes guests', async () =>
   const guest = await anonSession(app)
   await app.request('/me', { headers: { cookie: guest } })  // real mint → guest core row (isAnonymous=1)
   await repo.createRemoteUser({ handle: 'feed1', displayName: 'Feed', feedUrl: 'https://e/f.xml' })
-  const users = repo.listUsers()
+  const users = repo.listUsers(undefined, 100).items
   const kinds = users.map((u) => u.kind).sort()
   expect(kinds).toEqual(['local', 'remote'])
   const remote = users.find((u) => u.kind === 'remote')!
@@ -41,13 +42,30 @@ test('listUsers: registered locals + remote feeds, excludes guests', async () =>
   expect(typeof local.emailVerified).toBe('boolean')
 })
 
+test('listUsers: paginates stably — limit=1 returns exactly 1 item + nextCursor, and the union of all pages has no dupes/gaps', async () => {
+  const { repo } = await makeApp()
+  await repo.createRemoteUser({ handle: 'feedA', displayName: 'A', feedUrl: 'https://e/a.xml' })
+  await repo.createRemoteUser({ handle: 'feedB', displayName: 'B', feedUrl: 'https://e/b.xml' })
+
+  const first = repo.listUsers(undefined, 1)
+  expect(first.items).toHaveLength(1)
+  expect(first.nextCursor).not.toBeNull()
+
+  const second = repo.listUsers(decodeCursor(first.nextCursor!), 1)
+  expect(second.items).toHaveLength(1)
+  expect(second.nextCursor).toBeNull()
+
+  const handles = new Set([...first.items, ...second.items].map((u) => u.handle))
+  expect(handles).toEqual(new Set(['feedA', 'feedB']))
+})
+
 test('GET /admin/users: admin 200 with the list; non-admin 403; anon 403; no session 401', async () => {
   const { app, repo } = await makeApp()
   await repo.createRemoteUser({ handle: 'shown', displayName: 'Shown', feedUrl: 'https://e/s.xml' })
   const admin = await registeredSession(app, 'boss@x.test', repo)
   const ok = await app.request('/admin/users', { headers: { cookie: admin } })
   expect(ok.status).toBe(200)
-  expect((await ok.json()).users.some((u: { handle: string }) => u.handle === 'shown')).toBe(true)
+  expect((await ok.json()).items.some((u: { handle: string }) => u.handle === 'shown')).toBe(true)
   expect((await app.request('/admin/users', { headers: { cookie: await registeredSession(app, 'peon@x.test', repo) } })).status).toBe(403)
   expect((await app.request('/admin/users', { headers: { cookie: await anonSession(app) } })).status).toBe(403)
   expect((await app.request('/admin/users')).status).toBe(401)

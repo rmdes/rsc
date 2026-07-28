@@ -1,5 +1,6 @@
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscription, PushProtocol } from './types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscription, PushProtocol, Page } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import type { Cursor } from './source-repository.ts'
 
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
@@ -15,7 +16,7 @@ export interface Repository {
   deleteUserCascade(id: string): void
   deleteAuthRows(authUserId: string): void
   instanceStats(v2: boolean): { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
-  listUsers(): Array<{ handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
+  listUsers(cursor: Cursor | undefined, limit: number): Page<{ id: string; handle: string; displayName: string; kind: 'local' | 'remote'; emailVerified: boolean | null; createdAt: string; feedUrl: string | null }>
   close(): void
   listFollowing(followerId: string): Promise<User[]>
   getPost(id: string): Promise<Post | undefined>
