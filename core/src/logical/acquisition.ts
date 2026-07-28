@@ -454,7 +454,7 @@ const ZERO_COUNTERS: AdminAcquisitionCounters = { candidates: 0, seen: 0, observ
 function loadRemoteSource(tx: ReadTx, sourceId: string): RemoteSource | undefined {
   const r = tx.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as Record<string, unknown> | undefined
   if (!r) return undefined
-  return { id: r.id as string, canonicalUrl: r.canonical_url as string, attributionMode: r.attribution_mode as RemoteSource['attributionMode'], operation: r.operation as RemoteSource['operation'], governance: r.governance as RemoteSource['governance'], provenance: r.provenance as RemoteSource['provenance'], provenanceNote: (r.provenance_note as string | null) ?? null, adminRetained: r.admin_retained === 1, createdAt: r.created_at as string }
+  return { id: r.id as string, canonicalUrl: r.canonical_url as string, attributionMode: r.attribution_mode as RemoteSource['attributionMode'], operation: r.operation as RemoteSource['operation'], governance: r.governance as RemoteSource['governance'], provenance: r.provenance as RemoteSource['provenance'], provenanceNote: (r.provenance_note as string | null) ?? null, adminRetained: r.admin_retained === 1, overridden: (r.overridden as number) === 0 ? false : true, createdAt: r.created_at as string }
 }
 
 export function claimAcquisition(tx: WriteTx, input: { sourceId: string; reason: AcquisitionReason; now: string }): ClaimAcquisitionResult {

@@ -62,7 +62,7 @@ function rowToSubscription(r: SubscriptionsTable): Subscription {
 // v2 source-control plane row shapes — read-only in this task. Rows carry the
 // WIDER SQL CHECK vocabulary (rev 5, V4 §10 pin); mapping to the narrower V1
 // DTO types below is deliberate, not a bug.
-interface RemoteSourceV2Row {
+export interface RemoteSourceV2Row {
   id: string; canonical_url: string
   attribution_mode: 'single_publisher' | 'aggregate'
   operation: 'enabled' | 'paused'
@@ -70,6 +70,7 @@ interface RemoteSourceV2Row {
   provenance: 'user_subscription' | 'opml' | 'admin_federation' | 'origin_verification' | 'migration'
   provenance_note: string | null
   admin_retained: 0 | 1
+  overridden: 0 | 1
   created_at: string
 }
 interface SourceSubscriptionV2Row { id: string; owner_id: string; source_id: string; state: 'active' | 'pending' | 'pending_review'; created_at: string }
@@ -85,7 +86,7 @@ function rowToRemoteSourceV2(r: RemoteSourceV2Row): RemoteSource {
   return {
     id: r.id, canonicalUrl: r.canonical_url, attributionMode: r.attribution_mode,
     operation: r.operation, governance: r.governance, provenance: r.provenance,
-    provenanceNote: r.provenance_note, adminRetained: r.admin_retained === 1, createdAt: r.created_at,
+    provenanceNote: r.provenance_note, adminRetained: r.admin_retained === 1, overridden: r.overridden === 0 ? false : true, createdAt: r.created_at,
   }
 }
 
@@ -630,7 +631,7 @@ export class SqliteRepository implements Repository, SourceRepository {
             `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
              VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, ?)`,
           ).run(id, input.canonicalUrl, input.now)
-          source = { id, canonical_url: input.canonicalUrl, attribution_mode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'user_subscription', provenance_note: null, admin_retained: 0, created_at: input.now }
+          source = { id, canonical_url: input.canonicalUrl, attribution_mode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'user_subscription', provenance_note: null, admin_retained: 0, overridden: 1, created_at: input.now }
         }
         state = source.governance === 'quarantined' ? 'pending' : 'active'
         raw.prepare(
@@ -727,7 +728,7 @@ export class SqliteRepository implements Repository, SourceRepository {
             `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
              VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'opml', NULL, 0, ?)`,
           ).run(id, canonicalUrl, input.now)
-          source = { id, canonical_url: canonicalUrl, attribution_mode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'opml', provenance_note: null, admin_retained: 0, created_at: input.now }
+          source = { id, canonical_url: canonicalUrl, attribution_mode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'opml', provenance_note: null, admin_retained: 0, overridden: 1, created_at: input.now }
         }
         const state: 'active' | 'pending' = source.governance === 'quarantined' ? 'pending' : 'active'
         raw.prepare(
@@ -869,7 +870,7 @@ export class SqliteRepository implements Repository, SourceRepository {
           `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
            VALUES (?, ?, ?, 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
         ).run(id, input.canonicalUrl, input.attributionMode, input.now)
-        row = { id, canonical_url: input.canonicalUrl, attribution_mode: input.attributionMode, operation: 'enabled', governance: 'allowed', provenance: 'admin_federation', provenance_note: null, admin_retained: 0, created_at: input.now }
+        row = { id, canonical_url: input.canonicalUrl, attribution_mode: input.attributionMode, operation: 'enabled', governance: 'allowed', provenance: 'admin_federation', provenance_note: null, admin_retained: 0, overridden: 1, created_at: input.now }
       } else if (row.governance === 'quarantined') {
         // A retained source keeps its own mode and operation; approval only
         // lifts a quarantined candidate to allowed (design §5).
@@ -1212,6 +1213,12 @@ export const MIGRATIONS: string[][] = [
   // on live databases. Pure data UPDATE/DELETE, no DDL. Defined in
   // logical/schema.ts; see the 2026-07-27/28 spec rev 2.
   AGGREGATE_PUBLISHER_IDENTITY_FIX,
+  // 19 — instance-governed members (spec 2026-07-25): the sticky-override bit.
+  // Appended at the TAIL, AFTER AGGREGATE_PUBLISHER_IDENTITY_FIX (migration
+  // #18) — mid-array insertion corrupts user_version on live databases.
+  // DEFAULT 1: every existing INSERT omits the column and every non-mint row
+  // is a deliberate act; the origin_verification mint writes an explicit 0.
+  [`ALTER TABLE remote_sources_v2 ADD COLUMN overridden INTEGER NOT NULL DEFAULT 1 CHECK (overridden IN (0,1))`],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

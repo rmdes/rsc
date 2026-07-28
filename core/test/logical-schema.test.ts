@@ -90,3 +90,15 @@ test('the required indexes ship (timeline ordering + the V1 subscription index-d
   expect([...idx].some((n) => n.includes('logical_items_v2'))).toBe(true)
   expect([...idx].some((n) => n.includes('source_subscriptions_v2_source'))).toBe(true)
 })
+
+test('overridden: DEFAULT 1, mint writes 0, CHECK enforces the bit', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as InstanceType<typeof Database>
+  // any legacy-shaped INSERT omitting the column defaults to 1
+  raw.prepare(`INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+               VALUES ('s1', 'https://a.test/f', 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, '2026-07-25T00:00:00.000Z')`).run()
+  expect((raw.prepare(`SELECT overridden FROM remote_sources_v2 WHERE id = 's1'`).get() as { overridden: number }).overridden).toBe(1)
+  expect(() => raw.prepare(`UPDATE remote_sources_v2 SET overridden = 2 WHERE id = 's1'`).run()).toThrow()
+  expect(raw.pragma('user_version', { simple: true })).toBe(19)
+  repo.close()
+})

@@ -92,6 +92,7 @@ export interface RemoteSource {
   provenance: 'user_subscription' | 'opml' | 'admin_federation' | 'origin_verification' | 'migration'
   provenanceNote: string | null
   adminRetained: boolean
+  overridden: boolean
   createdAt: string
 }
 export interface FederationRelationship {

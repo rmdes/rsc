@@ -300,8 +300,8 @@ function findOrCreateOriginSource(tx: WriteTx, url: string, assertingSourceId: s
   const gov = (tx.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(assertingSourceId) as { governance: string } | undefined)?.governance ?? 'allowed'
   const id = randomUUID()
   tx.prepare(
-    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
-     VALUES (?, ?, 'single_publisher', 'enabled', ?, 'origin_verification', NULL, 0, ?)`,
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', ?, 'origin_verification', NULL, 0, 0, ?)`,
   ).run(id, url, gov, now)
   return id
 }
