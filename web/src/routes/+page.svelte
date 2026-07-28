@@ -1,12 +1,10 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
-	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
@@ -16,7 +14,6 @@
 	import { invalidateAll } from '$app/navigation'
 	import { confirmSubmit } from '$lib/confirm'
 	import { keepEvent, type Lens } from '$lib/lens'
-	import { TABS } from '$lib/tabs'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -133,11 +130,6 @@
 
 <div class="shell">
 	<aside class="tools">
-		<header class="masthead">
-			<a href="/">RSC</a>
-			<ThemeToggle />
-		</header>
-
 		<ComposerDialog
 			draftKey="compose"
 			action="?tab={data.tab}&/compose"
@@ -166,11 +158,10 @@
 	<main>
 		<h1 class="visually-hidden">Timeline</h1>
 
-		<nav class="tabs" aria-label="Timeline">
-			{#each TABS as t (t)}
-				<a href="/?tab={t}" aria-current={data.tab === t ? 'page' : undefined}>{t}</a>
-			{/each}
-		</nav>
+		<div class="page-head" style="padding-inline:0">
+			<span class="kicker">{data.tab} river</span>
+			<h2>Everything from you and the people you follow</h2>
+		</div>
 
 		{#if data.coreDown}
 			<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>
@@ -195,49 +186,52 @@
 			{#each posts as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
-						<Avatar author={post.author} sourceName={post.sourceName} />
-						<strong>{post.sourceName ?? post.author.displayName}</strong>
-						{#if post.publisherId}
-							<!-- v2 remote publisher: /p, not /u (which stays local-account only) -->
-							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
-						{:else if post.author.handle}
-							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
-						{/if}
 						<span class="kind">{post.source}</span>
+						{#if post.source === 'remote' && post.url}<span class="source-host">{URL.parse(post.url)?.hostname}</span>{/if}
 						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 						<EditedMarker {post} />
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>
+					<div class="byline-name">
+						<strong>{post.sourceName ?? post.author.displayName}</strong>
+						{#if post.publisherId}
+							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
+						{:else if post.author.handle}
+							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
+						{/if}
+					</div>
 					{#if post.title}<h2 class="title">{post.title}</h2>{/if}
 					<PostBody {post} />
-					{#if post.replyCount}
-						<ReplyToggle
-							count={post.replyCount}
-							href="/post/{post.id}"
-							expanded={!!expanded[post.id]}
-							busy={!!loading[post.id]}
-							aria-describedby="by-{post.id}"
-							onactivate={() => toggleReplies(post.id)}
-						/>
-					{/if}
-					{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
-						<a class="source" href="/post/{post.id}">Reply</a>
-					{/if}
-					{#if !post.inReplyToPostId && post.replyContextAuthor}
-						<ReplyContext author={post.replyContextAuthor} snippet={post.replyContextSnippet} url={post.inReplyTo?.startsWith('http') ? post.inReplyTo : null} />
-					{:else if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
-						<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
-					{/if}
-					{#if post.source === 'remote' && post.url}<a class="source" href={post.url} rel="noreferrer">{URL.parse(post.url)?.hostname ?? 'source'}</a>{/if}
-					{#if post.source === 'local' && data.me?.user.id === post.author.id}
-						<a class="edit" href="/post/{post.id}/edit">Edit</a>
-					{/if}
-					{#if data.me?.isAdmin && post.source === 'local'}
-						<form method="POST" action="?tab={data.tab}&/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
-							<input type="hidden" name="id" value={post.id} />
-							<button class="danger-link" type="submit">Remove</button>
-						</form>
-					{/if}
+					<div class="actions">
+						{#if post.replyCount}
+							<ReplyToggle
+								count={post.replyCount}
+								href="/post/{post.id}"
+								expanded={!!expanded[post.id]}
+								busy={!!loading[post.id]}
+								aria-describedby="by-{post.id}"
+								onactivate={() => toggleReplies(post.id)}
+							/>
+						{/if}
+						{#if !(post.replyCount || post.threadRootId || post.inReplyToPostId)}
+							<a class="source" href="/post/{post.id}">Reply</a>
+						{/if}
+						{#if !post.inReplyToPostId && post.replyContextAuthor}
+							<ReplyContext author={post.replyContextAuthor} snippet={post.replyContextSnippet} url={post.inReplyTo?.startsWith('http') ? post.inReplyTo : null} />
+						{:else if post.inReplyTo && !post.inReplyToPostId && post.inReplyTo.startsWith('http')}
+							<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
+						{/if}
+						{#if post.source === 'remote' && post.url}<a class="source" href={post.url} rel="noreferrer">{URL.parse(post.url)?.hostname ?? 'source'}</a>{/if}
+						{#if post.source === 'local' && data.me?.user.id === post.author.id}
+							<a class="edit" href="/post/{post.id}/edit">Edit</a>
+						{/if}
+						{#if data.me?.isAdmin && post.source === 'local'}
+							<form method="POST" action="?tab={data.tab}&/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
+								<input type="hidden" name="id" value={post.id} />
+								<button class="danger-link" type="submit">Remove</button>
+							</form>
+						{/if}
+					</div>
 					{#if expanded[post.id]}
 						<ReplyTree thread={expanded[post.id]} parentId={post.id} />
 					{/if}
@@ -315,45 +309,5 @@
 
 	.danger-link:hover {
 		text-decoration: underline;
-	}
-
-	/* Tab bar: .admin-nav pattern + focus ring. Fixed 44px row so live
-	   prepends below never shift it (MASTER: jank-free prepends). */
-	.tabs {
-		display: flex;
-		gap: var(--space-md);
-		overflow-x: auto;
-		border-bottom: 1px solid var(--color-border);
-		margin-bottom: var(--space-md);
-	}
-
-	.tabs a {
-		display: inline-flex;
-		flex-shrink: 0;
-		align-items: center;
-		min-height: 44px;
-		padding: 0 var(--space-xs);
-		color: var(--color-secondary);
-		font-weight: 600;
-		text-decoration: none;
-		text-transform: capitalize;
-		border-bottom: 2px solid transparent;
-		transition:
-			color 200ms,
-			border-color 200ms;
-	}
-
-	.tabs a:hover {
-		color: var(--color-foreground);
-	}
-
-	.tabs a:focus-visible {
-		outline: none;
-		box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 15%, transparent);
-	}
-
-	.tabs a[aria-current='page'] {
-		color: var(--color-foreground);
-		border-bottom-color: var(--color-accent);
 	}
 </style>

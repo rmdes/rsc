@@ -1,39 +1,90 @@
-/* RSC — tokens + layout. Source of truth: design-system/rsc/MASTER.md */
+/* RSC — tokens + layout. Source of truth: design-system/rsc/MASTER.md
+   (Modernist revision, 2026-07-28). Accent is RSS orange, not Modernist red. */
+
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap');
 
 :root {
 	/* system preference by default; data-theme (set by the toggle) overrides */
 	color-scheme: light dark;
-	--color-primary: light-dark(#18181b, #fafafa);
-	--color-on-primary: light-dark(#ffffff, #09090b);
-	--color-secondary: light-dark(#3f3f46, #a1a1aa);
+
+	/* Ground, surface and ink. Light values are Modernist's own; dark values sit
+	   on the same OKLCH neutral ramp — surface is neutral-900, the ground one
+	   step below it, ink is neutral-100. */
+	--color-background: light-dark(#f3f2f2, #1a1918);
+	--color-surface: light-dark(#eae9e9, #2d2b2b);
+	--color-foreground: light-dark(#201e1d, #f8f4f4);
+	--color-primary: light-dark(#201e1d, #f8f4f4);
+	--color-on-primary: light-dark(#f3f2f2, #1a1918);
+
+	/* neutral-700 on light, neutral-400 on dark — one ramp, same visual weight */
+	--color-secondary: light-dark(#605d5d, #bab6b6);
+	--color-muted: light-dark(#eae7e7, #444141);
+
+	/* Accent has three roles and they are not interchangeable:
+	   --color-accent       fills, icons, the 2px kind rules, uppercase labels
+	   --color-accent-text  anything at paragraph size (a deep ramp step)
+	   --color-accent-hover one step past the base — DARKER on light, LIGHTER on
+	                        dark; a darker hover on a dark ground reads disabled */
 	--color-accent: light-dark(#c2410c, #ea580c);
-	--color-on-accent: light-dark(#ffffff, #09090b);
-	--color-background: light-dark(#fafafa, #09090b);
-	--color-surface: light-dark(#ffffff, #18181b);
-	--color-foreground: light-dark(#09090b, #fafafa);
-	--color-muted: light-dark(#e8ecf0, #27272a);
-	--color-border: light-dark(#e4e4e7, #27272a);
+	--color-accent-text: light-dark(#7c2d12, #f79a5f);
+	--color-accent-hover: light-dark(#9a3412, #f79a5f);
+	/* A label on an accent fill is the GROUND, never white: white on #ea580c is
+	   3.5:1. */
+	--color-on-accent: light-dark(#f3f2f2, #1a1918);
+
+	/* Ink at opacity, so rules stay visible in dark mode without a second token
+	   set. --color-border is the 1px peer rule, --color-divider the 2px section
+	   rule. Separation never depends on a shadow. */
+	--color-border: light-dark(rgba(32, 30, 29, 0.22), rgba(248, 244, 244, 0.22));
+	--color-divider: light-dark(rgba(32, 30, 29, 0.4), rgba(248, 244, 244, 0.38));
+
 	--color-destructive: light-dark(#dc2626, #ef4444);
-	--color-ring: light-dark(#18181b, #fafafa);
+	--color-ring: var(--color-accent);
 	--color-code-string: light-dark(#15803d, #4ade80);
 	--color-code-value: light-dark(#1d4ed8, #93c5fd);
 
 	--space-xs: 0.25rem;
 	--space-sm: 0.5rem;
+	--space-3: 0.75rem;
 	--space-md: 1rem;
 	--space-lg: 1.5rem;
 	--space-xl: 2rem;
 
-	--font-heading: 'Libre Bodoni', serif;
-	--font-body: 'Public Sans', system-ui, sans-serif;
+	/* Zero, on purpose. There is no scale. */
+	--radius: 0px;
+
+	/* Light elevation is an ink-tinted shadow; dark elevation is a hairline edge
+	   plus ambient darkness (see the blocks below — light-dark() can't carry a
+	   shadow list, its arguments are comma-separated too). */
+	--shadow-sm: 0 1px 2px rgba(45, 43, 43, 0.14);
+	--shadow-md: 0 3px 10px rgba(45, 43, 43, 0.16);
+	--shadow-lg: 0 12px 32px rgba(45, 43, 43, 0.22);
+
+	--font-heading: 'Archivo', system-ui, sans-serif;
+	--font-heading-weight: 800;
+	--font-body: 'Archivo', system-ui, sans-serif;
+}
+
+/* Dark elevation, duplicated across both selectors for the same reason the rest
+   of the theming is: an explicit data-theme must beat the media query in BOTH
+   directions. */
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		--shadow-sm: 0 0 0 1px rgba(248, 244, 244, 0.14);
+		--shadow-md: 0 0 0 1px rgba(248, 244, 244, 0.14), 0 8px 24px rgba(0, 0, 0, 0.55);
+		--shadow-lg: 0 0 0 1px rgba(248, 244, 244, 0.14), 0 12px 32px rgba(0, 0, 0, 0.6);
+	}
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--shadow-sm: 0 0 0 1px rgba(248, 244, 244, 0.14);
+	--shadow-md: 0 0 0 1px rgba(248, 244, 244, 0.14), 0 8px 24px rgba(0, 0, 0, 0.55);
+	--shadow-lg: 0 0 0 1px rgba(248, 244, 244, 0.14), 0 12px 32px rgba(0, 0, 0, 0.6);
 }
 
 [data-theme='light'] {
 	color-scheme: light;
-}
-
-[data-theme='dark'] {
-	color-scheme: dark;
 }
 
 /* Base */
@@ -47,25 +98,52 @@ body {
 	background: var(--color-background);
 	color: var(--color-foreground);
 	font-family: var(--font-body);
-	font-size: 1rem;
-	line-height: 1.6;
+	font-size: 0.9375rem;
+	line-height: 1.55;
 }
 
 h1,
 h2,
-h3 {
+h3,
+h4 {
 	font-family: var(--font-heading);
-	line-height: 1.2;
+	font-weight: var(--font-heading-weight);
+	line-height: 1.12;
+	letter-spacing: -0.015em;
 	margin: 0;
 }
 
+h1 { font-size: 2.625rem; }
+h2 { font-size: 2rem; }
+h3 { font-size: 1.5625rem; }
+h4 { font-size: 1.25rem; }
+
+/* The workhorse of this system: the 11px flush-left uppercase label. It replaces
+   every pill badge in the app — the local/remote kind, .badge-kind, federation
+   status, the reply count, the conversation wedge, admin stat captions. If you
+   are reaching for a rounded chip, you want this. */
+.label {
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-secondary);
+}
+
 a {
-	color: var(--color-accent);
+	/* paragraph-size accent text uses the deep ramp step, not the base accent */
+	color: var(--color-accent-text);
+	text-underline-offset: 3px;
 }
 
 :focus-visible {
-	outline: 2px solid var(--color-ring);
+	outline: 2px solid var(--color-accent);
 	outline-offset: 2px;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -75,102 +153,404 @@ a {
 	}
 }
 
-/* Shell grid: tools | timeline | meta */
+/* Header nav — one horizontal line carrying the brand, the four rivers and the
+   primary action. The old .masthead-in-the-rail plus the bordered .tabs strip
+   above the river collapse into this; the river gets the full measure back. */
+
+.nav {
+	display: flex;
+	align-items: center;
+	gap: var(--space-lg);
+	padding: var(--space-3) var(--space-md);
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.nav-brand {
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.375rem;
+	letter-spacing: -0.02em;
+	color: var(--color-foreground);
+	text-decoration: none;
+	margin-right: var(--space-xl);
+}
+
+.nav a {
+	color: inherit;
+	text-decoration: none;
+	font-size: 0.875rem;
+}
+
+.nav a:hover,
+.nav a[aria-current='page'] {
+	color: var(--color-accent);
+}
+
+.nav .spacer {
+	margin-left: auto;
+}
+
+/* Shell grid: tools | river | meta — separated by 2px RULES, not by a gap. The
+   grid runs edge to edge; the old centred max-width container is gone. */
 
 .shell {
 	display: grid;
-	grid-template-columns: 16rem minmax(0, 44rem) fit-content(18rem);
-	justify-content: center;
-	align-items: start;
-	gap: var(--space-xl);
-	max-width: 90rem;
-	margin-inline: auto;
-	padding: var(--space-lg);
+	grid-template-columns: 16.5rem minmax(0, 1fr) 18.75rem;
+	align-items: stretch;
+	gap: 0;
+	padding: 0;
 }
 
 .tools,
 .meta {
-	position: sticky;
-	top: var(--space-lg);
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-md);
+	gap: var(--space-lg);
+	padding: var(--space-lg);
+	min-width: 0;
+}
+
+.tools {
+	border-right: 2px solid var(--color-divider);
+}
+
+.meta {
+	border-left: 2px solid var(--color-divider);
+}
+
+.shell > main {
+	padding: var(--space-lg) var(--space-xl);
 	min-width: 0;
 }
 
 @media (max-width: 1023px) {
 	.shell {
-		grid-template-columns: 14rem minmax(0, 1fr);
+		grid-template-columns: 15rem minmax(0, 1fr);
 	}
+	/* The META rail is what drops at tablet, not the tools rail: subscribing and
+	   the source list are actions, About and the peer list are reference. It
+	   becomes a two-cell ruled band below the river. */
 	.meta {
 		grid-column: 1 / -1;
-		position: static;
+		border-left: 0;
+		border-top: 2px solid var(--color-divider);
+		flex-direction: row;
+		flex-wrap: wrap;
+		gap: 0;
+		padding: 0;
+	}
+	.meta > * {
+		flex: 1 1 20rem;
+		padding: var(--space-lg);
+		border-top: 0;
+	}
+	.meta > * + * {
+		border-left: 1px solid var(--color-border);
 	}
 }
 
+/* Below 768 the whole grid is one column and the nav collapses into .nav-menu
+   (see below). Rail rules turn horizontal; the 2px kind rule on a row does NOT
+   get quieter — it is the local/remote signal. */
 @media (max-width: 767px) {
 	.shell {
 		grid-template-columns: minmax(0, 1fr);
-		padding: var(--space-md);
 	}
 	.tools {
-		position: static;
+		/* the tools rail's content lives in the menu panel at this width */
+		display: none;
+	}
+	.meta {
+		flex-direction: column;
+	}
+	.meta > * + * {
+		border-left: 0;
+		border-top: 1px solid var(--color-border);
+	}
+	.shell > main {
+		padding: var(--space-lg) var(--space-md);
+	}
+	.nav {
+		padding: var(--space-sm) var(--space-md);
+		gap: var(--space-md);
+	}
+	/* the rivers move into the menu panel; the river names itself on the page */
+	.nav > a:not(.nav-brand):not(.btn):not(.nav-menu-toggle) {
+		display: none;
+	}
+	.nav-brand {
+		font-size: 1.25rem;
+		margin-right: 0;
+	}
+	.post {
+		gap: var(--space-3);
+	}
+	.post .title {
+		font-size: 1.375rem;
+		max-width: 20ch;
+	}
+	.post .byline {
+		gap: var(--space-sm);
+	}
+	/* The remote row's source host gets its own line rather than an ellipsis:
+	   MASTER.md makes naming the host half of the local/remote signal, and
+	   "ordinaryn…" names nothing. `order: 1` moves it after every other child
+	   (all at the default `order: 0`) regardless of source position, so the
+	   date and the feed link stay on the FIRST line — the timestamp IS the
+	   permalink, and it can never be the thing that drops. */
+	.post .byline .source-host {
+		order: 1;
+		flex-basis: 100%;
+	}
+	/* the action row's items each need the 44px floor once they're the only
+	   touch targets in reach */
+	.post .actions > * {
+		display: inline-flex;
+		align-items: center;
+		min-height: 44px;
+	}
+	.lens h1 {
+		font-size: 2.125rem;
+	}
+	.lens > *:not(.masthead):not(.page-head):not(.lens-stats) {
+		padding-inline: var(--space-md);
+	}
+	.page-head {
+		padding: var(--space-md) var(--space-md) var(--space-3);
+	}
+	.lens-stats > div {
+		padding: var(--space-3) var(--space-md);
+	}
+	.lens-stats .n {
+		font-size: 1.375rem;
+	}
+	.lens-stats .k {
+		font-size: 0.625rem;
+	}
+	.stat-grid {
+		grid-template-columns: repeat(2, 1fr);
+	}
+	.stat-card:nth-child(n + 3) {
+		border-top: 1px solid var(--color-border);
+	}
+	.stat-card:nth-child(odd) {
+		border-left: 0;
+	}
+	.replies {
+		padding-left: var(--space-3);
 	}
 }
 
-/* Identity bar — global strip above every page's own masthead. Three states:
-   guest nudge, anonymous (handle + register CTA), registered (name + logout). */
+/* Tables can't survive a narrow column: below 700px a .table-records table
+   becomes stacked ruled records, its column headings demoted to a label line
+   above each row via the cells' own data-label. Mark the table
+   `class="table table-records"` and give each td a data-label. */
+@media (max-width: 699px) {
+	.table-records thead {
+		display: none;
+	}
+	.table-records,
+	.table-records tbody,
+	.table-records tr,
+	.table-records td {
+		display: block;
+		width: auto;
+	}
+	.table-records tr {
+		padding: var(--space-3) 0;
+		border-top: 1px solid var(--color-border);
+	}
+	.table-records td {
+		padding: 0;
+		border: 0;
+	}
+	/* the label line: every cell except the first prints its column name */
+	.table-records td:not(:first-child)::before {
+		content: attr(data-label) ' ';
+		font-family: var(--font-heading);
+		font-size: 0.625rem;
+		font-weight: var(--font-heading-weight);
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		color: var(--color-secondary);
+	}
+	.table-records td:first-child {
+		font-family: var(--font-heading);
+		font-weight: var(--font-heading-weight);
+		font-size: 1rem;
+		margin-top: var(--space-xs);
+	}
+}
+
+/* Mobile menu — a full-bleed ruled panel, not a dropdown: nothing floats in
+   this system. Native <details>, so it opens with JavaScript off. */
+
+.nav-menu {
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.nav-menu > summary {
+	display: none; /* the toggle lives in .nav at narrow widths */
+}
+
+.nav-menu-toggle {
+	display: none;
+	align-items: center;
+	min-height: 44px;
+	padding-left: var(--space-xs);
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-foreground);
+	text-decoration: none;
+	background: none;
+	border: 0;
+	cursor: pointer;
+}
+
+.nav-menu[open] .nav-menu-toggle {
+	color: var(--color-accent);
+}
+
+@media (max-width: 767px) {
+	.nav-menu-toggle {
+		display: inline-flex;
+		margin-left: 0;
+	}
+}
+
+@media (min-width: 768px) {
+	.nav-menu-panel {
+		display: none; /* rivers and the tools rail are visible again */
+	}
+}
+
+.nav-menu-group {
+	border-top: 2px solid var(--color-divider);
+	padding: var(--space-md);
+}
+
+.nav-menu-group h6 {
+	margin: 0 0 var(--space-3);
+	color: var(--color-accent);
+}
+
+/* River entries: display-grade, flush left, one per ruled row. The current
+   river is a solid accent cell — the segmented-control treatment — and says so
+   in words too, never colour alone. */
+.nav-menu-rivers a {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--space-3);
+	min-height: 56px;
+	padding: var(--space-3) var(--space-md);
+	border-top: 1px solid var(--color-border);
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.375rem;
+	letter-spacing: -0.015em;
+	color: var(--color-foreground);
+	text-decoration: none;
+}
+
+.nav-menu-rivers a[aria-current='page'] {
+	background: var(--color-accent);
+	color: var(--color-on-accent);
+}
+
+.nav-menu-rivers .n {
+	font-family: var(--font-body);
+	font-weight: 400;
+	font-size: 0.6875rem;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: inherit;
+	opacity: 0.7;
+}
+
+/* Ordinary menu rows — sources, account, links. */
+.nav-menu-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.nav-menu-list a {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	min-height: 44px;
+	border-bottom: 1px solid var(--color-border);
+	color: var(--color-foreground);
+	text-decoration: none;
+	font-size: 0.9375rem;
+}
+
+.nav-menu-list a:last-child {
+	border-bottom: 0;
+}
+
+.nav-menu-list a.destructive {
+	color: var(--color-destructive);
+}
+
+.nav-menu-identity {
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.375rem;
+	letter-spacing: -0.015em;
+}
+
+/* Identity bar — global strip above the nav. Three states: guest nudge,
+   anonymous (handle + register CTA), registered (name + logout). */
 
 .identity-bar {
-	background: var(--color-surface);
+	background: transparent;
 	border-bottom: 1px solid var(--color-border);
 }
 
 .identity-bar > div {
-	max-width: 90rem;
-	margin: 0 auto;
-	padding: var(--space-sm) var(--space-lg);
+	padding: var(--space-sm) var(--space-md);
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	gap: var(--space-sm);
-	font-size: 0.875rem;
+	gap: var(--space-3);
+	font-size: 0.75rem;
 	color: var(--color-secondary);
 }
 
 .identity-bar .handle {
 	color: var(--color-foreground);
 	font-weight: 600;
+	text-decoration: none;
 }
 
 .identity-bar .identity-cta {
-	color: var(--color-accent);
+	color: var(--color-accent-text);
 	font-weight: 600;
 }
 
 .identity-bar .logout-form {
+	margin: 0;
 	margin-inline-start: auto;
 }
 
-.identity-bar .logout-form button {
-	background: transparent;
-	color: var(--color-secondary);
-	border: 1px solid var(--color-border);
-	padding: 4px 12px;
-	font-weight: 500;
-}
-
-/* Site footer (mirror of the identity-bar; carries the About link) */
+/* Site footer (mirror of the identity bar; carries the About link) */
 
 .site-footer {
-	max-width: 90rem;
-	margin: var(--space-xl) auto 0;
-	padding: var(--space-lg);
-	border-top: 1px solid var(--color-border);
 	display: flex;
 	flex-wrap: wrap;
 	gap: var(--space-lg);
-	font-size: 0.875rem;
+	padding: var(--space-lg) var(--space-md);
+	border-top: 2px solid var(--color-divider);
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
 }
 
 .site-footer a {
@@ -179,53 +559,71 @@ a {
 }
 
 .site-footer a:hover {
-	color: var(--color-foreground);
+	color: var(--color-accent);
 }
 
-/* Masthead */
+/* Page mastheads (author lens, conversation, history, admin): a kicker in the
+   label style over the h1, on a 2px rule. */
 
 .masthead {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: var(--space-sm);
+	gap: var(--space-3);
 }
 
-.masthead a {
+.page-head {
+	padding: var(--space-xl) var(--space-xl) var(--space-md);
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.page-head .kicker {
+	display: block;
 	font-family: var(--font-heading);
-	font-size: 1.75rem;
-	font-weight: 700;
-	color: var(--color-foreground);
-	text-decoration: none;
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-accent);
+	margin-bottom: var(--space-sm);
 }
 
 .theme-toggle {
 	display: inline-flex;
-	padding: var(--space-sm);
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	padding: 0;
 	background: transparent;
-	color: var(--color-secondary);
-	border: 1px solid var(--color-border);
-	border-radius: 8px;
+	color: var(--color-foreground);
+	border: 1px solid var(--color-divider);
+	border-radius: var(--radius);
 	cursor: pointer;
-	transition: color 200ms ease, border-color 200ms ease;
+	transition: background-color 200ms ease;
 }
 
 .theme-toggle:hover {
-	color: var(--color-foreground);
-	border-color: var(--color-secondary);
+	background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
 }
 
-/* Collapsible panels (native details — works without JS) */
+/* Rail sections (native details — works without JS). The boxed panel loses its
+   border, radius and surface: a labelled section under a 2px rule. */
 
 .panel {
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: 12px;
+	background: none;
+	border: 0;
+	border-top: 2px solid var(--color-divider);
+	border-radius: var(--radius);
 }
 
 .panel > summary {
-	padding: var(--space-sm) var(--space-md);
-	font-weight: 600;
+	padding: var(--space-3) 0;
+	font-family: var(--font-heading);
+	font-size: 0.8125rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
 	cursor: pointer;
 	list-style-position: inside;
 }
@@ -235,7 +633,7 @@ a {
 }
 
 .panel > :not(summary) {
-	padding: 0 var(--space-md) var(--space-md);
+	padding: 0 0 var(--space-3);
 }
 
 /* Forms */
@@ -254,7 +652,11 @@ form.auth-form {
 
 .auth-note {
 	color: var(--color-secondary);
-	font-size: 0.875rem;
+	font-size: 0.8125rem;
+}
+
+.auth-note a {
+	color: var(--color-accent-text);
 }
 
 .field {
@@ -264,14 +666,15 @@ form.auth-form {
 }
 
 .field label {
-	font-weight: 600;
-	font-size: 0.875rem;
+	font-size: 0.75rem;
+	font-weight: 400;
+	color: var(--color-secondary);
 }
 
 .field-hint {
 	margin: 0;
 	color: var(--color-secondary);
-	font-size: 0.8125rem;
+	font-size: 0.75rem;
 }
 
 input,
@@ -279,45 +682,71 @@ textarea,
 select {
 	background: var(--color-surface);
 	color: var(--color-foreground);
-	padding: 10px 12px;
-	border: 1px solid var(--color-border);
-	border-radius: 8px;
+	padding: 6px 10px;
+	min-height: 36px;
+	border: 1px solid var(--color-divider);
+	border-radius: var(--radius);
 	font: inherit;
-	font-size: 1rem;
+	font-size: 0.875rem;
 	width: 100%;
+	caret-color: var(--color-accent);
 	transition: border-color 200ms ease;
 }
 
+input:hover,
+textarea:hover,
+select:hover {
+	border-color: color-mix(in srgb, var(--color-foreground) 45%, transparent);
+}
+
+/* The ring is :focus-visible now — no soft 3px glow. */
 input:focus,
 textarea:focus,
 select:focus {
-	border-color: var(--color-ring);
+	border-color: var(--color-accent);
 	outline: none;
-	box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 15%, transparent);
+	box-shadow: none;
 }
 
 textarea {
-	min-height: 5rem;
+	min-height: 5.625rem;
 	resize: vertical;
 }
 
+/* Labels are FLUSH LEFT, including inside a button wider than its label. This
+   is the rule most likely to look wrong if skipped. */
 button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 6px;
 	background: var(--color-accent);
 	color: var(--color-on-accent);
-	padding: 10px 20px;
-	border: none;
-	border-radius: 8px;
-	font: inherit;
-	font-weight: 600;
+	padding: var(--space-sm) var(--space-3);
+	border: 1px solid transparent;
+	border-radius: var(--radius);
+	font-family: var(--font-heading);
+	font-size: 0.875rem;
+	font-weight: var(--font-heading-weight);
+	line-height: 1.2;
 	cursor: pointer;
-	transition: opacity 200ms ease;
+	transition: background-color 200ms ease;
 }
 
 button:hover {
-	opacity: 0.9;
+	background: var(--color-accent-hover);
 }
 
-/* Timeline */
+button:active {
+	background: var(--color-accent-hover);
+}
+
+button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* Timeline — a ruled river, not a stack of cards */
 
 .timeline {
 	list-style: none;
@@ -325,51 +754,82 @@ button:hover {
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-md);
+	gap: 0;
 }
 
 .post {
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: 12px;
-	padding: var(--space-md) var(--space-lg);
+	display: grid;
+	grid-template-columns: 2px minmax(0, 1fr);
+	gap: var(--space-lg);
+	background: none;
+	border: 0;
+	border-bottom: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: var(--space-lg) 0;
 	overflow-wrap: break-word;
 }
 
-/* local vs remote: badge shape + left-border color + tint + domain text — never color alone */
-
-.post {
-	border-left: 3px solid var(--color-primary);
+/* local vs remote: the 2px left rule's colour AND the .kind label's text —
+   never colour alone. The old 4% accent tint is gone: a tinted row reads as a
+   selection state, and dropping it means an SSE prepend can't reflow anything. */
+.post::before {
+	content: '';
+	grid-column: 1;
+	grid-row: 1 / -1;
+	background: var(--color-primary);
 }
 
-.post.remote {
-	border-left-color: var(--color-accent);
-	background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface));
+.post.remote::before {
+	background: var(--color-accent);
 }
 
+.post > * {
+	grid-column: 2;
+}
+
+/* Byline, two rows: a meta row in the label style, then the name row. */
 .post .byline {
+	display: flex;
+	align-items: baseline;
+	gap: var(--space-3);
+	flex-wrap: wrap;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-secondary);
+}
+
+.post .byline-name {
 	display: flex;
 	align-items: baseline;
 	gap: var(--space-sm);
 	flex-wrap: wrap;
+	margin-top: var(--space-sm);
 }
 
-.post .handle,
-.post time {
+.post .byline-name strong {
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.0625rem;
+}
+
+.post .handle {
 	color: var(--color-secondary);
-	font-size: 0.875rem;
+	font-size: 0.8125rem;
+	text-decoration: none;
 }
 
+.post .handle:hover {
+	color: var(--color-accent);
+}
+
+/* Timestamp IS the permalink: every row's date links to /post/<id>. */
+.post .permalink,
 .post time {
-	margin-left: auto;
-}
-
-/* Timestamp IS the permalink: every card's date links to /post/<id>, the
-   shareable conversation URL anchored at that post — this replaces the old
-   "View conversation" text links. */
-.post .permalink {
-	color: var(--color-secondary);
-	font-size: 0.875rem;
+	color: inherit;
+	font-size: inherit;
 	text-decoration: none;
 }
 
@@ -379,103 +839,193 @@ button:hover {
 
 .post .permalink:hover {
 	color: var(--color-accent);
-	text-decoration: underline;
 }
 
+/* The kind badge: pill → flush-left uppercase word. */
 .post .kind {
-	font-size: 0.6875rem;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	border: 1px solid var(--color-border);
-	border-radius: 999px;
-	padding: 0 var(--space-sm);
-}
-
-.post:not(.remote) .kind {
-	background: var(--color-primary);
-	color: var(--color-on-primary);
-	border-color: var(--color-primary);
+	border: 0;
+	border-radius: var(--radius);
+	padding: 0;
+	background: none;
+	color: var(--color-foreground);
 }
 
 .post.remote .kind {
 	color: var(--color-accent);
-	border-color: currentColor;
 }
 
-.post .source {
-	font-size: 0.875rem;
+/* Every other badge in the app takes the same treatment. */
+.badge-kind {
+	display: inline-block;
+	border: 0;
+	border-radius: var(--radius);
+	padding: 0;
+	margin: 0;
+	background: none;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-secondary);
+	vertical-align: middle;
+}
+
+.badge-kind.on {
+	color: var(--color-accent);
+}
+
+/* Action row — reply count, Reply, Permalink, Edit, Remove — all label style. */
+.post .actions {
+	display: flex;
+	align-items: center;
+	gap: var(--space-lg);
+	margin-top: var(--space-3);
+}
+
+.post .source,
+.edit,
+.edited {
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-accent-text);
+	text-decoration: none;
+}
+
+.post .source:hover,
+.edit:hover,
+.edited:hover {
+	color: var(--color-accent-hover);
+	text-decoration: underline;
+}
+
+.edited {
+	color: var(--color-accent);
 }
 
 .reply-context {
 	color: var(--color-secondary);
-	font-size: 0.875rem;
-}
-
-.edited {
 	font-size: 0.8125rem;
-	color: var(--color-secondary);
-	text-decoration: none;
-}
-
-.edited:hover {
-	color: var(--color-accent);
-	text-decoration: underline;
-}
-
-.edit {
-	font-size: 0.875rem;
 }
 
 .post .title {
-	font-size: 1.25rem;
-	margin-top: var(--space-sm);
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.6875rem;
+	max-width: 30ch;
+	margin-top: var(--space-3);
 }
 
 .post p {
 	margin: var(--space-sm) 0 0;
+	max-width: 68ch;
+	text-wrap: pretty;
 }
 
 .older {
-	display: block;
-	text-align: center;
-	padding: var(--space-md);
-	color: var(--color-secondary);
+	display: inline-flex;
+	align-items: center;
+	min-height: 44px;
+	padding: 0;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-accent-text);
+	text-decoration: none;
 }
 
-/* Lens pages (/u/[handle], /u/[handle]/following) — single centered column,
-   these have no tools/meta rail so they don't use .shell */
+/* Lens pages (/u/[handle], /u/[handle]/following) and the conversation page —
+   full width now, with ruled sections rather than a 42rem centred column. */
 
 .lens {
-	max-width: 42rem;
-	margin-inline: auto;
-	padding: var(--space-lg);
+	max-width: none;
+	margin: 0;
+	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-lg);
+	gap: 0;
+}
+
+.lens > .masthead {
+	padding: var(--space-3) var(--space-md);
+	border-bottom: 2px solid var(--color-divider);
 }
 
 .lens .masthead a {
 	font-family: var(--font-heading);
-	font-size: 1.25rem;
-	font-weight: 700;
+	font-size: 1.375rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: -0.02em;
 	color: var(--color-foreground);
 	text-decoration: none;
 }
 
+.lens > *:not(.masthead):not(.page-head):not(.lens-stats) {
+	padding-inline: var(--space-xl);
+}
+
 .lens h1 {
-	font-size: 2rem;
+	font-size: 3.25rem;
 }
 
 .lens .subnav {
+	display: flex;
+	gap: var(--space-md);
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
 	color: var(--color-secondary);
-	font-size: 0.875rem;
+}
+
+.lens .subnav a {
+	text-decoration: none;
+}
+
+/* Author lens stat row — equal cells, 1px rules between, the same construction
+   as the admin overview. */
+
+.lens-stats {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	border-bottom: 2px solid var(--color-divider);
+	margin: 0;
+}
+
+.lens-stats > div {
+	padding: var(--space-md) var(--space-xl);
+}
+
+.lens-stats > div + div {
+	border-left: 1px solid var(--color-border);
+}
+
+.lens-stats .n {
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.75rem;
+	line-height: 1;
+}
+
+.lens-stats .k {
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-secondary);
+	margin-top: var(--space-xs);
 }
 
 /* /post/[id]/history — read-only revision list, oldest to newest, current
    version last. A ruled list rather than boxed cards: these are versions of
-   one post, not separate posts, so the divider reads as "next version" not
-   "next item". */
+   one post, not separate posts. */
 
 .history {
 	list-style: none;
@@ -485,29 +1035,75 @@ button:hover {
 
 .history li {
 	padding: var(--space-lg) 0;
-	border-top: 1px solid var(--color-border);
+	border-bottom: 1px solid var(--color-border);
 }
 
-.history li:first-child {
-	border-top: none;
-	padding-top: 0;
-}
-
-.history time {
+.history time,
+.history .badge-kind {
 	display: block;
-	color: var(--color-secondary);
-	font-size: 0.875rem;
-	margin-bottom: var(--space-sm);
+	margin-bottom: var(--space-3);
 }
 
+/* The current version is marked by a 2px ACCENT rule (was 2px ink). */
 .history li.current {
-	border-top: 2px solid var(--color-primary);
+	border-top: 2px solid var(--color-accent);
+	border-bottom: 0;
+	margin-top: -1px;
+}
+
+.history li.current .badge-kind {
+	color: var(--color-accent);
 }
 
 .history .title {
-	font-size: 1.25rem;
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.5625rem;
 	margin: 0 0 var(--space-sm);
 }
+
+/* Data tables — the right construction for sources, users, feeds and the
+   connected-instances list. Prefer these over .following-list boxes wherever
+   the content is genuinely tabular. */
+
+.table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.875rem;
+}
+
+.table th {
+	text-align: left;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--color-secondary);
+	padding: var(--space-sm);
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.table td {
+	padding: var(--space-sm);
+	border-bottom: 1px solid var(--color-border);
+}
+
+.table tbody tr:hover {
+	background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+}
+
+.table a {
+	color: inherit;
+	text-decoration: none;
+}
+
+.table a:hover {
+	color: var(--color-accent);
+}
+
+/* .following-list survives for the genuinely non-tabular lists (admin emails,
+   the peer list) — as ruled rows, not boxes. */
 
 .following-list {
 	list-style: none;
@@ -515,54 +1111,40 @@ button:hover {
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-sm);
+	gap: 0;
 }
 
 .following-list li {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: var(--space-sm);
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: 8px;
-	padding: var(--space-sm) var(--space-md);
-}
-
-.badge-kind {
-	display: inline-block;
-	font-size: 0.6875rem;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	color: var(--color-secondary);
-	border: 1px solid var(--color-border);
-	border-radius: 999px;
-	padding: 0 var(--space-sm);
-	margin-left: var(--space-sm);
-	vertical-align: middle;
-}
-
-/* On-state accent for a status badge (e.g. federation on/off). */
-.badge-kind.on {
-	color: var(--color-accent);
-	border-color: currentColor;
+	gap: var(--space-3);
+	background: none;
+	border: 0;
+	border-bottom: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: var(--space-sm) 0;
 }
 
 .unfollow-form button,
 .follow-form button {
-	padding: 6px 14px;
 	min-height: 44px;
+	background: transparent;
+	border: 1px solid var(--color-divider);
+	color: var(--color-foreground);
 }
 
 .unfollow-form button {
-	background: transparent;
 	color: var(--color-destructive);
-	border: 1px solid var(--color-border);
+}
+
+.unfollow-form button:hover,
+.follow-form button:hover {
+	background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
 }
 
 /* Visitor Follow reuses .unfollow-form's layout but reads as the positive
-   action it is — accent, not destructive red (SP3 final review, deferred). */
+   action it is — accent, not destructive red. */
 .follow-row button {
 	color: var(--color-accent);
 	border-color: var(--color-accent);
@@ -580,7 +1162,6 @@ button:hover {
 	min-width: 10rem;
 }
 
-
 /* Accessibility: label text available to screen readers, hidden visually */
 
 .visually-hidden {
@@ -595,110 +1176,115 @@ button:hover {
 	border: 0;
 }
 
-/* Lens timeline empty-state row */
+/* Empty state — a ruled row, not a dashed box */
 
 .timeline-empty {
 	list-style: none;
 	color: var(--color-secondary);
-	background: var(--color-surface);
-	border: 1px dashed var(--color-border);
-	border-radius: 12px;
-	padding: var(--space-lg);
-	text-align: center;
+	background: none;
+	border: 0;
+	border-bottom: 1px solid var(--color-border);
+	border-radius: var(--radius);
+	padding: var(--space-lg) 0;
+	text-align: left;
 }
 
-/* Notices */
+/* Notices — a 2px left rule and flush-left text; no box */
 
 .notice,
 .error {
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-left: 3px solid var(--color-destructive);
-	border-radius: 8px;
-	padding: var(--space-sm) var(--space-md);
+	background: none;
+	border: 0;
+	border-left: 2px solid var(--color-destructive);
+	border-radius: var(--radius);
+	padding: var(--space-sm) 0 var(--space-sm) var(--space-3);
 	margin: 0 0 var(--space-md);
+	font-size: 0.875rem;
 }
 
-/* Affirmative flash (feed added): same box, accent rail instead of the
-   destructive one — the palette has no dedicated success colour, and accent
-   is its affirmative/CTA token. Pair with .notice. */
+/* Affirmative flash (feed added): the same rule in the accent — the palette has
+   no dedicated success colour, and accent is its affirmative token. */
 .confirm {
 	border-left-color: var(--color-accent);
 }
 
-/* Outliner wedge, labeled: a pill that says what it hides ("3 replies").
-   The shade is still the signal — accent when there are replies you aren't
-   seeing, muted once open (or on the page-nav fallback). */
+.confirm a,
+.notice a {
+	color: var(--color-accent-text);
+}
+
+/* The labelled wedge on the author lens ("2 more in this conversation") — a
+   flush-left accent label, not a pill. The ▸ glyph is ornament and goes. */
 
 .wedge {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.375rem;
-	border: 1px solid var(--color-accent);
-	border-radius: 999px;
-	color: var(--color-accent);
-	background: none;
-	padding: var(--space-xs) 0.75rem;
 	min-height: 44px;
-	font-size: 0.8125rem;
+	padding: 0;
+	margin-right: var(--space-md);
+	background: none;
+	border: 0;
+	border-radius: var(--radius);
+	color: var(--color-accent);
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
 	line-height: 1;
 	text-decoration: none;
 	cursor: pointer;
-	margin-right: var(--space-sm);
 }
 
 .wedge:hover {
-	background: var(--color-muted);
-}
-
-.wedge:focus-visible {
-	outline: 2px solid var(--color-ring);
-	outline-offset: 2px;
+	background: none;
+	color: var(--color-accent-hover);
 }
 
 .wedge.light {
-	border-color: var(--color-border);
 	color: var(--color-secondary);
 }
 
 .wedge .glyph {
-	font-size: 0.7em;
+	display: none;
 }
 
-/* Compact reply count (ReplyToggle): a speech bubble + the number, no pill.
-   The count is the signal — resting secondary, accent once the thread is
-   open. 44×44 minimum target comes from min-height/min-width + padding (the
-   .tabs idiom), not a ::after hit-area overlay, so focus ring and hover
-   surface match what the finger actually gets. */
+/* Compact reply count (ReplyToggle). Every behavioural contract is unchanged —
+   real <a> first, 44×44 target from min-height/min-width + padding,
+   aria-expanded, aria-busy during the fetch. What changes: square, and the
+   count adopts the label style so it sits in the action row rather than
+   floating as a chip. */
 
 .reply-toggle {
 	display: inline-flex;
 	align-items: center;
-	justify-content: center;
-	gap: var(--space-xs);
+	justify-content: flex-start;
+	gap: var(--space-sm);
 	min-height: 44px;
 	min-width: 44px;
-	padding: 0 var(--space-sm);
-	margin-right: var(--space-sm);
-	border-radius: 8px;
+	padding: 0;
+	margin-right: var(--space-md);
+	border-radius: var(--radius);
 	color: var(--color-secondary);
-	font-size: 0.8125rem;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
 	line-height: 1;
 	text-decoration: none;
 	cursor: pointer;
-	transition:
-		color 200ms,
-		background-color 200ms;
+	transition: color 200ms;
 }
 
 .reply-toggle svg {
-	width: 1rem;
-	height: 1rem;
+	width: 0.875rem;
+	height: 0.875rem;
 }
 
 .reply-toggle:hover {
-	background: var(--color-muted);
-	color: var(--color-foreground);
+	background: none;
+	color: var(--color-accent);
 }
 
 .reply-toggle[aria-expanded='true'] {
@@ -708,31 +1294,40 @@ button:hover {
 /* Loading the thread: the anchor is inert until the fetch settles. The focus
    ring is the global :focus-visible rule — nothing here overrides it. */
 .reply-toggle[aria-busy='true'] {
-	opacity: 0.6;
+	opacity: 0.45;
 	cursor: progress;
 }
 
-/* Nested replies unfold indented under their parent, level by level. */
+/* Nested replies unfold indented behind a 1px rule, level by level. */
 
 .replies {
 	list-style: none;
-	margin: var(--space-sm) 0 0;
-	padding-left: var(--space-md);
+	margin: var(--space-md) 0 0;
+	padding-left: var(--space-lg);
 	border-left: 1px solid var(--color-border);
 }
 
 .replies .post {
-	padding: var(--space-sm) 0;
-	border: 0;
+	padding: var(--space-3) 0;
+}
+
+.replies .post:last-child {
+	border-bottom: 0;
+}
+
+.replies .post .byline-name strong {
+	font-size: 1rem;
 }
 
 /* Per-post feed icon (ported from rss.chat): the author's feed, one click,
-   ready to paste into a reader. RSS orange — the accent exists for this. */
+   ready to paste into a reader. The RSS mark stays the RSS mark — it is a
+   recognised logo, not an interface icon. */
 
 .feed-icon {
 	color: var(--color-accent);
 	display: inline-flex;
 	padding: var(--space-xs);
+	border-radius: var(--radius);
 }
 
 .feed-icon svg {
@@ -740,14 +1335,12 @@ button:hover {
 	height: 0.75rem;
 }
 
-/* Long posts clamp; clicking the text unfolds them. The decision whether a
-   post is actually clipped happens at click time, in JS. PostBody applies
-   this uniformly, including the thread page's root post (deliberate
-   unification — task 3). */
+/* Long posts clamp; clicking the text unfolds them. The decision whether a post
+   is actually clipped happens at click time, in JS. */
 
 .post .body {
 	position: relative;
-	max-height: 14rem;
+	max-height: 18rem;
 	overflow: hidden;
 	cursor: default;
 }
@@ -756,30 +1349,31 @@ button:hover {
 	max-height: none;
 }
 
-/* The affordance: bodies JS has measured as actually clipped get a fade +
-   "Show more" pill (no-JS never sets .clipped — those readers reach full
-   text via the conversation link, as before). */
+/* The affordance: bodies JS has measured as actually clipped end on a rule with
+   a flush-left uppercase label. No gradient — there is no card surface left to
+   dissolve into, which also retires the old .post.remote fade override. */
 .post .body.clipped:not(.expanded)::after {
 	content: 'Show more';
 	position: absolute;
 	inset: auto 0 0 0;
-	padding: 3rem 0 var(--space-xs);
-	text-align: center;
-	font-size: 0.8125rem;
-	font-weight: 600;
-	color: var(--color-accent);
-	background: linear-gradient(transparent, var(--color-surface) 75%);
+	padding: var(--space-sm) 0 0;
+	text-align: left;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-accent-text);
+	background: var(--color-background);
+	border-top: 1px solid var(--color-border);
 	cursor: pointer;
 }
 
-/* Remote cards are accent-tinted — the fade must dissolve into THAT color
-   or the strip reads as a pale band. */
-.post.remote .body.clipped:not(.expanded)::after {
-	background: linear-gradient(transparent, color-mix(in srgb, var(--color-accent) 4%, var(--color-surface)) 75%);
-}
-
-/* Letter avatar (rss.chat's populateAvatar fallback — the initial IS the
-   avatar until feeds carry an image). */
+/* The letter avatar is dropped from the river (MASTER.md → Avatar): unrounded it
+   reads as a swatch, it is a second marker on the same edge as the 2px kind
+   rule, and the letter repeats the name beside it. The class is kept for the
+   author-lens header, and is the slot a real .grayscale portrait grows into at
+   48px when feeds start carrying one. */
 
 .avatar {
 	display: inline-flex;
@@ -787,94 +1381,87 @@ button:hover {
 	justify-content: center;
 	width: 1.75rem;
 	height: 1.75rem;
-	border-radius: 50%;
+	border-radius: var(--radius);
 	background: var(--color-muted);
 	color: var(--color-foreground);
 	border: 1px solid var(--color-border);
+	font-family: var(--font-heading);
 	font-size: 0.875rem;
-	font-weight: 600;
+	font-weight: var(--font-heading-weight);
 	flex: none;
 }
 
-/* Author-lens card stacks: a card folding more of the author's posts from
-   the same conversation shows two card edges peeking underneath — the
-   "there are cards under this one" whisper. Pseudo-elements sit behind the
-   card via a local stacking context. */
+/* Author-lens conversation folds: a date-keyed ruled sub-list under the top
+   row, not peeking card edges (those depended on rounded corners). */
 
-.post.stacked {
-	position: relative;
-	z-index: 0;
+.post.stacked .replies {
+	border-left: 0;
+	border-top: 1px solid var(--color-border);
+	padding-left: 0;
+	margin-top: var(--space-md);
 }
 
-.post.stacked::before,
-.post.stacked::after {
-	content: '';
-	position: absolute;
-	z-index: -1;
-	border: 1px solid var(--color-border);
-	border-top: none;
-	border-radius: 0 0 12px 12px;
-	background: var(--color-surface);
+.post.stacked .replies > li {
+	display: grid;
+	grid-template-columns: 6rem minmax(0, 1fr);
+	gap: var(--space-lg);
+	padding: var(--space-3) 0;
+	border-bottom: 1px solid var(--color-border);
 }
 
-.post.stacked::after {
-	left: var(--space-sm);
-	right: var(--space-sm);
-	bottom: -5px;
-	height: 10px;
+.post.stacked .replies > li::before {
+	content: none;
 }
 
-.post.stacked::before {
-	left: var(--space-md);
-	right: var(--space-md);
-	bottom: -9px;
-	height: 10px;
+/* The post you arrived at, inside its conversation — the same 2px accent left
+   rule as .post.remote, so it reads at a glance three levels down. */
+
+.post.highlight::before {
+	background: var(--color-accent);
 }
 
-.post.stacked.remote::before,
-.post.stacked.remote::after {
-	background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface));
+.post.highlight .byline .here {
+	color: var(--color-accent);
 }
 
-/* The post you arrived at, inside its conversation. */
-
-.post.highlight {
-	box-shadow: -3px 0 0 var(--color-accent);
-	padding-left: var(--space-sm);
-}
-
-/* Rich post bodies (rss.chat 7/6-7/7 lessons: quotes read as quotes,
-   headings have hierarchy, code reads as code). Scoped inside .body so
-   page chrome is untouched. div.body replaces the old p.body — same clamp. */
+/* Rich post bodies. Scoped inside .body so page chrome is untouched. */
 
 .post .body blockquote {
-	margin: var(--space-sm) 0;
-	padding-left: var(--space-md);
-	border-left: 2px solid var(--color-border);
-	color: var(--color-secondary);
+	margin: var(--space-md) 0;
+	padding-left: var(--space-lg);
+	border-left: 2px solid var(--color-divider);
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.1875rem;
+	line-height: 1.25;
+	max-width: 44ch;
+	color: var(--color-foreground);
 }
 
-.post .body h1, .post .body h2, .post .body h3, .post .body h4 {
-	margin: var(--space-sm) 0 var(--space-xs);
-	line-height: 1.25;
+.post .body h1,
+.post .body h2,
+.post .body h3,
+.post .body h4 {
+	margin: var(--space-md) 0 var(--space-xs);
+	line-height: 1.15;
 }
-.post .body h1 { font-size: 1.25rem; }
-.post .body h2 { font-size: 1.125rem; }
-.post .body h3 { font-size: 1rem; }
-.post .body h4 { font-size: 0.9375rem; }
+.post .body h1 { font-size: 1.375rem; }
+.post .body h2 { font-size: 1.25rem; }
+.post .body h3 { font-size: 1.0625rem; }
+.post .body h4 { font-size: 1rem; }
 
 .post .body code {
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-	font-size: 0.875em;
+	font-size: 0.9em;
 	background: var(--color-muted);
-	padding: 0.0625rem 0.25rem;
-	border-radius: 4px;
+	padding: 1px 4px;
+	border-radius: var(--radius);
 }
 
 .post .body pre {
 	background: var(--color-muted);
-	padding: var(--space-sm);
-	border-radius: 8px;
+	padding: var(--space-3);
+	border-radius: var(--radius);
 	overflow-x: auto;
 }
 
@@ -915,14 +1502,23 @@ button:hover {
 .post .body img {
 	max-width: 100%;
 	height: auto;
+	border-radius: var(--radius);
 }
 
-.post .body ul, .post .body ol {
+.post .body ul,
+.post .body ol {
 	padding-left: var(--space-lg);
 }
 
-/* Meta-sidebar widgets: the firehose feed badge (classic RSS square — the
-   accent IS this palette's orange) and the Textcasting-peers list. */
+/* Content photographs print in pure black and white. */
+
+.grayscale,
+.grayscale img {
+	filter: grayscale(1) contrast(1.08);
+}
+
+/* Meta-rail widgets: the firehose feed badge (classic RSS square) and the
+   Textcasting-peers list. */
 
 .feed-widget {
 	display: flex;
@@ -933,15 +1529,15 @@ button:hover {
 
 .feed-widget .feed-badge {
 	display: inline-flex;
-	padding: 6px;
+	padding: 7px;
 	background: var(--color-accent);
 	color: var(--color-on-accent);
-	border-radius: 6px;
+	border-radius: var(--radius);
 }
 
 .feed-widget .feed-badge svg {
-	width: 1rem;
-	height: 1rem;
+	width: 0.9375rem;
+	height: 0.9375rem;
 }
 
 .peer-list {
@@ -950,7 +1546,7 @@ button:hover {
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-xs);
+	gap: 0;
 }
 
 .peer-list li {
@@ -958,6 +1554,107 @@ button:hover {
 	align-items: center;
 	justify-content: space-between;
 	gap: var(--space-sm);
+	padding: var(--space-sm) 0;
+	border-bottom: 1px solid var(--color-border);
+}
+
+/* Admin section nav — same treatment as the header nav's rivers. The old soft
+   box-shadow focus override is gone; the global accent ring applies. */
+
+.admin-nav {
+	display: flex;
+	gap: var(--space-lg);
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.admin-nav a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 44px;
+	padding: 0;
+	color: var(--color-foreground);
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	text-decoration: none;
+	transition: color 200ms;
+}
+
+.admin-nav a:hover,
+.admin-nav a[aria-current='page'] {
+	color: var(--color-accent);
+}
+
+/* Admin overview stats — one ruled row of equal cells, no card borders. */
+
+.stat-grid {
+	margin: 0;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.stat-card {
+	background: none;
+	border: 0;
+	border-radius: var(--radius);
+	padding: var(--space-md) var(--space-xl);
+}
+
+.stat-card + .stat-card {
+	border-left: 1px solid var(--color-border);
+}
+
+.stat-card dt {
+	order: 2;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-secondary);
+	margin-top: var(--space-xs);
+}
+
+.stat-card dd {
+	order: 1;
+	margin: 0;
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.75rem;
+	line-height: 1;
+}
+
+.stat-card {
+	display: flex;
+	flex-direction: column;
+}
+
+.status-label {
+	font-weight: 600;
+}
+
+/* Destructive text affordance, matching .edit/.source's weight — not a filled
+   or outlined button (that's the admin users list, which has more room). */
+
+.danger-link {
+	background: none;
+	border: 0;
+	padding: 0;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-destructive);
+	cursor: pointer;
+}
+
+.danger-link:hover {
+	background: none;
+	text-decoration: underline;
 }
 
 /* Compose dialog — writing happens in an overlay, not the sidebar. Native
@@ -965,20 +1662,20 @@ button:hover {
 
 .composer-open {
 	width: 100%;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	gap: var(--space-sm);
 }
 
 .composer-open .draft-badge {
-	font-size: 0.75rem;
-	font-weight: 600;
+	margin-left: auto;
+	padding: 0;
+	border-radius: var(--radius);
+	background: none;
+	color: inherit;
+	opacity: 0.75;
+	font-family: var(--font-heading);
+	font-size: 0.625rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
 	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	padding: 0 var(--space-xs);
-	border-radius: 4px;
-	background: color-mix(in srgb, var(--color-on-accent) 25%, transparent);
 }
 
 dialog.composer-dialog {
@@ -991,15 +1688,17 @@ dialog.composer-dialog {
 	max-width: 95vw;
 	max-height: 95vh;
 	margin: auto;
-	padding: 0; /* backdrop-click detection: dialog itself must have no clickable inset */
-	border: 1px solid var(--color-border);
-	border-radius: 12px;
+	padding: 0; /* backdrop-click detection: no clickable inset on the dialog */
+	border: 0;
+	border-radius: var(--radius);
 	background: var(--color-surface);
 	color: var(--color-foreground);
+	box-shadow: var(--shadow-lg);
 }
 
+/* No blur — Modernist doesn't blur. */
 dialog.composer-dialog::backdrop {
-	background: color-mix(in srgb, var(--color-primary) 40%, transparent);
+	background: color-mix(in srgb, #2d2b2b 50%, transparent);
 }
 
 .composer-dialog-body {
@@ -1011,30 +1710,49 @@ dialog.composer-dialog::backdrop {
 
 .composer-dialog-body header {
 	display: flex;
-	align-items: center;
+	align-items: flex-end;
 	justify-content: space-between;
+	gap: var(--space-md);
+	padding-bottom: var(--space-3);
+	border-bottom: 2px solid var(--color-divider);
+}
+
+.composer-dialog-body .kicker {
+	display: block;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--color-accent);
+	margin-bottom: var(--space-xs);
 }
 
 .composer-dialog-body h2 {
-	font-size: 1.5rem;
+	font-family: var(--font-heading);
+	font-weight: var(--font-heading-weight);
+	font-size: 1.375rem;
 }
 
 .dialog-close {
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	justify-content: center;
 	background: transparent;
-	color: var(--color-secondary);
-	padding: var(--space-xs) var(--space-sm);
-	font-size: 1.5rem;
+	border: 1px solid var(--color-divider);
+	color: var(--color-foreground);
+	font-size: 1.125rem;
 	line-height: 1;
 }
 
 .dialog-close:hover {
-	color: var(--color-foreground);
-	opacity: 1;
+	background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
 }
 
 /* The editing surface fills whatever size the user drags the dialog to:
-   body → form → editor → wrapper each pass the free height down; the
-   wrapper scrolls when writing outgrows it. */
+   body → form → editor → wrapper each pass the free height down; the wrapper
+   scrolls when writing outgrows it. */
 .composer-dialog .composer-dialog-body {
 	height: 100%;
 }
@@ -1072,21 +1790,24 @@ dialog.composer-dialog::backdrop {
    raw-hex borders). Keep the prefix on every new rule. */
 
 body .carta-theme__default.carta-editor {
-	background: var(--color-surface);
-	border: 1px solid var(--color-border);
-	border-radius: 8px;
+	background: var(--color-background);
+	border: 1px solid var(--color-divider);
+	border-radius: var(--radius);
 	font-family: inherit;
 }
 
 /* The app-wide button skin must not leak into carta's controls: its icon
-   buttons are 24×24 border-boxes, so inherited 10px/20px padding leaves a
-   0-width content box and the toolbar SVGs vanish entirely. */
+   buttons are 24×24 border-boxes, so inherited padding leaves a 0-width
+   content box and the toolbar SVGs vanish entirely. */
 body .carta-theme__default button {
 	padding: 0;
+	background: none;
+	border: 0;
+	justify-content: center;
 }
 
 body .carta-theme__default .carta-toolbar {
-	border-bottom: 1px solid var(--color-border);
+	border-bottom: 1px solid var(--color-divider);
 	color: var(--color-secondary);
 }
 
@@ -1095,21 +1816,36 @@ body .carta-theme__default .carta-toolbar button {
 	background: none;
 }
 
+body .carta-theme__default .carta-toolbar-left button {
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	padding: 7px 12px;
+}
+
+/* The active Write/Preview tab becomes a solid accent cell — Modernist's
+   segmented-control treatment — instead of an underline. */
 body .carta-theme__default .carta-toolbar-left button.carta-active {
-	color: var(--color-accent);
-	border-bottom-color: var(--color-accent);
+	background: var(--color-accent);
+	color: var(--color-on-accent);
+	border-bottom-color: transparent;
 }
 
 body .carta-theme__default .carta-icon:hover,
 body .carta-theme__default .carta-icon-full:hover {
-	background: var(--color-muted);
+	background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
+	border-radius: var(--radius);
 	color: var(--color-foreground);
 }
 
 /* Overflow menu popup (narrow toolbars) — default.css gives it no background. */
 body .carta-theme__default .carta-icons-menu {
 	background: var(--color-surface);
-	border: 1px solid var(--color-border);
+	border: 1px solid var(--color-divider);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow-md);
 	color: var(--color-secondary);
 }
 
@@ -1118,20 +1854,24 @@ body .carta-theme__default .carta-icons-menu {
    styling the textarea alone drifts the caret off the visible text. */
 body .carta-theme__default .carta-input {
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-	font-size: 0.9375rem;
-	caret-color: var(--color-foreground);
+	font-size: 0.875rem;
+	caret-color: var(--color-accent);
 	color: var(--color-foreground);
 	height: auto;
 	min-height: 7rem;
 	overflow-y: visible;
-	padding: var(--space-sm);
+	padding: var(--space-3);
 }
 
-/* The app-wide `input, textarea` skin sets font-size: 1rem, but carta's
-   caret layer must share metrics with the 0.9375rem highlight overlay —
-   a 1px font mismatch drifts the caret off the visible text. */
+/* The app-wide `input, textarea` skin sets its own font-size, but carta's caret
+   layer must share metrics with the highlight overlay — a 1px font mismatch
+   drifts the caret off the visible text. */
 body .carta-theme__default .carta-input textarea {
 	font: inherit;
+	min-height: 0;
+	padding: 0;
+	border: 0;
+	background: none;
 }
 
 body .carta-theme__default .carta-input textarea::placeholder {
@@ -1144,22 +1884,24 @@ body .carta-theme__default .carta-renderer {
 	height: auto;
 	min-height: 7rem;
 	overflow-y: visible;
-	padding: var(--space-sm);
+	padding: var(--space-3);
 }
 
-/* Slash-menu (@cartamd/plugin-slash) and emoji-autocomplete (@cartamd/plugin-emoji)
-   popups: same load-order rule as the block above — their default.css sets
-   hardcoded light colors via custom properties scoped to `.carta-slash` /
-   `.carta-emoji`, so redeclare those properties under a `body`-prefixed
-   selector to win the tie. */
+/* Slash-menu (@cartamd/plugin-slash) and emoji-autocomplete
+   (@cartamd/plugin-emoji) popups: same load-order rule as the block above —
+   their default.css sets hardcoded light colours via custom properties scoped
+   to `.carta-slash` / `.carta-emoji`, so redeclare those properties under a
+   `body`-prefixed selector to win the tie. */
 body .carta-slash,
 body .carta-emoji {
 	--background: var(--color-surface);
-	--group-color: var(--color-secondary);
+	--group-color: var(--color-accent);
 	--title-color: var(--color-foreground);
 	--description-color: var(--color-secondary);
-	--hover-background: var(--color-muted);
-	border: 1px solid var(--color-border);
+	--hover-background: var(--color-accent);
+	border: 1px solid var(--color-divider);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow-md);
 }
 
 body .carta-emoji {

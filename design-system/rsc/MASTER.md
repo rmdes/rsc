@@ -7,8 +7,27 @@
 ---
 
 **Project:** RSC
-**Generated:** 2026-07-15 20:21:54
-**Category:** Magazine/Blog
+**System:** Modernist (Swiss modernism, applied)
+**Revised:** 2026-07-28 — replaces the 2026-07-15 magazine/editorial revision
+**Category:** App surface (feeds-native timeline), not a marketing site
+
+---
+
+## What changed and why
+
+The previous revision was magazine/editorial: Libre Bodoni headings, rounded cards
+with shadows, pill badges, an 8–16px radius scale. This revision keeps the product
+thesis and every accessibility constraint but replaces the visual language with
+Modernist — flat, architectural, set entirely in Archivo, organised by alignment
+and rule weight rather than by cards and elevation.
+
+Three things did **not** change, and outrank anything below if they ever conflict:
+no-JS must read correctly, live prepends must not jank, and local vs remote must
+be legible by more than colour.
+
+The accent stays **RSS orange**. Modernist's own accent is red; RSC's orange is
+load-bearing — it is the RSS mark's colour, and the feed badge, feed icons and
+firehose links all trade on that recognition.
 
 ---
 
@@ -16,78 +35,158 @@
 
 ### Color Palette (light + dark)
 
-Both themes ship from day one. Every color in components comes from a variable — no raw hex outside this table.
+Both themes ship. Every colour in a component comes from a variable — no raw hex
+outside this table.
 
 | Role | Light | Dark | CSS Variable |
 |------|-------|------|--------------|
-| Primary | `#18181B` | `#FAFAFA` | `--color-primary` |
-| On Primary | `#FFFFFF` | `#09090B` | `--color-on-primary` |
-| Secondary | `#3F3F46` | `#A1A1AA` | `--color-secondary` |
-| Accent/CTA | `#C2410C` | `#EA580C` | `--color-accent` |
-| On Accent | `#FFFFFF` | `#09090B` | `--color-on-accent` |
-| Background | `#FAFAFA` | `#09090B` | `--color-background` |
-| Surface (cards, composer) | `#FFFFFF` | `#18181B` | `--color-surface` |
-| Foreground | `#09090B` | `#FAFAFA` | `--color-foreground` |
-| Muted | `#E8ECF0` | `#27272A` | `--color-muted` |
-| Border | `#E4E4E7` | `#27272A` | `--color-border` |
+| Background (the ground) | `#F3F2F2` | `#1A1918` | `--color-background` |
+| Surface (fields, overlays) | `#EAE9E9` | `#2D2B2B` | `--color-surface` |
+| Foreground (ink) | `#201E1D` | `#F8F4F4` | `--color-foreground` |
+| Primary | `#201E1D` | `#F8F4F4` | `--color-primary` |
+| On Primary | `#F3F2F2` | `#1A1918` | `--color-on-primary` |
+| Secondary (muted text) | `#605D5D` | `#BAB6B6` | `--color-secondary` |
+| Accent (fills, icons, rules, labels) | `#C2410C` | `#EA580C` | `--color-accent` |
+| Accent, body-size text | `#7C2D12` | `#F79A5F` | `--color-accent-text` |
+| Accent, hover/pressed | `#9A3412` | `#F79A5F` | `--color-accent-hover` |
+| On Accent (label on a fill) | `#F3F2F2` | `#1A1918` | `--color-on-accent` |
+| Muted (code, tint fills) | `#EAE7E7` | `#444141` | `--color-muted` |
+| Border (1px row rules) | ink @ 22% | ink @ 22% | `--color-border` |
+| Divider (2px section rules) | ink @ 40% | ink @ 38% | `--color-divider` |
 | Destructive | `#DC2626` | `#EF4444` | `--color-destructive` |
-| Ring | `#18181B` | `#FAFAFA` | `--color-ring` |
+| Ring (focus) | = accent | = accent | `--color-ring` |
 | Code string/regexp | `#15803D` | `#4ADE80` | `--color-code-string` |
 | Code number/title/attr | `#1D4ED8` | `#93C5FD` | `--color-code-value` |
 
-**Color Notes:** Editorial black/zinc + RSS orange accent. Contrast verified per theme: light accent `#C2410C` on white 4.9:1, dark accent `#EA580C` on `#09090B` 5.4:1; dark-mode accent buttons use near-black text (`--color-on-accent`), white on `#EA580C` is only 3.5:1.
+**Colour notes.**
+
+- The ground/surface/ink values are Modernist's own on light, and are derived on
+  the same OKLCH neutral ramp on dark: surface is `neutral-900`, the ground sits
+  one step below it, ink is `neutral-100`. Nothing here was invented by eye.
+- `--color-secondary` is `neutral-700` on light and `neutral-400` on dark — the
+  same perceptual step of one ramp, which is why they read as the same weight.
+- **Accent has three roles, and they are not interchangeable.** `--color-accent`
+  is for fills, icons, the 2px kind rules and the uppercase meta labels — all
+  interface chrome, where the accent/ground pair's 3:1 is enough.
+  `--color-accent-text` (a deep ramp step) is for anything at paragraph size:
+  links in body copy, `.post .source`, `.edit`, the identity CTA, the clamp
+  label. `--color-accent-hover` steps one past the base — **darker on light,
+  lighter on dark.** That reversal is deliberate; a darker hover on a dark
+  ground reads as a disabled state.
+- **A label on an accent fill is the ground colour, never white.** White on
+  `#EA580C` is 3.5:1. `--color-on-accent` handles it in both themes.
+- Borders and dividers are ink at opacity rather than fixed greys, so they stay
+  visible in dark mode without a second token set. Separation never depends on a
+  shadow.
 
 ### Theming mechanism
 
-CSS custom properties, three-state: system default, explicit light, explicit dark.
+Unchanged from the previous revision — three-state, `light-dark()` in `:root`
+with `data-theme` overriding in both directions, an inline pre-paint script in
+`app.html`, and the toggle as pure progressive enhancement.
 
-```css
-:root {
-  color-scheme: light dark; /* native form controls, scrollbars */
-  /* light tokens */
-}
-:root[data-theme='dark'] { /* dark tokens */ }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) { /* dark tokens (same block, duplicated or via mixin) */ }
-}
-```
-
-- **No-JS default:** the system preference (`prefers-color-scheme`) — no toggle needed to get dark mode.
-- **The toggle is progressive enhancement:** a small JS island sets `data-theme` on `<html>` and persists to `localStorage`; an inline script in `app.html` re-applies it before first paint (no flash). Without JS the toggle control is absent, the page still themes correctly.
-- Explicit `data-theme` always beats the media query — both directions.
+One exception: `--shadow-*` cannot use `light-dark()`, because that function's
+arguments are comma-separated and so are shadow lists. Dark elevation therefore
+needs an explicit `[data-theme='dark']` block plus its `prefers-color-scheme`
+twin.
 
 ### Typography
 
-- **Heading Font:** Libre Bodoni
-- **Body Font:** Public Sans
-- **Mood:** magazine, editorial, publishing, refined, journalism, print
-- **Google Fonts:** [Libre Bodoni + Public Sans](https://fonts.googleapis.com/css2?family=Libre+Bodoni:wght@400;500;600;700&family=Public+Sans:wght@300;400;500;600;700&display=swap)
+- **Heading font:** Archivo, weight 800
+- **Body font:** Archivo, weight 400
+- **Mood:** architectural, rational, international style, flush left
+- **Google Fonts:** `Archivo:wght@400;600;800`
 
-**CSS Import:**
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Libre+Bodoni:wght@400;500;600;700&family=Public+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&display=swap');
 ```
 
-### Spacing Variables
+Type scale — headings at `line-height: 1.12`, `letter-spacing: -0.015em`:
 
-| Token | Value | Usage |
-|-------|-------|-------|
-| `--space-xs` | `4px` / `0.25rem` | Tight gaps |
-| `--space-sm` | `8px` / `0.5rem` | Icon gaps, inline spacing |
-| `--space-md` | `16px` / `1rem` | Standard padding |
-| `--space-lg` | `24px` / `1.5rem` | Section padding |
-| `--space-xl` | `32px` / `2rem` | Large gaps |
-| `--space-2xl` | `48px` / `3rem` | Section margins |
-| `--space-3xl` | `64px` / `4rem` | Hero padding |
+| Element | Size | Used for |
+|---|---|---|
+| `h1` | 42px | page identity: `@handle`, Conversation, Admin |
+| `h2` | 32px | river heading ("You and everyone you follow") |
+| `h3` | 27px | a post title |
+| `h4` | 20px | in-body headings |
+| `.label` / `h6` | 11px, 800, `0.1em`, uppercase | every meta label in the app |
+| body | 15px / 1.55 | post text, at `max-width: 68ch` |
 
-### Shadow Depths
+**The 11px uppercase label is the workhorse of this system.** It replaces every
+pill badge: the local/remote kind, `.badge-kind`, federation status, the reply
+count, the "N more in this conversation" wedge, admin stat captions. Flush left,
+tracked, weight 800. If you are reaching for a rounded chip, you want this
+instead.
 
-| Level | Value | Usage |
-|-------|-------|-------|
-| `--shadow-sm` | `0 1px 2px rgba(0,0,0,0.05)` | Subtle lift |
-| `--shadow-md` | `0 4px 6px rgba(0,0,0,0.1)` | Cards, buttons |
-| `--shadow-lg` | `0 10px 15px rgba(0,0,0,0.1)` | Modals, dropdowns |
-| `--shadow-xl` | `0 20px 25px rgba(0,0,0,0.15)` | Hero images, featured cards |
+Everything is flush left — headings, copy, and the labels inside wide buttons.
+Nothing is centred, including the "Show more" clamp affordance and the "Older
+posts" link.
+
+### Spacing
+
+| Token | Value |
+|-------|-------|
+| `--space-xs` | `4px` |
+| `--space-sm` | `8px` |
+| `--space-3` | `12px` |
+| `--space-md` | `16px` |
+| `--space-lg` | `24px` |
+| `--space-xl` | `32px` |
+
+`--space-3` is new — Modernist's 12px step, which its button and card padding
+need.
+
+### Radius
+
+`--radius: 0px`. There is no scale. **Do not round a corner anywhere** — not
+cards, not buttons, not inputs, not badges, not the letter avatar, not the feed
+badge, not the composer dialog.
+
+### Rules and elevation
+
+Structure is drawn, not implied by whitespace:
+
+- **2px `--color-divider`** between major sections: the header nav's underside,
+  the boundaries between the three rails, above each rail section heading, the
+  river heading, the footer's top, the current revision in edit history.
+- **1px `--color-border`** between peers: rows in the river, table rows,
+  following-list rows, thread nesting rules.
+- Never soften either into a hairline, and never drop one for whitespace.
+
+Elevation exists only for things that genuinely float — the composer overlay and
+the slash/emoji popups.
+
+| Level | Light | Dark |
+|---|---|---|
+| `--shadow-sm` | `0 1px 2px rgba(45,43,43,.14)` | `0 0 0 1px rgba(248,244,244,.14)` |
+| `--shadow-md` | `0 3px 10px rgba(45,43,43,.16)` | hairline + `0 8px 24px rgba(0,0,0,.55)` |
+| `--shadow-lg` | `0 12px 32px rgba(45,43,43,.22)` | hairline + `0 12px 32px rgba(0,0,0,.6)` |
+
+On dark the 1px hairline does the separating and the soft shadow only sets depth.
+
+### Icons
+
+Lucide, `currentColor`, `stroke-width: 2`. Two exceptions stay as they are —
+the RSS mark in `FeedIcon.svelte` and the sidebar feed badge are the classic
+RSS square, drawn from the rss.chat port; they are a recognised mark, not an
+interface icon.
+
+### Imagery
+
+Every content photograph goes through `.grayscale` (`filter: grayscale(1)
+contrast(1.08)`). Never tint or colourise. This matters for the roadmap's
+avatar-harvesting work — see **Avatar** below.
+
+### Interaction states
+
+- Hover and pressed come from the accent ramp via `--color-accent-hover`; never
+  `opacity: 0.9` (the old button hover) and never a transform that shifts layout.
+- Focus is `outline: 2px solid var(--color-accent); outline-offset: 2px` on
+  `:focus-visible`. This replaces the old ink ring **and** the soft
+  `box-shadow` focus overrides in the tab bar and admin nav — delete those.
+- `::selection` is `color-mix(in srgb, var(--color-accent) 30%, transparent)`.
+- Disabled drops to 45% opacity.
+- Transitions 150–300ms, and `prefers-reduced-motion` still kills them all.
 
 ---
 
@@ -96,205 +195,364 @@ CSS custom properties, three-state: system default, explicit light, explicit dar
 ### Buttons
 
 ```css
-/* Primary Button */
-.btn-primary {
+.btn, button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start; /* FLUSH LEFT — a wide button starts its label
+                                  at the padding edge, never centred */
+  gap: 6px;
   background: var(--color-accent);
   color: var(--color-on-accent);
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 200ms ease;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: var(--space-sm) var(--space-3);
+  font-family: var(--font-heading);
+  font-weight: 800;
+  font-size: 14px;
   cursor: pointer;
+  transition: background-color 200ms ease;
 }
-
-.btn-primary:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
-}
-
-/* Secondary Button */
-.btn-secondary {
-  background: transparent;
-  color: var(--color-primary);
-  border: 2px solid var(--color-primary);
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 200ms ease;
-  cursor: pointer;
-}
+.btn:hover  { background: var(--color-accent-hover); }
+.btn-secondary { background: transparent; border-color: var(--color-divider); color: var(--color-foreground); }
+.btn-secondary:hover { background: color-mix(in srgb, var(--color-foreground) 7%, transparent); }
+.btn-ghost { background: none; color: var(--color-accent-text); padding-inline: var(--space-xs); }
+.btn-block { width: 100%; }
 ```
 
-### Cards
+The flush-left rule is the one most likely to look wrong if skipped — a
+full-width "Subscribe" with a centred label reads as a different system.
+
+### The post — a ruled row, not a card
+
+This is the largest change in the revision. `.post` is a two-column grid: a 2px
+full-height rule, then the content. No card background, no border box, no
+radius, no shadow, no tint.
 
 ```css
-.card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border); /* borders carry separation in dark mode, where shadows vanish */
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: var(--shadow-md);
-  transition: all 200ms ease;
-  cursor: pointer;
+.post {
+  display: grid;
+  grid-template-columns: 2px 1fr;
+  gap: var(--space-lg);
+  padding: var(--space-lg) 0;
+  border-bottom: 1px solid var(--color-border);
+  background: none;
 }
-
-.card:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
-}
+.post::before { content: ''; background: var(--color-primary); }  /* local */
+.post.remote::before { background: var(--color-accent); }         /* remote */
+.post > * { grid-column: 2; }
 ```
+
+**Local vs remote — the product thesis, restated.** Two signals, never colour
+alone: the left rule changes colour, **and** the flush-left uppercase label
+changes text (`LOCAL` / `REMOTE · ordinarynotes.example`, which also names the
+source host). The old 4% accent background tint is **gone** — a tinted row on a
+ruled river reads as a selection state, and dropping it means an SSE prepend
+cannot shift anything.
+
+**Byline, two rows.** First a meta row in the 11px label style (kind · date ·
+edited · feed link, pushed right); then the name row, display name in Archivo
+800 at 17px beside the muted handle. Then title (`h3`, 27px, `max-width: 30ch`),
+then body (`max-width: 68ch`, `text-wrap: pretty`), then the action row — reply
+count, Reply, Permalink, Edit, Remove — all in the 11px label style.
+
+**Long posts.** Clamp at `18rem` (up from 14rem — the measure is wider now). The
+affordance is **not** a centred gradient pill: the clipped body ends on a 1px
+rule with a flush-left uppercase "Show more". There is no card surface to
+dissolve into, so nothing fades, and the remote-specific gradient override is
+deleted along with the tint.
+
+**Blockquotes** inside a body are display-grade: 2px divider rule on the left,
+Archivo 800 at 19px, `max-width: 44ch`, full-strength ink rather than muted.
+
+**Avatar.** Dropped from the river. The letter avatar was rss.chat's
+`populateAvatar` fallback; unrounded it becomes a square tile that reads as a
+swatch, it is a second marker on the same left edge as the 2px kind rule, and
+the letter merely repeats the name beside it. When feeds start carrying avatars
+(roadmap), reintroduce it as its own 48px grid column — a square portrait
+through `.grayscale` — not as a letter chip. Identity in the meantime lives in
+the name row and on the author lens header.
+
+**Nested replies.** The 1px indent rule stays. Reply rows inherit the same
+ruled-row treatment; the `.post.stacked::before/::after` peeking card edges are
+deleted (they depended on rounded corners) — a folded conversation unfolds as a
+date-keyed ruled sub-list instead.
 
 ### Inputs
 
 ```css
-.input {
+.input, input, textarea, select {
   background: var(--color-surface);
   color: var(--color-foreground);
-  padding: 12px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  font-size: 16px;
-  transition: border-color 200ms ease;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  min-height: 36px;
+  font-size: 14px;
+  caret-color: var(--color-accent);
 }
-
-.input:focus {
-  border-color: var(--color-ring);
-  outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 15%, transparent);
-}
+.input:focus { border-color: var(--color-accent); box-shadow: none; }
 ```
 
-### Reply-Count Control (`ReplyToggle`)
+The soft 3px focus glow is gone — the ring is `:focus-visible`. Field labels are
+12px, weight 400, `--color-secondary` (not 600 bold).
 
-Compact affordance for a conversation's reply count — replaces the old
-oversized bordered wedge pill. A real `<a>` to the conversation permalink
-first (no-JS fallback); JS enhancement toggles the thread inline instead of
-navigating.
+### Rail sections (was: `.panel`)
+
+The boxed `<details>` panel loses its border, radius and surface. It becomes a
+labelled section under a 2px rule: `summary` in the 11px uppercase label style at
+13px, content flush left beneath. Still native `<details>`, still works with no
+JS.
+
+### Reply-count control (`ReplyToggle`)
+
+Keeps every behavioural contract from the previous revision — real `<a>` first,
+44×44 minimum target from padding, `aria-expanded`, `aria-busy` during the fetch,
+`aria-label` as the accessible name, visible glyph+count `aria-hidden`,
+secondary at rest / accent when expanded, no rotation animation.
+
+What changes: `border-radius: 0`, and the visible count adopts the 11px uppercase
+label style ("3 REPLIES") instead of a bare numeral, so it sits in the action row
+with Reply and Permalink rather than floating as a chip.
+
+### Tables
+
+New in this revision, and the right answer for the connected-instances list and
+every admin list:
 
 ```css
-.reply-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-xs);
-  min-height: 44px; /* touch target floor, not the visible glyph size */
-  min-width: 44px;
-  padding: 0 var(--space-sm);
-  border-radius: 8px;
-  color: var(--color-secondary); /* rest state */
-  font-size: 0.8125rem;
-  text-decoration: none;
-  cursor: pointer;
-  transition: color 200ms, background-color 200ms;
-}
-.reply-toggle svg {
-  width: 1rem; /* outline speech-bubble, currentColor, aria-hidden */
-  height: 1rem;
-}
-.reply-toggle:hover {
-  background: var(--color-muted);
-  color: var(--color-foreground);
-}
-.reply-toggle[aria-expanded='true'] {
-  color: var(--color-accent); /* expanded state — color only, no rotated glyph */
-}
-.reply-toggle[aria-busy='true'] {
-  opacity: 0.6;
-  cursor: progress; /* the global :focus-visible ring still applies */
-}
+.table th { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+            color: var(--color-secondary); border-bottom: 2px solid var(--color-divider); }
+.table td { border-bottom: 1px solid var(--color-border); }
 ```
 
-- Outline speech-bubble icon + numeric count — no persistent border, no
-  filled pill background at rest.
-- 44×44 CSS-pixel minimum hit target via padding on the compact glyph, not a
-  visually large pill and not `::after` hacks.
-- `aria-expanded` reflects open/closed; `aria-busy="true"` exactly while a
-  fetch is in flight; `aria-label` (`Show`/`Hide`/`Loading N replies`,
-  correct singular/plural) is the accessible name — the visible glyph+count
-  is `aria-hidden`.
-- Token colors only: secondary at rest, foreground on hover, accent when
-  expanded. No raw hex, no new color token.
-- Standard visible focus ring; no custom rotation/entrance animation.
+Prefer a table over `.following-list` boxes wherever the content is genuinely
+tabular — sources, users, feeds, instances.
 
-### Modals
+### Notices
+
+No box. A 2px left rule in `--color-destructive` (or `--color-accent` for the
+affirmative `.confirm`) and flush-left text at 12px padding-left. Square.
+
+### Modal / composer overlay
 
 ```css
-.modal-overlay {
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
-}
-
-.modal {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: var(--shadow-xl);
-  max-width: 500px;
-  width: 90%;
-}
+.dialog { background: var(--color-surface); border: 0; border-radius: 0;
+          box-shadow: var(--shadow-lg); }
+.dialog::backdrop { background: color-mix(in srgb, #2D2B2B 50%, transparent); }
 ```
+
+No blur — Modernist doesn't blur. The dialog header sits above a 2px rule and
+carries a kicker (`LOCAL · @handle`) over the title. The draft badge loses its
+tinted pill and becomes a trailing muted label, which suits the flush-left
+button.
+
+### Carta composer
+
+Keep every `body`-prefixed selector — `default.css` loads after `app.css` via
+dynamic import, so equal specificity loses the tie. Keep the `.carta-input` font
+metrics rules exactly as they are; the caret layer and the highlight overlay must
+share metrics.
+
+What changes: the editor frame is square with a 1px divider border; the active
+Write/Preview tab becomes a solid accent cell with ground-coloured label
+(Modernist's segmented-control treatment) rather than an underline; the tab labels
+adopt the 11px uppercase style; the icons menu and the slash/emoji popups are
+square with `--shadow-md`, and their `--group-color` is the accent.
 
 ---
 
-## Style Guidelines
+## Page Patterns
 
-**Style:** Swiss Modernism 2.0
+### Shell — the timeline (`/`)
 
-**Keywords:** Grid system, Helvetica, modular, asymmetric, international style, rational, clean, mathematical spacing
+A full-width header nav, then a three-column modular grid separated by 2px
+rules. The old centred `max-width: 90rem` container with 32px gaps is gone: the
+grid runs edge to edge and the rules do the dividing.
 
-**Best For:** Corporate sites, architecture, editorial, SaaS, museums, professional services, documentation
+```
+┌──────────────────────────────────────────────────────────────┐
+│ identity strip (1px rule under)                              │
+├──────────────────────────────────────────────────────────────┤
+│ .nav  RSC · Local Federated Personal Public · Firehose [New] │  2px rule
+├────────────┬─────────────────────────────────┬───────────────┤
+│ tools rail │ river                           │ meta rail     │
+│ 16.5rem    │ 1fr                             │ 18.75rem      │
+│  (2px rule between rails)                                    │
+└──────────────────────────────────────────────────────────────┘
+```
 
-**Key Effects:** display: grid, grid-template-columns: repeat(12 1fr), gap: 1rem, mathematical ratios, clear hierarchy
+**The tabs move into the nav.** They were a bordered tab strip above the river;
+as nav links they free the river's full measure and give the brand, the rivers
+and the primary action one horizontal line. Delete the `.tabs` block in
+`+page.svelte`'s `<style>`.
 
-### Page Pattern
+**Duplication rule:** a control appears once. "New post" lives in the nav, not
+also in the rail. The rivers live in the nav, not also as a rail list — the rail
+lists *sources* instead (with OPML import/export), which is the thing that was
+missing.
 
-**Pattern Name:** Timeline / Content First (app surface, not a marketing page)
+River order is unchanged: newest first, root-only, "Older posts" at the foot.
 
-- **Section Order:** 1. Masthead (site name), 2. Composer + add-remote forms, 3. Unified timeline (newest first), 4. "Older posts" pagination link
-- **Layout:** single centered column, `max-width: 42rem` (~65ch) — long-form text measure governs the width, not a 12-col grid
-- **Post anatomy:** author display name + `@handle` + kind badge (`local`/`remote`) · optional title (heading font) · body text · media enclosure (below text) · source link / timestamp
+### Author lens (`/u/[handle]`)
 
-### RSC-specific constraints (from the spec — override anything above that conflicts)
+Was a 42rem centred column. Now: a ruled masthead (kicker `AUTHOR LENS · LOCAL`,
+`@handle` at 42px, Follow + feed badge right-aligned), then a **stat row** of
+three equal cells divided by 1px rules — posts / following / followers — then the
+river full width.
 
-1. **No-JS first-class:** every style must read correctly on plain SSR HTML; JS only enhances. No CSS that depends on JS-added classes.
-2. **Live timeline:** SSE island prepends posts at the top. Insertions must not jank — fixed post paddings, no entrance animations taller than the post, respect `prefers-reduced-motion`.
-3. **Local vs remote must be legible:** this is the product thesis. Distinguish with the kind badge + a subtle border/marker on `.post.remote` — never color alone.
-4. **Theme toggle is an enhancement, not a requirement:** no-JS users get the correct theme from `prefers-color-scheme`; the toggle (JS island) only overrides it. Design and test every component in both themes — dark is not an inversion pass at the end.
-5. **Text first, enclosures second:** body text is the primary content. Media enclosures (podcast audio, images, video) render as an attachment block *below* the text, never as a hero. Use native `<audio controls>` / `<video controls>` / `<img loading="lazy">` — no player libraries. Images: `max-width: 100%`, declared aspect-ratio to avoid CLS.
-6. **Root-only rivers:** the Local/Federated/Personal/Public timeline tabs and the following-management timeline show each conversation once, at its root — a true root or an unresolved reply, never a resolved reply as its own card. Opening a root's `ReplyToggle` reveals the sanitized thread inline; the conversation permalink opens the complete tree. Author profiles and the conversation page are exempt — they remain activity/full-thread views and keep showing reply posts directly.
+The card-stack whisper is replaced: a conversation with more of the author's
+posts unfolds as a date-keyed ruled sub-list (`6rem` date column, then the text),
+under the top row's own rule.
+
+### Conversation (`/post/[id]`)
+
+Same masthead treatment: kicker `CONVERSATION`, and the "Replying to" way-up link
+in the 11px label style beneath it. The root row then the fully-unfolded tree,
+each level indented behind a 1px rule. The `highlight` state for the post you
+arrived at is a 2px accent left rule — the same mechanism as `.post.remote`, not
+a box-shadow — so it reads at a glance in a deep tree.
+
+The Reply composer stays a `<details>` at the foot, now as a labelled rail
+section rather than a boxed panel.
+
+### Edit history (`/post/[id]/history`)
+
+Already a ruled list rather than boxed cards — that instinct was right and
+survives intact. Versions run oldest to newest; each `<li>` is separated by a 1px
+rule, the timestamp is an 11px uppercase label, and the current version is
+marked by a **2px accent** top rule (was 2px ink). "← back to the post" is an
+11px label link.
+
+### Following (`/u/[handle]/following`)
+
+Three forms (subscribe, follow, import OPML) become labelled rail sections
+stacked under 2px rules rather than three boxed `<details>`. The subscriptions
+list becomes a `.table` — label, kind, state, action — which handles the
+`awaiting review` state far better than a badge on a rounded row. The timeline
+below it uses the standard ruled river.
+
+### Admin (`/admin/*`)
+
+The section tabs adopt the same treatment as the timeline tabs: a nav row over a
+2px rule, accent for the current page, no soft focus glow (delete the
+`box-shadow` focus override in `+layout.svelte`).
+
+The overview's four stat cards become a **single ruled row of equal cells** — the
+same construction as the author lens stat row, no card borders, 1px rules
+between, number in Archivo 800 at 28px over an 11px uppercase caption. Federation
+status becomes a two-column `.table` (setting / state), with `on` in the accent
+and `off` in secondary — plus the word itself, so it is not colour alone. Users
+and feeds are `.table`s.
+
+### Auth pages (`login` / `register` / `forgot` / `reset`)
+
+No layout change needed; the token swap and the button/input rules carry them.
+`form.auth-form` keeps its 24rem measure, flush left on the page rather than
+centred.
+
+### Narrow widths
+
+Three breakpoints, and the rule at each is *what drops*, not *what shrinks*.
+
+**1024 and below — the meta rail drops.** It becomes a two-cell ruled band below
+the river (About | Connected instances), divided by a 1px rule. The tools rail
+stays: subscribing and the source list are actions, About and the peer list are
+reference, and actions keep their place longer.
+
+**767 and below — one column, and the nav collapses into a menu.** The header
+holds three things: brand, New post, `MENU`. The rivers, the whole tools rail and
+the identity strip move into the panel; the river then has to name itself on the
+page, which it should have been doing anyway.
+
+**The menu is a full-bleed ruled panel, not a dropdown** — nothing floats in this
+system, so a floating sheet would be the wrong object. It is a poster page: groups
+divided by 2px rules, entries flush left in Archivo 800 at 22px on 56px rows,
+ordinary rows at 44px. The current river is a solid accent cell (the
+segmented-control treatment) and says `here` in words as well, so it is never
+colour alone. Built as a native `<details>` with the toggle as its `<summary>`, so
+it opens with JavaScript off and needs no `aria-expanded` management.
+
+Within a row at this width: the gap goes 24 → 12px, titles 27 → 22px, the byline
+wraps, and every item in the action row takes the 44px floor. **The 2px kind rule
+does not get quieter** — it is the local/remote signal, and it is the same weight
+at 375px as at 1440px.
+
+**Tables become records below 700px.** A four-column table cannot survive 375px.
+Mark it `.table.table-records`, give each `<td>` a `data-label`, and the `<thead>`
+hides while each row becomes a stacked ruled record — the column heading printed
+as an 11px uppercase label line, the first cell as the record's title. It stays a
+real table in the markup, so wide screens and screen readers are unaffected.
+
+**768 to 1023 is the two-rail layout:** rivers back in the nav, tools rail back at
+15rem, meta as the band below. So the menu is a 767-and-below concern only.
+
+---
+
+## RSC-specific constraints (override anything above that conflicts)
+
+1. **No-JS first-class.** Every style must read correctly on plain SSR HTML. No
+   CSS that depends on a JS-added class. The ruled river helps here — there is no
+   hover-elevation state to miss.
+2. **Live timeline.** The SSE island prepends at the top. Fixed row padding, no
+   entrance animation, `prefers-reduced-motion` respected. Dropping the
+   `.post.remote` background tint removes the last thing that could reflow on
+   insert.
+3. **Local vs remote must be legible.** Two signals minimum: the 2px left rule's
+   colour **and** the uppercase label's text. Never colour alone.
+4. **Theme toggle is an enhancement.** No-JS gets the right theme from
+   `prefers-color-scheme`. Design and test both themes independently — dark is
+   not an inversion pass. The toggle now lives in the nav bar.
+5. **Text first, enclosures second.** Unchanged: native `<audio>` / `<video>` /
+   `<img loading="lazy">`, an attachment block *below* the text, never a hero,
+   declared aspect-ratio. Enclosure images are square-cornered now, and content
+   photographs go through `.grayscale`.
+6. **Root-only rivers.** Unchanged: Local / Federated / Personal / Public and the
+   following-management timeline show each conversation once, at its root. Author
+   profiles and the conversation page remain full/activity views.
 
 ---
 
 ## Anti-Patterns (Do NOT Use)
 
-- ❌ Poor typography
-- ❌ Slow loading
-
-### Additional Forbidden Patterns
-
-- ❌ **Emojis as icons** — Use SVG icons (Heroicons, Lucide, Simple Icons)
-- ❌ **Missing cursor:pointer** — All clickable elements must have cursor:pointer
-- ❌ **Layout-shifting hovers** — Avoid scale transforms that shift layout
-- ❌ **Low contrast text** — Maintain 4.5:1 minimum contrast ratio
-- ❌ **Instant state changes** — Always use transitions (150-300ms)
-- ❌ **Invisible focus states** — Focus states must be visible for a11y
+- ❌ **Any rounded corner.** `--radius` is `0` on purpose.
+- ❌ **Centred button labels or centred page copy.**
+- ❌ **Pill badges.** Use the 11px uppercase label.
+- ❌ **Cards with shadows** as the river's unit of content. Rules divide; nothing floats.
+- ❌ **Softening a 2px rule to 1px, or replacing a rule with whitespace.**
+- ❌ **Tinted or colourised imagery.** `.grayscale`, always.
+- ❌ **`--color-accent` at paragraph size** — that is `--color-accent-text`.
+- ❌ **White text on an accent fill** — that is `--color-on-accent`.
+- ❌ **A darker hover on the dark ground** — hover steps lighter there.
+- ❌ **Emojis as icons.** Lucide SVG.
+- ❌ **Missing `cursor: pointer`** on anything clickable.
+- ❌ **Layout-shifting hovers**, `opacity` hovers, instant state changes.
+- ❌ **Invisible or default-blue focus states.**
+- ❌ **Low contrast text** — 4.5:1 minimum for body copy, per theme.
 
 ---
 
 ## Pre-Delivery Checklist
 
-Before delivering any UI code, verify:
-
-- [ ] No emojis used as icons (use SVG instead)
-- [ ] All icons from consistent icon set (Heroicons/Lucide)
-- [ ] `cursor-pointer` on all clickable elements
-- [ ] Hover states with smooth transitions (150-300ms)
-- [ ] Both themes: text contrast 4.5:1 minimum, checked independently
-- [ ] Theme toggle overrides system preference in both directions; no flash on load
-- [ ] Borders/dividers and interaction states visible in dark mode (not shadow-only)
-- [ ] Focus states visible for keyboard navigation
+- [ ] No rounded corners anywhere
+- [ ] No pill badges — meta reads as 11px uppercase flush-left labels
+- [ ] Every wide button's label starts at the left padding edge
+- [ ] 2px rules between sections, 1px between peers; none softened or dropped
+- [ ] Accent used at the right weight: fill/icon/label vs body text vs hover
+- [ ] Accent-fill labels use `--color-on-accent`, not white
+- [ ] Dark hover steps *lighter*, not darker
+- [ ] Both themes: text contrast 4.5:1, checked independently
+- [ ] Dark mode separation comes from borders/rules, not shadows
+- [ ] Theme toggle overrides system preference both ways; no flash on load
+- [ ] Focus ring is the 2px accent `:focus-visible`; no leftover soft glows
+- [ ] Local vs remote distinguished by rule colour **and** label text
+- [ ] Live prepends can't shift layout (no tint, fixed row padding)
 - [ ] `prefers-reduced-motion` respected
+- [ ] Photographs through `.grayscale`
+- [ ] Icons from Lucide (RSS mark excepted)
 - [ ] Responsive: 375px, 768px, 1024px, 1440px
-- [ ] No content hidden behind fixed navbars
-- [ ] No horizontal scroll on mobile
+- [ ] At 767 and below: rivers, tools rail and identity live in the menu panel, nowhere twice
+- [ ] The menu panel is a ruled full-bleed page, opens with JS off, rows ≥ 44px
+- [ ] Multi-column tables carry `data-label` and collapse to records below 700px
+- [ ] The 2px kind rule is the same weight at every width
+- [ ] No content hidden behind the nav; no horizontal scroll on mobile
+- [ ] Reads correctly with JavaScript off
