@@ -45,6 +45,7 @@
 				{/if}
 				<a class="permalink" href="/post/{reply.id}"><time datetime={reply.publishedAt}>{reply.publishedAt.slice(0, 10)}</time></a>
 				<EditedMarker post={reply} />
+				{#if reply.id === highlightId}<span class="here">You are here</span>{/if}
 			</div>
 			{#if reply.title}<h3 class="title">{reply.title}</h3>{/if}
 			<PostBody post={reply} />

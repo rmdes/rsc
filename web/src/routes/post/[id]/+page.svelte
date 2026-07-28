@@ -98,6 +98,7 @@
 					<span class="kind">{root.source}</span>
 					<a class="permalink" href="/post/{root.id}"><time datetime={root.publishedAt}>{root.publishedAt.slice(0, 10)}</time></a>
 					<EditedMarker post={root} />
+					{#if root.id === data.postId}<span class="here">You are here</span>{/if}
 				</div>
 				{#if root.title}<h2 class="title">{root.title}</h2>{/if}
 				<PostBody post={root} />
@@ -128,22 +129,3 @@
 		</form>
 	</details>
 </div>
-
-<style>
-	/* Text-button destructive affordance, matching .edit/.source's inline
-	   link weight — not a filled/outlined button (that's .danger on
-	   /admin/users, a card list with more visual room). */
-	.danger-link {
-		font: inherit;
-		font-size: 0.875rem;
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--color-destructive);
-		cursor: pointer;
-	}
-
-	.danger-link:hover {
-		text-decoration: underline;
-	}
-</style>
