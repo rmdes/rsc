@@ -89,6 +89,7 @@
 							     row came from — verification, not subscribe/OPML/admin — a nested
 							     member never reaches here at all (Task 6 exclusion). -->
 							{#if row.viaVerification}<p class="subnav hint">via verification</p>{/if}
+							<p class="subnav"><a href="/admin/sources/{encodeURIComponent(row.id)}">Details (run history, items, purge)</a></p>
 						</div>
 						{#if row.group === 'federation' && row.memberCounts}
 							{@const qs = [expanded ? '' : `expand=${row.id}`, data.cursor ? `cursor=${encodeURIComponent(data.cursor)}` : ''].filter(Boolean).join('&')}
@@ -112,6 +113,7 @@
 													{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
 												</span>
 												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
+												<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
 											</div>
 											{@render managePanel(m, 'm-')}
 										</li>

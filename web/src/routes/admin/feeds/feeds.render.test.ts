@@ -172,3 +172,24 @@ test('a blocked member renders twice (flat + nested) with distinct DOM ids to av
 	flatLabelFor.forEach((label) => expect(body).toContain(label))
 	nestedLabelFor.forEach((label) => expect(body).toContain(label))
 })
+
+// The source detail page (/admin/sources/[sourceId] — run history, item
+// history, purge) had no link reaching it from this list at all; an admin
+// had to already know the source's id and type the URL by hand.
+test('every row, ordinary and nested member alike, links to its own source detail page', () => {
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
+		expand: 'inst1',
+		expandedMembers: [memberRow()],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+
+	expect(body).toContain('href="/admin/sources/inst1"')
+	expect(body).toContain('href="/admin/sources/mem1"')
+})
