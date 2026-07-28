@@ -580,7 +580,7 @@ export class SqliteRepository implements Repository, SourceRepository {
   // endpoint is NEVER shipped — only a stable non-secret digest of it — and the
   // callback token and secret are not read at all, so they cannot reach any body.
   // ponytail: one small indexed lookup per listed source (the page is clamped to
-  // ≤50); fold into the list query only if a page read ever shows up in a profile.
+  // ≤100, via clampLimit); fold into the list query only if a page read ever shows up in a profile.
   private pushFor(sourceId: string): { push: PushSummary; pushExpiresAt: string | null } {
     const row = this.raw.prepare(
       `SELECT mode, state, endpoint, expires_at FROM push_subscriptions_v2 WHERE source_id = ?
@@ -593,9 +593,16 @@ export class SqliteRepository implements Repository, SourceRepository {
     }
   }
 
-  // The retention ladder (spec, mirrors every reapSourceIfOrphaned guard in
-  // order): non-null only for orphans. admin_retained must be checked before
-  // source_audit_v2 or an admin-retained orphan is mislabeled reapable.
+  // A display-only retention-reason label for ANY source (getSourceDetail and
+  // listSourceMembers call this unconditionally, not just for orphans) — first
+  // match wins, in priority order: verified_origin > admin_retained >
+  // audit_history > reapable. This checks only those 3 signals, NOT the full
+  // reapSourceIfOrphaned guard chain (which also checks subscribers/governance/
+  // federation first). Trap: 'reapable' means "nothing here is retaining it,"
+  // NOT "safe to reap" — a source with active subscriptions still shows
+  // 'reapable' when rendered via getSourceDetail/listSourceMembers, since
+  // neither pre-filters to orphans the way listSourceSummaries's orphan
+  // filter does.
   private retentionFor(sourceId: string): 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' {
     if (this.raw.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)) return 'verified_origin'
     const source = this.raw.prepare(`SELECT admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { admin_retained: 0 | 1 } | undefined
@@ -605,7 +612,7 @@ export class SqliteRepository implements Repository, SourceRepository {
   }
 
   // ponytail: one small indexed lookup per listed source (the page is clamped
-  // to ≤50, matching pushFor's own accepted shape); fold into the list query
+  // to ≤100, matching pushFor's own accepted shape); fold into the list query
   // only if a page read ever shows up in a profile.
   private addedByFor(sourceId: string): { handle: string; displayName: string }[] {
     const rows = this.raw.prepare(
@@ -978,7 +985,10 @@ export class SqliteRepository implements Repository, SourceRepository {
         return result
       }
       const outcome = reapSourceFn(raw, input.sourceId, { force: input.force }, input.now)
-      storeCommand(raw, input.command, outcome, input.now)
+      // Only a 'reaped' outcome is ledgered — like every sibling admin command,
+      // a refusal writes nothing so a retry with the same commandId
+      // re-evaluates against live state instead of replaying a stale refusal.
+      if (outcome.kind === 'reaped') storeCommand(raw, input.command, outcome, input.now)
       return outcome
     }).immediate()
   }

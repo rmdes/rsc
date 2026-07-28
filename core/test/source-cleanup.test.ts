@@ -399,7 +399,7 @@ test('operator reap is ledgered and idempotent on replay, no second effect', asy
   repo.close()
 })
 
-test('a refused reap replays on the same commandId even with force flipped, but a new commandId re-judges and can succeed', async () => {
+test('a refused reap is never ledgered, so the same commandId re-judges against live state and can succeed', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-retry.test/feed' })
@@ -407,16 +407,14 @@ test('a refused reap replays on the same commandId even with force flipped, but 
 
   const refused = await repo.reapSource({ command: reapCmd('r7a', src), sourceId: src, force: false, now: NOW })
   expect(refused).toEqual({ kind: 'refused', reason: 'verified_origin_evidence' })
+  expect(countRows(raw, 'command_ledger_v2')).toBe(0) // refusals are never ledgered, unlike 'reaped'
 
-  // Same commandId, now with force:true -> replays the STORED refusal, does not re-judge.
+  // Same commandId, now with force:true -> refusal was never stored, so this
+  // re-evaluates against live state (not a replay) and succeeds.
   const sameIdRetry = await repo.reapSource({ command: reapCmd('r7a', src), sourceId: src, force: true, now: NOW })
-  expect(sameIdRetry).toEqual(refused)
-  expect(countRows(raw, 'remote_sources_v2')).toBe(1)
-
-  // A NEW commandId with force:true re-judges and succeeds.
-  const forced = await repo.reapSource({ command: reapCmd('r7b', src), sourceId: src, force: true, now: NOW })
-  expect(forced).toEqual({ kind: 'reaped' })
+  expect(sameIdRetry).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(0)
+  expect(countRows(raw, 'command_ledger_v2')).toBe(1) // the successful reap IS ledgered
 
   repo.close()
 })
