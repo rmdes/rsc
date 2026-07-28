@@ -87,6 +87,8 @@ test('every admin source route answers [401,403,403,200,401,401] for [none,anon,
     subscriptions: (headers) => app.request(`/admin/sources/${sourceId}/subscriptions`, { headers }),
     audit: (headers) => app.request(`/admin/sources/${sourceId}/audit`, { headers }),
     mutate: (headers, actor) => app.request(`/admin/sources/${sourceId}/pause`, post(headers, { commandId: `mutate-${actor}` })),
+    members: (headers) => app.request(`/admin/sources/${sourceId}/members`, { headers }),
+    membersCounts: (headers) => app.request(`/admin/sources/${sourceId}/members/counts`, { headers }),
   }
 
   const expected = [401, 403, 403, 200, 401, 401]
@@ -218,6 +220,62 @@ test('the admin reads paginate and project summary/detail/subresources', async (
   expect(audit).toEqual({ items: [], nextCursor: null })
 
   expect((await app.request('/admin/sources?cursor=@@bogus@@', { headers: { cookie } })).status).toBe(400)
+  repo.close()
+})
+
+// --- Task 5 (instance-governed-members): the member list/count reads -------
+
+function seedMember(repo: { raw: Raw }, opts: { url: string; overridden?: 0 | 1; createdAt?: string }): string {
+  const id = randomUUID()
+  repo.raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'origin_verification', NULL, 0, ?, ?)`,
+  ).run(id, opts.url, opts.overridden ?? 0, opts.createdAt ?? '2026-01-01T00:00:00.000Z')
+  return id
+}
+
+function approveFederationFor(repo: { raw: Raw }, sourceId: string, createdAt = '2026-01-01T00:00:00.000Z'): void {
+  repo.raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, 'approved', NULL, ?, ?)`,
+  ).run(sourceId, createdAt, createdAt)
+}
+
+test('GET /admin/sources/:id/members and /members/counts page and count members, reachable through the F2 gate', async () => {
+  const { app, repo, cookie } = await adminApp()
+  const instanceId = insertSourceRow(repo, { canonicalUrl: 'https://rss.chat/hub.xml' })
+  approveFederationFor(repo, instanceId)
+  const m1 = seedMember(repo, { url: 'https://rss.chat/users/a.xml', createdAt: '2026-01-02T00:00:00.000Z' })
+  const m2 = seedMember(repo, { url: 'https://rss.chat/users/b.xml', overridden: 1, createdAt: '2026-01-02T00:00:01.000Z' })
+  const m3 = seedMember(repo, { url: 'https://rss.chat/users/c.xml', createdAt: '2026-01-02T00:00:02.000Z' })
+
+  const counts = await (await app.request(`/admin/sources/${instanceId}/members/counts`, { headers: { cookie } })).json()
+  expect(counts).toEqual({ members: 3, overridden: 1 })
+
+  const page1 = await (await app.request(`/admin/sources/${instanceId}/members?limit=2`, { headers: { cookie } })).json()
+  expect(page1.items.map((i: { source: { id: string } }) => i.source.id)).toEqual([m3, m2]) // created_at DESC, id DESC
+  expect(page1.nextCursor).toEqual(expect.any(String))
+  // per-row shape matches listSourceSummaries's own projection
+  expect(Object.keys(page1.items[0]).sort()).toEqual(['federationStatus', 'push', 'source', 'subscriptionCounts'])
+
+  const page2 = await (await app.request(`/admin/sources/${instanceId}/members?limit=2&cursor=${encodeURIComponent(page1.nextCursor)}`, { headers: { cookie } })).json()
+  expect(page2.items.map((i: { source: { id: string } }) => i.source.id)).toEqual([m1])
+  expect(page2.nextCursor).toBeNull()
+
+  // A non-instance id (no approved federation relationship) — empty, not 404,
+  // same posture as :id/subscriptions and :id/audit (Task 2's F2 gate reached
+  // through the route).
+  const nonInstance = insertSourceRow(repo, { canonicalUrl: 'https://other.test/f.xml' })
+  const nonInstanceMembers = await app.request(`/admin/sources/${nonInstance}/members`, { headers: { cookie } })
+  expect(nonInstanceMembers.status).toBe(200)
+  expect(await nonInstanceMembers.json()).toEqual({ items: [], nextCursor: null })
+  const nonInstanceCounts = await app.request(`/admin/sources/${nonInstance}/members/counts`, { headers: { cookie } })
+  expect(nonInstanceCounts.status).toBe(200)
+  expect(await nonInstanceCounts.json()).toEqual({ members: 0, overridden: 0 })
+
+  // An entirely unknown id — same empty posture, still 200.
+  const unknownMembers = await app.request(`/admin/sources/${randomUUID()}/members`, { headers: { cookie } })
+  expect(unknownMembers.status).toBe(200)
+  expect(await unknownMembers.json()).toEqual({ items: [], nextCursor: null })
   repo.close()
 })
 

@@ -102,6 +102,12 @@ export interface SourceRepository {
   getSourceDetail(id: string): Promise<SourceDetail | undefined>
   listSourceSubscriptions(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSubscription>>
   listSourceAudit(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceAuditEvent>>
+  // Task 5 (instance-governed-members): admin reads of an instance's members —
+  // gated on the target CURRENTLY holding an approved federation relationship
+  // (Task 2's memberRowsPage/memberCounts, F2) — same empty-not-404 posture as
+  // the :id/subscriptions and :id/audit siblings above for a non-instance id.
+  listSourceMembers(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>>
+  sourceMemberCounts(sourceId: string): Promise<{ members: number; overridden: number }>
   // Each is a single ledger-backed BEGIN IMMEDIATE transaction (Task 3).
   followLocalAccount(input: { command: CommandEnvelope; ownerId: string; targetId: string; now: string }): Promise<SubscribeResult>
   resolveAndSubscribeSource(input: { command: CommandEnvelope; ownerId: string; canonicalUrl: string; cap: number; now: string }): Promise<SubscribeResult>

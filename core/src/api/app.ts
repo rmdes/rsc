@@ -317,6 +317,19 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json(await v2repo.listSourceAudit(c.req.param('id') ?? '', args.cursor, args.limit))
   })
 
+  // Task 5 (instance-governed-members): same empty-not-404 posture as the two
+  // siblings above — a non-instance id (no approved federation relationship)
+  // is Task 2's F2 gate, applied inside listSourceMembers/sourceMemberCounts.
+  app.get('/admin/sources/:id/members', async (c) => {
+    const args = pageArgs(c)
+    if (args instanceof Response) return args
+    return c.json(await v2repo.listSourceMembers(c.req.param('id') ?? '', args.cursor, args.limit))
+  })
+
+  app.get('/admin/sources/:id/members/counts', async (c) => {
+    return c.json(await v2repo.sourceMemberCounts(c.req.param('id') ?? ''))
+  })
+
   // ONE federation handler for both callers (V4 §6: "no second code path") —
   // same validator, same establishFederation call, same dispositions. Only the
   // actor differs, so the ops route cannot drift from the admin route.

@@ -12,7 +12,7 @@ import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_I
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
-import { memberRows, healMembers } from '../logical/membership.ts'
+import { memberRows, memberRowsPage, memberCounts, healMembers } from '../logical/membership.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
 // These source-command methods run whenever the source-control plane is wired
@@ -572,6 +572,27 @@ export class SqliteRepository implements Repository, SourceRepository {
     ) as SourceAuditV2Row[]
     const { page, nextCursor } = this.splitPage(rows, lim)
     return { items: page.map(rowToSourceAuditV2), nextCursor }
+  }
+
+  // Task 5 (instance-governed-members): the admin member list/count reads —
+  // delegates the F2 approved-federation gate and the range query wholly to
+  // membership.ts, then reuses this class's own per-row summary projection
+  // (same shape listSourceSummaries/getSourceDetail already build).
+  async listSourceMembers(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceSummary>> {
+    const instRow = this.raw.prepare(`SELECT id, canonical_url FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { id: string; canonical_url: string } | undefined
+    if (!instRow) return { items: [], nextCursor: null }
+    const { rows, nextCursor } = memberRowsPage(this.raw, instRow, cursor, limit)
+    const items: SourceSummary[] = rows.map((r) => {
+      const source = rowToRemoteSourceV2(r)
+      return { source, federationStatus: this.federationStatusFor(source.id), subscriptionCounts: this.subscriptionCountsFor(source.id), push: this.pushFor(source.id).push }
+    })
+    return { items, nextCursor }
+  }
+
+  async sourceMemberCounts(sourceId: string): Promise<{ members: number; overridden: number }> {
+    const instRow = this.raw.prepare(`SELECT id, canonical_url FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { id: string; canonical_url: string } | undefined
+    if (!instRow) return { members: 0, overridden: 0 }
+    return memberCounts(this.raw, instRow)
   }
 
   // --- v2 source-control plane mutations (Task 3). Each method is a single
