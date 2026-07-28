@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
@@ -65,19 +64,14 @@
 </svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
-	<div>
-		<h1>
-			@{data.handle}
-			{#if kind}<span class="badge-kind">{kind}</span>{/if}
+	<header class="page-head">
+		<span class="kicker">Author lens{#if kind} · {kind}{/if}</span>
+		<h1>@{data.handle}</h1>
+		<p class="subnav">
+			<a href="/u/{data.handle}/following">Following &amp; followers</a>
 			{#if data.timeline[0]}<FeedIcon author={data.timeline[0].author} />{/if}
-		</h1>
-		<p class="subnav"><a href="/u/{data.handle}/following">following &amp; followers</a></p>
-	</div>
+		</p>
+	</header>
 
 	{#if data.coreDown}<p class="notice" role="alert">Can't load this page right now — try again shortly.</p>{/if}
 
@@ -130,20 +124,16 @@
 					<ReplyTree thread={expanded[post.id]} parentId={post.id} />
 				{:else if stackOpen[post.id]}
 					<ul class="replies">
-						<!-- no per-card links: the whole stack is one conversation, and the
-						     top card already carries the one "View conversation" that matters -->
 						{#each others as p (p.id)}
-							<li class="post" class:remote={p.source === 'remote'}>
-								<div class="byline">
-									{#if p.sourceName}<strong>{p.sourceName}</strong>{/if}
-									<a class="permalink" href="/post/{p.id}"><time datetime={p.publishedAt}>{p.publishedAt.slice(0, 10)}</time></a>
-									<EditedMarker post={p} />
+							<li>
+								<span class="k"><time datetime={p.publishedAt}>{p.publishedAt.slice(5, 10)}</time></span>
+								<div>
+									{#if p.title}<h3 class="title">{p.title}</h3>{/if}
+									<PostBody post={p} />
+									{#if p.source === 'local' && data.me?.user.id === p.author.id}
+										<a class="edit" href="/post/{p.id}/edit">Edit</a>
+									{/if}
 								</div>
-								{#if p.title}<h3 class="title">{p.title}</h3>{/if}
-								<PostBody post={p} />
-								{#if p.source === 'local' && data.me?.user.id === p.author.id}
-									<a class="edit" href="/post/{p.id}/edit">Edit</a>
-								{/if}
 							</li>
 						{/each}
 					</ul>
