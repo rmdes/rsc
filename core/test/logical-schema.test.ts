@@ -103,9 +103,11 @@ test('overridden: DEFAULT 1, mint writes 0, CHECK enforces the bit', async () =>
   repo.close()
 })
 
-test('migration 20 adds source_health_v2(last_poll_at) for the self-pacing scheduler', async () => {
+test('migration 20 adds acquisition_runs_v2(started_at) and acquisition_runs_v2(status) indexes', async () => {
   const repo = await createSqliteRepository(':memory:')
   const idx = indexNames(repo.raw)
-  expect([...idx].some((n) => n.includes('source_health_v2'))).toBe(true)
+  expect([...idx].some((n) => n === 'acquisition_runs_v2_started_at')).toBe(true)
+  expect([...idx].some((n) => n === 'acquisition_runs_v2_status')).toBe(true)
   expect(repo.raw.pragma('user_version', { simple: true })).toBe(20)
+  repo.close()
 })

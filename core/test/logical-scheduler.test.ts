@@ -512,3 +512,48 @@ test('an acquireSource throw does not orphan the lane — pollDue resolves and t
   spy.mockRestore()
   raw.close()
 })
+
+// --- a throwing source must still get recordHealth (review finding 3) ------
+// listDueSources orders NULLs/oldest last_poll_at first. Without recordHealth
+// in the catch, a source whose acquireSource throws never advances its
+// last_poll_at, so it stays maximally-overdue and — combined with the
+// per-tick LIMIT this task introduced — permanently occupies one of a small
+// number of batch slots, starving every other source forever.
+
+test('a throwing source still gets recordHealth — its staleness advances instead of staying permanently head-of-line', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 'a-throws')
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const order: string[] = []
+  const engine: AcquisitionEngine = {
+    async acquireSource(sourceId: string) {
+      order.push(sourceId)
+      if (sourceId === 'a-throws') throw new Error('boom')
+      return { runId: `run-${sourceId}`, sourceId, status: 'terminal', outcome: 'parsed' }
+    },
+    inFlight: () => false,
+  }
+  const sched1 = createScheduler({ store, acquisition: engine, config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
+  await sched1.pollDue(NOW)
+
+  // The core assertion: without recordHealth in the catch, this stays null
+  // forever and 'a-throws' would keep re-winning every future staleness
+  // ordering ahead of sources that have never been polled at all.
+  expect(store.getHealth('a-throws')?.lastPollAt).toBe(NOW)
+
+  // Seed a source that's genuinely never been polled, then advance past the
+  // base interval so 'a-throws' becomes due again too. With a per-tick LIMIT
+  // of 1, listDueSources' NULL-first ordering must pick the never-polled
+  // source, not re-pick 'a-throws' first ('a-throws' sorts before 'z-never'
+  // alphabetically, so a stale/never-advanced tie would wrongly favor it) —
+  // proving the throw didn't leave it permanently head-of-line.
+  await seedSubscribed(raw, repo, 'z-never')
+  const CONFIG2 = { pollSeconds: 60, ingestCycleMinutes: 2, ingestConcurrency: 8, ingestMaxPerHost: 8 }
+  const sched2 = createScheduler({ store, acquisition: engine, config: CONFIG2, drainVerification: undefined, push: undefined, breather: undefined })
+  order.length = 0
+  await sched2.pollDue(at(61))
+  expect(order).toEqual(['z-never'])
+
+  spy.mockRestore()
+  raw.close()
+})

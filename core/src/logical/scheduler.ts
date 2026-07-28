@@ -70,7 +70,8 @@ export interface LogicalScheduler {
   start(): void
   stop(): void
   wake(): void
-  // One deterministic serial pass over the due sources; returns the count polled.
+  // One deterministic pass over the due sources (bounded-concurrent, not
+  // serial); returns the count polled.
   // The loop and tests share it. Exposed so tests need no wall-clock timers.
   pollDue(now: string): Promise<number>
 }
@@ -99,11 +100,12 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
     const due = store.listDueSources({ now: nowStr, pollSeconds: config.pollSeconds, pushPollFactor: PUSH_POLL_FACTOR, limit: batchSize })
       .filter((s) => !acquisition.inFlight(s.id))
     // ponytail: a lane that finds nothing startable (every remaining item is
-    // host-capped) doesn't defer — another lane is still in flight holding that
-    // host's count and will free it, and this lane loops right back to pick the
-    // item up within the SAME pollDue call. A host-heavy batch just makes one
-    // tick's pass take longer (harmless — busy prevents overlapping passes),
-    // not "wait for next tick."
+    // host-capped) doesn't defer — it returns, giving up its slot for this
+    // pass. But nothing is lost: some OTHER lane is still in flight holding
+    // that host's count, and when it finishes it decrements the count and
+    // loops back to findIndex itself, picking the item up within the SAME
+    // pollDue call. A host-heavy batch just makes one tick's pass take longer
+    // (harmless — busy prevents overlapping passes), not "wait for next tick."
     const queue = due.map((s) => ({ id: s.id, host: hostOf(s.canonicalUrl) }))
     const hostCounts = new Map<string, number>()
     let polled = 0
@@ -129,6 +131,16 @@ export function createScheduler(deps: SchedulerDeps): LogicalScheduler {
           // moved on, orphaning them (busy no longer covers them, stop() can't
           // halt them, and this pass's polled count / trailing renewDue+purge
           // never happen).
+          //
+          // Also record health here: without this, last_poll_at never advances
+          // for a source whose acquireSource call itself throws (distinct from
+          // acquireSource returning an operational_failure outcome normally,
+          // which already goes through recordHealth above). Left unrecorded,
+          // listDueSources' staleness ordering (oldest/NULL first) would put
+          // this source at the front of every future batch forever — and since
+          // this task introduced a per-tick LIMIT, a persistently-throwing
+          // source would permanently occupy one of a small number of slots.
+          store.recordHealth({ sourceId: item.id, outcome: 'operational_failure', now: nowStr })
           console.error('poll: source failed:', item.id, err instanceof Error ? err.message : err)
         } finally {
           hostCounts.set(item.host, (hostCounts.get(item.host) ?? 1) - 1)

@@ -720,8 +720,11 @@ export function createLogicalStore(db: DatabaseContext) {
     // is maximally overdue), LIMIT-bounded due-query (spec 2026-07-28 §1). A
     // source with an active, unexpired push lease needs pollSeconds ×
     // pushPollFactor elapsed instead of pollSeconds — same rule scheduler.ts
-    // used to apply per-source in JS, now index-supported SQL so this stays
-    // O(limit), never O(catalog size).
+    // used to apply per-source in JS, now SQL. The ORDER BY is a temp B-tree
+    // sort over the schedulable set (a LEFT JOIN forces remote_sources_v2 as
+    // the outer loop, so no index on source_health_v2 can satisfy this
+    // ordering) — fine at any realistic catalog size. The LIMIT is what keeps
+    // per-tick fetch/parse/commit work at O(batchSize), not the ordering.
     listDueSources(input: { now: string; pollSeconds: number; pushPollFactor: number; limit: number }): { id: string; canonicalUrl: string }[] {
       return db.read((tx) => {
         const nowMs = Date.parse(input.now)

@@ -172,7 +172,10 @@ RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | `RSC_MAIL_FROM` | no | `rsc@<host of RSC_PUBLIC_URL or RSC_WEB_ORIGIN>` | From-address on outgoing mail. |
 | `RSC_DB` | no | `./data/rsc.db` | SQLite file path, or `:memory:`. |
 | `RSC_PORT` | no | `8787` | HTTP port core listens on. |
-| `RSC_POLL_SECONDS` | no | `60` | How often remote feeds are polled. |
+| `RSC_POLL_SECONDS` | no | `60` | Scheduler tick interval — how often the poll loop wakes up to check what's due. |
+| `RSC_INGEST_CYCLE_MINUTES` | no | `30` | Target time for the whole catalog to be polled once. The scheduler self-paces: per-tick batch size is catalog size ÷ (this ÷ `RSC_POLL_SECONDS`), so it scales automatically as the catalog grows — no need to retune `RSC_POLL_SECONDS` itself. |
+| `RSC_INGEST_CONCURRENCY` | no | `8` | Max sources fetched simultaneously per tick. |
+| `RSC_INGEST_MAX_PER_HOST` | no | `2` | Max simultaneous fetches to the same remote host, regardless of the concurrency cap above. |
 | `RSC_MIGRATION_MANIFEST` | no | — | Path to the optional legacy-conversion manifest (JSON) naming which pre-existing `instance` feeds are pre-approved. Only relevant on an upgrade from a pre-v2 database — see "Legacy data conversion" below. |
 
 `web/.env`:
@@ -405,8 +408,14 @@ This must be empty. If duplicates exist, merge/delete them before upgrading.
 - A newly added remote user's first poll backfills its existing feed items
   silently (no flood into the live timeline). From the second poll onward,
   new items appear live, the same as local posts.
-- Feeds are polled every `RSC_POLL_SECONDS` (default 60). A feed
-  added just now shows its content within one poll interval.
+- Feeds no longer poll on a fixed `RSC_POLL_SECONDS` cadence for every
+  source. The scheduler self-paces: it targets cycling the whole catalog
+  once every `RSC_INGEST_CYCLE_MINUTES` (default 30), so per-feed cadence
+  scales with catalog size — at a handful of feeds it's close to
+  `RSC_POLL_SECONDS`; at hundreds, an individual feed may go 20-30 minutes
+  between polls. A feed added just now still gets polled on the very next
+  tick regardless of catalog size or cycle position — never-polled sources
+  are always the most overdue and go to the front of the line.
 - Local composes are **Markdown** (GFM — bare URLs autolink). With
   JavaScript on, the composer is a Markdown editor with live preview
   (Carta); without it, the same plain textarea as always — posts are
