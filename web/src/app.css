@@ -273,10 +273,24 @@ a {
 	.nav {
 		padding: var(--space-sm) var(--space-md);
 		gap: var(--space-md);
+		flex-wrap: wrap;
 	}
 	/* the rivers move into the menu panel; the river names itself on the page */
 	.nav > a:not(.nav-brand):not(.btn):not(.nav-menu-toggle) {
 		display: none;
+	}
+	/* collapsed header holds exactly three things — brand, New post, Menu —
+	   so the icon toggle hides here; the segmented one in the panel covers it */
+	.nav > .theme-toggle {
+		display: none;
+	}
+	/* .nav-menu sits in the flex row (its summary is the Menu toggle, staying
+	   inline with brand/New post while closed) but its panel must stay
+	   full-bleed and in-flow, not a floating dropdown: once open, force it
+	   onto its own 100%-width line so it spans edge to edge and pushes the
+	   page down, same as before the toggle moved into .nav. */
+	.nav-menu[open] {
+		flex: 1 0 100%;
 	}
 	.nav-brand {
 		font-size: 1.25rem;
@@ -387,10 +401,6 @@ a {
 
 .nav-menu {
 	border-bottom: 2px solid var(--color-divider);
-}
-
-.nav-menu > summary {
-	display: none; /* the toggle lives in .nav at narrow widths */
 }
 
 .nav-menu-toggle {
