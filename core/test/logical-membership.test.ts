@@ -61,6 +61,32 @@ test('memberRows excludes the instance row itself, other provenances, other host
   expect(rows.map((r) => r.id)).toEqual(['m1'])
 })
 
+// 2026-07-28 whole-branch review I1: establishFederation/transition('approve')
+// can approve federation directly on an origin_verification-provenanced row
+// (e.g. it was looked up by canonical_url and happened to already be a
+// member candidate). Once THAT row itself holds an approved federation
+// relationship, it governs itself and must be excluded from every consumer
+// of MEMBER_RANGE_SQL — even though its canonical_url still falls inside the
+// covering instance's prefix range.
+test('a row that is itself approved-federated is excluded from memberRows/memberRowsPage/memberCounts even though its prefix falls inside a covering instance', async () => {
+  const { raw } = await fresh()
+  seedSource(raw, { id: 'inst', url: 'https://rss.chat/hub.xml', provenance: 'admin_federation' })
+  approveFederation(raw, 'inst')
+  seedSource(raw, { id: 'ordinary-member', url: 'https://rss.chat/users/a.xml' })
+  // self-federated: origin_verification AND its own approved relationship.
+  seedSource(raw, { id: 'self-fed', url: 'https://rss.chat/users/b.xml' })
+  approveFederation(raw, 'self-fed')
+
+  const rows = memberRows(raw, { id: 'inst', canonical_url: 'https://rss.chat/hub.xml' })
+  expect(rows.map((r) => r.id)).toEqual(['ordinary-member'])
+
+  const page = memberRowsPage(raw, { id: 'inst', canonical_url: 'https://rss.chat/hub.xml' }, undefined, 50)
+  expect(page.rows.map((r) => r.id)).toEqual(['ordinary-member'])
+
+  const counts = memberCounts(raw, { id: 'inst', canonical_url: 'https://rss.chat/hub.xml' })
+  expect(counts.members).toBe(1)
+})
+
 // ---- approvedInstanceFor -----------------------------------------------------
 
 test('approvedInstanceFor picks the earliest-created among two approved same-prefix aggregates', async () => {

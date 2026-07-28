@@ -47,6 +47,12 @@
 	// core's V1 AuditCategory enum. core is the gate (it 400s an invalid one);
 	// this select is the enum at the UI.
 	const CATEGORIES = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
+
+	// Shared by every row's Manage panel, ordinary or nested member (C1 fix):
+	// a member row's `actions` is computed by the SAME toRow() as an ordinary
+	// row, so the panel — and the forms it renders — are identical, not a
+	// re-derivation.
+	type Row = PageData['expandedMembers'][number]
 </script>
 
 <svelte:head><title>Admin — Sources — RSC</title></svelte:head>
@@ -107,55 +113,66 @@
 												</span>
 												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
 											</div>
+											{@render managePanel(m)}
 										</li>
 									{/each}
 								</ul>
 							{/if}
 						{/if}
-						<details class="panel">
-							<summary aria-label="Manage {row.url}">Manage</summary>
-							<div class="source-actions">
-								{#each row.actions as a (a.action)}
-									{@const consequence = CONSEQUENCE[a.action]}
-									{@const retryCommandId = retryFail?.sourceId === row.id && retryFail?.action === a.action ? retryFail.commandId : undefined}
-									<form
-										method="POST"
-										action="?/source{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}"
-										class="source-action"
-										class:destructive={a.action === 'block'}
-										use:enhance={consequence ? confirmSubmit(`${consequence} Continue?`) : undefined}
-									>
-										<input type="hidden" name="sourceId" value={row.id} />
-										<input type="hidden" name="action" value={a.action} />
-										<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
-										<span class="action-name">{LABEL[a.action]}</span>
-										{#if consequence}<p class="consequence">{consequence}</p>{/if}
-										{#if a.action === 'attribution-mode'}
-											<label class="visually-hidden" for="mode-{row.id}">Attribution mode</label>
-											<select id="mode-{row.id}" name="attributionMode">
-												<option value="single_publisher">single publisher</option>
-												<option value="aggregate">aggregate</option>
-											</select>
-										{/if}
-										{#if a.action !== 'pause' && a.action !== 'resume'}
-											<label class="visually-hidden" for="cat-{row.id}-{a.action}">Moderation category</label>
-											<select id="cat-{row.id}-{a.action}" name="category" required>
-												{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-											</select>
-										{/if}
-										<label class="visually-hidden" for="note-{row.id}-{a.action}">Note (optional)</label>
-										<input id="note-{row.id}-{a.action}" name="note" placeholder="note (optional)" />
-										<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
-									</form>
-								{/each}
-							</div>
-						</details>
+						{@render managePanel(row)}
 					</li>
 				{/each}
 			</ul>
 		{/if}
 	</section>
 {/each}
+
+<!-- C1 fix: the Manage panel is shared verbatim between an ordinary row and
+     a nested member row — both carry the same `actions` shape from toRow(),
+     so a member is moderated through the exact same forms, not a separate
+     read-only view. `expand` is carried forward alongside `cursor` so acting
+     on a member doesn't collapse its instance's expansion. -->
+{#snippet managePanel(row: Row)}
+	{@const qs = [data.cursor ? `cursor=${encodeURIComponent(data.cursor)}` : '', data.expand ? `expand=${encodeURIComponent(data.expand)}` : ''].filter(Boolean).join('&')}
+	<details class="panel">
+		<summary aria-label="Manage {row.url}">Manage</summary>
+		<div class="source-actions">
+			{#each row.actions as a (a.action)}
+				{@const consequence = CONSEQUENCE[a.action]}
+				{@const retryCommandId = retryFail?.sourceId === row.id && retryFail?.action === a.action ? retryFail.commandId : undefined}
+				<form
+					method="POST"
+					action="?/source{qs ? `&${qs}` : ''}"
+					class="source-action"
+					class:destructive={a.action === 'block'}
+					use:enhance={consequence ? confirmSubmit(`${consequence} Continue?`) : undefined}
+				>
+					<input type="hidden" name="sourceId" value={row.id} />
+					<input type="hidden" name="action" value={a.action} />
+					<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
+					<span class="action-name">{LABEL[a.action]}</span>
+					{#if consequence}<p class="consequence">{consequence}</p>{/if}
+					{#if a.action === 'attribution-mode'}
+						<label class="visually-hidden" for="mode-{row.id}">Attribution mode</label>
+						<select id="mode-{row.id}" name="attributionMode">
+							<option value="single_publisher">single publisher</option>
+							<option value="aggregate">aggregate</option>
+						</select>
+					{/if}
+					{#if a.action !== 'pause' && a.action !== 'resume'}
+						<label class="visually-hidden" for="cat-{row.id}-{a.action}">Moderation category</label>
+						<select id="cat-{row.id}-{a.action}" name="category" required>
+							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+						</select>
+					{/if}
+					<label class="visually-hidden" for="note-{row.id}-{a.action}">Note (optional)</label>
+					<input id="note-{row.id}-{a.action}" name="note" placeholder="note (optional)" />
+					<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
+				</form>
+			{/each}
+		</div>
+	</details>
+{/snippet}
 
 {#if data.nextCursor}
 	<a class="older" href="/admin/feeds?cursor={encodeURIComponent(data.nextCursor)}">More sources</a>

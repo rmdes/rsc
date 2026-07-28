@@ -366,6 +366,36 @@ test('?expand=<id> loads that instance’s member rows only, none other', async 
 	expect(result.expandedMembers?.[0]?.overridden).toBe(true)
 })
 
+// C1 (whole-branch review): the admin UI had no way to moderate a nested
+// member at all — the +page.svelte fix (a shared Manage-panel snippet,
+// covered by feeds.render.test.ts) relies on this exact data already being
+// present on a member row. Pin it here so the SAME `?/source` action/id
+// shape a governance form posts for an ordinary row is confirmed present
+// for a member row too.
+test('a member row carries a working governance action (quarantine) targeting its OWN id, same shape as an ordinary row', async () => {
+	const inst1 = govSummary('inst1', 'https://inst1.test/feed.xml', 'user_subscription', 'approved')
+	const mem1 = govSummary('mem1', 'https://inst1.test/origin/a.xml', 'origin_verification', 'none')
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/members/counts')) return new Response(JSON.stringify({ members: 1, overridden: 0 }), { status: 200 })
+		if (u.includes('/admin/sources/inst1/members')) return new Response(JSON.stringify({ items: [mem1], nextCursor: null }), { status: 200 })
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [inst1], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch, '?expand=inst1')
+	const member = result.expandedMembers?.[0]
+	expect(member?.id).toBe('mem1')
+	const quarantine = member?.actions.find((a) => a.action === 'quarantine')
+	expect(quarantine).toBeTruthy()
+	expect(quarantine?.commandId).toMatch(/^[0-9a-f-]{36}$/)
+	// Posting this action goes through the same `source` form action as any
+	// ordinary row, keyed on the MEMBER's own id — never the instance's.
+	const res = await actions.source(formEvent('source', { sourceId: member!.id, action: 'quarantine', category: 'operator_policy', commandId: quarantine!.commandId }, fetch) as never)
+	expect(res).toEqual({ done: 'quarantine' })
+	const call = fetch.mock.calls.find((c) => String(c[0]).includes('/quarantine'))!
+	expect(String(call[0])).toContain(`/admin/sources/${member!.id}/quarantine`)
+})
+
 test('a verification-minted row whose host has no approved instance stays in user, flagged via verification', async () => {
 	const solo = govSummary('solo1', 'https://standalone.test/origin/a.xml', 'origin_verification', 'none')
 	const fetch = vi.fn(async (url: string | URL) => {

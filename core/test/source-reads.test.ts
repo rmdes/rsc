@@ -82,14 +82,16 @@ test('getSourceDetail reports federationStatus none/status, subscriptionCounts, 
   const olderAudit = randomUUID()
   const newerAudit = randomUUID()
   insertAudit(raw, olderAudit, sourceId, T)
-  // Equal timestamp, later id — must win as "newest" via the id tie-break.
+  // Equal timestamp — m2 (whole-branch review): "newest" is decided by
+  // insertion order (rowid), not by comparing the random ids lexicographically
+  // — the row inserted SECOND always wins, regardless of which UUID sorts
+  // higher (deterministic across runs, unlike the old id DESC tie-break).
   insertAudit(raw, newerAudit, sourceId, T)
-  const newestSeededAudit = [olderAudit, newerAudit].sort().at(-1)!
 
   const detail = await repo.getSourceDetail(sourceId)
   expect(detail!.federationStatus).toBe('approved')
   expect(detail!.subscriptionCounts).toEqual({ active: 2, pending: 1, pendingReview: 1 })
-  expect(detail!.latestAudit).toMatchObject({ id: newestSeededAudit })
+  expect(detail!.latestAudit).toMatchObject({ id: newerAudit })
 
   repo.close()
 })

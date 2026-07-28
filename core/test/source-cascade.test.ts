@@ -108,6 +108,34 @@ test('instance quarantine cascades to instance-governed allowed members, skips a
   repo.close()
 })
 
+// --- Case 1b: m2 — latestAudit picks the direct action, not the cascade summary ---
+
+test('a cascading transition inserts two same-timestamp audit rows on the instance; getSourceDetail\'s latestAudit deterministically picks the direct action (inserted last), not the instance_cascade summary', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const instanceId = insertSourceRow(raw, { canonicalUrl: 'https://inst1b.test/f.xml', governance: 'allowed' })
+  insertFederation(raw, instanceId, 'approved')
+  insertSourceRow(raw, { canonicalUrl: 'https://inst1b.test/members/a', governance: 'allowed', provenance: 'origin_verification', overridden: 0 })
+
+  await service.transition({
+    sourceId: instanceId, action: 'quarantine', category: 'operator_policy', note: null,
+    commandId: 'c1', actorId: admin.id, actorKind: 'administrator',
+  })
+
+  // Both audit rows share the same created_at (the command's `now`).
+  const rows = raw.prepare(`SELECT action, created_at FROM source_audit_v2 WHERE source_id = ?`).all(instanceId) as { action: string; created_at: string }[]
+  expect(rows.map((r) => r.action).sort()).toEqual(['instance_cascade', 'quarantine'])
+  expect(new Set(rows.map((r) => r.created_at)).size).toBe(1)
+
+  const detail = await repo.getSourceDetail(instanceId)
+  expect(detail!.latestAudit?.action).toBe('quarantine')
+
+  repo.close()
+})
+
 // --- Case 2: instance allow ---
 
 test('instance allow lifts quarantined members, skips a blocked member, and activates a pending subscription on a lifted member', async () => {
@@ -162,6 +190,34 @@ test('block moves every member — overridden included — to blocked; a later u
   })
   expect(governance(raw, memberA)).toBe('quarantined')
   expect(governance(raw, memberOverridden)).toBe('quarantined')
+
+  repo.close()
+})
+
+// --- Case 3b: I1 — a member that is itself approved-federated is untouched ---
+
+test('a member row that is itself approved-federated is untouched by its covering instance\'s cascade (I1 / F14 core-side)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
+  const service = createSourceService(repo, PUBLIC_URL)
+
+  const instanceId = insertSourceRow(raw, { canonicalUrl: 'https://inst3b.test/f.xml', governance: 'allowed' })
+  insertFederation(raw, instanceId, 'approved')
+  // self-fed: origin_verification-provenanced AND independently approved-
+  // federated — governs itself, is not a member even though its canonical_url
+  // falls inside instanceId's prefix range.
+  const selfFed = insertSourceRow(raw, { canonicalUrl: 'https://inst3b.test/members/self', governance: 'allowed', provenance: 'origin_verification', overridden: 0 })
+  insertFederation(raw, selfFed, 'approved')
+
+  await service.transition({
+    sourceId: instanceId, action: 'quarantine', category: 'operator_policy', note: null,
+    commandId: 'c1', actorId: admin.id, actorKind: 'administrator',
+  })
+  expect(governance(raw, selfFed)).toBe('allowed') // untouched by the instance's cascade
+
+  const audits = cascadeAudits(raw, instanceId)
+  expect(audits).toHaveLength(0) // no members to move — no cascade audit at all
 
   repo.close()
 })
@@ -252,11 +308,14 @@ test('a direct administrator governance transition on a member sets its overridd
   const service = createSourceService(repo, PUBLIC_URL)
 
   const memberA = insertSourceRow(raw, { canonicalUrl: 'https://inst7.test/members/a', governance: 'allowed', provenance: 'origin_verification', overridden: 0 })
-  await service.transition({
+  const flipResult = await service.transition({
     sourceId: memberA, action: 'quarantine', category: 'operator_policy', note: null,
     commandId: 'c1', actorId: admin.id, actorKind: 'administrator',
   })
   expect(overridden(raw, memberA)).toBe(1)
+  // m1 (whole-branch review): the flip must be visible in THIS call's own
+  // result, not just in the row on the next read.
+  expect((flipResult as { kind: 'applied'; source: { overridden: boolean } }).source.overridden).toBe(true)
 
   const memberB = insertSourceRow(raw, { canonicalUrl: 'https://inst7.test/members/b', governance: 'allowed', provenance: 'origin_verification', overridden: 0 })
   await service.transition({

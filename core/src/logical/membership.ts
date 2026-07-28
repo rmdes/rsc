@@ -38,7 +38,17 @@ export function approvedInstanceFor(raw: Db, memberUrl: string): ApprovedInstanc
 // build their WHERE clause from this constant, and the EXPLAIN plan test
 // asserts against it directly — a hand-retyped copy in the test could drift
 // silently from the real query and still pass.
-export const MEMBER_RANGE_SQL = `canonical_url >= ? AND canonical_url < ? AND provenance = 'origin_verification' AND id != ?`
+//
+// 2026-07-28 F14 amendment (whole-branch review, core-side close): a row
+// that is itself currently approved-federated governs itself — it is never
+// treated as a member, even when another approved instance's prefix happens
+// to cover it (establishFederation/transition('approve') can approve
+// federation directly on an origin_verification-provenanced row). Mirrors
+// the client predicate already in web's +page.server.ts isInstanceMember.
+// The NOT EXISTS is correlated against the outer remote_sources_v2 row —
+// no new bound parameter, so no call site's argument list changes.
+export const MEMBER_RANGE_SQL = `canonical_url >= ? AND canonical_url < ? AND provenance = 'origin_verification' AND id != ?
+  AND NOT EXISTS (SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id AND f.status = 'approved')`
 
 export function memberRows(raw: Db, instance: { id: string; canonical_url: string }): { id: string; governance: string; operation: string; overridden: 0 | 1 }[] {
   const prefix = instancePrefix(instance.canonical_url)

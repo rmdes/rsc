@@ -513,8 +513,16 @@ export class SqliteRepository implements Repository, SourceRepository {
   async getSourceDetail(id: string): Promise<SourceDetail | undefined> {
     const row = this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(id) as RemoteSourceV2Row | undefined
     if (!row) return undefined
+    // m2 (whole-branch review): a cascading transition can insert TWO audit
+    // rows for the same source_id with the SAME created_at (the direct
+    // action's own audit, plus its instance_cascade summary) — id DESC broke
+    // that tie on a random UUID, so which one "latestAudit" picked varied
+    // unpredictably run to run. rowid reflects real insertion order, so the
+    // most-recently-inserted row deterministically wins. Single LIMIT-1 read,
+    // no cursor involved — unlike listSourceAudit below, changing this
+    // tie-break doesn't touch any keyset-pagination invariant.
     const auditRow = this.raw.prepare(
-      `SELECT * FROM source_audit_v2 WHERE source_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`,
+      `SELECT * FROM source_audit_v2 WHERE source_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(id) as SourceAuditV2Row | undefined
     return {
       source: rowToRemoteSourceV2(row),
@@ -559,6 +567,15 @@ export class SqliteRepository implements Repository, SourceRepository {
     return { items: page.map(rowToSourceSubscriptionV2), nextCursor }
   }
 
+  // m2 (whole-branch review): this listing's ORDER BY tie-break stays `id`,
+  // NOT `rowid` like getSourceDetail's single-row read above — its keyset
+  // pagination WHERE-seeks on `id` (cursor.id), so the ORDER BY and the seek
+  // predicate must use the same column or a same-created_at row can be
+  // skipped or repeated across a page boundary. A full listing showing two
+  // equal-timestamp rows in either relative order loses no data (unlike
+  // picking a single "latest"), so id's arbitrary-but-stable tie-break is
+  // left alone here. ponytail: fold rowid into the cursor if this listing
+  // ever needs a "most recent wins" reading too.
   async listSourceAudit(sourceId: string, cursor: Cursor | undefined, limit: number): Promise<Page<SourceAuditEvent>> {
     const lim = clampLimit(limit)
     const rows = (cursor
@@ -977,13 +994,17 @@ export class SqliteRepository implements Repository, SourceRepository {
       }
       // A direct administrator GOVERNANCE change on a member is a sticky
       // override; pause/resume/set_attribution_mode are not judgments.
-      if (input.actorKind === 'administrator' && governance !== row.governance && row.provenance === 'origin_verification') {
+      const overriddenFlip = input.actorKind === 'administrator' && governance !== row.governance && row.provenance === 'origin_verification'
+      if (overriddenFlip) {
         raw.prepare(`UPDATE remote_sources_v2 SET overridden = 1 WHERE id = ?`).run(row.id)
       }
       if (patch.federation === 'none') raw.prepare(`DELETE FROM federation_relationships_v2 WHERE source_id = ?`).run(row.id)
       else if (patch.federation) raw.prepare(`UPDATE federation_relationships_v2 SET status = ?, updated_at = ? WHERE source_id = ?`).run(patch.federation, input.now, row.id)
 
-      const updated: RemoteSourceV2Row = { ...row, operation, governance, attribution_mode: attributionMode }
+      // m1 (whole-branch review): `updated` is spread from the PRE-flip row —
+      // when overriddenFlip just fired, the DB row is already 1 but `row` still
+      // says 0. Reflect the flip in the same response, not just the database.
+      const updated: RemoteSourceV2Row = { ...row, operation, governance, attribution_mode: attributionMode, overridden: overriddenFlip ? 1 : row.overridden }
       if (input.action === 'allow' || input.action === 'approve') activatePendingSubscriptions(raw, updated)
       // Converting to aggregate withdraws every ordinary subscription for review
       // — active and pending alike — in the same transaction as the mode change.

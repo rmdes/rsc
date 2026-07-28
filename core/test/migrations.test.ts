@@ -405,3 +405,41 @@ test('migration 19 heals instance-governed members: clears overridden, syncs gov
   const c2_m1 = repo.raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = 'c2-m1'`).get() as { governance: string }
   expect(c2_m1.governance).toBe('quarantined')
 })
+
+// 2026-07-28 whole-branch review I1: the heal must not overwrite a row's own
+// governance when that row is itself approved-federated (it governs itself),
+// even though its canonical_url falls inside a covering instance's prefix.
+test('migration 19 heal leaves a self-federated origin_verification row untouched', async () => {
+  const file = tempDb()
+  const raw = new Database(file)
+  for (const stmt of MIGRATIONS.slice(0, 18).flat()) raw.exec(stmt)
+  raw.pragma('user_version = 18')
+
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('d-inst', 'https://d.example.com/', 'aggregate', 'enabled', 'quarantined', 'migration', 0, '2026-03-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, created_at, updated_at)
+     VALUES ('d-inst', 'approved', '2026-03-01T00:00:00.000Z', '2026-03-01T00:00:00.000Z')`,
+  ).run()
+  // self-federated: origin_verification AND its own approved relationship —
+  // governs itself, must keep its own 'allowed' governance despite d-inst
+  // being quarantined and covering its prefix.
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, admin_retained, created_at)
+     VALUES ('d-self', 'https://d.example.com/self', 'single_publisher', 'enabled', 'allowed', 'origin_verification', 0, '2026-03-01T00:01:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, created_at, updated_at)
+     VALUES ('d-self', 'approved', '2026-03-01T00:01:00.000Z', '2026-03-01T00:01:00.000Z')`,
+  ).run()
+
+  raw.close()
+  const repo = await createSqliteRepository(file)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(19)
+
+  const dSelf = repo.raw.prepare(`SELECT governance, overridden FROM remote_sources_v2 WHERE id = 'd-self'`).get() as { governance: string; overridden: number }
+  expect(dSelf.governance).toBe('allowed') // untouched — not d-inst's quarantined
+  expect(dSelf.overridden).toBe(0) // the heal's blanket overridden=0 reset still applies to every origin_verification row
+})
