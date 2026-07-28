@@ -743,6 +743,42 @@ export function createLogicalStore(db: DatabaseContext) {
         return rows.map((r) => ({ id: r.id, canonicalUrl: r.canonical_url }))
       })
     },
+    // /admin/overview's cycle-health readout (spec 2026-07-28 §4): every field
+    // computed fresh from durable state here, matching how every other
+    // /admin/overview field already works (service.instanceStats) — no new
+    // in-memory scheduler-closure bookkeeping.
+    schedulerStats(input: { now: string; pollSeconds: number }): {
+      catalogSize: number
+      mostOverdueSeconds: number | null
+      attemptedLastWindow: number
+      windowSpanSeconds: number | null
+    } {
+      return db.read((tx) => {
+        const { n: catalogSize } = tx.prepare(
+          `SELECT COUNT(*) AS n FROM remote_sources_v2 s WHERE ${SCHEDULABLE_SOURCE_WHERE}`,
+        ).get() as { n: number }
+
+        const staleness = tx.prepare(
+          `SELECT MIN(h.last_poll_at) AS oldest, SUM(CASE WHEN h.last_poll_at IS NULL THEN 1 ELSE 0 END) AS neverPolled
+           FROM remote_sources_v2 s LEFT JOIN source_health_v2 h ON h.source_id = s.id
+           WHERE ${SCHEDULABLE_SOURCE_WHERE}`,
+        ).get() as { oldest: string | null; neverPolled: number | null }
+        const mostOverdueSeconds = catalogSize === 0 || (staleness.neverPolled ?? 0) > 0 || staleness.oldest === null
+          ? null
+          : Math.round((Date.parse(input.now) - Date.parse(staleness.oldest)) / 1000)
+
+        const windowStart = new Date(Date.parse(input.now) - input.pollSeconds * 1000).toISOString()
+        const window = tx.prepare(
+          `SELECT COUNT(*) AS attempted, MIN(started_at) AS windowStart, MAX(COALESCE(completed_at, started_at)) AS windowEnd
+           FROM acquisition_runs_v2 WHERE started_at >= ?`,
+        ).get(windowStart) as { attempted: number; windowStart: string | null; windowEnd: string | null }
+        const windowSpanSeconds = window.attempted > 0 && window.windowStart && window.windowEnd
+          ? Math.round((Date.parse(window.windowEnd) - Date.parse(window.windowStart)) / 1000)
+          : null
+
+        return { catalogSize, mostOverdueSeconds, attemptedLastWindow: window.attempted, windowSpanSeconds }
+      })
+    },
   }
 }
 

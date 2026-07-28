@@ -769,6 +769,10 @@ viewers for a threat not yet observed.
 ## Force-refresh — a *paced* re-poll you can trigger, scoped by feed class
 
 **Status:** candidate (operational; the pacing is the feature, not the trigger).
+`docs/superpowers/specs/2026-07-28-scalable-ingest-scheduler-design.md`
+built a bounded-concurrency pool for the scheduled poll path — this
+entry's manual trigger can dispatch through the same pool instead of
+building a second one.
 
 **Mechanism.** Today the only way a feed refreshes is the timer, and the cycle is
 a **strictly sequential walk of every remote feed**: `runPollCycle` does
