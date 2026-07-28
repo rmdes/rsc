@@ -63,7 +63,7 @@
 			{#if page.url.pathname === '/'}
 				<div class="nav-menu-group" id="compose">
 					<h6>New post</h6>
-					<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" />
+					<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" idSuffix="-menu" />
 				</div>
 				<div class="nav-menu-group">
 					<h6>Subscribe to a feed</h6>

@@ -9,13 +9,15 @@
 		action,
 		title,
 		submitLabel,
-		placeholder = ''
+		placeholder = '',
+		idSuffix = ''
 	}: {
 		draftKey: string
 		action: string
 		title: string
 		submitLabel: string
 		placeholder?: string
+		idSuffix?: string
 	} = $props()
 
 	let content = $state('')
@@ -78,7 +80,7 @@
 	<dialog
 		bind:this={dialog}
 		class="composer-dialog"
-		aria-labelledby="composer-dialog-title"
+		aria-labelledby={`composer-dialog-title${idSuffix}`}
 		onclick={(e) => {
 			if (e.target === dialog) dialog?.close()
 		}}
@@ -86,7 +88,7 @@
 	>
 		<div class="composer-dialog-body">
 			<header>
-				<h2 id="composer-dialog-title">{title}</h2>
+				<h2 id={`composer-dialog-title${idSuffix}`}>{title}</h2>
 				<button type="button" class="dialog-close" aria-label="Close" onclick={() => dialog?.close()}>×</button>
 			</header>
 			{#if error}<p class="error" role="alert">{error}</p>{/if}
