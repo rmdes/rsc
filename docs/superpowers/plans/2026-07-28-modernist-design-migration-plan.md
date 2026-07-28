@@ -1,5 +1,10 @@
 # Modernist Design Migration Implementation Plan
 
+**Rev 2** — folded in a ponytail-review pass (dispatched to a clean
+sub-context): cut the speculative `Avatar.svelte` prep task (no caller
+existed for it) and scoped `subscribeCommandId` minting to only the request
+that actually uses it. 14 tasks (was 15).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace RSC's current magazine/editorial visual system (Libre Bodoni,
@@ -11,7 +16,7 @@ route, or CSS custom-property name.
 stylesheet) establish the new tokens/components, followed by targeted markup
 edits across ~10 Svelte files to match the new component anatomy the CSS
 assumes. No new dependencies. One small new core route (`GET
-/users/:handle/stats`, Task 7) backed entirely by existing/trivially-indexed
+/users/:handle/stats`, Task 6) backed entirely by existing/trivially-indexed
 queries — the only functional (non-visual) addition in this plan.
 
 **Tech Stack:** SvelteKit (Svelte 5 runes), `web/src/app.css`, existing Hono
@@ -37,7 +42,7 @@ records the decisions and corrections this plan encodes.
 - `prefers-reduced-motion` kills every transition.
 - Carta composer: keep every `body`-prefixed selector in `app.css` and the `.carta-input` font-metric rules exactly as shipped — `carta-md/default.css` loads after `app.css` and equal specificity would silently lose the tie.
 - If a test breaks because markup legitimately moved, update the test. If a test breaks because *behavior* changed, that's a bug in the task — stop and fix the cause, don't paper over it with a test edit.
-- Never fabricate data: a stat cell only renders when its number was actually queried (Task 7).
+- Never fabricate data: a stat cell only renders when its number was actually queried (Task 6).
 
 ---
 
@@ -156,7 +161,7 @@ explicit confirmation before Task 3 touches any markup.
 
 **Interfaces:**
 - Consumes: `resolveTab(raw: string | null, me: { isAnonymous: boolean } | null): Tab` from `$lib/tabs` (already exported, used identically in `+page.server.ts:27` — do not change that file, this is a deliberate small duplication of a cheap pure function, not a shared dependency).
-- Produces: `LayoutServerLoad` return type gains `tab: Tab`, consumed by `+layout.svelte`'s `data.tab` and, from Task 8 onward, the mobile menu panel.
+- Produces: `LayoutServerLoad` return type gains `tab: Tab`, consumed by `+layout.svelte`'s `data.tab` and, from Task 7 onward, the mobile menu panel.
 
 - [ ] **Step 1: Add `tab` to the layout load**
 
@@ -403,7 +408,11 @@ with:
 ```
 
 Delete the `import Avatar from '$lib/Avatar.svelte'` line — this page no
-longer calls the component (Task 5 keeps the file itself, unused for now).
+longer calls the component. Leave `Avatar.svelte` itself completely
+unmodified: it has no callers anywhere after this task (ponytail-review
+finding — don't add the `imageUrl`/`.grayscale` branch speculatively; that's
+a follow-up for when the roadmap's avatar-harvesting work gives it a real
+URL to pass, logged in Task 11).
 
 - [ ] **Step 4: Wrap the action row**
 
@@ -445,85 +454,14 @@ git commit -m "design: river byline split, kicker heading, drop avatar"
 
 ---
 
-### Task 5: `Avatar.svelte` — prepare for the roadmap, not re-wired yet
-
-**Files:**
-- Modify: `web/src/lib/Avatar.svelte`
-
-**Interfaces:**
-- Produces: `{ author: TimelineEntry['author']; sourceName?: string | null; imageUrl?: string | null }` props. No current caller passes `imageUrl` (feeds carry no avatar image today) — this task makes the component ready for when the roadmap's avatar-harvesting work lands a real URL, matching `FeedIcon.svelte`'s existing untrusted-URL scheme guard pattern. No task in this plan adds a new call site for it; Task 4 already removed its only current caller.
-
-- [ ] **Step 1: Replace the component**
-
-Current:
-
-```svelte
-<script lang="ts">
-	import type { TimelineEntry } from './types'
-
-	// Letter avatar — rss.chat's populateAvatar fallback (theme.js:349): an image
-	// when one exists, else the initial. Feeds carry no avatar today (the channel
-	// <image> is empty, no per-item element), so the initial IS the avatar; when
-	// feeds start carrying one, this component grows an <img> branch.
-	let {
-		author,
-		sourceName = null
-	}: { author: TimelineEntry['author']; sourceName?: string | null } = $props()
-	const name = $derived(sourceName ?? author.displayName)
-	const initial = $derived((Array.from(name.trim())[0] ?? '?').toUpperCase())
-</script>
-
-<span class="avatar" aria-hidden="true">{initial}</span>
-```
-
-Replace with:
-
-```svelte
-<script lang="ts">
-	import type { TimelineEntry } from './types'
-
-	let {
-		author,
-		sourceName = null,
-		imageUrl = null
-	}: { author: TimelineEntry['author']; sourceName?: string | null; imageUrl?: string | null } = $props()
-	const name = $derived(sourceName ?? author.displayName)
-	const initial = $derived((Array.from(name.trim())[0] ?? '?').toUpperCase())
-	const safe = (u: string | null) => (u && /^https?:\/\//i.test(u) ? u : null)
-	const src = $derived(safe(imageUrl))
-</script>
-
-{#if src}
-	<span class="avatar grayscale"><img {src} alt="" loading="lazy" /></span>
-{:else}
-	<span class="avatar" aria-hidden="true">{initial}</span>
-{/if}
-```
-
-- [ ] **Step 2: Typecheck and svelte-check**
-
-```bash
-npm run typecheck -w core && npm run check -w web
-```
-Expected: 0 errors. No test file exists for this component today — none to update.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add web/src/lib/Avatar.svelte
-git commit -m "design: Avatar gains the img/.grayscale branch for future feed avatars"
-```
-
----
-
-### Task 6: The author lens (`u/[handle]/+page.svelte`)
+### Task 5: The author lens (`u/[handle]/+page.svelte`)
 
 **Files:**
 - Modify: `web/src/routes/u/[handle]/+page.svelte`
 - Test: `web/src/routes/u/[handle]/u-page.test.ts`
 
 **Interfaces:**
-- Consumes: existing `data.handle`, `kind`, `groups` (unchanged by this task — Task 7 adds `data.stats`).
+- Consumes: existing `data.handle`, `kind`, `groups` (unchanged by this task — Task 6 adds `data.stats`).
 - Produces: no new exports.
 
 - [ ] **Step 1: Replace the masthead with a page-head + kicker**
@@ -635,7 +573,7 @@ git commit -m "design: author-lens page-head kicker and date-keyed sub-list"
 
 ---
 
-### Task 7: Author-lens stat row — real posts/following/followers counts
+### Task 6: Author-lens stat row — real posts/following/followers counts
 
 **Files:**
 - Modify: `core/src/domain/repository.ts` (interface)
@@ -820,7 +758,7 @@ export const load: PageServerLoad = async ({ fetch, params, url }) => {
 
 - [ ] **Step 11: Render the row in `+page.svelte`**
 
-Directly after the `<header class="page-head">` block from Task 6:
+Directly after the `<header class="page-head">` block from Task 5:
 
 ```svelte
 {#if data.stats}
@@ -855,7 +793,7 @@ git commit -m "feat: real posts/following/followers counts for the author-lens s
 
 ---
 
-### Task 8: Mobile menu, 3-state theme toggle, and the composer/subscribe fix
+### Task 7: Mobile menu, 3-state theme toggle, and the composer/subscribe fix
 
 **Files:**
 - Modify: `web/src/routes/+layout.server.ts`
@@ -864,7 +802,7 @@ git commit -m "feat: real posts/following/followers counts for the author-lens s
 
 **Interfaces:**
 - Consumes: `data.me`, `data.tab` from layout data (Task 3); `ComposerDialog` (`draftKey`, `action`, `title`, `submitLabel`, `placeholder` props, unchanged, imported directly into `+layout.svelte` too).
-- Produces: `LayoutServerLoad` gains `subscribeCommandId: string`. `ThemeToggle.svelte` gains a `variant?: 'icon' | 'segmented'` prop (default `'icon'`, so every other existing call site is unaffected).
+- Produces: `LayoutServerLoad` gains `subscribeCommandId?: string` (only present on `/` for a non-anonymous session — see Step 2). `ThemeToggle.svelte` gains a `variant?: 'icon' | 'segmented'` prop (default `'icon'`, so every other existing call site is unaffected).
 
 **Resolved scope decision (composing is home-page-only today):** `<ComposerDialog>`
 and the subscribe form only exist in `+page.svelte`'s tools rail today — there
@@ -983,44 +921,67 @@ patterns, do not invent new tokens):
 .theme-segmented button + button { border-left: 1px solid var(--color-divider); }
 ```
 
-- [ ] **Step 2: Mint a `subscribeCommandId` in the layout load**
+- [ ] **Step 2: Mint a `subscribeCommandId` in the layout load, only when it'll be used**
 
 `+page.server.ts` already mints one per render for its own subscribe form's
 no-JS resubmit idempotency (`subscribeCommandId: crypto.randomUUID()`). The
-layout's own duplicate subscribe form (Step 3) needs an independent one —
-same reasoning as Task 3's duplicated `resolveTab` call, a cheap per-request
-value, not shared state. In `web/src/routes/+layout.server.ts`, add to
-**every** return branch (the no-session, success, and catch branches added
-in Task 3):
+layout's own duplicate subscribe form (Step 3) needs an independent one, but
+that form only ever renders when `pathname === '/' && me && !me.isAnonymous`
+(the same gate Step 3 uses) — minting a UUID on every route, for every guest
+and anonymous visitor, would be pure waste (ponytail-review finding). Scope
+it to exactly the condition that needs it. In
+`web/src/routes/+layout.server.ts`:
 
 ```ts
 export const load: LayoutServerLoad = async ({ fetch, cookies, url }) => {
 	const mailEnabled = await getMailEnabled(fetch)
 	const tab = (me: Parameters<typeof resolveTab>[1]) => resolveTab(url.searchParams.get('tab'), me)
-	if (!hasSession(cookies)) return { me: null, mailEnabled, tab: tab(null), subscribeCommandId: crypto.randomUUID() }
+	const subscribeCommandId = (me: { isAnonymous: boolean } | null) =>
+		url.pathname === '/' && me && !me.isAnonymous ? crypto.randomUUID() : undefined
+	if (!hasSession(cookies)) return { me: null, mailEnabled, tab: tab(null), subscribeCommandId: subscribeCommandId(null) }
 	try {
 		const me = await getMe(authedFetch(fetch, url.origin, cookieHeader(cookies)))
-		return { me, mailEnabled, tab: tab(me), subscribeCommandId: crypto.randomUUID() }
+		return { me, mailEnabled, tab: tab(me), subscribeCommandId: subscribeCommandId(me) }
 	} catch {
-		return { me: null, mailEnabled, tab: tab(null), subscribeCommandId: crypto.randomUUID() }
+		return { me: null, mailEnabled, tab: tab(null), subscribeCommandId: subscribeCommandId(null) }
 	}
 }
 ```
 
-(This is Task 3's `load` function with one new field — `subscribeCommandId`
-— added to all three returns; everything else is unchanged from Task 3.)
+(This is Task 3's `load` function with one new field added to all three
+returns; everything else is unchanged from Task 3.)
 
-Update `layout.load.test.ts`'s three `toEqual` assertions (from Task 3) to
-also expect a `subscribeCommandId` field — since it's a fresh UUID each
-call, assert its shape rather than an exact value:
+`layout.load.test.ts`'s three existing `toEqual` assertions (from Task 3)
+need **no changes**: none of the three test scenarios hit
+`pathname === '/' && me && !me.isAnonymous` (no session, an anonymous
+session, and a core-unreachable failure — all resolve `me` to `null` or
+anonymous), so `subscribeCommandId` is `undefined` in every case, and
+Vitest's `toEqual` already ignores `undefined`-valued properties when
+comparing objects.
+
+Add one new test covering the minting logic itself, since it's new
+behavior:
 
 ```ts
-	const result = await load({ fetch, cookies: { getAll: () => [] }, url: new URL('http://x/') } as never)
-	expect(result).toMatchObject({ me: null, mailEnabled: true, tab: 'public' })
-	expect((result as { subscribeCommandId: string }).subscribeCommandId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+test('subscribeCommandId mints a UUID only on / for a non-anonymous session, and is absent everywhere else', async () => {
+	const fetch = vi.fn(async (..._args: unknown[]) => healthResponse(true))
+	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
+	// registered session, home page: minted
+	const registeredFetch = vi.fn(async (..._args: unknown[]) => {
+		const input = _args[0]
+		if (String(input).includes('/health')) return healthResponse(true)
+		return new Response(JSON.stringify({ user: { id: 'u1', handle: 'a' }, isAnonymous: false }), { status: 200 })
+	})
+	const onHome = await load({ fetch: registeredFetch, cookies, url: new URL('http://x/') } as never)
+	expect((onHome as { subscribeCommandId?: string }).subscribeCommandId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+	// same session, a different route: not minted
+	const elsewhere = await load({ fetch: registeredFetch, cookies, url: new URL('http://x/admin') } as never)
+	expect((elsewhere as { subscribeCommandId?: string }).subscribeCommandId).toBeUndefined()
+	// no session at all, home page: not minted
+	const guest = await load({ fetch, cookies: { getAll: () => [] }, url: new URL('http://x/') } as never)
+	expect((guest as { subscribeCommandId?: string }).subscribeCommandId).toBeUndefined()
+})
 ```
-(Apply the same pattern to all three tests — switch `toEqual` to
-`toMatchObject` for the fixed fields, add the separate UUID-shape assertion.)
 
 - [ ] **Step 3: Wrap the nav in the mobile `<details>` menu**
 
@@ -1091,7 +1052,7 @@ compose/subscribe panel groups only render on `/` — composing has never
 worked from any other route, so this reflects existing behavior rather than
 inventing cross-route form-action plumbing (an absolute-path `action="/?/compose"`
 posting to the home route from elsewhere is a bigger, separate feature, not
-part of this visual migration — logged as a follow-up in Task 12). (2) The
+part of this visual migration — logged as a follow-up in Task 11). (2) The
 subscribe group renders the **real** subscribe form (not the handoff's
 static "Your subscriptions"/"Import OPML"/"Export OPML" text links, which
 point to pages, not actions). "New post" is a same-page anchor (`#compose`)
@@ -1131,7 +1092,7 @@ git commit -m "design: mobile menu, 3-state theme toggle, working New-post/subsc
 
 ---
 
-### Task 9: Conversation highlight — "You are here"
+### Task 8: Conversation highlight — "You are here"
 
 **Files:**
 - Modify: `web/src/routes/post/[id]/+page.svelte`
@@ -1194,7 +1155,7 @@ git commit -m "design: You-are-here marker on the highlighted post, danger-link 
 
 ---
 
-### Task 10: Admin polish
+### Task 9: Admin polish
 
 **Files:**
 - Modify: `web/src/routes/admin/+layout.svelte`
@@ -1317,7 +1278,7 @@ git commit -m "design: admin masthead dedup, ruled overview stat row"
 
 ---
 
-### Task 11: Tables — subscriptions and admin users
+### Task 10: Tables — subscriptions and admin users
 
 **Files:**
 - Modify: `web/src/routes/u/[handle]/following/+page.svelte`
@@ -1461,12 +1422,12 @@ git commit -m "design: subscriptions and admin-users lists become real tables"
 
 ---
 
-### Task 12: Log the skipped optional item
+### Task 11: Log the skipped optional items
 
 **Files:**
 - Modify: `docs/superpowers/ideas.md`
 
-- [ ] **Step 1: Append two entries**
+- [ ] **Step 1: Append three entries**
 
 Follow the existing format in that file (name · mechanism · why-novel ·
 grounding · tradeoff · status).
@@ -1476,21 +1437,25 @@ grounding · tradeoff · status).
    optional in the source doc, skipped from this migration since it's a
    feature reorg, not a visual change; status: backlog.
 2. Compose-from-any-route: the mobile menu's "New post"/subscribe group
-   (Task 8) only appears on the home page today because that's the only
+   (Task 7) only appears on the home page today because that's the only
    route with a `compose`/`subscribe` form action — a real cross-route
    compose capability would need an absolute-path form action plus a
    post-submit redirect back to the originating page; status: backlog.
+3. `Avatar.svelte`'s `imageUrl`/`.grayscale` `<img>` branch (dropped from
+   this plan per ponytail-review — no caller exists yet): add it in the same
+   change that first gives the component a real image URL to render, when
+   the roadmap's avatar-harvesting work lands; status: backlog.
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add docs/superpowers/ideas.md
-git commit -m "docs: log rivers-panel-to-sources swap as a follow-up idea"
+git commit -m "docs: log three follow-up ideas deferred from the Modernist migration"
 ```
 
 ---
 
-### Task 13: Full verification pass
+### Task 12: Full verification pass
 
 **Files:** none (verification only; fixes land wherever a real break is found).
 
@@ -1526,7 +1491,7 @@ already green.)
 
 ---
 
-### Task 14: Manual QA against the checklist (no code changes)
+### Task 13: Manual QA against the checklist (no code changes)
 
 Using the browser tool against the worktree's dev server:
 
@@ -1548,16 +1513,16 @@ Using the browser tool against the worktree's dev server:
 
 ---
 
-### Task 15: Whole-branch review
+### Task 14: Whole-branch review
 
 - [ ] Dispatch a whole-branch review on the most capable model available,
-      covering every commit from Task 1 through Task 14's fixes.
+      covering every commit from Task 1 through Task 13's fixes.
 - [ ] Dispatch a ponytail-review pass on the same diff (over-engineering
       lens — this plan already made several scope-reduction calls; confirm
       none of them left dead code or an unused abstraction behind, e.g. the
       `ThemeToggle` `variant` prop should have exactly two call sites using
       `'segmented'` and every other call site implicit-defaulting to `'icon'`,
       not a config value invented for a hypothetical third variant).
-- [ ] Fold any findings, re-run Task 13's verification, then hand back to the
+- [ ] Fold any findings, re-run Task 12's verification, then hand back to the
       user for the merge/PR/cleanup decision — nothing merges to `main`
       without explicit approval.
