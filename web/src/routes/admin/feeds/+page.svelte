@@ -113,7 +113,7 @@
 												</span>
 												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
 											</div>
-											{@render managePanel(m)}
+											{@render managePanel(m, 'm-')}
 										</li>
 									{/each}
 								</ul>
@@ -131,8 +131,10 @@
      a nested member row — both carry the same `actions` shape from toRow(),
      so a member is moderated through the exact same forms, not a separate
      read-only view. `expand` is carried forward alongside `cursor` so acting
-     on a member doesn't collapse its instance's expansion. -->
-{#snippet managePanel(row: Row)}
+     on a member doesn't collapse its instance's expansion.
+     N1 fix: a blocked member renders twice (flat + nested in expanded instance),
+     so we add a scope discriminator to prevent duplicate DOM ids. -->
+{#snippet managePanel(row: Row, scope = '')}
 	{@const qs = [data.cursor ? `cursor=${encodeURIComponent(data.cursor)}` : '', data.expand ? `expand=${encodeURIComponent(data.expand)}` : ''].filter(Boolean).join('&')}
 	<details class="panel">
 		<summary aria-label="Manage {row.url}">Manage</summary>
@@ -153,20 +155,20 @@
 					<span class="action-name">{LABEL[a.action]}</span>
 					{#if consequence}<p class="consequence">{consequence}</p>{/if}
 					{#if a.action === 'attribution-mode'}
-						<label class="visually-hidden" for="mode-{row.id}">Attribution mode</label>
-						<select id="mode-{row.id}" name="attributionMode">
+						<label class="visually-hidden" for="mode-{scope}{row.id}">Attribution mode</label>
+						<select id="mode-{scope}{row.id}" name="attributionMode">
 							<option value="single_publisher">single publisher</option>
 							<option value="aggregate">aggregate</option>
 						</select>
 					{/if}
 					{#if a.action !== 'pause' && a.action !== 'resume'}
-						<label class="visually-hidden" for="cat-{row.id}-{a.action}">Moderation category</label>
-						<select id="cat-{row.id}-{a.action}" name="category" required>
+						<label class="visually-hidden" for="cat-{scope}{row.id}-{a.action}">Moderation category</label>
+						<select id="cat-{scope}{row.id}-{a.action}" name="category" required>
 							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
 						</select>
 					{/if}
-					<label class="visually-hidden" for="note-{row.id}-{a.action}">Note (optional)</label>
-					<input id="note-{row.id}-{a.action}" name="note" placeholder="note (optional)" />
+					<label class="visually-hidden" for="note-{scope}{row.id}-{a.action}">Note (optional)</label>
+					<input id="note-{scope}{row.id}-{a.action}" name="note" placeholder="note (optional)" />
 					<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
 				</form>
 			{/each}

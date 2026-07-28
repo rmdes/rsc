@@ -157,5 +157,11 @@ test('memberRowsPage and memberCounts page/count correctly once the instance is 
 test('the member range plans as SEARCH on the canonical_url autoindex', async () => {
   const { raw } = await fresh()
   const plan = raw.prepare(`EXPLAIN QUERY PLAN SELECT id FROM remote_sources_v2 WHERE ${MEMBER_RANGE_SQL}`).all('https://x.test/', 'https://x.test0', 'irrelevant') as { detail: string }[]
-  expect(plan.map((r) => r.detail).join(' ')).toMatch(/SEARCH .*USING (COVERING )?INDEX/)
+  // The plan now has 3 rows: the outer SEARCH on remote_sources_v2, a CORRELATED SCALAR
+  // SUBQUERY row, and the subquery's SCAN. We must specifically check that the
+  // remote_sources_v2 row (the outer query) uses SEARCH...USING INDEX, not just that
+  // the pattern appears somewhere in the joined plan (where the subquery's own indexed
+  // lookups would satisfy it even if the outer scan regressed to SCAN).
+  const outerRow = plan.find((r) => r.detail.includes('remote_sources_v2'))
+  expect(outerRow?.detail).toMatch(/SEARCH remote_sources_v2 USING (COVERING )?INDEX/)
 })
