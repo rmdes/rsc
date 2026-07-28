@@ -60,19 +60,23 @@
 				{/each}
 			</div>
 
-			{#if page.url.pathname === '/' && data.me && !data.me.isAnonymous}
+			{#if page.url.pathname === '/'}
 				<div class="nav-menu-group" id="compose">
 					<h6>New post</h6>
 					<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" />
 				</div>
 				<div class="nav-menu-group">
 					<h6>Subscribe to a feed</h6>
-					<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
-						<label class="visually-hidden" for="menu-sub-url">Feed URL</label>
-						<input id="menu-sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
-						<input type="hidden" name="commandId" value={data.subscribeCommandId} />
-						<button>Subscribe</button>
-					</form>
+					{#if data.me && !data.me.isAnonymous}
+						<form method="POST" action="?tab={data.tab}&/subscribe" class="add-remote">
+							<label class="visually-hidden" for="menu-sub-url">Feed URL</label>
+							<input id="menu-sub-url" name="url" type="url" placeholder="https://their-site.com/feed.xml" required />
+							<input type="hidden" name="commandId" value={data.subscribeCommandId} />
+							<button>Subscribe</button>
+						</form>
+					{:else}
+						<p class="auth-note">Register to add feeds.</p>
+					{/if}
 				</div>
 			{/if}
 
