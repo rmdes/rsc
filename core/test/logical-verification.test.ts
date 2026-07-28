@@ -435,6 +435,40 @@ test('verification changes no governance/federation/subscription of the assertin
   expect(count(raw, 'source_subscriptions_v2')).toBe(0)
 })
 
+// ---- instance-governed members: the mint rule (spec 2026-07-25) -------------
+
+function approveFederation(raw: Raw, sourceId: string): void {
+  raw.prepare(`INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, 'approved', NULL, ?, ?)`).run(sourceId, NOW, NOW)
+}
+
+test('mint rule: an origin under an APPROVED ALLOWED instance is born allowed even when the asserting aggregate is quarantined', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_inst', 'https://origin.test/hub.xml', { governance: 'allowed' }) // instance, same prefix as ORIGIN
+  approveFederation(raw, 's_inst')
+  seedSource(raw, 's_agg', 'https://agg.test/f', { governance: 'quarantined' }) // asserting aggregate — cross-instance echo
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
+  expect((raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE canonical_url = ?`).get(ORIGIN) as { governance: string }).governance).toBe('allowed')
+})
+
+test('mint rule: an origin under an APPROVED BLOCKED instance is born blocked', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_inst', 'https://origin.test/hub.xml', { governance: 'blocked' })
+  approveFederation(raw, 's_inst')
+  seedSource(raw, 's_agg', 'https://agg.test/f') // asserting aggregate, allowed
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
+  expect((raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE canonical_url = ?`).get(ORIGIN) as { governance: string }).governance).toBe('blocked')
+})
+
+test('mint rule: with no approved instance covering the origin, it inherits the asserting aggregate governance (regression pin)', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f', { governance: 'quarantined' }) // no instance federated over origin.test at all
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
+  expect((raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE canonical_url = ?`).get(ORIGIN) as { governance: string }).governance).toBe('quarantined')
+})
+
 // ---- publisher aliases (spec §1.6, §4.3) ------------------------------------
 
 test('a verified direct-origin permanent redirect writes one publisher_feed_aliases_v2 row', async () => {

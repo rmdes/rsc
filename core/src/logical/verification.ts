@@ -12,6 +12,7 @@ import { projectItem } from './projector.ts'
 import { appendJournal } from './journal.ts'
 import { appendItemAudit } from './moderation.ts'
 import { isTombstoned } from './tombstones.ts'
+import { approvedInstanceFor } from './membership.ts'
 
 // Bounded origin verification — SCHEDULING + the batched fetch (V3 Task 4, spec
 // §7). A valid publisher (origin feed) URL first seen in an aggregate claim
@@ -292,12 +293,19 @@ function matchContainment(tx: WriteTx, itemId: string, parsedItems: Verification
 }
 
 // Find-or-create the direct-origin source keyed by the batch (origin feed) URL,
-// with the foundation's verification defaults; governance INHERITED from the
-// asserting aggregate source at creation time (found sources keep their state).
+// with the foundation's verification defaults. Governance comes from an
+// APPROVED federated instance whose prefix covers the origin's URL, when one
+// exists (instance-governed members, spec 2026-07-25 — the instance's
+// governance wins over the asserting aggregate's, e.g. a cross-instance echo
+// through a quarantined aggregate still mints allowed under an allowed
+// instance); otherwise INHERITED from the asserting aggregate source at
+// creation time (today's behavior — found sources keep their state either way).
 function findOrCreateOriginSource(tx: WriteTx, url: string, assertingSourceId: string, now: string): string {
   const existing = tx.prepare(`SELECT id FROM remote_sources_v2 WHERE canonical_url = ?`).get(url) as { id: string } | undefined
   if (existing) return existing.id
-  const gov = (tx.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(assertingSourceId) as { governance: string } | undefined)?.governance ?? 'allowed'
+  const assertingGovernance = (tx.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(assertingSourceId) as { governance: string } | undefined)?.governance ?? 'allowed'
+  const inst = approvedInstanceFor(tx, url)
+  const gov = inst ? inst.governance : assertingGovernance
   const id = randomUUID()
   tx.prepare(
     `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
