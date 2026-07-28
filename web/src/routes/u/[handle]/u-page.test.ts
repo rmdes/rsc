@@ -2,8 +2,9 @@ import { test, expect, vi } from 'vitest'
 import { load } from './+page.server.ts'
 
 // V4 §3.5 — the permanent reserved-handle redirect. /u is local accounts only;
-// every legacy remote handle is reserved at conversion and redirects to its
-// publisher page.
+// a legacy remote handle converted from a single_publisher source is reserved
+// at conversion and redirects to its publisher page (an aggregate source's
+// handle is never reserved, so it just 404s as any unreserved handle would).
 
 const isHandle = (u: unknown) => String(u).includes('/handles/')
 const reserved = (publisherId: string) =>

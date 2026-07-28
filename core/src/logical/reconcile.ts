@@ -190,8 +190,16 @@ export function identityLevelFor(attributionMode: string): 'feed_anchored' | 'so
 }
 
 export function getOrCreatePublisher(tx: WriteTx, canonicalUrl: string, identityLevel: 'feed_anchored' | 'source_scoped_fallback', now: string): string {
-  const r = tx.prepare(`SELECT id FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string } | undefined
-  if (r) return r.id
+  const r = tx.prepare(`SELECT id, identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get(canonicalUrl) as { id: string; identity_level: string } | undefined
+  if (r) {
+    // attribution_mode is a live admin setting (set_attribution_mode) that can
+    // flip after this publisher row already exists — re-derive on every call
+    // so a mode flip self-corrects instead of leaving a stale identity_level.
+    if (r.identity_level !== identityLevel) {
+      tx.prepare(`UPDATE remote_publishers_v2 SET identity_level = ? WHERE id = ?`).run(identityLevel, r.id)
+    }
+    return r.id
+  }
   const id = randomUUID()
   tx.prepare(`INSERT INTO remote_publishers_v2 (id, canonical_feed_url, identity_level, created_at) VALUES (?, ?, ?, ?)`).run(id, canonicalUrl, identityLevel, now)
   return id

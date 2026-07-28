@@ -395,9 +395,12 @@ export const AGGREGATE_PUBLISHER_IDENTITY_FIX: string[] = [
 ]
 
 // The permanent legacy-handle reservation guard (V4 §3.5): a handle converted
-// from a legacy remote feed can never be claimed again, even after the source
-// row is removed or purged (the table has no FKs precisely so the reservation
-// outlives its source — see above). It raises the EXISTING collision-shaped
+// from a single_publisher legacy remote feed can never be claimed again, even
+// after the source row is removed or purged (the table has no FKs precisely so
+// the reservation outlives its source — see above). An aggregate source's
+// handle is never reserved in the first place (no reservation row is ever
+// inserted for it), so this guard has nothing to say about it. It raises the
+// EXISTING collision-shaped
 // error, so a reserved handle is indistinguishable from a taken one: no
 // reserved-vs-taken oracle, and the same 409 from PATCH /me either way.
 // Empty (and so inert) until conversion runs.

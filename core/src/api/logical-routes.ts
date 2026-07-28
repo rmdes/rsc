@@ -498,9 +498,11 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
 // Mounted by server.ts beside the stream route (both need composition pieces
 // app.ts does not carry), unconditionally.
 //
-// Web asks this before rendering /u/:handle: every legacy remote handle is
-// permanently reserved at conversion and redirects to its publisher page. The
-// reservation relation has NO foreign keys and outlives source removal and purge
+// Web asks this before rendering /u/:handle: a legacy remote handle converted
+// from a single_publisher source is permanently reserved at conversion and
+// redirects to its publisher page — an aggregate source's handle is never
+// reserved, so /u/:handle just 404s for it as always. The reservation relation
+// has NO foreign keys and outlives source removal and purge
 // (schema.ts), so a hit here does NOT promise the publisher still exists —
 // after a purge the redirect still fires and /p/:publisherId 404s through the
 // ordinary not-found path (spec WP5). No post-purge branch exists, here or in web.

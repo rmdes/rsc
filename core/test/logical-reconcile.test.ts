@@ -411,6 +411,32 @@ test('getOrCreatePublisher mints source_scoped_fallback for an aggregate source,
   expect(boundPub.identity_level).toBe('feed_anchored')
 })
 
+test('getOrCreatePublisher re-derives identity_level when attribution_mode flips single_publisher -> aggregate', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://flip.test/f', { mode: 'single_publisher' })
+  await acquire(db, raw, 's1', 'https://flip.test/f', RSS(guidItem('g1')))
+  drain(store)
+  expect((raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get('https://flip.test/f') as { identity_level: string }).identity_level).toBe('feed_anchored')
+
+  raw.prepare(`UPDATE remote_sources_v2 SET attribution_mode = 'aggregate' WHERE id = ?`).run('s1')
+  await acquire(db, raw, 's1', 'https://flip.test/f', RSS(guidItem('g2')), LATER)
+  drain(store, LATER)
+  expect((raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get('https://flip.test/f') as { identity_level: string }).identity_level).toBe('source_scoped_fallback')
+})
+
+test('getOrCreatePublisher re-derives identity_level when attribution_mode flips aggregate -> single_publisher', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://flip2.test/f', { mode: 'aggregate' })
+  await acquire(db, raw, 's1', 'https://flip2.test/f', RSS(guidItem('g1')))
+  drain(store)
+  expect((raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get('https://flip2.test/f') as { identity_level: string }).identity_level).toBe('source_scoped_fallback')
+
+  raw.prepare(`UPDATE remote_sources_v2 SET attribution_mode = 'single_publisher' WHERE id = ?`).run('s1')
+  await acquire(db, raw, 's1', 'https://flip2.test/f', RSS(guidItem('g2')), LATER)
+  drain(store, LATER)
+  expect((raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE canonical_feed_url = ?`).get('https://flip2.test/f') as { identity_level: string }).identity_level).toBe('feed_anchored')
+})
+
 // ---- orphan adoption is WIRED: a reply arriving before its parent attaches ---
 
 test('a reply reconciled BEFORE its parent attaches once the parent lands', async () => {

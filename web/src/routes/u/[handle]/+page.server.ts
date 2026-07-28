@@ -4,9 +4,10 @@ import { env } from '$env/dynamic/private'
 import { getLogicalRiverOrEmpty } from '$lib/logical-api'
 import { enrichEntries } from '$lib/server/render'
 
-// The permanent reserved-handle redirect (V4 §3.5). Every legacy remote handle
-// is reserved at conversion; /u is local-accounts only, so a reserved handle
-// redirects permanently to its publisher page. The reservation outlives source
+// The permanent reserved-handle redirect (V4 §3.5). A legacy remote handle
+// converted from a single_publisher source is reserved at conversion (an
+// aggregate source's handle never is); /u is local-accounts only, so a
+// reserved handle redirects permanently to its publisher page. The reservation outlives source
 // removal and purge, so a hit does NOT promise the publisher still exists —
 // after a purge the redirect still fires and /p/:publisherId 404s through the
 // ordinary not-found path (spec WP5). There is deliberately no post-purge branch.

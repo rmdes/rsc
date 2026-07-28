@@ -278,7 +278,7 @@ test('a grandfathered user gets no NEW subscription until back under the cap', a
 
 // ── handle reservations ──────────────────────────────────────────────────
 
-test('every remote handle is reserved against its converted source and publisher', async () => {
+test('a single_publisher remote handle is reserved against its converted source and publisher', async () => {
   const raw = await fresh()
   seedRemote(raw)
   seedLocal(raw)
