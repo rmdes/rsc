@@ -98,10 +98,11 @@ test('GET /users/:handle/stats returns posts, followers and following counts', a
 
 	await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'hi' }) })
 	await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie: bobCookie }, body: JSON.stringify({ handle: 'alice' }) })
+	await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ handle: 'bob' }) })
 
 	const res = await app.request('/users/alice/stats')
 	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual({ posts: 1, followers: 1, following: 0 })
+	expect(await res.json()).toEqual({ posts: 1, followers: 1, following: 1 })
 })
 
 test('GET /users/:handle/stats 404s for an unknown handle', async () => {
