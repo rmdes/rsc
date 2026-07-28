@@ -5,6 +5,9 @@ export interface Config {
   token: string
   port: number
   pollSeconds: number
+  ingestCycleMinutes: number
+  ingestConcurrency: number
+  ingestMaxPerHost: number
   publicUrl: string | null
   websub: WebSubMode
   rssCloud: boolean
@@ -90,6 +93,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     token,
     port: positiveInt('RSC_PORT', env.RSC_PORT ?? '8787'),
     pollSeconds: positiveInt('RSC_POLL_SECONDS', env.RSC_POLL_SECONDS ?? '60'),
+    ingestCycleMinutes: positiveInt('RSC_INGEST_CYCLE_MINUTES', env.RSC_INGEST_CYCLE_MINUTES ?? '30'),
+    ingestConcurrency: positiveInt('RSC_INGEST_CONCURRENCY', env.RSC_INGEST_CONCURRENCY ?? '8'),
+    ingestMaxPerHost: positiveInt('RSC_INGEST_MAX_PER_HOST', env.RSC_INGEST_MAX_PER_HOST ?? '2'),
     publicUrl,
     websub,
     rssCloud,
