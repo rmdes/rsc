@@ -32,11 +32,44 @@ type SourceAction = (typeof ACTIONS)[number]
 // may carry no category (design §5); core 400s the others without one.
 const CATEGORY_OPTIONAL: ReadonlySet<string> = new Set(['pause', 'resume'])
 
-// Only the SourceSummary fields this page renders. Everything else core sends
-// (provenance, retention, subscription counts) is ignored on purpose.
+// Only the SourceSummary fields this page renders, plus the two core sends
+// that are read here ONLY to derive booleans (never forwarded raw, F1):
+// provenance drives isInstanceMember/viaVerification; overridden is already a
+// boolean on the wire. Retention flag and subscription counts stay ignored.
 interface SourceSummary {
-	source: { id: string; canonicalUrl: string; attributionMode: 'single_publisher' | 'aggregate'; operation: 'enabled' | 'paused'; governance: 'allowed' | 'quarantined' | 'blocked' }
+	source: {
+		id: string
+		canonicalUrl: string
+		attributionMode: 'single_publisher' | 'aggregate'
+		operation: 'enabled' | 'paused'
+		governance: 'allowed' | 'quarantined' | 'blocked'
+		provenance: string
+		overridden: boolean
+	}
 	federationStatus: 'none' | 'pending' | 'approved'
+}
+
+// ONE membership predicate, client-side mirror of core's membership.ts
+// instancePrefix (scheme+host only, via `new URL`) — http and https on one
+// host do NOT group.
+function instancePrefixClient(canonicalUrl: string): string | null {
+	try {
+		const u = new URL(canonicalUrl)
+		if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+		return `${u.protocol}//${u.host}/`
+	} catch {
+		return null
+	}
+}
+
+// 2026-07-28 spec-edge amendment (plan review F14): a row that is itself
+// approved-federated governs itself — it is never treated as a member, even
+// when another approved instance's prefix happens to cover its URL.
+function isInstanceMember(row: SourceSummary, allRows: SourceSummary[]): boolean {
+	if (row.source.provenance !== 'origin_verification') return false
+	if (row.federationStatus === 'approved') return false
+	const rowPrefix = instancePrefixClient(row.source.canonicalUrl)
+	return allRows.some((inst) => inst.federationStatus === 'approved' && inst.source.id !== row.source.id && instancePrefixClient(inst.source.canonicalUrl) === rowPrefix)
 }
 
 // Not exported: SvelteKit only allows load/actions/etc. out of a +page.server.
@@ -47,14 +80,26 @@ const GROUPS = [
 	{ key: 'blocked', title: 'Blocked sources', blurb: 'No acquisition, no eligible deliveries — still fully inspectable. Unblocking returns a source to quarantine, never straight to visibility.' }
 ] as const
 
-const groupOf = (s: SourceSummary): (typeof GROUPS)[number]['key'] =>
-	s.source.governance === 'blocked'
-		? 'blocked'
-		: s.source.governance === 'quarantined' || s.federationStatus === 'pending'
-			? 'review'
-			: s.federationStatus === 'approved'
-				? 'federation'
-				: 'user'
+// A verification-minted member (isInstanceMember) that would otherwise land
+// in 'user' or 'review' is routed to 'member' instead — a key that matches
+// none of GROUPS, so it never renders flatly. It resurfaces only via that
+// instance's own ?expand= member list (Task 6). Blocked/federation are left
+// alone: a member can't be 'federation' (F14 excludes approved rows from
+// membership) and a cascaded-blocked member still needs to show up in the
+// blocked group like every other blocked source.
+type GroupKey = (typeof GROUPS)[number]['key'] | 'member'
+
+const groupOf = (s: SourceSummary, isMember: boolean): GroupKey => {
+	const base: (typeof GROUPS)[number]['key'] =
+		s.source.governance === 'blocked'
+			? 'blocked'
+			: s.source.governance === 'quarantined' || s.federationStatus === 'pending'
+				? 'review'
+				: s.federationStatus === 'approved'
+					? 'federation'
+					: 'user'
+	return isMember && (base === 'user' || base === 'review') ? 'member' : base
+}
 
 // The legal transitions for these axes, mirroring core's SOURCE_TRANSITIONS.
 // Offering an illegal one would only earn core's 409 `invalid transition`.
@@ -72,14 +117,21 @@ const availableActions = (s: SourceSummary): SourceAction[] => [
 // One command id per rendered form (design §11): resubmitting the same rendered
 // form — browser retry, back-and-resubmit — replays the identical id, so core
 // returns the original result instead of mutating twice.
-const toRow = (s: SourceSummary) => ({
+// F1: isInstanceMember/viaVerification are the only derived signals carried
+// forward from provenance — the raw string itself never reaches this object.
+// memberCounts starts undefined; the load fills it in for federation rows only.
+const toRow = (s: SourceSummary, isMember: boolean) => ({
 	id: s.source.id,
 	url: s.source.canonicalUrl,
 	governance: s.source.governance,
 	operation: s.source.operation,
 	attributionMode: s.source.attributionMode,
 	federationStatus: s.federationStatus,
-	group: groupOf(s),
+	overridden: s.source.overridden,
+	isInstanceMember: isMember,
+	viaVerification: s.source.provenance === 'origin_verification',
+	memberCounts: undefined as { members: number; overridden: number; instanceGoverned: number } | undefined,
+	group: groupOf(s, isMember),
 	actions: availableActions(s).map((action) => ({ action, commandId: crypto.randomUUID() }))
 })
 
@@ -88,6 +140,21 @@ async function listSources(f: typeof fetch, cursor: string | null, filter?: 'gov
 	const res = await f(`${base()}/admin/sources${qs ? `?${qs}` : ''}`)
 	if (!res.ok) throw new Error(await coreError(res, `listAdminSources ${res.status}`))
 	return (await res.json()) as { items: SourceSummary[]; nextCursor: string | null }
+}
+
+// Task 5's reads, consumed here: per-instance member rows (lazy, ?expand=)
+// and counts (PT10's roll-up). Non-instance/non-federated ids come back
+// empty from core (F2) rather than 404 — same posture as the sibling reads.
+async function listMembers(f: typeof fetch, instanceId: string): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {
+	const res = await f(`${base()}/admin/sources/${encodeURIComponent(instanceId)}/members`)
+	if (!res.ok) throw new Error(await coreError(res, `listSourceMembers ${res.status}`))
+	return (await res.json()) as { items: SourceSummary[]; nextCursor: string | null }
+}
+
+async function memberCountsFor(f: typeof fetch, instanceId: string): Promise<{ members: number; overridden: number }> {
+	const res = await f(`${base()}/admin/sources/${encodeURIComponent(instanceId)}/members/counts`)
+	if (!res.ok) throw new Error(await coreError(res, `sourceMemberCounts ${res.status}`))
+	return (await res.json()) as { members: number; overridden: number }
 }
 
 export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
@@ -102,12 +169,34 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	// every page.
 	const [page, governance] = await Promise.all([listSources(f, cursor), listSources(f, null, 'governance')])
 	const governanceIds = new Set(governance.items.map((s) => s.source.id))
-	const rows = [...governance.items, ...page.items.filter((s) => !governanceIds.has(s.source.id))].map(toRow)
+	const merged = [...governance.items, ...page.items.filter((s) => !governanceIds.has(s.source.id))]
+	// The governance fetch is unpaginated and always carries every approved
+	// instance, so isInstanceMember's "is some OTHER row an approved instance
+	// covering my prefix" check sees the whole federation set regardless of
+	// which subscription page is being viewed.
+	const rows = merged.map((s) => toRow(s, isInstanceMember(s, merged)))
+	// PT10: the roll-up line's counts, one read per approved-federation row —
+	// small and bounded (federated peers, not the whole page) so a parallel
+	// fetch per row is the right size for Promise.all rather than a batch API.
+	const federationRows = rows.filter((r) => r.group === 'federation')
+	const counts = await Promise.all(federationRows.map((r) => memberCountsFor(f, r.id)))
+	federationRows.forEach((r, i) => {
+		const c = counts[i]
+		r.memberCounts = { members: c.members, overridden: c.overridden, instanceGoverned: c.members - c.overridden }
+	})
+	// Lazy member expansion (Task 6): a plain query param, no-JS-safe — the
+	// page re-renders with this one instance's member rows inlined. isMember
+	// is hardcoded true: core's /members already gates to true members only
+	// (F2 + the range predicate), no need to re-derive it client-side.
+	const expand = url.searchParams.get('expand')
+	const expandedMembers = expand ? (await listMembers(f, expand)).items.map((s) => toRow(s, true)) : []
 	// V3: the reserved blocked/tombstoned URLs (unpaginated). One command id per
 	// rendered unblock form — a resubmit replays the identical id (design §11).
 	const tombstones = (await listTombstones(f)).map((t) => ({ ...t, commandId: crypto.randomUUID() }))
 	return {
 		groups: GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => r.group === g.key) })),
+		expand,
+		expandedMembers,
 		tombstones,
 		tombstoneConsequence: TOMBSTONE_CONSEQUENCE,
 		categories: AUDIT_CATEGORIES,

@@ -67,6 +67,7 @@
 		{:else}
 			<ul class="following-list source-list">
 				{#each group.rows as row (row.id)}
+					{@const expanded = data.expand === row.id}
 					<li>
 						<div class="feed-info">
 							<strong class="feed-url">{row.url}</strong>
@@ -75,8 +76,42 @@
 								<span class="badge-kind">{row.operation}</span>
 								{#if row.federationStatus !== 'none'}<span class="badge-kind on">federation {row.federationStatus}</span>{/if}
 								<span class="badge-kind">{row.attributionMode.replace('_', ' ')}</span>
+								{#if row.overridden}<span class="badge-kind on">overridden</span>{/if}
 							</span>
+							<!-- A moderated member no longer tracks its instance's governance
+							     (the overridden bit, Task 1); this hint marks WHERE a flatly-shown
+							     row came from — verification, not subscribe/OPML/admin — a nested
+							     member never reaches here at all (Task 6 exclusion). -->
+							{#if row.viaVerification}<p class="subnav hint">via verification</p>{/if}
 						</div>
+						{#if row.group === 'federation' && row.memberCounts}
+							{@const qs = [expanded ? '' : `expand=${row.id}`, data.cursor ? `cursor=${encodeURIComponent(data.cursor)}` : ''].filter(Boolean).join('&')}
+							<p class="subnav member-rollup">
+								{row.memberCounts.members} member{row.memberCounts.members === 1 ? '' : 's'} ·
+								{row.memberCounts.overridden} overridden ·
+								{row.memberCounts.instanceGoverned} instance-governed
+								{#if row.memberCounts.members > 0}
+									<a href="/admin/feeds{qs ? `?${qs}` : ''}">{expanded ? 'Hide members' : 'Show members'}</a>
+								{/if}
+							</p>
+							{#if expanded}
+								<ul class="following-list source-list member-list">
+									{#each data.expandedMembers as m (m.id)}
+										<li>
+											<div class="feed-info">
+												<strong class="feed-url">{m.url}</strong>
+												<span>
+													<span class="badge-kind">{m.governance}</span>
+													<span class="badge-kind">{m.operation}</span>
+													{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
+												</span>
+												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
+											</div>
+										</li>
+									{/each}
+								</ul>
+							{/if}
+						{/if}
 						<details class="panel">
 							<summary aria-label="Manage {row.url}">Manage</summary>
 							<div class="source-actions">
@@ -199,6 +234,27 @@
 	.source-list li {
 		flex-direction: column;
 		align-items: stretch;
+	}
+
+	/* The hint carries no new meaning of its own (it's a provenance footnote,
+	   not a warning or a call to action) — same secondary/small treatment as
+	   .consequence rather than a new color. */
+	.hint {
+		margin: 0;
+		color: var(--color-secondary);
+		font-size: 0.8125rem;
+	}
+
+	.member-rollup {
+		margin: 0;
+	}
+
+	/* Nested members read as a sub-list of their instance: indented and
+	   rail-marked with the existing border token, not a new component. */
+	.member-list {
+		margin: var(--space-sm) 0 0 var(--space-lg);
+		border-left: 2px solid var(--color-border);
+		padding-left: var(--space-sm);
 	}
 
 	.source-actions {

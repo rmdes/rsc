@@ -132,6 +132,19 @@ sees. **Outbound mirror** = fetch the feed a peer polls and assert on the bytes.
       *(Would have caught: D1 empty-handle byline; and the individualized
       byline / publisher-naming fixes.)*
 
+### 11. Instance governance (verification-minted members)
+- [ ] **FD:** federate an instance whose feed asserts several distinct
+      verification-minted origins under one host.
+- [ ] **In-app:** members appear nested under it, not as flat, ungoverned
+      rows — the roll-up line's counts (members/overridden/instance-governed)
+      match `/admin/sources/:id/members/counts`; moderate one member and it
+      carries the `overridden` badge.
+- [ ] **Mirror:** block the instance — **all** members go dark on timeline,
+      byline, and publisher pages (navigate to each, don't just read a flag).
+      Unblock — members return to quarantine, never straight to visibility,
+      and the member moderated earlier stays `overridden` (V1: sticky
+      overrides are not restored by an unblock/re-block cycle).
+
 ---
 
 ## Minimum outbound-mirror toolkit

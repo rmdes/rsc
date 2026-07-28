@@ -32,9 +32,27 @@ const summary = (
 	subscriptionCounts: { active: 1, pending: 0, pendingReview: 0 }
 })
 
-type Row = { id: string; url: string; governance: string; operation: string; federationStatus: string; actions: Array<{ action: string; commandId: string }> }
+type Row = {
+	id: string
+	url: string
+	governance: string
+	operation: string
+	federationStatus: string
+	overridden: boolean
+	isInstanceMember: boolean
+	viaVerification: boolean
+	memberCounts?: { members: number; overridden: number; instanceGoverned: number }
+	actions: Array<{ action: string; commandId: string }>
+}
 type Group = { key: string; title: string; blurb: string; rows: Row[] }
-type LoadResult = { groups?: Group[]; cursor?: string | null; nextCursor?: string | null; establishCommandId?: string }
+type LoadResult = {
+	groups?: Group[]
+	cursor?: string | null
+	nextCursor?: string | null
+	establishCommandId?: string
+	expand?: string | null
+	expandedMembers?: Row[]
+}
 
 // Every load case takes a FRESH +page.server.ts import (vi.resetModules) purely
 // for isolation between cases — the load itself has no memoized state.
@@ -282,6 +300,84 @@ test("a tombstone unblock that core answers 409 'not blocked' reaches the admin 
 	expect(res.status).toBe(409)
 	expect(res.data.error).toBe('source not blocked')
 	expect(res.data.commandId).toBe('dup')
+})
+
+// --- Task 6: instance-governed members ------------------------------------
+
+const govSummary = (id: string, canonicalUrl: string, provenance: string, federationStatus: string, overridden = false) => ({
+	source: { id, canonicalUrl, attributionMode: 'aggregate', operation: 'enabled', governance: 'allowed', provenance, adminRetained: false, overridden },
+	federationStatus,
+	subscriptionCounts: { active: 0, pending: 0, pendingReview: 0 }
+})
+
+test('a verification-minted member nests out of user/review; an approved-federated row governs itself even when another approved instance shares its host prefix (F14)', async () => {
+	const instA = govSummary('instA', 'https://inst-a.test/feed.xml', 'user_subscription', 'approved')
+	// F14: instB is itself origin-verification-provenanced AND independently
+	// approved-federated — it must stay un-nested even though instA's prefix
+	// (same host) also covers it.
+	const instB = govSummary('instB', 'https://inst-a.test/other.xml', 'origin_verification', 'approved')
+	const mem1 = govSummary('mem1', 'https://inst-a.test/origin/alice.xml', 'origin_verification', 'none')
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/members/counts')) return new Response(JSON.stringify({ members: 0, overridden: 0 }), { status: 200 })
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [instA, instB], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [mem1], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch)
+	const fed = result.groups?.find((g) => g.key === 'federation')
+	const user = result.groups?.find((g) => g.key === 'user')
+	const review = result.groups?.find((g) => g.key === 'review')
+	expect(fed?.rows.map((r) => r.id).sort()).toEqual(['instA', 'instB'])
+	expect(user?.rows.map((r) => r.id)).not.toContain('mem1')
+	expect(review?.rows.map((r) => r.id)).not.toContain('mem1')
+	const allVisible = result.groups?.flatMap((g) => g.rows.map((r) => r.id)) ?? []
+	expect(allVisible).not.toContain('mem1')
+})
+
+test('a federated instance row carries memberCounts (members, overridden, instanceGoverned) fetched per instance', async () => {
+	const inst1 = govSummary('inst1', 'https://inst-a.test/feed.xml', 'user_subscription', 'approved')
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/admin/sources/inst1/members/counts')) return new Response(JSON.stringify({ members: 5, overridden: 2 }), { status: 200 })
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [inst1], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch)
+	const row = result.groups?.find((g) => g.key === 'federation')?.rows.find((r) => r.id === 'inst1')
+	expect(row?.memberCounts).toEqual({ members: 5, overridden: 2, instanceGoverned: 3 })
+	expect(urlsOf(fetch).some((u) => u.includes('/admin/sources/inst1/members/counts'))).toBe(true)
+})
+
+test('?expand=<id> loads that instance’s member rows only, none other', async () => {
+	const inst1 = govSummary('inst1', 'https://inst1.test/feed.xml', 'user_subscription', 'approved')
+	const inst2 = govSummary('inst2', 'https://inst2.test/feed.xml', 'user_subscription', 'approved')
+	const mem1 = govSummary('mem1', 'https://inst1.test/origin/a.xml', 'origin_verification', 'none', true)
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/members/counts')) return new Response(JSON.stringify({ members: 1, overridden: 1 }), { status: 200 })
+		if (u.includes('/admin/sources/inst2/members')) throw new Error('must not fetch inst2’s members')
+		if (u.includes('/admin/sources/inst1/members')) return new Response(JSON.stringify({ items: [mem1], nextCursor: null }), { status: 200 })
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [inst1, inst2], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch, '?expand=inst1')
+	expect(result.expand).toBe('inst1')
+	expect(result.expandedMembers?.map((m) => m.id)).toEqual(['mem1'])
+	expect(result.expandedMembers?.[0]?.overridden).toBe(true)
+})
+
+test('a verification-minted row whose host has no approved instance stays in user, flagged via verification', async () => {
+	const solo = govSummary('solo1', 'https://standalone.test/origin/a.xml', 'origin_verification', 'none')
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('filter=governance')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		return new Response(JSON.stringify({ items: [solo], nextCursor: null }), { status: 200 })
+	})
+	const result = await loadAdminWith(fetch)
+	const row = result.groups?.find((g) => g.key === 'user')?.rows.find((r) => r.id === 'solo1')
+	expect(row).toBeTruthy()
+	expect(row?.viaVerification).toBe(true)
+	expect(row?.isInstanceMember).toBe(false)
 })
 
 test('a core outage still throws to the error page — never an empty admin list', async () => {
