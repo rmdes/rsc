@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { PageData } from './$types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
@@ -14,11 +13,6 @@
 <svelte:head><title>{data.publisher.displayName} — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<div>
 		<h1>{data.publisher.displayName} <span class="badge-kind">publisher</span></h1>
 		<p class="subnav">

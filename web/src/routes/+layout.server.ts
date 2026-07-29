@@ -18,11 +18,13 @@ async function getMailEnabled(f: typeof fetch): Promise<boolean> {
 export const load: LayoutServerLoad = async ({ fetch, cookies, url }) => {
 	const mailEnabled = await getMailEnabled(fetch)
 	const tab = (me: Parameters<typeof resolveTab>[1]) => resolveTab(url.searchParams.get('tab'), me)
-	if (!hasSession(cookies)) return { me: null, mailEnabled, tab: tab(null) }
+	const subscribeCommandId = (me: { isAnonymous: boolean } | null) =>
+		url.pathname === '/' && me && !me.isAnonymous ? crypto.randomUUID() : undefined
+	if (!hasSession(cookies)) return { me: null, mailEnabled, tab: tab(null), subscribeCommandId: subscribeCommandId(null) }
 	try {
 		const me = await getMe(authedFetch(fetch, url.origin, cookieHeader(cookies)))
-		return { me, mailEnabled, tab: tab(me) }
+		return { me, mailEnabled, tab: tab(me), subscribeCommandId: subscribeCommandId(me) }
 	} catch {
-		return { me: null, mailEnabled, tab: tab(null) }
+		return { me: null, mailEnabled, tab: tab(null), subscribeCommandId: subscribeCommandId(null) }
 	}
 }

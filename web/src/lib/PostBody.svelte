@@ -54,7 +54,7 @@
 				<!-- svelte-ignore a11y_media_has_caption — remote feed media ships no track -->
 				<video controls preload="none" src={e.url}></video>
 			{:else if kindOf(e.mimeType, e.url) === 'image'}
-				<img loading="lazy" src={e.url} alt={e.title ?? ''} />
+				<img class="grayscale" loading="lazy" src={e.url} alt={e.title ?? ''} />
 			{:else}
 				<a href={e.url} rel="noopener nofollow" download>{label(e)}</a>
 			{/if}
@@ -85,7 +85,7 @@
 	}
 	.enclosures img,
 	.enclosures video {
-		border-radius: 4px;
+		border-radius: var(--radius);
 		height: auto;
 	}
 </style>

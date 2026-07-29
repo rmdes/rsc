@@ -254,6 +254,14 @@ export class SqliteRepository implements Repository, SourceRepository {
     const r = await this.db.selectFrom('follows').select(({ fn }) => fn.countAll().as('n')).where('followed_id', '=', userId).executeTakeFirst()
     return Number(r?.n ?? 0)
   }
+  // Root posts only (in_reply_to_post_id IS NULL), matching the river's own
+  // `river` filter (projector.ts: `AND p.in_reply_to_post_id IS NULL`) — the
+  // author-lens stat must count what the river above it actually displays,
+  // not replies folded under their thread's top card.
+  async countPostsByAuthor(authorId: string) {
+    const r = await this.db.selectFrom('posts').select(({ fn }) => fn.countAll().as('n')).where('author_id', '=', authorId).where('in_reply_to_post_id', 'is', null).executeTakeFirst()
+    return Number(r?.n ?? 0)
+  }
   async getSetting(key: string) {
     const r = await this.db.selectFrom('instance_settings').select('value').where('key', '=', key).executeTakeFirst()
     return r?.value

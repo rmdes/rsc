@@ -2200,3 +2200,93 @@ right mechanism needs to distinguish "this source posts a lot" from "this
 source's delivery keys are colliding and re-registering the same content."
 Not solved here; flagged as the open design question whoever picks this up
 needs to answer first.
+
+---
+
+## Sources/OPML list sidebar — replace the meta rail's rivers panel on desktop
+
+**Status:** candidate (deferred from Modernist migration).
+
+**Mechanism.** The desktop timeline's right meta rail carries a "Rivers" panel
+listing the current view's composed feeds (lenses on the local timeline, remote
+firehose elements, et al.). Redesign moves this to a collapsible sidebar-within-
+sidebar or a below-the-fold section: promote it from a floating "what's in this
+river" label to a **live sources/OPML list** you can expand, copy, or import.
+Scope it as a **feature reorganization, not a visual change** — the content
+stays; the rail layout that contains it is the *only* thing moving.
+
+**Why deferred.** The Modernist migration's scope is visual + structural tweaks
+to surface an existing design (the public-feeds-first timeline from the
+founding spec, `2026-07-15-textcaster-design.md`). This sidebar reorganization
+is a *feature move* — changing *where* and *how* the user accesses lenses — so
+it sidesteps the visual-spec boundary and lives in backlog alongside other
+feature reshuffles.
+
+**Grounding.** `web/src/routes/+page.svelte:90` (current rivers panel) ·
+Modernist migration scope: `svelte-changes.md §2f` (marked optional; the design
+doc itself flagged this as reorg, not visual).
+
+**Tradeoff.** None structural — the rivers list is already computed and
+rendered; moving it trades absolute positioning for flow layout and a disclosure
+affordance. The only cost is the design-spec boundary: ship the visual migration
+first (rivers stay where they are), then reshape the interaction surface (move
+it, make it expandable) in a follow-up.
+
+---
+
+## Compose-from-any-route — carry the "New post" action across all pages
+
+**Status:** candidate (deferred from Modernist migration · Task 7 scope).
+
+**Mechanism.** The mobile menu's "New post" and "Subscribe" group appears only
+on the home page (`/`) today because those form actions (`compose`, `subscribe`)
+live in `+page.server.ts` of the root layout. A true cross-route capability
+would emit those forms on every page (so you can post from `/u/alice`, `/thread`,
+any bookmark), then post-submit, redirect back to the originating page via a
+hidden `returnTo` field. The forms themselves already exist and are idempotent
+(by guid + author, no duplicates); the lift is routing + redirect plumbing.
+
+**Why deferred.** Task 7 (Modernist Interactions) shaped the *visual* mobile-menu
+redesign — where and how the affordances appear — but assumed they stay
+home-page-only. Enabling them everywhere is a *feature enablement*, distinct
+from the visual+structural scope Modernist covers. Kept backlog until that
+broader routing refactor aligns with it.
+
+**Grounding.** `web/src/routes/+layout.server.ts` + `+page.server.ts` (the
+layout/route hierarchy that keeps actions local to their file) ·
+`web/src/lib/components/MobileMenu.svelte` (current home-only appearance) ·
+`web/src/routes/+page.server.ts` (the `compose` + `subscribe` actions) ·
+existing post-submit redirect pattern (`form.redirect` in Sveltekit).
+
+**Tradeoff.** Form actions in SvelteKit are scoped to their route file, so
+lifting them to a shared surface (layout-level or mobile-menu component) breaks
+that locality boundary and requires explicit `returnTo` plumbing to preserve
+user context. Worth the routing clarity once the broader layout refactor lands;
+premature here risks spilling composition state onto unrelated pages.
+
+---
+
+## Avatar.svelte's imageUrl branch — add the deferred img render path
+
+**Status:** candidate (deferred from Modernist migration per ponytail-review).
+
+**Mechanism.** The `Avatar.svelte` component has a conditional `imageUrl` prop
+and a dormant `.grayscale <img>` branch, both written but **never called** —
+there is no caller passing a real `imageUrl` value today, so the branch sits
+inert. Drop it from the migration, and add it back in the same task that ships
+avatar harvesting (a roadmapped feature that will fetch author images off
+ingested feeds and populate `User.avatarUrl`). Then the component's image
+branch becomes live, `displayName` fallback still works for image-less users,
+and both render paths are equally tested.
+
+**Why deferred.** Ponytail-review flagged the dormant branch as speculative
+coverage — write it when the caller exists, not before. Kept in this backlog
+to prevent re-discovery + duplicate work when avatar harvesting lands.
+
+**Grounding.** `web/src/lib/components/Avatar.svelte` (the imageUrl prop and
+`.grayscale` branch, unreached) · roadmap: "Avatar harvesting from source feeds"
+(admin milestone follow-up) · ponytail review, Modernist migration task set.
+
+**Tradeoff.** None — deferral is pure clarity (ship what's reachable, defer dead
+code until its caller exists). Restore-from-git when needed; the branch is
+already written and tested.

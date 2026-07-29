@@ -1,17 +1,11 @@
 <script lang="ts">
 	import type { PageData } from './$types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	let { data }: { data: PageData } = $props()
 </script>
 
 <svelte:head><title>Accounts — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>Accounts</h1>
 	<p class="field-hint">Switch between accounts signed in on this browser.</p>
 
@@ -20,7 +14,7 @@
 			<li class:active={account.active}>
 				<span class="account-email">{account.email}</span>
 				{#if account.active}
-					<span class="badge">current</span>
+					<span class="badge-kind on">current</span>
 					<form method="POST" action="?/logoutOne"><button>Log out</button></form>
 				{:else}
 					<form method="POST" action="?/switch">
@@ -61,7 +55,7 @@
 		gap: var(--space-sm);
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
-		border-radius: 8px;
+		border-radius: var(--radius);
 		padding: var(--space-sm) var(--space-md);
 	}
 
@@ -75,21 +69,6 @@
 		font-weight: 600;
 		overflow-wrap: anywhere;
 		margin-right: auto;
-	}
-
-	/* P3: net-new here. Modeled on .badge-kind's "on" variant (accent
-	   outline, uppercase caps) rather than a filled pill — this is a status
-	   label, not a count. */
-	.badge {
-		display: inline-block;
-		font-size: 0.6875rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--color-accent);
-		border: 1px solid currentColor;
-		border-radius: 999px;
-		padding: 0 var(--space-sm);
 	}
 
 	/* Compact row buttons (Switch / Log out), matching the density of
@@ -115,7 +94,7 @@
 		background: var(--color-accent);
 		color: var(--color-on-accent);
 		padding: 10px 20px;
-		border-radius: 8px;
+		border-radius: var(--radius);
 		font-weight: 600;
 		text-decoration: none;
 		cursor: pointer;
@@ -126,20 +105,4 @@
 		opacity: 0.9;
 	}
 
-	/* P3: net-new here, but not a new pattern — same text-button destructive
-	   treatment as /+page.svelte and /post/[id]/+page.svelte's .danger-link
-	   (component-scoped there too; duplicated per house convention). */
-	.danger-link {
-		font: inherit;
-		font-size: 0.875rem;
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--color-destructive);
-		cursor: pointer;
-	}
-
-	.danger-link:hover {
-		text-decoration: underline;
-	}
 </style>

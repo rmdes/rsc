@@ -35,6 +35,25 @@ test('load degrades to me: null, mailEnabled: false when the core is unreachable
 	expect(result).toEqual({ me: null, mailEnabled: false, tab: 'public' })
 })
 
+test('subscribeCommandId mints a UUID only on / for a non-anonymous session, and is absent everywhere else', async () => {
+	const fetch = vi.fn(async (..._args: unknown[]) => healthResponse(true))
+	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
+	// registered session, home page: minted
+	const registeredFetch = vi.fn(async (..._args: unknown[]) => {
+		const input = _args[0]
+		if (String(input).includes('/health')) return healthResponse(true)
+		return new Response(JSON.stringify({ user: { id: 'u1', handle: 'a' }, isAnonymous: false }), { status: 200 })
+	})
+	const onHome = await load({ fetch: registeredFetch, cookies, url: new URL('http://x/') } as never)
+	expect((onHome as { subscribeCommandId?: string }).subscribeCommandId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+	// same session, a different route: not minted
+	const elsewhere = await load({ fetch: registeredFetch, cookies, url: new URL('http://x/admin') } as never)
+	expect((elsewhere as { subscribeCommandId?: string }).subscribeCommandId).toBeUndefined()
+	// no session at all, home page: not minted
+	const guest = await load({ fetch, cookies: { getAll: () => [] }, url: new URL('http://x/') } as never)
+	expect((guest as { subscribeCommandId?: string }).subscribeCommandId).toBeUndefined()
+})
+
 test('healthz is a trivial liveness answer that never touches core', async () => {
 	const { GET } = await import('./healthz/+server.ts')
 	const res = GET({} as never) as Response

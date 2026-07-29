@@ -89,6 +89,28 @@ test('POST /me/follows/opml requires registration: 403 anonymous, 200 registered
   expect(await reg.json()).toEqual({ localFollowed: 0, active: 1, pending: 0, unavailable: 0, notSubscribable: 0, capSkipped: 0 })
 })
 
+test('GET /users/:handle/stats returns posts, followers and following counts', async () => {
+	const { app, repo } = await makeApp()
+	const cookie = await registeredSession(app, 'alice@test.example', repo)
+	await renameTo(app, cookie, 'alice', 'Alice')
+	const bobCookie = await registeredSession(app, 'bob@test.example', repo)
+	await renameTo(app, bobCookie, 'bob', 'Bob')
+
+	await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'hi' }) })
+	await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie: bobCookie }, body: JSON.stringify({ handle: 'alice' }) })
+	await app.request('/me/follows', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ handle: 'bob' }) })
+
+	const res = await app.request('/users/alice/stats')
+	expect(res.status).toBe(200)
+	expect(await res.json()).toEqual({ posts: 1, followers: 1, following: 1, kind: 'local' })
+})
+
+test('GET /users/:handle/stats 404s for an unknown handle', async () => {
+	const { app } = await makeApp()
+	const res = await app.request('/users/nobody/stats')
+	expect(res.status).toBe(404)
+})
+
 test('lens query params: both → 400 before resolution, unknown → 404, author lens works', async () => {
   const { app, repo, service } = await makeApp()
   await service.createLocalPostAs('x', 'X', 'x1')

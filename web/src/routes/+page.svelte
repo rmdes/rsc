@@ -129,7 +129,7 @@
 <svelte:head><title>RSC</title></svelte:head>
 
 <div class="shell">
-	<aside class="tools">
+	<aside class="tools" id="compose-desktop">
 		<ComposerDialog
 			draftKey="compose"
 			action="?tab={data.tab}&/compose"
@@ -292,22 +292,3 @@
 		{/if}
 	</aside>
 </div>
-
-<style>
-	/* Text-button destructive affordance, matching .edit/.source's inline
-	   link weight — not a filled/outlined button (that's .danger on
-	   /admin/users, a card list with more visual room). */
-	.danger-link {
-		font: inherit;
-		font-size: 0.875rem;
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--color-destructive);
-		cursor: pointer;
-	}
-
-	.danger-link:hover {
-		text-decoration: underline;
-	}
-</style>

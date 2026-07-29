@@ -460,7 +460,9 @@
 
 	/* Outline, not the accent fill: half a dozen moderation verbs stacked in
 	   one panel are all equally weighted, none of them a page CTA. Block reads
-	   destructive on top of that, matching .unfollow-form / .danger elsewhere. */
+	   destructive on top of that, the same outline-destructive idea as
+	   .unfollow-form elsewhere (admin/users' delete-account button, the
+	   following-page's Unfollow/Unsubscribe). */
 	.source-action button {
 		background: transparent;
 		color: var(--color-foreground);

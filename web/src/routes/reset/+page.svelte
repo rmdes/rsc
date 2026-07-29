@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 </script>
@@ -8,11 +7,6 @@
 <svelte:head><title>Reset password — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>Reset password</h1>
 
 	{#if !data.mailEnabled}

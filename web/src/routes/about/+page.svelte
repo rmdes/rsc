@@ -4,9 +4,6 @@
      reading rhythm. Every claim traces to README.md + the founding design at
      docs/superpowers/specs/2026-07-15-textcaster-design.md — keep roadmap
      items marked as roadmap. -->
-<script lang="ts">
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
-</script>
 
 <svelte:head>
 	<title>About — RSC</title>
@@ -17,11 +14,6 @@
 </svelte:head>
 
 <div class="lens about">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>A social timeline built natively on feeds.</h1>
 
 	<p class="lede">
@@ -165,15 +157,16 @@
 		margin-block: 0;
 	}
 
+	/* Reads as a sentence, not a short state label, so it drops the pill
+	   shape and border entirely rather than becoming an 11px uppercase
+	   label — kept at accent-text weight (not --color-accent, which is
+	   reserved for fills/icons/labels, not paragraph-size text) since the
+	   pre-release note is still a real signal worth keeping visually distinct. */
 	.status {
-		align-self: flex-start;
 		margin: 0;
-		padding: var(--space-xs) var(--space-md);
-		border: 1px solid var(--color-border);
-		border-radius: 999px;
-		font-size: 0.8125rem;
+		font-size: 0.9375rem;
 		font-weight: 600;
-		color: var(--color-accent);
+		color: var(--color-accent-text);
 	}
 
 	.about section {

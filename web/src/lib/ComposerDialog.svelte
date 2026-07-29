@@ -18,6 +18,11 @@
 		placeholder?: string
 	} = $props()
 
+	// Per-instance-unique, SSR/client-consistent — replaces a manually-threaded
+	// idSuffix prop now that the two coexisting instances (desktop rail, mobile
+	// menu panel) each need a non-colliding dialog-title id with no caller input.
+	const uid = $props.id()
+
 	let content = $state('')
 	let error = $state('')
 	let dialog = $state<HTMLDialogElement>()
@@ -78,7 +83,7 @@
 	<dialog
 		bind:this={dialog}
 		class="composer-dialog"
-		aria-labelledby="composer-dialog-title"
+		aria-labelledby={`composer-dialog-title-${uid}`}
 		onclick={(e) => {
 			if (e.target === dialog) dialog?.close()
 		}}
@@ -86,7 +91,7 @@
 	>
 		<div class="composer-dialog-body">
 			<header>
-				<h2 id="composer-dialog-title">{title}</h2>
+				<h2 id={`composer-dialog-title-${uid}`}>{title}</h2>
 				<button type="button" class="dialog-close" aria-label="Close" onclick={() => dialog?.close()}>×</button>
 			</header>
 			{#if error}<p class="error" role="alert">{error}</p>{/if}

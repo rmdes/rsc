@@ -175,19 +175,28 @@ a {
 	margin-right: var(--space-xl);
 }
 
-.nav a {
+.nav a:not(.btn) {
 	color: inherit;
 	text-decoration: none;
 	font-size: 0.875rem;
 }
 
-.nav a:hover,
-.nav a[aria-current='page'] {
+.nav a:not(.btn):hover,
+.nav a:not(.btn)[aria-current='page'] {
 	color: var(--color-accent);
 }
 
 .nav .spacer {
 	margin-left: auto;
+}
+
+/* "New post" has two targets (see +layout.svelte) — only one is ever the
+   visible anchor, matching the id its href points at being the only #compose
+   visible at that width. Desktop is the default state; the 767px query below
+   flips it. `.nav` prefix needed to outrank .btn's own display (same
+   specificity, declared later in this file). */
+.nav .new-post-mobile {
+	display: none;
 }
 
 /* Shell grid: tools | river | meta — separated by 2px RULES, not by a gap. The
@@ -273,10 +282,30 @@ a {
 	.nav {
 		padding: var(--space-sm) var(--space-md);
 		gap: var(--space-md);
+		flex-wrap: wrap;
 	}
 	/* the rivers move into the menu panel; the river names itself on the page */
 	.nav > a:not(.nav-brand):not(.btn):not(.nav-menu-toggle) {
 		display: none;
+	}
+	/* collapsed header holds exactly three things — brand, New post, Menu —
+	   so the icon toggle hides here; the segmented one in the panel covers it */
+	.nav > .theme-toggle {
+		display: none;
+	}
+	.nav .new-post-desktop {
+		display: none;
+	}
+	.nav .new-post-mobile {
+		display: inline-flex;
+	}
+	/* .nav-menu sits in the flex row (its summary is the Menu toggle, staying
+	   inline with brand/New post while closed) but its panel must stay
+	   full-bleed and in-flow, not a floating dropdown: once open, force it
+	   onto its own 100%-width line so it spans edge to edge and pushes the
+	   page down, same as before the toggle moved into .nav. */
+	.nav-menu[open] {
+		flex: 1 0 100%;
 	}
 	.nav-brand {
 		font-size: 1.25rem;
@@ -312,7 +341,7 @@ a {
 	.lens h1 {
 		font-size: 2.125rem;
 	}
-	.lens > *:not(.masthead):not(.page-head):not(.lens-stats) {
+	.lens > *:not(.page-head):not(.lens-stats) {
 		padding-inline: var(--space-md);
 	}
 	.page-head {
@@ -387,10 +416,6 @@ a {
 
 .nav-menu {
 	border-bottom: 2px solid var(--color-divider);
-}
-
-.nav-menu > summary {
-	display: none; /* the toggle lives in .nav at narrow widths */
 }
 
 .nav-menu-toggle {
@@ -562,15 +587,8 @@ a {
 	color: var(--color-accent);
 }
 
-/* Page mastheads (author lens, conversation, history, admin): a kicker in the
+/* Page headers (author lens, conversation, history, admin): a kicker in the
    label style over the h1, on a 2px rule. */
-
-.masthead {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--space-3);
-}
 
 .page-head {
 	padding: var(--space-xl) var(--space-xl) var(--space-md);
@@ -606,6 +624,21 @@ a {
 .theme-toggle:hover {
 	background: color-mix(in srgb, var(--color-foreground) 7%, transparent);
 }
+
+.theme-segmented { display: flex; border: 1px solid var(--color-divider); }
+.theme-segmented button {
+	flex: 1; padding: var(--space-xs) var(--space-sm); background: none; border: 0;
+	color: var(--color-secondary); text-transform: uppercase; font-size: 0.6875rem; letter-spacing: 0.08em; font-weight: var(--font-heading-weight);
+	cursor: pointer;
+}
+/* Same tie as .nav a used to have: `.theme-segmented button` and the generic
+   `button:hover` (app-wide) are equal specificity, so the LATER one in the
+   file (button:hover) was winning and painting every inactive segment
+   accent-orange on hover — the .active look, but with grey text left behind.
+   A dedicated hover rule, not just source-order luck. */
+.theme-segmented button:hover { background: color-mix(in srgb, var(--color-foreground) 7%, transparent); }
+.theme-segmented button.active { background: var(--color-accent); color: var(--color-on-accent); }
+.theme-segmented button + button { border-left: 1px solid var(--color-divider); }
 
 /* Rail sections (native details — works without JS). The boxed panel loses its
    border, radius and surface: a labelled section under a 2px rule. */
@@ -715,7 +748,7 @@ textarea {
 
 /* Labels are FLUSH LEFT, including inside a button wider than its label. This
    is the rule most likely to look wrong if skipped. */
-button {
+.btn, button {
 	display: inline-flex;
 	align-items: center;
 	justify-content: flex-start;
@@ -733,15 +766,15 @@ button {
 	transition: background-color 200ms ease;
 }
 
-button:hover {
+.btn:hover, button:hover {
 	background: var(--color-accent-hover);
 }
 
-button:active {
+.btn:active, button:active {
 	background: var(--color-accent-hover);
 }
 
-button:disabled {
+.btn:disabled, button:disabled {
 	opacity: 0.45;
 	cursor: not-allowed;
 }
@@ -854,6 +887,14 @@ button:disabled {
 	color: var(--color-accent);
 }
 
+.here {
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+}
+
 /* Every other badge in the app takes the same treatment. */
 .badge-kind {
 	display: inline-block;
@@ -951,21 +992,7 @@ button:disabled {
 	gap: 0;
 }
 
-.lens > .masthead {
-	padding: var(--space-3) var(--space-md);
-	border-bottom: 2px solid var(--color-divider);
-}
-
-.lens .masthead a {
-	font-family: var(--font-heading);
-	font-size: 1.375rem;
-	font-weight: var(--font-heading-weight);
-	letter-spacing: -0.02em;
-	color: var(--color-foreground);
-	text-decoration: none;
-}
-
-.lens > *:not(.masthead):not(.page-head):not(.lens-stats) {
+.lens > *:not(.page-head):not(.lens-stats) {
 	padding-inline: var(--space-xl);
 }
 
@@ -999,6 +1026,8 @@ button:disabled {
 }
 
 .lens-stats > div {
+	display: flex;
+	flex-direction: column;
 	padding: var(--space-md) var(--space-xl);
 }
 
@@ -1007,6 +1036,8 @@ button:disabled {
 }
 
 .lens-stats .n {
+	order: 1;
+	margin: 0;
 	font-family: var(--font-heading);
 	font-weight: var(--font-heading-weight);
 	font-size: 1.75rem;
@@ -1014,6 +1045,7 @@ button:disabled {
 }
 
 .lens-stats .k {
+	order: 2;
 	font-family: var(--font-heading);
 	font-size: 0.6875rem;
 	font-weight: var(--font-heading-weight);
@@ -1087,6 +1119,7 @@ button:disabled {
 .table td {
 	padding: var(--space-sm);
 	border-bottom: 1px solid var(--color-border);
+	overflow-wrap: anywhere;
 }
 
 .table tbody tr:hover {
@@ -1597,6 +1630,8 @@ button:disabled {
 }
 
 .stat-card {
+	display: flex;
+	flex-direction: column;
 	background: none;
 	border: 0;
 	border-radius: var(--radius);
@@ -1625,11 +1660,6 @@ button:disabled {
 	font-weight: var(--font-heading-weight);
 	font-size: 1.75rem;
 	line-height: 1;
-}
-
-.stat-card {
-	display: flex;
-	flex-direction: column;
 }
 
 .status-label {

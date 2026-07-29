@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
@@ -38,11 +37,6 @@
 <svelte:head><title>@{data.handle} following — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<div>
 		<h1>@{data.handle} — following</h1>
 		<p class="subnav"><a href="/u/{data.handle}">author lens</a> · <a href="/u/{data.handle}/following.opml">export OPML</a></p>
@@ -99,30 +93,36 @@
 		{#if (data.rows ?? []).length === 0}
 			<p class="timeline-empty">{emptyNote}</p>
 		{:else}
-			<ul class="following-list">
-				{#each data.rows ?? [] as row (row.kind === 'local' ? row.handle : row.sourceId)}
-					<li>
-						{#if row.kind === 'local'}
-							<span><a href="/u/{row.handle}">@{row.handle}</a> <span class="badge-kind">local</span></span>
-							<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'} class="unfollow-form" class:follow-row={!data.isOwner}>
-								<input type="hidden" name="target" value={row.handle} />
-								<button>{data.isOwner ? 'Unfollow' : 'Follow'}</button>
-							</form>
-						{:else}
-							<!-- Only the owner's own projection can carry pending, and it
-							     says nothing about why — no governance state reaches here. -->
-							<span><a href={row.url} rel="noreferrer">{row.label}</a>{#if row.pending}<span class="badge-kind">awaiting review</span>{/if}</span>
-							{#if data.isOwner}
-								<form method="POST" action="?/unsubscribe" class="unfollow-form">
-									<input type="hidden" name="sourceId" value={row.sourceId} />
-									<input type="hidden" name="commandId" value={row.commandId} />
-									<button>Unsubscribe</button>
-								</form>
-							{/if}
-						{/if}
-					</li>
-				{/each}
-			</ul>
+			<table class="table table-records">
+				<thead>
+					<tr><th>Label</th><th>Kind</th><th>State</th><th>Action</th></tr>
+				</thead>
+				<tbody>
+					{#each data.rows ?? [] as row (row.kind === 'local' ? row.handle : row.sourceId)}
+						<tr>
+							<td data-label="Label">{#if row.kind === 'local'}<a href="/u/{row.handle}">@{row.handle}</a>{:else}<a href={row.url} rel="noreferrer">{row.label}</a>{/if}</td>
+							<td data-label="Kind">{row.kind === 'local' ? 'local' : 'source'}</td>
+							<td data-label="State">{row.kind === 'source' && row.pending ? 'awaiting review' : '—'}</td>
+							<td data-label="Action">
+								{#if row.kind === 'local'}
+									<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'} class="unfollow-form" class:follow-row={!data.isOwner}>
+										<input type="hidden" name="target" value={row.handle} />
+										<button>{data.isOwner ? 'Unfollow' : 'Follow'}</button>
+									</form>
+								{:else if data.isOwner}
+									<form method="POST" action="?/unsubscribe" class="unfollow-form">
+										<input type="hidden" name="sourceId" value={row.sourceId} />
+										<input type="hidden" name="commandId" value={row.commandId} />
+										<button>Unsubscribe</button>
+									</form>
+								{:else}
+									—
+								{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		{/if}
 	</section>
 

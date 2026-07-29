@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import Avatar from '$lib/Avatar.svelte'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ThreadPlaceholder from '$lib/ThreadPlaceholder.svelte'
 	import PostBody from '$lib/PostBody.svelte'
@@ -60,11 +59,6 @@
 <svelte:head><title>Conversation — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>Conversation</h1>
 	{#if parent}
 		<p class="subnav">Replying to <a href="/post/{parent.id}">@{parent.author.handle}</a></p>
@@ -98,6 +92,7 @@
 					<span class="kind">{root.source}</span>
 					<a class="permalink" href="/post/{root.id}"><time datetime={root.publishedAt}>{root.publishedAt.slice(0, 10)}</time></a>
 					<EditedMarker post={root} />
+					{#if root.id === data.postId}<span class="here">You are here</span>{/if}
 				</div>
 				{#if root.title}<h2 class="title">{root.title}</h2>{/if}
 				<PostBody post={root} />
@@ -128,22 +123,3 @@
 		</form>
 	</details>
 </div>
-
-<style>
-	/* Text-button destructive affordance, matching .edit/.source's inline
-	   link weight — not a filled/outlined button (that's .danger on
-	   /admin/users, a card list with more visual room). */
-	.danger-link {
-		font: inherit;
-		font-size: 0.875rem;
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--color-destructive);
-		cursor: pointer;
-	}
-
-	.danger-link:hover {
-		text-decoration: underline;
-	}
-</style>

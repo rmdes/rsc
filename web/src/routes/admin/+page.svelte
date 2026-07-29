@@ -94,38 +94,3 @@
 		</ul>
 	</section>
 {/if}
-
-<style>
-	.stat-grid {
-		margin: 0;
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-		gap: var(--space-md);
-	}
-
-	.stat-card {
-		background: var(--color-surface);
-		border: 1px solid var(--color-border);
-		border-radius: 12px;
-		padding: var(--space-md);
-	}
-
-	.stat-card dt {
-		font-size: 0.75rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--color-secondary);
-	}
-
-	.stat-card dd {
-		margin: var(--space-xs) 0 0;
-		font-family: var(--font-heading);
-		font-size: 2rem;
-		line-height: 1.1;
-	}
-
-	.status-label {
-		font-weight: 600;
-	}
-</style>
