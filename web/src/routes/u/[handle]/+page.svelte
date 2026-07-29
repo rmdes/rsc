@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
+	import Avatar from '$lib/Avatar.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
@@ -96,6 +97,7 @@
 				<!-- aggregate lenses (e.g. @rsschat) carry a per-item author; the date
 				     permalink lives top-right like every byline, not in the action row -->
 				<div class="byline">
+					<Avatar author={post.author} sourceName={post.sourceName} />
 					{#if post.sourceName}<strong>{post.sourceName}</strong>{/if}
 					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 					<EditedMarker {post} />
