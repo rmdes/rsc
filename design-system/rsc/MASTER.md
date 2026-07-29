@@ -414,15 +414,24 @@ grid runs edge to edge and the rules do the dividing.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ identity strip (1px rule under)                              │
-├──────────────────────────────────────────────────────────────┤
 │ .nav  RSC · Local Federated Personal Public · Firehose [New] │  2px rule
+│       … @handle ▾ / Log in · Register                        │
 ├────────────┬─────────────────────────────────┬───────────────┤
 │ tools rail │ river                           │ meta rail     │
 │ 16.5rem    │ 1fr                             │ 18.75rem      │
 │  (2px rule between rails)                                    │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+There is one header row, not two. Identity is no longer a separate strip above
+the nav — it is the `AccountMenu` control, right-aligned in the `.nav` row
+itself, present at every width. Guests see `Log in · Register`; anyone with a
+session sees an `@handle` disclosure that opens identity, a contextual nudge
+when one applies (register-to-keep-this-account for anonymous sessions,
+verify-your-email otherwise), Your lens, Settings, Admin (if applicable), the
+theme toggle, and Log out. This is the one place all of that lives, at any
+width — there is no separate desktop vs. mobile account surface to keep in
+sync.
 
 **The tabs move into the nav.** They were a bordered tab strip above the river;
 as nav links they free the river's full measure and give the brand, the rivers
@@ -432,7 +441,8 @@ and the primary action one horizontal line. Delete the `.tabs` block in
 **Duplication rule:** a control appears once. "New post" lives in the nav, not
 also in the rail. The rivers live in the nav, not also as a rail list — the rail
 lists *sources* instead (with OPML import/export), which is the thing that was
-missing.
+missing. Account/identity content lives in the `AccountMenu` disclosure, not
+also in the mobile menu panel.
 
 River order is unchanged: newest first, root-only, "Older posts" at the foot.
 
@@ -503,9 +513,13 @@ stays: subscribing and the source list are actions, About and the peer list are
 reference, and actions keep their place longer.
 
 **767 and below — one column, and the nav collapses into a menu.** The header
-holds three things: brand, New post, `MENU`. The rivers, the whole tools rail and
-the identity strip move into the panel; the river then has to name itself on the
-page, which it should have been doing anyway.
+holds four things: brand, New post, `AccountMenu`, `MENU`. The `AccountMenu`
+does not move into the panel — it stays visible in the header at every width,
+since it is the same control on mobile as on desktop. The `MENU` panel's scope
+narrows to what has no other on-page equivalent at this width: the rivers, the
+composer, and subscribing to a feed. The whole tools rail folds in here too;
+the river then has to name itself on the page, which it should have been
+doing anyway.
 
 **The menu is a full-bleed ruled panel, not a dropdown** — nothing floats in this
 system, so a floating sheet would be the wrong object. It is a poster page: groups
@@ -513,7 +527,9 @@ divided by 2px rules, entries flush left in Archivo 800 at 22px on 56px rows,
 ordinary rows at 44px. The current river is a solid accent cell (the
 segmented-control treatment) and says `here` in words as well, so it is never
 colour alone. Built as a native `<details>` with the toggle as its `<summary>`, so
-it opens with JavaScript off and needs no `aria-expanded` management.
+it opens with JavaScript off and needs no `aria-expanded` management. The
+`AccountMenu` is a second, independent `<details>` for the same reason — its own
+JS-off-safe disclosure, not gated by the `MENU` toggle.
 
 Within a row at this width: the gap goes 24 → 12px, titles 27 → 22px, the byline
 wraps, and every item in the action row takes the 44px floor. **The 2px kind rule
@@ -544,7 +560,9 @@ real table in the markup, so wide screens and screen readers are unaffected.
    colour **and** the uppercase label's text. Never colour alone.
 4. **Theme toggle is an enhancement.** No-JS gets the right theme from
    `prefers-color-scheme`. Design and test both themes independently — dark is
-   not an inversion pass. The toggle now lives in the nav bar.
+   not an inversion pass. The toggle lives inside the `AccountMenu` disclosure
+   in the nav bar, at every width — not a separate control that only exists
+   below 768px.
 5. **Text first, enclosures second.** Unchanged: native `<audio>` / `<video>` /
    `<img loading="lazy">`, an attachment block *below* the text, never a hero,
    declared aspect-ratio. Enclosure images are square-cornered now, and content
@@ -596,7 +614,8 @@ real table in the markup, so wide screens and screen readers are unaffected.
 - [ ] Photographs through `.grayscale`
 - [ ] Icons from Lucide (RSS mark excepted)
 - [ ] Responsive: 375px, 768px, 1024px, 1440px
-- [ ] At 767 and below: rivers, tools rail and identity live in the menu panel, nowhere twice
+- [ ] At 767 and below: rivers and tools rail live in the menu panel; the
+      `AccountMenu` stays in the header at every width, nowhere twice
 - [ ] The menu panel is a ruled full-bleed page, opens with JS off, rows ≥ 44px
 - [ ] Multi-column tables carry `data-label` and collapse to records below 700px
 - [ ] The 2px kind rule is the same weight at every width
