@@ -183,12 +183,15 @@ this is a pure presentation refactor of data already fetched.
 - `.account-menu` gets the `margin-left: auto` (`.spacer`) treatment
   currently on whichever "New post" link is visible, so it right-aligns
   whether or not `.new-post-mobile` is present.
-- Responsive trigger: on narrow mobile widths, `@handle` text may collapse
-  to a small letter-square reusing `Avatar.svelte`'s existing visual style
-  (1.75rem, `--radius: 0`, initial-letter fallback) rather than inventing a
-  second avatar-like token — exact breakpoint value decided during
-  implementation by live-testing header fit at common widths (say 375–414px)
-  alongside brand + New-post + this trigger + the Menu toggle.
+- Responsive trigger: no separate collapsed visual state. Give
+  `.account-menu-toggle` a fixed `max-width` with `text-overflow: ellipsis`
+  (or allow it to wrap) so it never needs a breakpoint-specific swap — same
+  "never hidden" guarantee as the rest of this design, with no second visual
+  state or live-tuning step to schedule. (Ponytail-review rev 1: dropped a
+  speculative letter-square-avatar collapse state and its to-be-determined
+  breakpoint — nothing established that the fixed-width `@handle` text
+  actually overflows at common widths; add the collapse later if real usage
+  shows it's needed.)
 - `.nav-menu-toggle`'s existing mobile-only visibility rule
   (`display: none` by default, visible at `max-width: 767px`) is unchanged —
   it's now correct rather than accidentally hiding account content, since
@@ -220,7 +223,6 @@ One new component (`AccountMenu.svelte`), edits confined to
 `+layout.svelte` and `app.css`, plus the MASTER.md documentation update.
 No new routes, no new server/load-function data, no new dependency. Small
 enough for a single implementation plan — likely 3 tasks (component +
-layout wiring; CSS incl. responsive trigger sizing, live-tested at common
-mobile widths in both themes; MASTER.md update + full verification), matching
-the shape of the just-shipped timeline-legibility plan rather than the
-larger original Modernist migration.
+layout wiring; CSS, verified live in both themes; MASTER.md update + full
+verification), matching the shape of the just-shipped timeline-legibility
+plan rather than the larger original Modernist migration.
