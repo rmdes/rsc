@@ -31,7 +31,7 @@ export async function getFollowing(f: typeof fetch, handle: string): Promise<Tim
 	return (await res.json()).following
 }
 
-export async function getHandleStats(f: typeof fetch, handle: string): Promise<{ posts: number; followers: number; following: number }> {
+export async function getHandleStats(f: typeof fetch, handle: string): Promise<{ posts: number; followers: number; following: number; kind: 'local' | 'remote' }> {
 	const res = await f(`${base()}/users/${encodeURIComponent(handle)}/stats`)
 	if (!res.ok) throw new Error(await errorMessage(res, `stats ${res.status}`))
 	return res.json()

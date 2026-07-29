@@ -73,11 +73,18 @@
 		</p>
 	</header>
 
-	{#if data.stats}
+	{#if data.stats && data.stats.kind === 'local'}
+		<!-- Remote/aggregate authors are gated out entirely, not just the posts
+		     cell: `posts` only ever counts LOCAL rows (always 0 for remote,
+		     contradicting a full timeline above it — worse than no stat), and
+		     `following` has no meaning for a remote/aggregate feed-as-user either
+		     (it has no locally-tracked subscriptions of its own). `followers` IS
+		     correct for a remote author, but hiding the whole row is the simpler,
+		     safer call over half-showing a 3-column grid. -->
 		<dl class="lens-stats">
-			<div><dd class="n">{data.stats.posts}</dd><dt class="k">Posts</dt></div>
-			<div><dd class="n">{data.stats.following}</dd><dt class="k">Following</dt></div>
-			<div><dd class="n">{data.stats.followers}</dd><dt class="k">Followers</dt></div>
+			<div><dt class="k">Posts</dt><dd class="n">{data.stats.posts}</dd></div>
+			<div><dt class="k">Following</dt><dd class="n">{data.stats.following}</dd></div>
+			<div><dt class="k">Followers</dt><dd class="n">{data.stats.followers}</dd></div>
 		</dl>
 	{/if}
 

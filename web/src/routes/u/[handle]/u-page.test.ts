@@ -11,7 +11,7 @@ const isStats = (u: unknown) => String(u).includes('/stats')
 const reserved = (publisherId: string) =>
 	new Response(JSON.stringify({ model: 'logical-v2', handle: 'alice', reserved: true, publisherId }), { status: 200 })
 const notReserved = () => new Response(JSON.stringify({ error: 'not found' }), { status: 404 })
-const stats = () => new Response(JSON.stringify({ posts: 0, followers: 0, following: 0 }), { status: 200 })
+const stats = () => new Response(JSON.stringify({ posts: 0, followers: 0, following: 0, kind: 'local' }), { status: 200 })
 
 const item = {
 	kind: 'logical_item',

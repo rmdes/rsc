@@ -102,7 +102,7 @@ test('GET /users/:handle/stats returns posts, followers and following counts', a
 
 	const res = await app.request('/users/alice/stats')
 	expect(res.status).toBe(200)
-	expect(await res.json()).toEqual({ posts: 1, followers: 1, following: 1 })
+	expect(await res.json()).toEqual({ posts: 1, followers: 1, following: 1, kind: 'local' })
 })
 
 test('GET /users/:handle/stats 404s for an unknown handle', async () => {

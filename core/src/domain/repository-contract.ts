@@ -133,12 +133,16 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository & Pick<
       expect(posts.map((p) => p.id)).toEqual([mine[2].id, mine[1].id])
     })
 
-    test('countPostsByAuthor counts only that author\'s posts', async () => {
+    test('countPostsByAuthor counts only that author\'s ROOT posts', async () => {
       const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
       const b = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
-      ;[1, 2, 3].forEach((i) => logical.createLocalPost({ author: a, content: `alice ${i}`, replyToId: null, now: `2026-01-0${i}T00:00:00.000Z` }))
+      const roots = [1, 2, 3].map((i) => logical.createLocalPost({ author: a, content: `alice ${i}`, replyToId: null, now: `2026-01-0${i}T00:00:00.000Z` }))
       logical.createLocalPost({ author: b, content: 'bob 1', replyToId: null, now: '2026-01-09T00:00:00.000Z' })
+      // A reply is NOT a root post — it must not inflate the count, matching the
+      // river above the author-lens stat (which is root-only, see projector.ts's
+      // `river` filter: `AND p.in_reply_to_post_id IS NULL`).
+      logical.createLocalPost({ author: a, content: 'alice replies to her own root', replyToId: roots[0]!.id, now: '2026-01-04T00:00:00.000Z' })
       expect(await repo.countPostsByAuthor(a.id)).toBe(3)
       expect(await repo.countPostsByAuthor(b.id)).toBe(1)
       expect(await repo.countPostsByAuthor('no-such-id')).toBe(0)
