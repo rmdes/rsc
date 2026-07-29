@@ -1,12 +1,9 @@
 # Remote content retention — design
 
-**Status:** rev 2 (2026-07-30) — folds a `ponytail:ponytail-audit` pass
-(dispatched to a fresh subagent, clean sub-context) run against rev 1.
-One finding accepted and applied (the disposal mechanism was over-built —
-see the Architecture section); one finding (drop the age cap) presented
-to the maintainer and explicitly declined — both count and age stay, per
-maintainer call. Full findings and the maintainer's call are in the
-Revision History at the bottom.
+**Status:** rev 3 (2026-07-30) — rev 2 folded a `ponytail:ponytail-audit`
+pass; rev 3 fixes a real sequencing bug in rev 2's trim algorithm, found
+by re-reading `removeSourceEvidence` a second time while drafting the
+implementation plan. Full history at the bottom.
 
 ## Motivation
 
@@ -102,6 +99,20 @@ already-tested purge/reap suite.
 export function trimSourceToCap(tx: WriteTx, input: { sourceId: string; maxCount: number; maxAgeDays: number; now: string }): { trimmedCount: number }
 ```
 
+**Sequencing note (fixed after a second read of `removeSourceEvidence`
+during plan-writing):** the delivery/observation-scoped DELETEs must run
+*before* the per-item reselect/delete/tombstone decision, not after —
+`removeSourceEvidence` checks `hasDelivery(id)` (does this item still
+have a *surviving* identity key of kind `'delivery'`?) only after its own
+FK deletes already removed the identity keys tied to the
+deliveries being scrapped, so that check correctly reflects "is there a
+delivery left" rather than always seeing the one about to be removed. An
+earlier draft of this section put the reselect/dispose decision before
+the deletes and skipped the reselect branch entirely — that would have
+deleted/tombstoned items that actually still had a perfectly good
+surviving delivery (e.g. the same content also observed via a different,
+untouched source). Corrected order:
+
 1. Fast path: if both `maxCount` and `maxAgeDays` are `0`, return
    `{ trimmedCount: 0 }` immediately — no query cost for the (default)
    unlimited case.
@@ -113,22 +124,38 @@ export function trimSourceToCap(tx: WriteTx, input: { sourceId: string; maxCount
    older than `now - maxAgeDays`.
 4. Excess by count (if `maxCount > 0`): every row ranked beyond position
    `maxCount` in the DESC order.
-5. Union the two id sets → the excess logical-item ids.
-6. For each excess item id: `hasChildEdge(tx, id) ?
-   convertToStructuralTombstone(tx, id) : deleteLogicalNode(tx, id)` —
-   the same branch `removeSourceEvidence`'s own per-item loop uses,
-   called directly.
-7. Delete the excess items' own delivery/observation-version rows —
-   **delivery/observation-scoped tables only**, never the source-scoped
-   ones step 6's sibling `removeSourceEvidence` also touches:
-   `presentation_entries_v2` (by delivery_id), `reconciliation_jobs_v2`
-   (by observation_version_id), `publisher_claims_v2` (by
-   observation_version_id — **not** source_id, the source itself
-   survives), `logical_conflicts_v2` (by observation_version_id),
-   `observation_versions_v2` (by delivery_id), `logical_identity_keys_v2`
-   (kind='delivery', key=delivery_id), `deliveries_v2` (by id) — children
-   before the delivery row itself.
-8. Return `{ trimmedCount: <excess item count> }`.
+5. Union the two id sets → the excess logical-item ids. If empty, return
+   `{ trimmedCount: 0 }`.
+6. Resolve each excess item's `selected_delivery_id` → the delivery-id
+   set to remove.
+7. Delete delivery/observation-scoped rows for that delivery-id set —
+   **never the source-scoped tables** `removeSourceEvidence` also
+   touches (the source itself survives): compute `vers` = observation
+   versions for those deliveries, then `reconciliation_jobs_v2` (by
+   `observation_version_id IN vers`), `presentation_entries_v2` (by
+   `delivery_id`), `publisher_claims_v2` (by `observation_version_id IN
+   vers` — **not** `source_id`), `logical_conflicts_v2` (by
+   `observation_version_id IN vers`), `observation_versions_v2` (by
+   `delivery_id`), `logical_identity_keys_v2` (`kind='delivery' AND key
+   IN` the delivery-id set), `deliveries_v2` (by `id IN` the delivery-id
+   set) — in that order, mirroring `removeSourceEvidence`'s own FK order
+   for these same tables.
+8. *Now*, per excess item id (identity keys for the removed deliveries
+   are already gone, so this check is accurate): if
+   `hasDelivery(id)` (a `logical_identity_keys_v2` row of kind
+   `'delivery'` still exists for it — some other, untouched source's
+   delivery also backs this same logical item), call
+   `applySelectionHints(tx, id, '')` to reselect; otherwise add it to an
+   `unsupported` set.
+9. Delete-to-fixpoint / tombstone the remainder — identical to
+   `removeSourceEvidence`'s own loop: repeatedly delete any
+   `unsupported` id with no surviving child edge
+   (`hasChildEdge(tx, id)`), tracking each deleted item's
+   `parent_logical_item_id`; once no more can be deleted, convert every
+   remaining `unsupported` id (it has a surviving descendant edge) via
+   `convertToStructuralTombstone`; finally call
+   `sweepStructuralTombstones(tx, deletedParents, now)`.
+10. Return `{ trimmedCount: <excess item count> }`.
 
 Deliberately does **not** touch: `acquisition_runs_v2`,
 `source_health_v2`, `source_validators_v2`, `verification_checks_v2`,
@@ -212,10 +239,13 @@ trim needs that a whole-source purge doesn't have to distinguish.
   test runs** — rev 2's standalone design doesn't touch that file at all.
 - New tests for `trimSourceToCap`: count-only cap, age-only cap, both
   together (union), a reply surviving its trimmed parent as a structural
-  tombstone (mirrors purge's own such test), the `0`/`0` no-op fast path,
-  local items never selected regardless of settings, and confirming the
-  source-scoped tables (`acquisition_runs_v2`, `source_health_v2`, etc.)
-  and the `remote_sources_v2` row are untouched after a trim.
+  tombstone (mirrors purge's own such test), an excess item that still
+  has a surviving delivery from a DIFFERENT, untouched source reselecting
+  instead of being deleted/tombstoned (the sequencing fix above — this is
+  the one case a naive implementation gets wrong), the `0`/`0` no-op fast
+  path, local items never selected regardless of settings, and confirming
+  the source-scoped tables (`acquisition_runs_v2`, `source_health_v2`,
+  etc.) and the `remote_sources_v2` row are untouched after a trim.
 - `commitAcquisition` integration test: a poll that pushes a source over
   its configured cap trims within the same commit.
 - Admin settings round-trip test mirroring the existing
@@ -266,5 +296,20 @@ findings:
 The settings/hook-point/`AcquisitionDeps` plumbing (optional field,
 inert default, only one real call site touched) was reviewed and judged
 already proportionate — no changes there.
+
+**Rev 3 (2026-07-30).** While drafting the implementation plan, re-read
+`removeSourceEvidence`'s exact body a second time (rather than trusting
+rev 2's own summary of it) and found rev 2's step 6 ("for each excess
+item, tombstone or delete") skipped a case `removeSourceEvidence` itself
+handles: checking whether an item still has a *surviving* delivery (via
+some other, untouched source) before deciding to delete or tombstone it,
+and running that check only *after* the delivery-scoped rows are deleted
+(so the check isn't fooled by the very identity keys about to be
+removed). Fixed the Trim mechanism section to delete delivery/
+observation-scoped rows first, then run the same
+hasDelivery-reselect-or-dispose sequence `removeSourceEvidence` uses,
+in the same order. Added a test case for the specific scenario a naive
+implementation gets wrong (an item with a surviving delivery from a
+different source). No other section changed.
 
 *developed with the help of AI tools*
