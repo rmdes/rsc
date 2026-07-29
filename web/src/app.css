@@ -181,8 +181,8 @@ a {
 	font-size: 0.875rem;
 }
 
-.nav a:hover,
-.nav a[aria-current='page'] {
+.nav a:not(.btn):hover,
+.nav a:not(.btn)[aria-current='page'] {
 	color: var(--color-accent);
 }
 
@@ -326,7 +326,7 @@ a {
 	.lens h1 {
 		font-size: 2.125rem;
 	}
-	.lens > *:not(.masthead):not(.page-head):not(.lens-stats) {
+	.lens > *:not(.page-head):not(.lens-stats) {
 		padding-inline: var(--space-md);
 	}
 	.page-head {
@@ -572,15 +572,8 @@ a {
 	color: var(--color-accent);
 }
 
-/* Page mastheads (author lens, conversation, history, admin): a kicker in the
+/* Page headers (author lens, conversation, history, admin): a kicker in the
    label style over the h1, on a 2px rule. */
-
-.masthead {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--space-3);
-}
 
 .page-head {
 	padding: var(--space-xl) var(--space-xl) var(--space-md);
@@ -620,9 +613,15 @@ a {
 .theme-segmented { display: flex; border: 1px solid var(--color-divider); }
 .theme-segmented button {
 	flex: 1; padding: var(--space-xs) var(--space-sm); background: none; border: 0;
-	color: var(--color-secondary); text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; font-weight: 800;
+	color: var(--color-secondary); text-transform: uppercase; font-size: 0.6875rem; letter-spacing: 0.08em; font-weight: var(--font-heading-weight);
 	cursor: pointer;
 }
+/* Same tie as .nav a used to have: `.theme-segmented button` and the generic
+   `button:hover` (app-wide) are equal specificity, so the LATER one in the
+   file (button:hover) was winning and painting every inactive segment
+   accent-orange on hover — the .active look, but with grey text left behind.
+   A dedicated hover rule, not just source-order luck. */
+.theme-segmented button:hover { background: color-mix(in srgb, var(--color-foreground) 7%, transparent); }
 .theme-segmented button.active { background: var(--color-accent); color: var(--color-on-accent); }
 .theme-segmented button + button { border-left: 1px solid var(--color-divider); }
 
@@ -874,11 +873,11 @@ textarea {
 }
 
 .here {
-	font-size: 11px;
-	font-weight: 800;
+	font-family: var(--font-heading);
+	font-size: 0.6875rem;
+	font-weight: var(--font-heading-weight);
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
-	color: var(--color-accent);
 }
 
 /* Every other badge in the app takes the same treatment. */
@@ -978,21 +977,7 @@ textarea {
 	gap: 0;
 }
 
-.lens > .masthead {
-	padding: var(--space-3) var(--space-md);
-	border-bottom: 2px solid var(--color-divider);
-}
-
-.lens .masthead a {
-	font-family: var(--font-heading);
-	font-size: 1.375rem;
-	font-weight: var(--font-heading-weight);
-	letter-spacing: -0.02em;
-	color: var(--color-foreground);
-	text-decoration: none;
-}
-
-.lens > *:not(.masthead):not(.page-head):not(.lens-stats) {
+.lens > *:not(.page-head):not(.lens-stats) {
 	padding-inline: var(--space-xl);
 }
 
@@ -1026,6 +1011,8 @@ textarea {
 }
 
 .lens-stats > div {
+	display: flex;
+	flex-direction: column;
 	padding: var(--space-md) var(--space-xl);
 }
 
@@ -1034,6 +1021,7 @@ textarea {
 }
 
 .lens-stats .n {
+	order: 1;
 	font-family: var(--font-heading);
 	font-weight: var(--font-heading-weight);
 	font-size: 1.75rem;
@@ -1041,6 +1029,7 @@ textarea {
 }
 
 .lens-stats .k {
+	order: 2;
 	font-family: var(--font-heading);
 	font-size: 0.6875rem;
 	font-weight: var(--font-heading-weight);
@@ -1114,6 +1103,7 @@ textarea {
 .table td {
 	padding: var(--space-sm);
 	border-bottom: 1px solid var(--color-border);
+	overflow-wrap: anywhere;
 }
 
 .table tbody tr:hover {
@@ -1624,6 +1614,8 @@ textarea {
 }
 
 .stat-card {
+	display: flex;
+	flex-direction: column;
 	background: none;
 	border: 0;
 	border-radius: var(--radius);
@@ -1652,11 +1644,6 @@ textarea {
 	font-weight: var(--font-heading-weight);
 	font-size: 1.75rem;
 	line-height: 1;
-}
-
-.stat-card {
-	display: flex;
-	flex-direction: column;
 }
 
 .status-label {
