@@ -793,7 +793,7 @@ textarea {
 	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 0;
+	gap: var(--space-sm);
 }
 
 .post {
@@ -802,7 +802,6 @@ textarea {
 	gap: var(--space-lg);
 	background: none;
 	border: 0;
-	border-bottom: 1px solid var(--color-border);
 	border-radius: var(--radius);
 	padding: var(--space-lg) 0;
 	overflow-wrap: break-word;
@@ -834,7 +833,7 @@ textarea {
 	flex-wrap: wrap;
 	font-family: var(--font-heading);
 	font-size: 0.6875rem;
-	font-weight: var(--font-heading-weight);
+	font-weight: 400;
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--color-secondary);
@@ -842,7 +841,7 @@ textarea {
 
 .post .byline-name {
 	display: flex;
-	align-items: baseline;
+	align-items: center;
 	gap: var(--space-sm);
 	flex-wrap: wrap;
 	margin-top: var(--space-sm);
@@ -851,7 +850,7 @@ textarea {
 .post .byline-name strong {
 	font-family: var(--font-heading);
 	font-weight: var(--font-heading-weight);
-	font-size: 1.0625rem;
+	font-size: 1.125rem;
 }
 
 .post .handle {
