@@ -68,10 +68,17 @@ before touching anything:
   The other three byline surfaces (`web/src/lib/ReplyTree.svelte`,
   `web/src/routes/post/[id]/+page.svelte`'s root post,
   `web/src/routes/u/[handle]/following/+page.svelte`) **already render
-  `<Avatar>` today and need no markup change** — only verify (during
-  implementation) that they still look right once the shared `.post
-  .byline-name { align-items: center }` CSS change below lands, since that
-  rule applies to all of them identically.
+  `<Avatar>` today and need no markup change at all.** These three (verified
+  by reading each) place `<Avatar>` directly inside a single `.post .byline`
+  div — the older, single-row byline shape — not the two-row `.byline` +
+  `.byline-name` split that only exists on the home river (introduced by
+  the original migration's Task 4, which is also the only place that ever
+  removed Avatar). Change #3's CSS (`.post .byline-name { align-items: center }`)
+  only affects `.byline-name`, which **only exists on the home river** — it
+  is a no-op for these three files and for the author lens (next point),
+  since none of them have a `.byline-name` element. No CSS change is needed
+  for them; they keep rendering exactly as they do today, which is already
+  the target look.
 - This is the small, per-post **letter-square** avatar (`.avatar`,
   1.75rem/28px, already defined in `app.css`) — **not** the larger 48px
   profile-style avatar MASTER.md separately describes for the author-lens
@@ -83,7 +90,7 @@ before touching anything:
   classes with zero local per-page overrides (verified via grep before
   writing this spec), so one change in `app.css` applies consistently to
   every surface automatically. No page-by-page CSS work needed for those two
-  changes — only the avatar needs markup changes, and only in the five files
+  changes — only the avatar needs markup changes, and only in the two files
   listed above.
 
 ## The three changes
@@ -114,7 +121,12 @@ untouched by this — it stays the non-negotiable local/remote signal
 	font-weight: 400; /* was var(--font-heading-weight), i.e. 800 */
 }
 .post .byline-name strong {
-	font-size: 1.125rem; /* was 1.0625rem */
+	font-size: 1.125rem; /* was 1.0625rem — small bump, home river only (this
+	                         class doesn't exist elsewhere): once the meta row
+	                         recedes in weight, giving the name slightly more
+	                         size reinforces it as the one thing that should
+	                         read as primary in that row. Tested live
+	                         alongside the weight change, not in isolation. */
 }
 ```
 Deliberately **not** touching `.post .byline`'s color (`--color-secondary`
@@ -133,23 +145,36 @@ pattern is used (`.badge-kind`, table headers, `.here`, admin captions) is
 untouched. The byline is the one place two label-weight elements compete
 directly for attention in the same line, which is why it gets the exception.
 
-### 3. Reintroduce the letter-avatar in the byline-name row
+### 3. Reintroduce the letter-avatar in the byline
 
 In the two files that lost/never had it, add `<Avatar author={...}
-sourceName={...} />` as the first child of `.byline-name`, before the
-`<strong>` name — exact prop expression per file:
+sourceName={...} />` as the first child of whichever byline element the file
+actually has — the home river's two-row `.byline-name`, or the author lens's
+single-row `.byline` — before the `<strong>` name in each case. Exact
+placement per file:
 
-- `web/src/routes/+page.svelte`: `<Avatar author={post.author}
-  sourceName={post.sourceName} />` plus `import Avatar from
-  '$lib/Avatar.svelte'` (both were removed in Task 4; restore verbatim).
-- `web/src/routes/u/[handle]/+page.svelte`: `<Avatar author={post.author}
-  sourceName={post.sourceName} />` plus a fresh `import Avatar from
-  '$lib/Avatar.svelte'` (check the actual loop variable name — the file's
-  `{#each groups as { top: post, others }}` binds it as `post`).
+- `web/src/routes/+page.svelte`: first child of `.byline-name`. `<Avatar
+  author={post.author} sourceName={post.sourceName} />` plus `import Avatar
+  from '$lib/Avatar.svelte'` (both were removed in Task 4; restore
+  verbatim).
+- `web/src/routes/u/[handle]/+page.svelte`: **this file has no
+  `.byline-name` row at all** — verified its byline is a single flat
+  `<div class="byline">{#if post.sourceName}<strong>...</strong>{/if}
+  <a class="permalink">...</a><EditedMarker /></div>`, matching the same
+  single-row shape the three "already correct" files below use (not the
+  home river's two-row split). Add `<Avatar author={post.author}
+  sourceName={post.sourceName} />` as the first child of this `.byline` div
+  (before the conditional `<strong>`), plus a fresh `import Avatar from
+  '$lib/Avatar.svelte'` (the file's `{#each groups as { top: post, others }}`
+  binds the loop variable as `post`). No CSS change needed here — `.post
+  .byline`'s existing `align-items: baseline` is what the three already-correct
+  surfaces already render with today.
 
 The other three surfaces (`ReplyTree.svelte`, `post/[id]/+page.svelte`'s
-root, `following/+page.svelte`) already have the correct call — no markup
-change, just re-verify their rendering once change #2's CSS lands.
+root, `following/+page.svelte`) already have the correct call in this same
+single-row `.byline` shape — no markup change, nothing to re-verify beyond
+confirming they're unaffected by changes #1 and #2 (which they are: neither
+touches `.post .byline`'s existing rules).
 
 ```css
 .post .byline-name {
