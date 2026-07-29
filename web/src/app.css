@@ -599,7 +599,7 @@ a {
 	border: 1px solid var(--color-divider);
 }
 
-/* Site footer (mirror of the account menu's guest/identity states; carries the About link) */
+/* Site footer — same thin, muted, secondary-content treatment as the nav bar; carries the About link */
 
 .site-footer {
 	display: flex;
