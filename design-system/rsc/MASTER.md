@@ -119,10 +119,10 @@ tracked, weight 800. If you are reaching for a rounded chip, you want this
 instead.
 
 One narrow, deliberate exception: the post byline's meta row (kind · date ·
-edited · feed link) drops to weight 400. It sits on the same line as the
-author name, and at 800 the two would compete at identical weight instead of
-reading as a hierarchy; every other use of the label elsewhere in the app
-stays 800.
+edited · feed link) drops to weight 400. It sits directly above the author
+name row, in the same byline block, and at 800 the two would compete at
+identical weight instead of reading as a hierarchy; every other use of the
+label elsewhere in the app stays 800.
 
 Everything is flush left — headings, copy, and the labels inside wide buttons.
 Nothing is centred, including the "Show more" clamp affordance and the "Older
