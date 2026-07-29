@@ -24,11 +24,11 @@
 		<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
 	{/each}
 	{#if page.url.pathname === '/'}
-		<!-- Two targets, like the rivers/theme-toggle above: below 768px this
-		     jumps into the mobile menu's own #compose group (native
-		     details-auto-expand-on-anchor); at 768px+ it targets the desktop
-		     tools rail's composer instead. Never both #compose at once — see
-		     the CSS media queries gating each anchor's visibility. -->
+		<!-- Mobile-only shortcut: below 768px there's no persistently-visible
+		     composer to jump to, so this jumps into the mobile menu's own
+		     #compose group (native details-auto-expand-on-anchor). Hidden by
+		     CSS at 768px+, where the .tools sidebar composer is already
+		     on-screen — see .nav .new-post-mobile in app.css. -->
 		<a class="spacer btn new-post-mobile" href="#compose">New post</a>
 	{/if}
 	<AccountMenu me={data.me} />

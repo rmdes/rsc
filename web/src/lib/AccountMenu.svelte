@@ -19,8 +19,8 @@
 {:else}
 	<details class="account-menu">
 		<summary class="account-menu-toggle">
-			{#if needsAttention}<span class="account-menu-dot" aria-hidden="true"></span>{/if}
-			@{me.user.handle}
+			{#if needsAttention}<span class="account-menu-dot" aria-hidden="true"></span><span class="visually-hidden">Needs attention</span>{/if}
+			<span class="account-menu-handle">@{me.user.handle}</span>
 		</summary>
 		<div class="account-menu-panel">
 			<div class="nav-menu-group">

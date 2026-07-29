@@ -414,8 +414,8 @@ grid runs edge to edge and the rules do the dividing.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ .nav  RSC · Local Federated Personal Public · Firehose [New] │  2px rule
-│       … @handle ▾ / Log in · Register                        │
+│ .nav  RSC · Local Federated Personal Public · Firehose       │  2px rule
+│       … @handle (no disclosure glyph) / Log in · Register    │
 ├────────────┬─────────────────────────────────┬───────────────┤
 │ tools rail │ river                           │ meta rail     │
 │ 16.5rem    │ 1fr                             │ 18.75rem      │
@@ -438,8 +438,9 @@ as nav links they free the river's full measure and give the brand, the rivers
 and the primary action one horizontal line. Delete the `.tabs` block in
 `+page.svelte`'s `<style>`.
 
-**Duplication rule:** a control appears once. "New post" lives in the nav, not
-also in the rail. The rivers live in the nav, not also as a rail list — the rail
+**Duplication rule:** a control appears once. "New post" lives in the `.tools`
+rail's composer at 768px and up, and in the nav only below 768px — never both
+at once. The rivers live in the nav, not also as a rail list — the rail
 lists *sources* instead (with OPML import/export), which is the thing that was
 missing. Account/identity content lives in the `AccountMenu` disclosure, not
 also in the mobile menu panel.

@@ -513,8 +513,19 @@ a {
 	border: 0;
 	border-bottom: 1px solid var(--color-border);
 	font: inherit;
+	font-size: 0.875rem;
 	text-align: left;
 	cursor: pointer;
+}
+
+/* Same tie as .theme-segmented button above: `.nav-menu-list button` and the
+   generic `button:hover` (app-wide) are equal specificity, so the LATER one
+   in the file was winning and painting a full-width accent-orange bar behind
+   the (width: 100%) Log-out row on hover. A dedicated override, not just
+   source-order luck. */
+.nav-menu-list button:hover,
+.nav-menu-list button:active {
+	background: none;
 }
 
 .nav-menu-list a:last-child,
@@ -567,13 +578,20 @@ a {
 	gap: var(--space-xs);
 	min-height: 44px;
 	max-width: 12rem;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 	font-size: 0.875rem;
 	font-weight: 600;
 	color: var(--color-foreground);
 	cursor: pointer;
+}
+
+/* On a flex container, text-overflow doesn't apply to the raw text node the
+   way it would in a block context — it needs its own block/inline-block box
+   to ellipsize and to shrink below its content size. */
+.account-menu-handle {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
 }
 
 .account-menu[open] .account-menu-toggle {
@@ -599,7 +617,13 @@ a {
 	border: 1px solid var(--color-divider);
 }
 
-/* Site footer — same thin, muted, secondary-content treatment as the nav bar; carries the About link */
+/* The panel's own 1px border plus the first group's 2px border-top would
+   otherwise stack into a heavy 3px double rule at the top of the dropdown. */
+.account-menu-panel > .nav-menu-group:first-child {
+	border-top: 0;
+}
+
+/* Site footer — label-style row; carries the About link */
 
 .site-footer {
 	display: flex;
