@@ -158,7 +158,7 @@
 	<main>
 		<h1 class="visually-hidden">Timeline</h1>
 
-		<div class="page-head" style="padding-inline:0">
+		<div class="page-head">
 			<span class="kicker">{data.tab} river</span>
 			<h2>Everything from you and the people you follow</h2>
 		</div>

@@ -595,6 +595,12 @@ a {
 	border-bottom: 2px solid var(--color-divider);
 }
 
+/* The river heading sits directly in <main>, which already carries its own
+   inline padding — .page-head's own inline padding would double it up. */
+main > .page-head {
+	padding-inline: 0;
+}
+
 .page-head .kicker {
 	display: block;
 	font-family: var(--font-heading);

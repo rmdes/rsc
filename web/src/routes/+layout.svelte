@@ -63,7 +63,7 @@
 				<h6>Rivers</h6>
 				{#each TABS as t (t)}
 					<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>
-						{t}<span class="n">{page.url.pathname === '/' && data.tab === t ? 'here' : ''}</span>
+						{t}{#if page.url.pathname === '/' && data.tab === t}<span class="n">here</span>{/if}
 					</a>
 				{/each}
 			</div>
