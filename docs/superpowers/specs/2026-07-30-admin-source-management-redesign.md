@@ -1,6 +1,11 @@
 # Admin source-management UX redesign
 
-Status: rev 1 (2026-07-30), pending ponytail-review
+Status: rev 2 (2026-07-30) — folds ponytail-review findings: drops the
+invented `batchId`-derivation scheme in favor of reusing commandIds already
+minted per row at load, fixes a self-contradiction on bulk tombstone-unblock,
+fixes bulk reap's shape to carry per-row `force`, and fixes an `?expand=`
+param collision with the existing federation-member-list use. See Revision
+history.
 
 ## Motivation
 
@@ -58,9 +63,8 @@ every routine task:
 - No change to the idempotent-commandId invariant (spec §11) or the
   stated-consequence invariant (spec §10) — both are preserved, just
   re-homed into inline disclosure instead of a popup.
-- No bulk variant for `establish` (federation) or tombstone-unblock — neither
-  is naturally batchable the way governance transitions are, and each is
-  already a single, deliberate act.
+- No bulk variant for `establish` (federation) — it accepts a new URL each
+  time, not a toggle on an existing row, so there's nothing to select in bulk.
 
 ## Components
 
@@ -117,19 +121,33 @@ availableActions] · Clear`. Orphans and tombstones get the same bar swapped
 in over their own section blurb, offering bulk reap / bulk unblock
 respectively.
 
-**New server action — `bulkSource`:** one hidden `batchId`
-(`crypto.randomUUID()`), minted once per group at page load exactly like
-every existing `commandId`. The bulk form posts `batchId`, the checked
-`sourceId[]`, and the chosen `action`. `bulkSource` loops over the selected
-ids and calls the same per-source core endpoint `source` already calls,
-deriving each item's commandId as `` `${batchId}:${sourceId}` `` — an opaque
-string; core's idempotency store has no format constraint on commandId
-(confirm against `core/src/domain/source-repository.ts` command-ledger schema
-during planning). A browser resubmit of the exact rendered form (same
-`batchId`, same checked set) therefore replays every item instead of
-double-executing — the same guarantee single-item forms already have, fanned
-out rather than reinvented. No new core endpoint, no cross-source
-transaction, no atomicity claim: partial success is expected and reported.
+**New server action — `bulkSource`, reusing existing per-row commandIds
+(no `batchId`, no derivation):** every row already carries its own
+`commandId` per action (`toRow`, `+page.server.ts:151`) or, for orphans,
+`commandId`/`forceCommandId` (`toOrphanRow`, `:168-169`). The checkbox for
+each row is paired with hidden fields carrying that row's *own already-minted*
+id(s), so the bulk form submits parallel `sourceId[]`/`commandId[]` arrays
+built entirely from what's already rendered — the same commandId a lone
+submit of that row would have used. `bulkSource` loops over the pairs and
+calls the same per-source core endpoint `source` already calls, one
+commandId per source, exactly as today. A browser resubmit of the exact
+rendered form replays every item (each id is stable for the life of that
+render, same as any single-item form today) instead of double-executing. No
+new core endpoint, no cross-source transaction, no atomicity claim, no
+idempotency scheme invented beyond what already exists per row: partial
+success is expected and reported.
+
+Bulk tombstone-unblock uses the same reuse pattern: each tombstone row
+already carries its own `commandId` (`+page.server.ts:241`), so a bulk
+unblock submits those unchanged.
+
+Bulk reap carries **per-row `force`**, not a single action-wide flag: each
+checked orphan row already resolved, in §2, whether it renders as plain
+"Reap" or "Reap anyway" (`force: true`) — the bulk form submits
+`{sourceId, commandId, force}` triples built from each row's own already-
+decided state, never a user-supplied bulk force toggle. The confirm text
+reflects the mix: "Reaping 3 sources — 1 plain, 2 override retained
+evidence permanently. This cannot be undone."
 
 **Outcome reporting:** `bulkSource` returns `{sourceId, ok, error?}[]`. The
 page renders a per-row outcome list under the (now-cleared) toolbar — "3
@@ -139,23 +157,29 @@ re-selecting.
 
 **Destructive bulk ops** (bulk reap, bulk purge, bulk delete-user) use the
 same `<details>` reveal-to-confirm as §1, scoped to the toolbar instead of a
-row: expanding shows a pluralized consequence ("Reaping 3 sources permanently
-deletes...") and a "Confirm reap" submit.
+row: expanding shows a pluralized consequence and a "Confirm" submit.
 
 `users/+page.svelte` gets the same treatment for `deleteUser` (checkbox per
 row, one bulk-delete bar) — the only other page with a per-row destructive
-action.
+action. `deleteUser` has no commandId today (verified:
+`web/src/routes/admin/users/+page.server.ts:14-25` reads no `commandId`
+field at all) — bulk delete-user matches that exactly and invents no
+idempotency scheme for it either; it's a plain loop over checked handles.
 
 ### 4. Route consolidation — inline source detail
 
-Extends the existing `?expand=` pattern (currently only used for federation-
-instance members, `web/src/routes/admin/feeds/+page.svelte:188-221`) to
-ordinary rows: clicking "Details" adds `?expand={sourceId}` and the row
-inlines the detail panel (refresh button, status `dl`, items list, purge
-form) by reusing `/admin/sources/[sourceId]`'s existing `load` logic from the
-list page's own `load`, instead of navigating to a separate route. No-JS
-safe — it's a link + re-render, same mechanism the member-expand already
-uses.
+Adds a **second, distinct** query param, `?detail={sourceId}`, alongside the
+existing `?expand=` (federation-member-list toggle only,
+`web/src/routes/admin/feeds/+page.svelte:188-221`) — the two can't share a
+name: every row, including federation ones, already renders its own
+"Details" link (`:186`), so a federation row needs `expand=` (member list)
+and `detail=` (its own panel) to mean different things at once, not one
+param overloaded to mean both. Clicking "Details" adds `?detail={sourceId}`
+and the row inlines the detail panel (refresh button, status `dl`, items
+list, purge form) by reusing `/admin/sources/[sourceId]`'s existing `load`
+logic from the list page's own `load`, instead of navigating to a separate
+route. No-JS safe — it's a link + re-render, same mechanism the member-expand
+already uses, just a different param.
 
 **Run history stays a separate route** (`/admin/sources/[sourceId]/runs`).
 It's an independently-paginated log, not source state; embedding it would put
@@ -173,8 +197,8 @@ Net: three routes become two — `/admin/feeds` (list + inline detail) and
 - New tests for retention-driven reap button selection (reapable vs. each of
   the three force-liftable reasons) replacing the old two-step-refusal test.
 - New tests for `bulkSource`: mixed-outcome batch (some ok, some refused),
-  commandId derivation stability across a resubmit of the same batch, and
-  empty-selection submit (no-op, no error).
+  per-row commandId reuse on a resubmit of the same rendered form, mixed
+  plain/force reap batch, and empty-selection submit (no-op, no error).
 - New test for inline-expand detail panel rendering the same fields the
   standalone `/admin/sources/[sourceId]` page renders (shared load logic, not
   a re-derivation — same posture as the existing member-panel sharing note in
@@ -187,17 +211,23 @@ release. No feature flag: the old popup/round-trip/single-item behavior has
 no users depending on its specific shape (it's an operator-facing admin
 surface, not user-facing).
 
-## Open questions
-
-- Exact commandId-format confirmation against core's command ledger (does it
-  accept an arbitrary opaque string, or does it validate UUID shape?) —
-  verify during planning before committing to the `` `${batchId}:${sourceId}` ``
-  derivation; if core validates format, fall back to a per-item
-  `crypto.randomUUID()` seeded deterministically some other way, or accept
-  minting fresh per-item ids on every batch submit (losing exact-resubmit
-  idempotency for bulk only, single-item forms unaffected).
-
 ## Revision history
 
 - rev 1 (2026-07-30): initial design, from dogfooding `/admin/feeds` as the
   live moderation surface across 4 running instances.
+- rev 2 (2026-07-30): folds ponytail-review findings (dispatched to a clean
+  subagent, all verified against the current tree before applying).
+  Dropped the invented `batchId`-derivation commandId scheme — bulk actions
+  now reuse each row's own already-minted commandId(s), same as a lone
+  submit of that row would use — which also removes the rev-1 open question
+  about core's commandId format entirely (nothing new is minted, so nothing
+  needed verifying). Fixed a self-contradiction where Non-goals excluded
+  bulk tombstone-unblock while Components proposed it — kept the feature
+  (tombstones already carry a per-row commandId, no reason to exclude them)
+  and narrowed the exclusion to `establish` alone. Fixed bulk reap's shape
+  from a single batch-wide `action` (which couldn't represent "3 sources,
+  3 different force needs") to per-row `{sourceId, commandId, force}`
+  triples, keeping the feature per the maintainer's explicit bulk-scope
+  call rather than cutting it. Fixed an `?expand=` param collision with the
+  existing federation-member-list use by introducing a distinct `?detail=`
+  param for inline source detail.
