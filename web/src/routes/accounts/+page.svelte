@@ -14,7 +14,7 @@
 			<li class:active={account.active}>
 				<span class="account-email">{account.email}</span>
 				{#if account.active}
-					<span class="badge">current</span>
+					<span class="badge-kind on">current</span>
 					<form method="POST" action="?/logoutOne"><button>Log out</button></form>
 				{:else}
 					<form method="POST" action="?/switch">
@@ -71,18 +71,6 @@
 		margin-right: auto;
 	}
 
-	/* P3: net-new here. Matches .badge-kind (app.css): the 11px uppercase
-	   flush-left label, not a pill — this is a status label, not a count. */
-	.badge {
-		display: inline-block;
-		font-family: var(--font-heading);
-		font-size: 0.6875rem;
-		font-weight: var(--font-heading-weight);
-		letter-spacing: 0.1em;
-		text-transform: uppercase;
-		color: var(--color-accent);
-	}
-
 	/* Compact row buttons (Switch / Log out), matching the density of
 	   .follow-form/.unfollow-form's inline actions rather than full-size
 	   page buttons. */
@@ -117,20 +105,4 @@
 		opacity: 0.9;
 	}
 
-	/* P3: net-new here, but not a new pattern — same text-button destructive
-	   treatment as /+page.svelte and /post/[id]/+page.svelte's .danger-link
-	   (component-scoped there too; duplicated per house convention). */
-	.danger-link {
-		font: inherit;
-		font-size: 0.875rem;
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--color-destructive);
-		cursor: pointer;
-	}
-
-	.danger-link:hover {
-		text-decoration: underline;
-	}
 </style>

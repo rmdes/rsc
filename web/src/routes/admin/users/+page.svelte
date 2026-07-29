@@ -41,6 +41,7 @@
 							<form
 								method="POST"
 								action="?/deleteUser"
+								class="unfollow-form"
 								use:enhance={confirmSubmit(`Delete @${u.handle} and all their posts? This can't be undone.`)}
 							>
 								<input type="hidden" name="handle" value={u.handle} />

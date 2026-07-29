@@ -105,12 +105,12 @@
 							<td data-label="State">{row.kind === 'source' && row.pending ? 'awaiting review' : '—'}</td>
 							<td data-label="Action">
 								{#if row.kind === 'local'}
-									<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'}>
+									<form method="POST" action={data.isOwner ? '?/unfollow' : '?/follow'} class="unfollow-form" class:follow-row={!data.isOwner}>
 										<input type="hidden" name="target" value={row.handle} />
 										<button>{data.isOwner ? 'Unfollow' : 'Follow'}</button>
 									</form>
 								{:else if data.isOwner}
-									<form method="POST" action="?/unsubscribe">
+									<form method="POST" action="?/unsubscribe" class="unfollow-form">
 										<input type="hidden" name="sourceId" value={row.sourceId} />
 										<input type="hidden" name="commandId" value={row.commandId} />
 										<button>Unsubscribe</button>
