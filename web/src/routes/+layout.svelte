@@ -2,8 +2,8 @@
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import type { LayoutData } from './$types';
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
+	import AccountMenu from '$lib/AccountMenu.svelte'
 	import { TABS } from '$lib/tabs'
 	import { page } from '$app/state'
 
@@ -18,27 +18,6 @@
 	<link rel="alternate" type="application/rss+xml" title="All posts" href="/users/rss.xml" />
 </svelte:head>
 
-<div class="identity-bar">
-	{#if !data.me}
-		<div>Browsing as a guest — post or follow to get an identity. <a href="/login">Log in</a> · <a href="/register">Register</a></div>
-	{:else if data.me.isAnonymous}
-		<div>
-			<a class="handle" href="/u/{data.me.user.handle}">@{data.me.user.handle}</a>
-			<a class="identity-cta" href="/register">Register to keep this account</a>
-			<a href="/settings">Settings</a>
-		</div>
-	{:else}
-		<div>
-			{data.me.user.displayName} <a class="handle" href="/u/{data.me.user.handle}">@{data.me.user.handle}</a>
-			{#if data.me.emailVerified === false}
-				<span>Verify your email — <a class="identity-cta" href="/login">email me a login link</a></span>
-			{/if}
-			<a href="/settings">Settings</a>
-			<form method="POST" action="/login?/logout" class="logout-form"><button type="submit">Log out</button></form>
-		</div>
-	{/if}
-</div>
-
 <nav class="nav" aria-label="Main">
 	<a class="nav-brand" href="/">RSC</a>
 	{#each TABS as t (t)}
@@ -51,9 +30,8 @@
 		     tools rail's composer instead. Never both #compose at once — see
 		     the CSS media queries gating each anchor's visibility. -->
 		<a class="spacer btn new-post-mobile" href="#compose">New post</a>
-		<a class="spacer btn new-post-desktop" href="#compose-desktop">New post</a>
 	{/if}
-	<ThemeToggle />
+	<AccountMenu me={data.me} />
 
 	<details class="nav-menu">
 		<summary class="nav-menu-toggle">Menu</summary>
@@ -87,23 +65,6 @@
 					{/if}
 				</div>
 			{/if}
-
-			<div class="nav-menu-group">
-				<h6>Signed in</h6>
-				{#if data.me}
-					<div class="nav-menu-identity">{data.me.user.displayName}</div>
-					<div class="nav-menu-list">
-						<a href="/u/{data.me.user.handle}">Your lens</a>
-						<a href="/settings">Settings</a>
-						{#if data.me.isAdmin}<a href="/admin">Admin</a>{/if}
-						{#if !data.me.isAnonymous}<a class="destructive" href="/login?/logout">Log out</a>{/if}
-					</div>
-				{:else}
-					<p class="auth-note"><a href="/login">Log in</a> · <a href="/register">Register</a></p>
-				{/if}
-			</div>
-
-			<div class="nav-menu-group"><ThemeToggle variant="segmented" /></div>
 		</div>
 	</details>
 </nav>
