@@ -1,6 +1,12 @@
 # Remote content retention — design
 
-**Status:** rev 1, ready for review.
+**Status:** rev 2 (2026-07-30) — folds a `ponytail:ponytail-audit` pass
+(dispatched to a fresh subagent, clean sub-context) run against rev 1.
+One finding accepted and applied (the disposal mechanism was over-built —
+see the Architecture section); one finding (drop the age cap) presented
+to the maintainer and explicitly declined — both count and age stay, per
+maintainer call. Full findings and the maintainer's call are in the
+Revision History at the bottom.
 
 ## Motivation
 
@@ -39,10 +45,12 @@ own posts forever should be able to, unconditionally.
   applied uniformly to every remote source. No per-source override.
 - Enforced once per source, right after that source's poll commits new
   items — no new scheduled job.
-- Reuses the existing per-item disposal logic (reselect / delete /
-  structural-tombstone) that `removeSourceEvidence` (purge, reap) already
-  has, generalized to operate on an explicit delivery-id set instead of
-  "every delivery for source X."
+- Reuses the existing per-item disposal primitives (reselect / delete /
+  structural-tombstone) that `removeSourceEvidence` (purge, reap) also
+  calls — these are already standalone, logical-item-id-keyed exports
+  (`threading.ts`, `reconcile.ts`), not logic bundled inside
+  `removeSourceEvidence` that needs extracting. `tombstones.ts` itself is
+  untouched by this feature (rev 2 — see Revision History).
 
 **Explicitly out of scope** (accepted tradeoffs, not deferred bugs):
 - No periodic sweep. A paused/quarantined source already holding excess
@@ -70,68 +78,65 @@ Both default to unlimited, so shipping this feature never silently trims
 an existing instance's content until an admin explicitly opts in by
 setting a non-zero value.
 
-### The disposal-core refactor (`core/src/logical/tombstones.ts`)
+### Trim mechanism (new, standalone — `core/src/logical/tombstones.ts`)
 
-`removeSourceEvidence(tx, {sourceId, now})` currently conflates two
-things: FK-ordered deletion scoped by `source_id`, and per-item
-reselect/delete/structural-tombstone logic scoped by an `affected` set of
-logical-item ids derived from that source's deliveries. Split:
-
-```ts
-// New: takes an explicit delivery-id set instead of "every delivery for
-// this source" — the shared core both removeSourceEvidence (all
-// deliveries) and trimSourceToCap (just the excess ones) call.
-export function disposeDeliveries(tx: WriteTx, input: { deliveryIds: string[]; now: string }): { ordinaryAffected: boolean }
-```
-
-`disposeDeliveries` is `removeSourceEvidence`'s existing lines ~97-178
-(capture affected set, FK-order DELETEs, per-item reselect/delete/
-tombstone, unreferenced-publisher cleanup), with every `WHERE source_id =
-?` rewritten to `WHERE delivery_id IN (...)` / `WHERE id IN (...)` against
-the passed `deliveryIds`, and the FK-order delete queries' `(SELECT id
-FROM deliveries_v2 WHERE source_id = @s)` subqueries replaced with the
-literal `deliveryIds` list bound directly (no join back through
-`source_id` needed — the caller already resolved which deliveries).
-
-`removeSourceEvidence` becomes:
-
-```ts
-export function removeSourceEvidence(tx: WriteTx, input: { sourceId: string; now: string }): { ordinaryAffected: boolean } {
-  const deliveryIds = (tx.prepare(`SELECT id FROM deliveries_v2 WHERE source_id = ?`).all(input.sourceId) as { id: string }[]).map((r) => r.id)
-  const result = disposeDeliveries(tx, { deliveryIds, now: input.now })
-  // publisher/source-row cleanup that only a full-source removal does
-  // (candidatePublishers computation + the final source-row DELETE) stays here.
-  ...
-  return result
-}
-```
-
-The candidate-publisher cleanup and the final `DELETE FROM
-remote_sources_v2` stay in `removeSourceEvidence` only — a trim never
-deletes the source row (the source keeps polling; only its old items go).
-Every existing purge/reap test should pass unchanged: same SQL, same
-order, same outcomes, just re-homed behind one more call frame.
-
-### Trim selection (new, `core/src/logical/tombstones.ts` or a new
-`retention.ts` — implementer's call, matching whichever keeps the file
-focused)
+Rev 2 (ponytail-audit finding, accepted): rev 1 proposed extracting
+`removeSourceEvidence`'s per-item logic into a shared `disposeDeliveries`
+core. Unnecessary — the reusable per-item primitives are **already**
+standalone exports, not logic bundled inside `removeSourceEvidence` that
+needs extracting: `hasChildEdge`, `deleteLogicalNode`,
+`convertToStructuralTombstone`, `sweepStructuralTombstones`
+(`core/src/logical/threading.ts:270-317`, each `(tx, id: string)`) and
+`applySelectionHints` (`core/src/logical/reconcile.ts:421`, `(tx,
+itemId, currentVersionId)`). And most of `removeSourceEvidence`'s FK
+deletes are genuinely **source**-scoped
+(`verification_checks_v2`, `source_health_v2`, `source_validators_v2`,
+`acquisition_runs_v2`, `policy_fanout_v2`, `publisher_names_v2`) — a
+trim must never touch these (the source keeps polling; only its old
+items go), so rewriting them to a delivery-id parameterization never
+made sense. **`removeSourceEvidence`/`tombstones.ts`'s existing code is
+unchanged by this feature** — zero re-verification risk to the
+already-tested purge/reap suite.
 
 ```ts
 export function trimSourceToCap(tx: WriteTx, input: { sourceId: string; maxCount: number; maxAgeDays: number; now: string }): { trimmedCount: number }
 ```
 
-1. If both `maxCount` and `maxAgeDays` are `0`, return `{ trimmedCount: 0 }`
-   immediately — no query cost for the (default) unlimited case.
-2. Select this source's remote logical items via the same delivery→source
-   join used elsewhere (`logical_items_v2 li JOIN deliveries_v2 d ON
-   d.id = li.selected_delivery_id WHERE d.source_id = ? AND li.origin =
-   'remote'`), ordered by `li.timeline_sort_at DESC`.
-3. Excess by age (if `maxAgeDays > 0`): any row with `timeline_sort_at <
-   now - maxAgeDays`.
+1. Fast path: if both `maxCount` and `maxAgeDays` are `0`, return
+   `{ trimmedCount: 0 }` immediately — no query cost for the (default)
+   unlimited case.
+2. Select this source's remote logical items via
+   `logical_items_v2 li JOIN deliveries_v2 d ON d.id =
+   li.selected_delivery_id WHERE d.source_id = ? AND li.origin =
+   'remote'`, ordered by `li.timeline_sort_at DESC`.
+3. Excess by age (if `maxAgeDays > 0`): any row with `timeline_sort_at`
+   older than `now - maxAgeDays`.
 4. Excess by count (if `maxCount > 0`): every row ranked beyond position
    `maxCount` in the DESC order.
-5. Union the two id sets, map to `selected_delivery_id`, call
-   `disposeDeliveries` with that list.
+5. Union the two id sets → the excess logical-item ids.
+6. For each excess item id: `hasChildEdge(tx, id) ?
+   convertToStructuralTombstone(tx, id) : deleteLogicalNode(tx, id)` —
+   the same branch `removeSourceEvidence`'s own per-item loop uses,
+   called directly.
+7. Delete the excess items' own delivery/observation-version rows —
+   **delivery/observation-scoped tables only**, never the source-scoped
+   ones step 6's sibling `removeSourceEvidence` also touches:
+   `presentation_entries_v2` (by delivery_id), `reconciliation_jobs_v2`
+   (by observation_version_id), `publisher_claims_v2` (by
+   observation_version_id — **not** source_id, the source itself
+   survives), `logical_conflicts_v2` (by observation_version_id),
+   `observation_versions_v2` (by delivery_id), `logical_identity_keys_v2`
+   (kind='delivery', key=delivery_id), `deliveries_v2` (by id) — children
+   before the delivery row itself.
+8. Return `{ trimmedCount: <excess item count> }`.
+
+Deliberately does **not** touch: `acquisition_runs_v2`,
+`source_health_v2`, `source_validators_v2`, `verification_checks_v2`,
+`policy_fanout_v2`, `publisher_names_v2`, or the `remote_sources_v2` row
+— those belong only to a full source removal (purge/reap), never a
+partial trim. Unreferenced-publisher cleanup is also skipped: a trimmed
+source's publisher stays in play as long as the source does, since more
+items may still arrive on its next poll.
 
 Ordering key is the logical item's own `timeline_sort_at` (publish date),
 not delivery ingestion time or `first_seen_at` — a 2005 episode discovered
@@ -158,11 +163,14 @@ in `createAcquisition`'s closure), *before* opening the transaction, and
 the resolved numbers get passed into `CommitAcquisitionInput` as plain
 values for `commitAcquisition` to act on. Concretely: `commitFromBody`
 gains two `await deps.getSetting(...)` calls (parsed to numbers, `0` on
-missing/unset) ahead of its `db.write(...)` call. `CommitAcquisitionInput`
-(`core/src/logical/types.ts:445-460`) gains two new fields —
-`maxRemoteItemsPerSource: number` and `maxRemoteItemAgeDays: number` —
-that `commitFromBody` populates from those two resolved values, and
-`commitAcquisition` reads at the point it calls `trimSourceToCap`.
+missing/unset) ahead of its `db.write(...)` call. Rev 2 (ponytail-audit
+shrink, accepted): `CommitAcquisitionInput`
+(`core/src/logical/types.ts:445-460`) gains ONE new field, not two —
+`retentionCap: { maxCount: number; maxAgeDays: number } | null` — that
+`commitFromBody` populates from the two resolved settings values (`null`
+when both are `0`, so `commitAcquisition` has a single check instead of
+two), and `commitAcquisition` reads at the point it calls
+`trimSourceToCap`.
 
 `AcquisitionDeps` (`core/src/logical/acquisition.ts:640-646`, currently
 `{ db, fetchFn?, lookupFn?, deadlineMs?, now? }`) has no settings access
@@ -188,23 +196,26 @@ new keys.
 
 ## Data safety
 
-Trimmed items go through the *exact* per-item disposal path purge already
-uses: a reply whose parent gets trimmed away, but which is itself still
-under the cap, converts its parent into a structural tombstone rather
-than losing the parent silently — thread integrity is preserved the same
-way it already is for purge. No new deletion semantics are introduced;
-this feature only changes *which* delivery ids reach the existing,
-already-tested disposal core.
+Trimmed items go through the *same* per-item primitives purge already
+calls (`hasChildEdge`/`deleteLogicalNode`/`convertToStructuralTombstone`):
+a reply whose parent gets trimmed away, but which is itself still under
+the cap, converts its parent into a structural tombstone rather than
+losing the parent silently — thread integrity is preserved the same way
+it already is for purge. No new deletion semantics are introduced; this
+feature calls existing, already-tested primitives directly, and owns
+only the delivery/observation-version-scoped table deletes a partial
+trim needs that a whole-source purge doesn't have to distinguish.
 
 ## Testing
 
-- `disposeDeliveries`/`removeSourceEvidence` split: every existing
-  purge/reap test (`source-cleanup.test.ts` and friends) must pass
-  unchanged — this is a refactor of tested code, not new behavior.
+- `removeSourceEvidence`/`tombstones.ts` need **no changes and no new
+  test runs** — rev 2's standalone design doesn't touch that file at all.
 - New tests for `trimSourceToCap`: count-only cap, age-only cap, both
   together (union), a reply surviving its trimmed parent as a structural
   tombstone (mirrors purge's own such test), the `0`/`0` no-op fast path,
-  local items never selected regardless of settings.
+  local items never selected regardless of settings, and confirming the
+  source-scoped tables (`acquisition_runs_v2`, `source_health_v2`, etc.)
+  and the `remote_sources_v2` row are untouched after a trim.
 - `commitAcquisition` integration test: a poll that pushes a source over
   its configured cap trims within the same commit.
 - Admin settings round-trip test mirroring the existing
@@ -219,5 +230,41 @@ per the no-periodic-sweep decision above) rather than all at once on
 first enabling the setting — a large existing backlog (like
 `rsc.rmdes.be`'s current 12,232 remote items) shrinks gradually as
 sources get repolled on their normal cadence, not in one large write.
+
+## Revision History
+
+**Rev 2 (2026-07-30).** A `ponytail:ponytail-audit` subagent (fresh,
+clean sub-context) reviewed rev 1 against the real current source
+(`tombstones.ts`, `acquisition.ts`, `types.ts`, `service.ts`, the
+`/admin/settings` route) before this spec moved to writing-plans. Three
+findings:
+
+1. **`yagni` (accepted, applied).** The proposed `disposeDeliveries`
+   extraction out of `removeSourceEvidence` was unnecessary — the per-item
+   primitives it would "extract" (`hasChildEdge`, `deleteLogicalNode`,
+   `convertToStructuralTombstone`, `sweepStructuralTombstones`,
+   `applySelectionHints`) are already standalone, logical-item-id-keyed
+   exports. Most of `removeSourceEvidence`'s FK deletes are also
+   source-scoped, not delivery-scoped, so the proposed rewrite didn't
+   even apply to them and a trim must never touch them anyway. Verified
+   independently (grepped the four `threading.ts` exports + `reconcile.ts`'s
+   `applySelectionHints` — all confirmed standalone) before applying.
+   `trimSourceToCap` is now written standalone; `tombstones.ts` is
+   unchanged by this feature; net effect is less code and zero
+   re-verification risk to the already-tested purge/reap suite.
+2. **`yagni` (presented, declined).** The audit noted the production
+   grounding is entirely a count problem (one podcast feed with 1,002
+   episodes), not a staleness problem, and proposed cutting
+   `max_remote_item_age_days` from v1. Presented to the maintainer
+   directly — declined: both count and age ship together, as originally
+   decided. No spec change from this finding.
+3. **`shrink` (accepted, applied).** `CommitAcquisitionInput`'s two new
+   fields (`maxRemoteItemsPerSource`, `maxRemoteItemAgeDays`) collapsed
+   into one `retentionCap: { maxCount; maxAgeDays } | null` — independent
+   of finding 2's outcome, since both values still exist either way.
+
+The settings/hook-point/`AcquisitionDeps` plumbing (optional field,
+inert default, only one real call site touched) was reviewed and judged
+already proportionate — no changes there.
 
 *developed with the help of AI tools*
