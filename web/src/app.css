@@ -175,6 +175,14 @@ a {
 	margin-right: var(--space-xl);
 }
 
+/* Wraps the river tabs so they can be pulled onto their own always-visible
+   row on mobile (see the 767px query below) without touching desktop at
+   all: display:contents makes the wrapper invisible to the box model here,
+   so the <a> tabs stay direct flex items of .nav exactly as before. */
+.nav-tabs {
+	display: contents;
+}
+
 .nav a:not(.btn) {
 	color: inherit;
 	text-decoration: none;
@@ -283,9 +291,24 @@ a {
 		gap: var(--space-md);
 		flex-wrap: wrap;
 	}
-	/* the rivers move into the menu panel; the river names itself on the page */
-	.nav > a:not(.nav-brand):not(.btn):not(.nav-menu-toggle) {
-		display: none;
+	/* Rivers stay directly reachable at every width — quick-switching between
+	   local/federated/personal/public is a primary, frequent action, not
+	   secondary chrome to bury behind a menu tap. Forced onto its own full
+	   line via flex-basis so it doesn't jostle for space with New post /
+	   AccountMenu / Menu on line one. */
+	.nav-tabs {
+		display: flex;
+		order: 10;
+		flex: 1 0 100%;
+		gap: var(--space-md);
+		overflow-x: auto;
+		padding-top: var(--space-sm);
+		margin-top: var(--space-sm);
+		border-top: 1px solid var(--color-border);
+	}
+	.nav-tabs a {
+		flex-shrink: 0;
+		padding: var(--space-xs) 0;
 	}
 	.nav .new-post-mobile {
 		display: inline-flex;
@@ -451,40 +474,6 @@ a {
 .nav-menu-group h6 {
 	margin: 0 0 var(--space-3);
 	color: var(--color-accent);
-}
-
-/* River entries: display-grade, flush left, one per ruled row. The current
-   river is a solid accent cell — the segmented-control treatment — and says so
-   in words too, never colour alone. */
-.nav-menu-rivers a {
-	display: flex;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: var(--space-3);
-	min-height: 56px;
-	padding: var(--space-3) var(--space-md);
-	border-top: 1px solid var(--color-border);
-	font-family: var(--font-heading);
-	font-weight: var(--font-heading-weight);
-	font-size: 1.375rem;
-	letter-spacing: -0.015em;
-	color: var(--color-foreground);
-	text-decoration: none;
-}
-
-.nav-menu-rivers a[aria-current='page'] {
-	background: var(--color-accent);
-	color: var(--color-on-accent);
-}
-
-.nav-menu-rivers .n {
-	font-family: var(--font-body);
-	font-weight: 400;
-	font-size: 0.6875rem;
-	letter-spacing: 0.1em;
-	text-transform: uppercase;
-	color: inherit;
-	opacity: 0.7;
 }
 
 /* Ordinary menu rows — sources, account, links. */

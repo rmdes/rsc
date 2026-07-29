@@ -2,12 +2,36 @@
 	import '../app.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import type { LayoutData } from './$types';
+	import { tick } from 'svelte';
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import AccountMenu from '$lib/AccountMenu.svelte'
 	import { TABS } from '$lib/tabs'
 	import { page } from '$app/state'
 
 	let { data, children }: { data: LayoutData; children: import('svelte').Snippet } = $props();
+
+	// This layout persists across SvelteKit's client-side navigation, so a
+	// native <details>'s open/closed state otherwise survives a route change —
+	// close it whenever the actual page changes (a river link was clicked).
+	// Keyed on pathname+search, not the full href: opening the mobile composer
+	// only changes the #compose hash on the SAME page and must not close this.
+	let menuOpen = $state(false);
+	const routeKey = $derived(page.url.pathname + page.url.search);
+	$effect(() => {
+		routeKey;
+		menuOpen = false;
+	});
+
+	// The New Post link's href="#compose" is a no-JS fallback (the browser's
+	// native fragment-reveal algorithm auto-expands an ancestor <details> —
+	// but that's inconsistently supported and was the "sometimes it just
+	// doesn't open" bug). With JS available, open the menu explicitly instead.
+	async function openComposer(e: MouseEvent) {
+		e.preventDefault();
+		menuOpen = true;
+		await tick();
+		document.getElementById('compose')?.scrollIntoView({ block: 'start' });
+	}
 </script>
 
 <svelte:head>
@@ -20,33 +44,26 @@
 
 <nav class="nav" aria-label="Main">
 	<a class="nav-brand" href="/">RSC</a>
-	{#each TABS as t (t)}
-		<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
-	{/each}
+	<div class="nav-tabs">
+		{#each TABS as t (t)}
+			<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
+		{/each}
+	</div>
 	{#if page.url.pathname === '/'}
 		<!-- Mobile-only shortcut: below 768px there's no persistently-visible
-		     composer to jump to, so this jumps into the mobile menu's own
-		     #compose group (native details-auto-expand-on-anchor). Hidden by
-		     CSS at 768px+, where the .tools sidebar composer is already
-		     on-screen — see .nav .new-post-mobile in app.css. -->
-		<a class="spacer btn new-post-mobile" href="#compose">New post</a>
+		     composer to jump to, so this opens the mobile menu's own #compose
+		     group directly (see openComposer above). Hidden by CSS at 768px+,
+		     where the .tools sidebar composer is already on-screen — see
+		     .nav .new-post-mobile in app.css. -->
+		<a class="spacer btn new-post-mobile" href="#compose" onclick={openComposer}>New post</a>
 	{/if}
 	<AccountMenu me={data.me} />
 
-	<details class="nav-menu">
-		<summary class="nav-menu-toggle">Menu</summary>
+	{#if page.url.pathname === '/'}
+		<details class="nav-menu" bind:open={menuOpen}>
+			<summary class="nav-menu-toggle">Menu</summary>
 
-		<div class="nav-menu-panel">
-			<div class="nav-menu-group nav-menu-rivers">
-				<h6>Rivers</h6>
-				{#each TABS as t (t)}
-					<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>
-						{t}{#if page.url.pathname === '/' && data.tab === t}<span class="n">here</span>{/if}
-					</a>
-				{/each}
-			</div>
-
-			{#if page.url.pathname === '/'}
+			<div class="nav-menu-panel">
 				<div class="nav-menu-group" id="compose">
 					<h6>New post</h6>
 					<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" />
@@ -64,9 +81,9 @@
 						<p class="auth-note">Register to add feeds.</p>
 					{/if}
 				</div>
-			{/if}
-		</div>
-	</details>
+			</div>
+		</details>
+	{/if}
 </nav>
 
 {@render children()}

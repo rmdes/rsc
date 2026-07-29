@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ThemeToggle from '$lib/ThemeToggle.svelte'
+	import { page } from '$app/state'
 
 	type Me = {
 		user: { displayName: string; handle: string }
@@ -10,6 +11,16 @@
 
 	let { me }: { me: Me } = $props()
 	const needsAttention = $derived(me != null && (me.isAnonymous || me.emailVerified === false))
+
+	// This layout persists across SvelteKit's client-side navigation, so a
+	// native <details>'s open/closed state otherwise survives a route change —
+	// close it whenever the actual page changes (a link inside was clicked).
+	let open = $state(false)
+	const routeKey = $derived(page.url.pathname + page.url.search)
+	$effect(() => {
+		routeKey
+		open = false
+	})
 </script>
 
 {#if !me}
@@ -17,7 +28,7 @@
 		<a href="/login">Log in</a> · <a href="/register">Register</a>
 	</div>
 {:else}
-	<details class="account-menu">
+	<details class="account-menu" bind:open>
 		<summary class="account-menu-toggle">
 			{#if needsAttention}<span class="account-menu-dot" aria-hidden="true"></span><span class="visually-hidden">Needs attention</span>{/if}
 			<span class="account-menu-handle">@{me.user.handle}</span>
