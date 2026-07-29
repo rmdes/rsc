@@ -190,6 +190,15 @@ a {
 	margin-left: auto;
 }
 
+/* "New post" has two targets (see +layout.svelte) — only one is ever the
+   visible anchor, matching the id its href points at being the only #compose
+   visible at that width. Desktop is the default state; the 767px query below
+   flips it. `.nav` prefix needed to outrank .btn's own display (same
+   specificity, declared later in this file). */
+.nav .new-post-mobile {
+	display: none;
+}
+
 /* Shell grid: tools | river | meta — separated by 2px RULES, not by a gap. The
    grid runs edge to edge; the old centred max-width container is gone. */
 
@@ -283,6 +292,12 @@ a {
 	   so the icon toggle hides here; the segmented one in the panel covers it */
 	.nav > .theme-toggle {
 		display: none;
+	}
+	.nav .new-post-desktop {
+		display: none;
+	}
+	.nav .new-post-mobile {
+		display: inline-flex;
 	}
 	/* .nav-menu sits in the flex row (its summary is the Menu toggle, staying
 	   inline with brand/New post while closed) but its panel must stay
@@ -1022,6 +1037,7 @@ textarea {
 
 .lens-stats .n {
 	order: 1;
+	margin: 0;
 	font-family: var(--font-heading);
 	font-weight: var(--font-heading-weight);
 	font-size: 1.75rem;

@@ -44,7 +44,15 @@
 	{#each TABS as t (t)}
 		<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
 	{/each}
-	{#if page.url.pathname === '/'}<a class="spacer btn" href="#compose">New post</a>{/if}
+	{#if page.url.pathname === '/'}
+		<!-- Two targets, like the rivers/theme-toggle above: below 768px this
+		     jumps into the mobile menu's own #compose group (native
+		     details-auto-expand-on-anchor); at 768px+ it targets the desktop
+		     tools rail's composer instead. Never both #compose at once — see
+		     the CSS media queries gating each anchor's visibility. -->
+		<a class="spacer btn new-post-mobile" href="#compose">New post</a>
+		<a class="spacer btn new-post-desktop" href="#compose-desktop">New post</a>
+	{/if}
 	<ThemeToggle />
 
 	<details class="nav-menu">

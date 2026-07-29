@@ -129,7 +129,7 @@
 <svelte:head><title>RSC</title></svelte:head>
 
 <div class="shell">
-	<aside class="tools">
+	<aside class="tools" id="compose-desktop">
 		<ComposerDialog
 			draftKey="compose"
 			action="?tab={data.tab}&/compose"
