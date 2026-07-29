@@ -39,12 +39,12 @@
 	{/if}
 </div>
 
-<nav class="nav" aria-label="Timeline">
+<nav class="nav" aria-label="Main">
 	<a class="nav-brand" href="/">RSC</a>
 	{#each TABS as t (t)}
 		<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{t}</a>
 	{/each}
-	{#if page.url.pathname === '/'}<a class="spacer btn btn-primary" href="#compose">New post</a>{/if}
+	{#if page.url.pathname === '/'}<a class="spacer btn" href="#compose">New post</a>{/if}
 	<ThemeToggle />
 
 	<details class="nav-menu">
@@ -54,8 +54,8 @@
 			<div class="nav-menu-group nav-menu-rivers">
 				<h6>Rivers</h6>
 				{#each TABS as t (t)}
-					<a href="/?tab={t}" aria-current={data.tab === t ? 'page' : undefined}>
-						{t}<span class="n">{data.tab === t ? 'here' : ''}</span>
+					<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>
+						{t}<span class="n">{page.url.pathname === '/' && data.tab === t ? 'here' : ''}</span>
 					</a>
 				{/each}
 			</div>
@@ -63,7 +63,7 @@
 			{#if page.url.pathname === '/'}
 				<div class="nav-menu-group" id="compose">
 					<h6>New post</h6>
-					<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" idSuffix="-menu" />
+					<ComposerDialog draftKey="compose" action="?tab={data.tab}&/compose" title="New post" submitLabel="Post" placeholder="what's happening?" />
 				</div>
 				<div class="nav-menu-group">
 					<h6>Subscribe to a feed</h6>

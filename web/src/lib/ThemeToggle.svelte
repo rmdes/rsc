@@ -35,7 +35,7 @@
 	{#if variant === 'segmented'}
 		<div class="theme-segmented" role="group" aria-label="Theme">
 			{#each (['system', 'light', 'dark'] as const) as m (m)}
-				<button type="button" class:active={mode === m} onclick={() => apply(m)}>{m}</button>
+				<button type="button" class:active={mode === m} aria-pressed={mode === m} onclick={() => apply(m)}>{m}</button>
 			{/each}
 		</div>
 	{:else}
