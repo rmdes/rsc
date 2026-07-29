@@ -549,6 +549,9 @@ a {
 }
 
 .account-menu-guest {
+	display: flex;
+	align-items: center;
+	gap: var(--space-xs);
 	font-size: 0.875rem;
 }
 

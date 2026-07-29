@@ -26,6 +26,7 @@
 {#if !me}
 	<div class="account-menu account-menu-guest">
 		<a href="/login">Log in</a> · <a href="/register">Register</a>
+		<ThemeToggle />
 	</div>
 {:else}
 	<details class="account-menu" bind:open>
