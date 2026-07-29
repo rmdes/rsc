@@ -65,7 +65,7 @@
 
 <div class="lens">
 	<header class="page-head">
-		<span class="kicker">Author lens{#if kind} · {kind}{/if}</span>
+		<span class="kicker">Author lens {#if kind}· {kind}{/if}</span>
 		<h1>@{data.handle}</h1>
 		<p class="subnav">
 			<a href="/u/{data.handle}/following">Following &amp; followers</a>

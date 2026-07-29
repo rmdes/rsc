@@ -175,7 +175,7 @@ a {
 	margin-right: var(--space-xl);
 }
 
-.nav a {
+.nav a:not(.btn) {
 	color: inherit;
 	text-decoration: none;
 	font-size: 0.875rem;
