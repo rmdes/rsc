@@ -1,11 +1,12 @@
 # Admin source-management UX redesign
 
-Status: rev 2 (2026-07-30) — folds ponytail-review findings: drops the
-invented `batchId`-derivation scheme in favor of reusing commandIds already
-minted per row at load, fixes a self-contradiction on bulk tombstone-unblock,
-fixes bulk reap's shape to carry per-row `force`, and fixes an `?expand=`
-param collision with the existing federation-member-list use. See Revision
-history.
+Status: rev 3 (2026-07-30) — rev 2 folded ponytail-review findings (dropped
+the invented `batchId`-derivation scheme, fixed a bulk-tombstone-unblock
+contradiction, fixed bulk reap's per-row `force` shape, fixed an `?expand=`
+collision). Rev 3 corrects two factual errors found while verifying
+references for the implementation plan: `confirm.ts` is used outside
+`/admin` too (not deletable) and the render tests never actually mocked
+`confirm()` (there was nothing to remove). See Revision history.
 
 ## Motivation
 
@@ -70,10 +71,11 @@ every routine task:
 
 ### 1. Inline reveal-to-confirm (replaces `confirmSubmit()`)
 
-Every destructive-action form (`source` action's block/unblock, `reap`,
-`purge`, `deleteUser`) wraps its consequence text and submit button in a
-native `<details>`/`<summary>` disclosure — the same primitive already used
-for the mobile nav panel (`design-system/rsc/MASTER.md:515`):
+Every destructive-action form on an admin page (`source` action's
+block/unblock, `reap` plain and force, `tombstone` unblock, `purge`,
+`deleteUser`) wraps its consequence text and submit button in a native
+`<details>`/`<summary>` disclosure — the same primitive already used for the
+mobile nav panel (`design-system/rsc/MASTER.md:515`):
 
 - **Collapsed:** a `<summary>` styled as a plain button reading the action
   name (e.g. "Block").
@@ -83,11 +85,21 @@ for the mobile nav panel (`design-system/rsc/MASTER.md:515`):
   enhancement wrapper (AJAX submit, row-level update) — there is no confirm
   gate left to short-circuit.
 
-`web/src/lib/confirm.ts` and every `use:enhance={consequence ? confirmSubmit(...) : undefined}`
-call site are deleted. `feeds.render.test.ts` / `source-actions.test.ts` /
-`item-review.test.ts` / `source-detail.test.ts` lose their `confirm()`-mock
-setup and gain an assertion that the consequence text is reachable without a
-popup.
+**`web/src/lib/confirm.ts` is NOT deleted** — `confirmSubmit()` is also used
+outside `/admin`, by the timeline's own admin-only "Remove this post"
+affordance (`web/src/routes/+page.svelte:231`,
+`web/src/routes/post/[id]/+page.svelte:104`), which is a non-admin page and
+out of scope for this redesign. Only the five admin call sites stop
+importing it: `feeds/+page.svelte`'s `source`-action block/unblock form, its
+two `reap` forms, its `tombstone` form, `sources/[sourceId]/+page.svelte`'s
+`purge` form, and `users/+page.svelte`'s `deleteUser` form — each drops its
+`import { confirmSubmit } from '$lib/confirm'` line once its own
+`use:enhance={confirmSubmit(...)}` is replaced by the `<details>` markup.
+`feeds.render.test.ts` / `source-actions.test.ts` / `source-detail.test.ts`
+lose their `confirm()`-mock setup for these forms and gain an assertion that
+the consequence text is reachable without a popup. (`item-review.test.ts`
+covers hide/restore, neither of which uses `confirmSubmit` today — no change
+there.)
 
 ### 2. Reap flow — `web/src/routes/admin/feeds/+page.svelte` + `+page.server.ts`
 
@@ -190,12 +202,23 @@ Net: three routes become two — `/admin/feeds` (list + inline detail) and
 
 ## Testing
 
-- Delete `confirm()`-mock scaffolding from `feeds.render.test.ts`,
-  `source-actions.test.ts`, `item-review.test.ts`, `source-detail.test.ts`;
-  add assertions that consequence text is present in the `<details>` markup
-  without JS.
-- New tests for retention-driven reap button selection (reapable vs. each of
-  the three force-liftable reasons) replacing the old two-step-refusal test.
+- `feeds.render.test.ts` and `source-detail.test.ts` are SvelteKit SSR render
+  tests (`svelte/server`'s `render()`, `$app/forms`'s `enhance` stubbed to a
+  no-op) — they never execute `confirmSubmit()`'s `confirm()` call today, so
+  there is no mock to remove. What changes: assert the consequence text and
+  "Confirm <action>" button are present inside a `<details>` element in the
+  static markup (reachable with zero JS), instead of asserting on
+  `use:enhance={confirmSubmit(...)}` prop wiring, which goes away.
+- `feeds.render.test.ts`'s reap-refusal loop (`for (const reason of [...])`,
+  currently asserting a `form` prop simulating a 409 drives which force-confirm
+  form appears — `feeds.render.test.ts:371-404`) is deleted and replaced:
+  the new tests assert the button choice comes from `row.retention` alone, no
+  `form` prop involved — one test per reason plus `reapable`, checking each
+  orphan row renders exactly one reap form (plain or force, never both) with
+  the reason-specific consequence text already present. The adjacent
+  `has_subscribers`-refusal test (`:406-411`) is deleted outright — an
+  orphan row can never carry that retention value (Motivation §1), so there
+  is no refusal-display path left to test for it.
 - New tests for `bulkSource`: mixed-outcome batch (some ok, some refused),
   per-row commandId reuse on a resubmit of the same rendered form, mixed
   plain/force reap batch, and empty-selection submit (no-op, no error).
@@ -231,3 +254,14 @@ surface, not user-facing).
   call rather than cutting it. Fixed an `?expand=` param collision with the
   existing federation-member-list use by introducing a distinct `?detail=`
   param for inline source detail.
+- rev 3 (2026-07-30): corrects two factual errors, found while reading the
+  actual referenced files to write the implementation plan. (1) `confirm.ts`
+  is used by two non-admin pages (`web/src/routes/+page.svelte:231`,
+  `web/src/routes/post/[id]/+page.svelte:104`, the timeline's own
+  admin-remove-post affordance) — it is not deleted, only the five admin
+  call sites (now including the previously-unlisted tombstone-unblock form)
+  stop importing it. (2) `feeds.render.test.ts`/`source-detail.test.ts` are
+  SSR render tests that never mock `confirm()` in the first place — the
+  reap-refusal test loop is rewritten to assert on `retention` directly
+  (no `form` prop), and the `has_subscribers`-refusal test is deleted rather
+  than adapted, since that refusal path no longer exists for orphan rows.
