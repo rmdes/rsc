@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 </script>
@@ -8,11 +7,6 @@
 <svelte:head><title>Settings — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>Settings</h1>
 
 	{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}

@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ReplyToggle from '$lib/ReplyToggle.svelte'
 	import FeedIcon from '$lib/FeedIcon.svelte'
@@ -38,11 +37,6 @@
 <svelte:head><title>@{data.handle} following — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<div>
 		<h1>@{data.handle} — following</h1>
 		<p class="subnav"><a href="/u/{data.handle}">author lens</a> · <a href="/u/{data.handle}/following.opml">export OPML</a></p>

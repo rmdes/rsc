@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import Avatar from '$lib/Avatar.svelte'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
 	import ThreadPlaceholder from '$lib/ThreadPlaceholder.svelte'
 	import PostBody from '$lib/PostBody.svelte'
@@ -60,11 +59,6 @@
 <svelte:head><title>Conversation — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>Conversation</h1>
 	{#if parent}
 		<p class="subnav">Replying to <a href="/post/{parent.id}">@{parent.author.handle}</a></p>

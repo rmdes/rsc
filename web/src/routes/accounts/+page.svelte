@@ -1,17 +1,11 @@
 <script lang="ts">
 	import type { PageData } from './$types'
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
 	let { data }: { data: PageData } = $props()
 </script>
 
 <svelte:head><title>Accounts — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>Accounts</h1>
 	<p class="field-hint">Switch between accounts signed in on this browser.</p>
 

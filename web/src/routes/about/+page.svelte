@@ -4,9 +4,6 @@
      reading rhythm. Every claim traces to README.md + the founding design at
      docs/superpowers/specs/2026-07-15-textcaster-design.md — keep roadmap
      items marked as roadmap. -->
-<script lang="ts">
-	import ThemeToggle from '$lib/ThemeToggle.svelte'
-</script>
 
 <svelte:head>
 	<title>About — RSC</title>
@@ -17,11 +14,6 @@
 </svelte:head>
 
 <div class="lens about">
-	<header class="masthead">
-		<a href="/">RSC</a>
-		<ThemeToggle />
-	</header>
-
 	<h1>A social timeline built natively on feeds.</h1>
 
 	<p class="lede">

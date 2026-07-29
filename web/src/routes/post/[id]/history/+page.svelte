@@ -6,7 +6,6 @@
 <svelte:head><title>Edit history — RSC</title></svelte:head>
 
 <div class="lens">
-	<header class="masthead"><a href="/">RSC</a></header>
 	<h1>Edit history</h1>
 	<p><a href="/post/{data.postId}">← back to the post</a></p>
 	<ol class="history">
