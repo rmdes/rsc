@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types'
+	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
@@ -24,6 +25,7 @@
 		{#each data.timeline as post (post.id)}
 			<li class="post" class:remote={post.source === 'remote'}>
 				<div class="byline">
+					<Avatar author={post.author} sourceName={null} />
 					<strong>{post.author.displayName}</strong>
 					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
 					<EditedMarker {post} />

@@ -785,7 +785,9 @@ textarea {
 	cursor: not-allowed;
 }
 
-/* Timeline — a ruled river, not a stack of cards */
+/* Timeline — posts separated by whitespace/proximity (.timeline's gap), not a
+   ruled divider: .post carries no border-bottom. Still not a stack of cards —
+   no card background, border box, radius, or shadow. */
 
 .timeline {
 	list-style: none;
@@ -1336,21 +1338,22 @@ textarea {
 	cursor: progress;
 }
 
-/* Nested replies unfold indented behind a 1px rule, level by level. */
+/* Nested replies unfold indented behind a 1px rule, level by level. Peers
+   inside are whitespace-separated (gap), same treatment as .timeline — .post
+   no longer draws its own border-bottom. */
 
 .replies {
 	list-style: none;
 	margin: var(--space-md) 0 0;
 	padding-left: var(--space-lg);
 	border-left: 1px solid var(--color-border);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-sm);
 }
 
 .replies .post {
 	padding: var(--space-3) 0;
-}
-
-.replies .post:last-child {
-	border-bottom: 0;
 }
 
 .replies .post .byline-name strong {
@@ -1425,6 +1428,7 @@ textarea {
 	font-family: var(--font-heading);
 	font-size: 0.875rem;
 	font-weight: var(--font-heading-weight);
+	letter-spacing: normal;
 	flex: none;
 }
 

@@ -118,11 +118,27 @@ count, the "N more in this conversation" wedge, admin stat captions. Flush left,
 tracked, weight 800. If you are reaching for a rounded chip, you want this
 instead.
 
-One narrow, deliberate exception: the post byline's meta row (kind · date ·
-edited · feed link) drops to weight 400. It sits directly above the author
-name row, in the same byline block, and at 800 the two would compete at
-identical weight instead of reading as a hierarchy; every other use of the
-label elsewhere in the app stays 800.
+One narrow, deliberate exception: `.post .byline` drops to weight 400 — every
+other use of the label elsewhere in the app stays 800. What that row actually
+contains differs by surface, and the weight drop applies to the whole row
+either way:
+
+- **Home river** (`/`): `.byline` holds only the meta (kind · date · edited ·
+  feed link) at weight 400, sitting directly above a separate `.byline-name`
+  row where the display name (`.byline-name strong`, Archivo 800, 18px) and
+  handle live. Splitting meta from name into two rows is what makes the 400
+  read as a hierarchy instead of a competing weight.
+- **Every other byline-rendering surface** (author lens, publisher lens, the
+  conversation/post page, `following`, `ReplyTree`) has no second row: `.byline`
+  is a single row carrying the meta *and* the name/handle together, all
+  inheriting the same weight-400 unless an element sets its own. `.here`,
+  `.edited`/`.edit`/`.post .source`, and `.avatar` each declare an explicit
+  `font-weight: 800` and stay bold regardless of `.byline`'s weight. The plain
+  `<strong>` wrapping the author's name on these single-row surfaces (e.g. the
+  publisher lens's `<strong>{post.author.displayName}</strong>`) has **no**
+  explicit weight rule of its own here — unlike `.byline-name strong` on the
+  home river — so it renders at whatever the browser's default `<strong>`
+  bolding computes against the inherited 400, not a deliberate 800 step.
 
 Everything is flush left — headings, copy, and the labels inside wide buttons.
 Nothing is centred, including the "Show more" clamp affordance and the "Older
@@ -155,9 +171,15 @@ Structure is drawn, not implied by whitespace:
 - **2px `--color-divider`** between major sections: the header nav's underside,
   the boundaries between the three rails, above each rail section heading, the
   river heading, the footer's top, the current revision in edit history.
-- **1px `--color-border`** between peers: rows in the river, table rows,
-  following-list rows, thread nesting rules.
-- Never soften either into a hairline, and never drop one for whitespace.
+- **1px `--color-border`** between peers: table rows, following-list rows,
+  thread nesting rules.
+- Never soften either into a hairline, and never drop one for whitespace —
+  **except** the timeline's post-to-post boundary, a deliberate carve-out:
+  `.post` draws no `border-bottom` at all, and `.timeline` separates its rows
+  with whitespace instead (`gap: var(--space-sm)`). This is the one place a
+  rule is dropped for proximity on purpose; every other peer rule above
+  (section-level 2px rules, table rows, following-list rows, thread nesting)
+  keeps its rule unchanged.
 
 Elevation exists only for things that genuinely float — the composer overlay and
 the slash/emoji popups.
@@ -228,19 +250,27 @@ avatar-harvesting work — see **Avatar** below.
 The flush-left rule is the one most likely to look wrong if skipped — a
 full-width "Subscribe" with a centred label reads as a different system.
 
-### The post — a ruled row, not a card
+### The post — a ruled row, whitespace-separated
 
 This is the largest change in the revision. `.post` is a two-column grid: a 2px
 full-height rule, then the content. No card background, no border box, no
-radius, no shadow, no tint.
+radius, no shadow, no tint — and, since this revision, no ruled bottom edge
+either. `.post` carries no `border-bottom` at all; posts in the river are
+separated from each other by proximity instead, via `.timeline`'s own
+`gap: var(--space-sm)`. The 2px local/remote rule down the left is still a
+rule — only the horizontal divider between posts is gone.
 
 ```css
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
 .post {
   display: grid;
   grid-template-columns: 2px 1fr;
   gap: var(--space-lg);
   padding: var(--space-lg) 0;
-  border-bottom: 1px solid var(--color-border);
   background: none;
 }
 .post::before { content: ''; background: var(--color-primary); }  /* local */
@@ -257,7 +287,7 @@ cannot shift anything.
 
 **Byline, two rows.** First a meta row in the 11px label style (kind · date ·
 edited · feed link, pushed right); then the name row, display name in Archivo
-800 at 17px beside the muted handle. Then title (`h3`, 27px, `max-width: 30ch`),
+800 at 18px beside the muted handle. Then title (`h3`, 27px, `max-width: 30ch`),
 then body (`max-width: 68ch`, `text-wrap: pretty`), then the action row — reply
 count, Reply, Permalink, Edit, Remove — all in the 11px label style.
 
@@ -280,10 +310,15 @@ applied to enclosure images in `PostBody`. A separate, larger profile-style
 avatar for the author-lens page header is still just a roadmap idea, not
 built — don't confuse it with this per-post scanning aid.
 
-**Nested replies.** The 1px indent rule stays. Reply rows inherit the same
-ruled-row treatment; the `.post.stacked::before/::after` peeking card edges are
-deleted (they depended on rounded corners) — a folded conversation unfolds as a
-date-keyed ruled sub-list instead.
+**Nested replies.** The 1px indent rule stays (`.replies`'s `border-left`).
+Reply rows are whitespace-separated from each other the same way top-level
+posts are — `.replies` carries the same `gap: var(--space-sm)` as `.timeline`,
+since `.post` no longer draws its own `border-bottom` for them to rely on. The
+author lens's folded, stacked view is the one exception that keeps a literal
+rule between its rows (`.post.stacked .replies > li`'s own `border-bottom`,
+alongside the same gap) — it is a denser, date-keyed record list rather than
+the ordinary reply river, and the `.post.stacked::before/::after` peeking card
+edges are deleted (they depended on rounded corners).
 
 ### Inputs
 
@@ -526,7 +561,9 @@ real table in the markup, so wide screens and screen readers are unaffected.
 - ❌ **Centred button labels or centred page copy.**
 - ❌ **Pill badges.** Use the 11px uppercase label.
 - ❌ **Cards with shadows** as the river's unit of content. Rules divide; nothing floats.
-- ❌ **Softening a 2px rule to 1px, or replacing a rule with whitespace.**
+- ❌ **Softening a 2px rule to 1px, or replacing a rule with whitespace** —
+  except the timeline's post-to-post boundary, the one deliberate carve-out
+  (see Rules and elevation, above). Don't extend that exception anywhere else.
 - ❌ **Tinted or colourised imagery.** `.grayscale`, always.
 - ❌ **`--color-accent` at paragraph size** — that is `--color-accent-text`.
 - ❌ **White text on an accent fill** — that is `--color-on-accent`.
@@ -545,6 +582,7 @@ real table in the markup, so wide screens and screen readers are unaffected.
 - [ ] No pill badges — meta reads as 11px uppercase flush-left labels
 - [ ] Every wide button's label starts at the left padding edge
 - [ ] 2px rules between sections, 1px between peers; none softened or dropped
+      — except the timeline's post-to-post boundary (whitespace by design)
 - [ ] Accent used at the right weight: fill/icon/label vs body text vs hover
 - [ ] Accent-fill labels use `--color-on-accent`, not white
 - [ ] Dark hover steps *lighter*, not darker
