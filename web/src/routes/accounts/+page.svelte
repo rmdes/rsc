@@ -55,7 +55,7 @@
 		gap: var(--space-sm);
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);
-		border-radius: 8px;
+		border-radius: var(--radius);
 		padding: var(--space-sm) var(--space-md);
 	}
 
@@ -71,19 +71,16 @@
 		margin-right: auto;
 	}
 
-	/* P3: net-new here. Modeled on .badge-kind's "on" variant (accent
-	   outline, uppercase caps) rather than a filled pill — this is a status
-	   label, not a count. */
+	/* P3: net-new here. Matches .badge-kind (app.css): the 11px uppercase
+	   flush-left label, not a pill — this is a status label, not a count. */
 	.badge {
 		display: inline-block;
+		font-family: var(--font-heading);
 		font-size: 0.6875rem;
-		font-weight: 600;
+		font-weight: var(--font-heading-weight);
+		letter-spacing: 0.1em;
 		text-transform: uppercase;
-		letter-spacing: 0.05em;
 		color: var(--color-accent);
-		border: 1px solid currentColor;
-		border-radius: 999px;
-		padding: 0 var(--space-sm);
 	}
 
 	/* Compact row buttons (Switch / Log out), matching the density of
@@ -109,7 +106,7 @@
 		background: var(--color-accent);
 		color: var(--color-on-accent);
 		padding: 10px 20px;
-		border-radius: 8px;
+		border-radius: var(--radius);
 		font-weight: 600;
 		text-decoration: none;
 		cursor: pointer;

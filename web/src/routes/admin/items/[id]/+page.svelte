@@ -251,7 +251,7 @@
 		padding: var(--space-sm);
 		background: var(--color-muted);
 		border: 1px solid var(--color-border);
-		border-radius: 4px;
+		border-radius: var(--radius);
 		font-family: var(--font-mono, monospace);
 		font-size: 0.8125rem;
 		white-space: pre-wrap;
