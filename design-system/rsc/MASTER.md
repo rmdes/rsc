@@ -118,6 +118,12 @@ count, the "N more in this conversation" wedge, admin stat captions. Flush left,
 tracked, weight 800. If you are reaching for a rounded chip, you want this
 instead.
 
+One narrow, deliberate exception: the post byline's meta row (kind · date ·
+edited · feed link) drops to weight 400. It sits on the same line as the
+author name, and at 800 the two would compete at identical weight instead of
+reading as a hierarchy; every other use of the label elsewhere in the app
+stays 800.
+
 Everything is flush left — headings, copy, and the labels inside wide buttons.
 Nothing is centred, including the "Show more" clamp affordance and the "Older
 posts" link.
@@ -264,13 +270,15 @@ deleted along with the tint.
 **Blockquotes** inside a body are display-grade: 2px divider rule on the left,
 Archivo 800 at 19px, `max-width: 44ch`, full-strength ink rather than muted.
 
-**Avatar.** Dropped from the river. The letter avatar was rss.chat's
-`populateAvatar` fallback; unrounded it becomes a square tile that reads as a
-swatch, it is a second marker on the same left edge as the 2px kind rule, and
-the letter merely repeats the name beside it. When feeds start carrying avatars
-(roadmap), reintroduce it as its own 48px grid column — a square portrait
-through `.grayscale` — not as a letter chip. Identity in the meantime lives in
-the name row and on the author lens header.
+**Avatar.** Present in every post's byline: a small (1.75rem), `--radius: 0`
+letter-square carrying the initial of the author's display name (or
+`sourceName` for an aggregate lens) — `rss.chat`'s original `populateAvatar`
+fallback. Feeds carry no avatar images today, so the letter *is* the avatar;
+`Avatar.svelte` stays a plain letter-span until a real image URL turns up, at
+which point it grows an `<img>` branch reusing the `.grayscale` filter already
+applied to enclosure images in `PostBody`. A separate, larger profile-style
+avatar for the author-lens page header is still just a roadmap idea, not
+built — don't confuse it with this per-post scanning aid.
 
 **Nested replies.** The 1px indent rule stays. Reply rows inherit the same
 ruled-row treatment; the `.post.stacked::before/::after` peeking card edges are

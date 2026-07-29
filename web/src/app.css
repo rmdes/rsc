@@ -1407,11 +1407,10 @@ textarea {
 	cursor: pointer;
 }
 
-/* The letter avatar is dropped from the river (MASTER.md → Avatar): unrounded it
-   reads as a swatch, it is a second marker on the same edge as the 2px kind
-   rule, and the letter repeats the name beside it. The class is kept for the
-   author-lens header, and is the slot a real .grayscale portrait grows into at
-   48px when feeds start carrying one. */
+/* Letter avatar (MASTER.md → Avatar): the initial of the author's display
+   name, unrounded per --radius: 0. Feeds carry no avatar images today, so the
+   letter is the avatar; this is the slot a real .grayscale image grows into
+   when feeds start carrying one. */
 
 .avatar {
 	display: inline-flex;
