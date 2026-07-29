@@ -175,6 +175,14 @@ a {
 	margin-right: var(--space-xl);
 }
 
+/* Wraps the river tabs so they can be pulled onto their own always-visible
+   row on mobile (see the 767px query below) without touching desktop at
+   all: display:contents makes the wrapper invisible to the box model here,
+   so the <a> tabs stay direct flex items of .nav exactly as before. */
+.nav-tabs {
+	display: contents;
+}
+
 .nav a:not(.btn) {
 	color: inherit;
 	text-decoration: none;
@@ -190,10 +198,9 @@ a {
 	margin-left: auto;
 }
 
-/* "New post" has two targets (see +layout.svelte) — only one is ever the
-   visible anchor, matching the id its href points at being the only #compose
-   visible at that width. Desktop is the default state; the 767px query below
-   flips it. `.nav` prefix needed to outrank .btn's own display (same
+/* "New post" is a mobile-only shortcut: mobile has no persistently-visible
+   composer to jump to, unlike desktop, where the .tools sidebar composer is
+   already on-screen. `.nav` prefix needed to outrank .btn's own display (same
    specificity, declared later in this file). */
 .nav .new-post-mobile {
 	display: none;
@@ -284,17 +291,24 @@ a {
 		gap: var(--space-md);
 		flex-wrap: wrap;
 	}
-	/* the rivers move into the menu panel; the river names itself on the page */
-	.nav > a:not(.nav-brand):not(.btn):not(.nav-menu-toggle) {
-		display: none;
+	/* Rivers stay directly reachable at every width — quick-switching between
+	   local/federated/personal/public is a primary, frequent action, not
+	   secondary chrome to bury behind a menu tap. Forced onto its own full
+	   line via flex-basis so it doesn't jostle for space with New post /
+	   AccountMenu / Menu on line one. */
+	.nav-tabs {
+		display: flex;
+		order: 10;
+		flex: 1 0 100%;
+		gap: var(--space-md);
+		overflow-x: auto;
+		padding-top: var(--space-sm);
+		margin-top: var(--space-sm);
+		border-top: 1px solid var(--color-border);
 	}
-	/* collapsed header holds exactly three things — brand, New post, Menu —
-	   so the icon toggle hides here; the segmented one in the panel covers it */
-	.nav > .theme-toggle {
-		display: none;
-	}
-	.nav .new-post-desktop {
-		display: none;
+	.nav-tabs a {
+		flex-shrink: 0;
+		padding: var(--space-xs) 0;
 	}
 	.nav .new-post-mobile {
 		display: inline-flex;
@@ -462,47 +476,14 @@ a {
 	color: var(--color-accent);
 }
 
-/* River entries: display-grade, flush left, one per ruled row. The current
-   river is a solid accent cell — the segmented-control treatment — and says so
-   in words too, never colour alone. */
-.nav-menu-rivers a {
-	display: flex;
-	align-items: baseline;
-	justify-content: space-between;
-	gap: var(--space-3);
-	min-height: 56px;
-	padding: var(--space-3) var(--space-md);
-	border-top: 1px solid var(--color-border);
-	font-family: var(--font-heading);
-	font-weight: var(--font-heading-weight);
-	font-size: 1.375rem;
-	letter-spacing: -0.015em;
-	color: var(--color-foreground);
-	text-decoration: none;
-}
-
-.nav-menu-rivers a[aria-current='page'] {
-	background: var(--color-accent);
-	color: var(--color-on-accent);
-}
-
-.nav-menu-rivers .n {
-	font-family: var(--font-body);
-	font-weight: 400;
-	font-size: 0.6875rem;
-	letter-spacing: 0.1em;
-	text-transform: uppercase;
-	color: inherit;
-	opacity: 0.7;
-}
-
 /* Ordinary menu rows — sources, account, links. */
 .nav-menu-list {
 	display: flex;
 	flex-direction: column;
 }
 
-.nav-menu-list a {
+.nav-menu-list a,
+.nav-menu-list button {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -514,12 +495,41 @@ a {
 	font-size: 0.9375rem;
 }
 
-.nav-menu-list a:last-child {
+.nav-menu-list button {
+	width: 100%;
+	padding: 0;
+	background: none;
+	border: 0;
+	border-bottom: 1px solid var(--color-border);
+	font: inherit;
+	font-size: 0.875rem;
+	text-align: left;
+	cursor: pointer;
+}
+
+/* Same tie as .theme-segmented button above: `.nav-menu-list button` and the
+   generic `button:hover` (app-wide) are equal specificity, so the LATER one
+   in the file was winning and painting a full-width accent-orange bar behind
+   the (width: 100%) Log-out row on hover. A dedicated override, not just
+   source-order luck. */
+.nav-menu-list button:hover,
+.nav-menu-list button:active {
+	background: none;
+}
+
+.nav-menu-list a:last-child,
+.nav-menu-list button:last-child {
 	border-bottom: 0;
 }
 
-.nav-menu-list a.destructive {
+.nav-menu-list a.destructive,
+.nav-menu-list button.destructive {
 	color: var(--color-destructive);
+}
+
+.nav-menu-list a.accent {
+	color: var(--color-accent-text);
+	font-weight: 600;
 }
 
 .nav-menu-identity {
@@ -529,41 +539,80 @@ a {
 	letter-spacing: -0.015em;
 }
 
-/* Identity bar — global strip above the nav. Three states: guest nudge,
-   anonymous (handle + register CTA), registered (name + logout). */
-
-.identity-bar {
-	background: transparent;
-	border-bottom: 1px solid var(--color-border);
+/* Account menu — the one control carrying identity/settings/admin/theme
+   content at every width. Unlike .nav-menu, this is never display:none'd —
+   that asymmetry was the actual bug (Admin was unreachable on desktop
+   because its only trigger only existed below 768px). */
+.account-menu {
+	position: relative;
+	margin-left: auto;
 }
 
-.identity-bar > div {
-	padding: var(--space-sm) var(--space-md);
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--space-3);
-	font-size: 0.75rem;
-	color: var(--color-secondary);
+.account-menu-guest {
+	font-size: 0.875rem;
 }
 
-.identity-bar .handle {
-	color: var(--color-foreground);
-	font-weight: 600;
+.account-menu-guest a {
+	color: inherit;
 	text-decoration: none;
 }
 
-.identity-bar .identity-cta {
-	color: var(--color-accent-text);
+.account-menu-guest a:hover {
+	color: var(--color-accent);
+}
+
+.account-menu-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-xs);
+	min-height: 44px;
+	max-width: 12rem;
+	font-size: 0.875rem;
 	font-weight: 600;
+	color: var(--color-foreground);
+	cursor: pointer;
 }
 
-.identity-bar .logout-form {
-	margin: 0;
-	margin-inline-start: auto;
+/* On a flex container, text-overflow doesn't apply to the raw text node the
+   way it would in a block context — it needs its own block/inline-block box
+   to ellipsize and to shrink below its content size. */
+.account-menu-handle {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
 }
 
-/* Site footer (mirror of the identity bar; carries the About link) */
+.account-menu[open] .account-menu-toggle {
+	color: var(--color-accent);
+}
+
+.account-menu-dot {
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--color-accent);
+	flex-shrink: 0;
+}
+
+.account-menu-panel {
+	position: absolute;
+	top: 100%;
+	right: 0;
+	z-index: 10;
+	min-width: 14rem;
+	background: var(--color-background);
+	border: 1px solid var(--color-divider);
+}
+
+/* The panel's own 1px border plus the first group's 2px border-top would
+   otherwise stack into a heavy 3px double rule at the top of the dropdown. */
+.account-menu-panel > .nav-menu-group:first-child {
+	border-top: 0;
+}
+
+/* Site footer — label-style row; carries the About link */
 
 .site-footer {
 	display: flex;
