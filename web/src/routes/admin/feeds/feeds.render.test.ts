@@ -268,7 +268,11 @@ test('the tombstone-unblock form renders its own confirm-gate with the distinct 
 		establishCommandId: 'establish-1'
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
-	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	// Task 7 added an always-present bulk-unblock confirm-gate ABOVE the
+	// per-row list, so with one tombstone there are now two `.confirm-gate`s
+	// in the document — the row's own is the LAST one.
+	const gateStart = body.lastIndexOf('class="confirm-gate')
+	const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
 	expect(detailsChunk).toContain('lifts the URL reservation')
 	expect(detailsChunk).toContain('Confirm unblock')
 })
@@ -434,7 +438,11 @@ test('a reapable orphan row renders exactly one plain Reap form, no force varian
 	expect(body).toContain('name="sourceId" value="orph1"')
 	expect(body).toContain('name="commandId" value="orph-cmd-1"')
 	expect(body).not.toContain('name="force"')
-	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	// Task 7 added an always-present bulk-reap confirm-gate ABOVE the
+	// per-row list, so with one orphan row there are now two
+	// `.confirm-gate`s in the document — the row's own is the LAST one.
+	const gateStart = body.lastIndexOf('class="confirm-gate')
+	const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
 	expect(detailsChunk).toContain('Confirm reap')
 })
 
