@@ -22,12 +22,17 @@
 	// that now spans five actions.
 	// Task 7 adds bulkReap's/bulkTombstone's own per-row outcome arrays —
 	// same reasoning, now seven actions deep.
+	// Task 9's inlined refresh/purge add `purge`/`purged` — the same two markers
+	// the standalone /admin/sources/[sourceId] page reads to tell WHICH of its
+	// two forms a returned commandId belongs to.
 	type RetryFail = {
 		sourceId?: string
 		action?: string
 		commandId?: string
 		tombstoneId?: string
 		force?: boolean
+		purge?: boolean
+		purged?: boolean
 		bulkResults?: { sourceId: string; ok: boolean; error?: string }[]
 		bulkAction?: string
 		bulkReapResults?: { sourceId: string; ok: boolean; error?: string }[]
@@ -171,6 +176,31 @@
 	// separate from `expand` (federation member-list) — a federation row can
 	// legitimately want both open at once.
 	const detail = $derived(data.detail?.sourceId ?? null)
+
+	// Command-id retention for the inline panel's two forms (design §11), the
+	// same pinning /admin/sources/[sourceId]/+page.svelte does with its own
+	// `commandId`/`purgeCommandId` $deriveds: loadSourceDetail mints a fresh
+	// uuid on EVERY load, so a re-render after a 202/refusal/blip has to reuse
+	// the id that was submitted — otherwise a retry mints a new command instead
+	// of replaying the original (a duplicate acquisition run, or a second
+	// audited purge). Unlike the standalone route, this page's `form` union
+	// spans seven actions, so refresh is identified POSITIVELY: it echoes
+	// sourceId+commandId for the open panel and carries none of the other
+	// actions' discriminators (source's `action`, reap's `force`, tombstone's
+	// `tombstoneId`, purge's `purge`/`purged`) — a failed block on the same row
+	// must not poison the refresh form's id.
+	const detailRefreshRetry = $derived(
+		retryFail?.commandId &&
+			retryFail.sourceId === detail &&
+			!retryFail.action &&
+			retryFail.force === undefined &&
+			!retryFail.tombstoneId &&
+			!retryFail.purge &&
+			!retryFail.purged
+			? retryFail.commandId
+			: undefined
+	)
+	const detailPurgeRetry = $derived((retryFail?.purge || retryFail?.purged) && retryFail.commandId ? retryFail.commandId : undefined)
 </script>
 
 <svelte:head><title>Admin — Sources — RSC</title></svelte:head>
@@ -349,7 +379,7 @@
 								<h4>Source acquisition</h4>
 								<form method="POST" action="?/refresh{otherParams() ? `&${otherParams()}` : ''}" use:enhance>
 									<input type="hidden" name="sourceId" value={data.detail.sourceId} />
-									<input type="hidden" name="commandId" value={data.detail.refreshCommandId} />
+									<input type="hidden" name="commandId" value={detailRefreshRetry ?? data.detail.refreshCommandId} />
 									<button>Refresh now</button>
 								</form>
 								{#if data.detail.latestRun}
@@ -370,7 +400,7 @@
 								{#if data.detail.purgeEligible}
 									<form method="POST" action="?/purge{otherParams() ? `&${otherParams()}` : ''}" class="source-action destructive" use:enhance>
 										<input type="hidden" name="sourceId" value={data.detail.sourceId} />
-										<input type="hidden" name="commandId" value={data.detail.purgeCommandId} />
+										<input type="hidden" name="commandId" value={detailPurgeRetry ?? data.detail.purgeCommandId} />
 										<label class="visually-hidden" for="detail-purge-cat">Moderation category</label>
 										<select id="detail-purge-cat" name="category" required>
 											{#each data.detail.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}

@@ -358,6 +358,56 @@ test('the inline panel\'s refresh and purge forms forward ?detail= so the panel 
 	expect(panelChunk).toContain('action="?/purge&amp;detail=inst1"')
 })
 
+// Design §11 (idempotent commandId), the same pinning the standalone
+// /admin/sources/[sourceId] route does with its own `$derived` commandId /
+// purgeCommandId: loadSourceDetail mints a FRESH uuid on every load, so a
+// re-render after a 202/refusal/blip must pin the id that was actually
+// SUBMITTED — otherwise the retry mints a new command instead of replaying the
+// original, risking a duplicate acquisition run or a second audited purge.
+function detailPanelOf(body: string): string {
+	return body.slice(body.indexOf('class="detail-panel'))
+}
+
+function inlineDetailData(over: Record<string, unknown> = {}) {
+	return {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1',
+		detail: detailData(),
+		...over
+	}
+}
+
+test('a still-processing (202) refresh from the inline panel pins the SUBMITTED commandId, so the "check again" resubmit replays the original run', () => {
+	const form = { sourceId: 'inst1', commandId: 'submitted-refresh', polling: true }
+	const panel = detailPanelOf(render(Page, { props: { data: inlineDetailData(), form } } as never).body)
+	expect(panel).toContain('name="commandId" value="submitted-refresh"')
+	expect(panel).not.toContain('value="refresh-1"') // never the freshly-minted one
+})
+
+test('a refused purge from the inline panel pins the purge form\'s submitted commandId and leaves refresh\'s own id untouched', () => {
+	const form = { commandId: 'submitted-purge', purge: true, error: 'source not blocked' }
+	const panel = detailPanelOf(render(Page, { props: { data: inlineDetailData(), form } } as never).body)
+	const purgeStart = panel.indexOf('action="?/purge')
+	expect(panel.slice(purgeStart)).toContain('name="commandId" value="submitted-purge"')
+	// the refresh form above keeps its OWN id — a purge result must not poison it
+	expect(panel.slice(0, purgeStart)).toContain('name="commandId" value="refresh-1"')
+})
+
+test('another action\'s failure (a per-row block) does not poison the inline panel\'s refresh commandId', () => {
+	const form = { sourceId: 'inst1', action: 'block', commandId: 'block-cmd-1', error: 'invalid transition' }
+	const panel = detailPanelOf(render(Page, { props: { data: inlineDetailData(), form } } as never).body)
+	expect(panel).toContain('name="commandId" value="refresh-1"')
+	expect(panel).not.toContain('value="block-cmd-1"')
+})
+
 test('no ?detail= (data.detail null) renders no inline detail panel for any row', () => {
 	const data = {
 		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
