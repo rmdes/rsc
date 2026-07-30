@@ -209,6 +209,70 @@ test('every row, ordinary and nested member alike, links to its own source detai
 	expect(body).toContain('href="/admin/sources/mem1"')
 })
 
+test('a block form with a consequence renders a collapsed <details> disclosure, not an always-visible confirm button', () => {
+	const row = baseRow({ actions: [{ action: 'block', commandId: 'block-cmd-1' }] })
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	// The consequence text and the actual submit button live INSIDE a
+	// <details>, collapsed by default — not sitting next to an always-active
+	// submit button (the old double-confirm shape).
+	expect(body).toContain('class="confirm-gate')
+	expect(body).toContain('Blocking stops all acquisition')
+	expect(body).toContain('Confirm block')
+	// The <summary> (always visible, collapsed state) carries the plain action label.
+	expect(body).toContain('class="action-name')
+	expect(body).toContain('>Block<')
+})
+
+test('an action with no stated consequence (pause) has no confirm-gate at all — direct submit', () => {
+	const row = baseRow({ actions: [{ action: 'pause', commandId: 'pause-cmd-1' }] })
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('class="confirm-gate')
+	expect(body).toContain('>Pause acquisition<')
+})
+
+test('the tombstone-unblock form renders its own confirm-gate with the distinct tombstone consequence', () => {
+	const data = {
+		groups: [],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [{ id: 't1', canonicalUrl: 'https://gone.test/t1.xml', action: 'block', category: 'spam', note: '', createdAt: '2026-07-01T00:00:00Z', aliases: [], commandId: 'tomb-cmd-1' }],
+		tombstoneConsequence: 'Unblocking this tombstone lifts the URL reservation so the URL can be created again. Nothing is restored.',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('class="confirm-gate')
+	expect(body).toContain('lifts the URL reservation')
+	expect(body).toContain('Confirm unblock')
+})
+
 // --- Task 4: search box, addedBy, the orphan group, the two-step reap confirm ---
 
 test('the search box echoes the current q and offers a Clear link only when q is set', () => {

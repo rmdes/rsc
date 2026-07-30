@@ -247,13 +247,11 @@
 					action="?/source{qs ? `&${qs}` : ''}"
 					class="source-action"
 					class:destructive={a.action === 'block'}
-					use:enhance={consequence ? confirmSubmit(`${consequence} Continue?`) : undefined}
+					use:enhance
 				>
 					<input type="hidden" name="sourceId" value={row.id} />
 					<input type="hidden" name="action" value={a.action} />
 					<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
-					<span class="action-name">{LABEL[a.action]}</span>
-					{#if consequence}<p class="consequence">{consequence}</p>{/if}
 					{#if a.action === 'attribution-mode'}
 						<label class="visually-hidden" for="mode-{scope}{row.id}">Attribution mode</label>
 						<select id="mode-{scope}{row.id}" name="attributionMode">
@@ -269,7 +267,16 @@
 					{/if}
 					<label class="visually-hidden" for="note-{scope}{row.id}-{a.action}">Note (optional)</label>
 					<input id="note-{scope}{row.id}-{a.action}" name="note" placeholder="note (optional)" />
-					<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
+					{#if consequence}
+						<details class="confirm-gate">
+							<summary><span class="action-name">{LABEL[a.action]}</span></summary>
+							<p class="consequence">{consequence}</p>
+							<button aria-label="Confirm {LABEL[a.action]} — {row.url}">Confirm {LABEL[a.action].toLowerCase()}</button>
+						</details>
+					{:else}
+						<span class="action-name">{LABEL[a.action]}</span>
+						<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
+					{/if}
 				</form>
 			{/each}
 		</div>
@@ -378,17 +385,20 @@
 						{#if t.aliases.length}<span class="subnav feed-url">aliases: {t.aliases.join(', ')}</span>{/if}
 						{#if t.note}<span class="subnav">{t.note}</span>{/if}
 					</div>
-					<form method="POST" action="?/tombstone{tombstoneQs ? `&${tombstoneQs}` : ''}" class="source-action" use:enhance={confirmSubmit(`${data.tombstoneConsequence} Continue?`)}>
+					<form method="POST" action="?/tombstone{tombstoneQs ? `&${tombstoneQs}` : ''}" class="source-action" use:enhance>
 						<input type="hidden" name="tombstoneId" value={t.id} />
 						<input type="hidden" name="commandId" value={retryCommandId ?? t.commandId} />
-						<p class="consequence">{data.tombstoneConsequence}</p>
 						<label class="visually-hidden" for="tomb-cat-{t.id}">Moderation category</label>
 						<select id="tomb-cat-{t.id}" name="category" required>
 							{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
 						</select>
 						<label class="visually-hidden" for="tomb-note-{t.id}">Note (optional)</label>
 						<input id="tomb-note-{t.id}" name="note" placeholder="note (optional)" />
-						<button aria-label="Unblock {t.canonicalUrl}">Unblock URL</button>
+						<details class="confirm-gate">
+							<summary><span class="action-name">Unblock URL</span></summary>
+							<p class="consequence">{data.tombstoneConsequence}</p>
+							<button aria-label="Confirm unblock — {t.canonicalUrl}">Confirm unblock</button>
+						</details>
 					</form>
 				</li>
 			{/each}
@@ -481,6 +491,23 @@
 		margin: 0;
 		color: var(--color-secondary);
 		font-size: 0.8125rem;
+	}
+
+	.confirm-gate summary {
+		cursor: pointer;
+		list-style: none;
+	}
+
+	.confirm-gate summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.confirm-gate[open] summary .action-name {
+		color: var(--color-secondary);
+	}
+
+	.confirm-gate .consequence {
+		margin: var(--space-sm) 0;
 	}
 
 	/* A one-line search bar, not the stacked .add-remote layout: input grows,
