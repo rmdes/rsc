@@ -388,5 +388,42 @@ export const actions: Actions = {
 			return fail(400, { error: err instanceof Error ? err.message : 'reap failed', sourceId, commandId, force })
 		}
 		return { reaped: true }
+	},
+	// Bulk governance transitions across N rows in one submit. Reuses each
+	// row's OWN already-minted commandId (from toRow's actions[], the exact
+	// same id a lone submit of that row would use) — no new idempotency
+	// scheme, no batch-wide id. attribution-mode is excluded: it's the one
+	// action needing a per-row-meaningful extra field (the new mode) that
+	// doesn't generalize to "the same value for every selected row" without
+	// design this spec never scoped.
+	bulkSource: async (event) => {
+		const form = await event.request.formData()
+		const action = String(form.get('action') ?? '')
+		const sourceIds = form.getAll('sourceId').map(String)
+		const commandIds = form.getAll('commandId').map(String)
+		if (!ACTIONS.includes(action as SourceAction) || action === 'attribution-mode') return fail(400, { error: 'unknown or unsupported bulk action' })
+		if (sourceIds.length === 0) return { bulkResults: [], bulkAction: action }
+		if (sourceIds.length !== commandIds.length) return fail(400, { error: 'sourceId/commandId length mismatch' })
+		const category = String(form.get('category') ?? '').trim()
+		const note = String(form.get('note') ?? '').trim()
+		if (!category && !CATEGORY_OPTIONAL.has(action)) return fail(400, { error: 'a moderation category is required' })
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkResults = await Promise.all(
+			sourceIds.map(async (sourceId, i) => {
+				const commandId = commandIds[i]
+				try {
+					const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/${action}`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ commandId, ...(category ? { category } : {}), ...(note ? { note } : {}) })
+					})
+					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, `${action} failed`) }
+					return { sourceId, ok: true }
+				} catch (err) {
+					return { sourceId, ok: false, error: err instanceof Error ? err.message : `${action} failed` }
+				}
+			})
+		)
+		return { bulkResults, bulkAction: action }
 	}
 }

@@ -219,6 +219,89 @@ test("core's two distinct conflicts reach the admin verbatim", async () => {
 	expect((res as { data: { error: string } }).data.error).toBe('invalid transition')
 })
 
+test('bulkSource posts the same per-source endpoint once per row, using each row\'s OWN commandId, and returns per-row outcomes', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/s1/quarantine')) return new Response(JSON.stringify({ source: {} }), { status: 200 })
+		if (u.includes('/s2/quarantine')) return new Response(JSON.stringify({ error: 'invalid transition' }), { status: 409 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const form = new URLSearchParams()
+	form.append('action', 'quarantine')
+	form.append('sourceId', 's1')
+	form.append('commandId', 'cmd-s1')
+	form.append('sourceId', 's2')
+	form.append('commandId', 'cmd-s2')
+	form.append('category', 'spam')
+	const res = (await actions.bulkSource({
+		request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }),
+		fetch,
+		url: new URL('http://x/admin/feeds'),
+		cookies
+	} as never)) as { bulkResults: { sourceId: string; ok: boolean; error?: string }[]; bulkAction: string }
+	expect(res.bulkAction).toBe('quarantine')
+	expect(res.bulkResults).toEqual([
+		{ sourceId: 's1', ok: true },
+		{ sourceId: 's2', ok: false, error: 'invalid transition' }
+	])
+	expect(fetch).toHaveBeenCalledTimes(2)
+	const [s1Url, s1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('/s1/'))! as unknown as [string, RequestInit]
+	expect(s1Url).toContain('/admin/sources/s1/quarantine')
+	expect(JSON.parse(String(s1Init.body))).toEqual({ commandId: 'cmd-s1', category: 'spam' })
+})
+
+test('bulkSource refuses attribution-mode and unknown actions without calling core', async () => {
+	const fetch = vi.fn()
+	for (const action of ['attribution-mode', 'constructor', 'purge']) {
+		const form = new URLSearchParams()
+		form.append('action', action)
+		form.append('sourceId', 's1')
+		form.append('commandId', 'cmd-1')
+		form.append('category', 'spam')
+		const res = await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
+		expect(res).toMatchObject({ status: 400 })
+	}
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkSource with zero selected sourceIds is a no-op, not an error', async () => {
+	const fetch = vi.fn()
+	const form = new URLSearchParams()
+	form.append('action', 'quarantine')
+	const res = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: unknown[] }
+	expect(res.bulkResults).toEqual([])
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkSource refuses a sourceId/commandId length mismatch without calling core', async () => {
+	const fetch = vi.fn()
+	const form = new URLSearchParams()
+	form.append('action', 'quarantine')
+	form.append('sourceId', 's1')
+	form.append('sourceId', 's2')
+	form.append('commandId', 'cmd-1')
+	form.append('category', 'spam')
+	const res = await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
+	expect(res).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkSource requires a category unless every action is pause/resume', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
+	const withoutCategory = new URLSearchParams()
+	withoutCategory.append('action', 'quarantine')
+	withoutCategory.append('sourceId', 's1')
+	withoutCategory.append('commandId', 'cmd-1')
+	expect(await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: withoutCategory }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)).toMatchObject({ status: 400 })
+
+	const pauseForm = new URLSearchParams()
+	pauseForm.append('action', 'pause')
+	pauseForm.append('sourceId', 's1')
+	pauseForm.append('commandId', 'cmd-1')
+	const pauseRes = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: pauseForm }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: { ok: boolean }[] }
+	expect(pauseRes.bulkResults[0].ok).toBe(true)
+})
+
 test('establish federation posts fixed aggregate/operator_policy with the url, note and command id', async () => {
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ source: {}, federation: {} }), { status: 201 }))
 	const res = await actions.establish(
