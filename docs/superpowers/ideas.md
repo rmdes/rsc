@@ -2290,3 +2290,13 @@ to prevent re-discovery + duplicate work when avatar harvesting lands.
 **Tradeoff.** None — deferral is pure clarity (ship what's reachable, defer dead
 code until its caller exists). Restore-from-git when needed; the branch is
 already written and tested.
+
+---
+
+## About sidebar section
+
+Allow the admin to replace the text in the sidebar about section with its own text and links, format markdown accepted
+
+## About page
+
+Move the about page to the rsc-site repository, replace the about footer link with a link to landing page of RSC : https://rmdes.be
