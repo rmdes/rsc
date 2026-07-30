@@ -161,16 +161,16 @@
 	// attribution-mode is never bulk-eligible: it carries a per-row-meaningful
 	// extra field that doesn't generalize to N rows.
 	function bulkActions(group: PageData['groups'][number]): string[] {
-		const chosen = group.rows.filter((r) => selected[group.key]?.has(r.id))
-		const union = [...new Set(group.rows.flatMap((r) => r.actions.map((a) => a.action)))].filter((a) => a !== 'attribution-mode')
+		// Nested federation-member rows (data.expandedMembers) render inside
+		// the federation group's section (whichever instance is ?expand=ed)
+		// and share ITS toolbar/form via form="bulk-federation" — they're the
+		// only rows outside group.rows a bulk panel ever needs to see, and
+		// only for group 'federation' (no other group ever nests members).
+		const candidateRows = group.key === 'federation' ? [...group.rows, ...data.expandedMembers] : group.rows
+		const chosen = candidateRows.filter((r) => selected[group.key]?.has(r.id))
+		const union = [...new Set(candidateRows.flatMap((r) => r.actions.map((a) => a.action)))].filter((a) => a !== 'attribution-mode')
 		return chosen.length ? union.filter((a) => chosen.every((r) => r.actions.some((x) => x.action === a))) : union
 	}
-
-	// Shared by every row's Manage panel, ordinary or nested member (C1 fix):
-	// a member row's `actions` is computed by the SAME toRow() as an ordinary
-	// row, so the panel — and the forms it renders — are identical, not a
-	// re-derivation.
-	type Row = PageData['expandedMembers'][number]
 
 	// Task 9: which row's inline ?detail= panel is open, if any. Deliberately
 	// separate from `expand` (federation member-list) — a federation row can
@@ -362,29 +362,59 @@
 							{#if expanded}
 								<ul class="following-list source-list member-list">
 									{#each data.expandedMembers as m (m.id)}
+										{@const memberAttrRetry = retryFail?.sourceId === m.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
 										<li>
-											<div class="feed-info">
-												<strong class="feed-url">{m.url}</strong>
-												<span>
-													<span class="badge-kind">{m.governance}</span>
-													<span class="badge-kind">{m.operation}</span>
-													{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
-												</span>
-												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
-												{#if m.addedBy.length}
-													{@const extra = Math.max(0, m.subscriberTotal - m.addedBy.length)}
-													<p class="subnav hint">Added by {m.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
-												{/if}
-												<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
+											<div class="row-head">
+												<label class="row-select">
+													<input
+														type="checkbox"
+														name="candidate"
+														value="{m.id}|{m.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+														form="bulk-{group.key}"
+														checked={selected[group.key]?.has(m.id) ?? false}
+														onchange={() => toggleSelected(group.key, m.id)}
+													/>
+													<span class="visually-hidden">Select {m.url}</span>
+												</label>
+												<div class="feed-info">
+													<strong class="feed-url">{m.url}</strong>
+													<span>
+														<span class="badge-kind">{m.governance}</span>
+														<span class="badge-kind">{m.operation}</span>
+														{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
+													</span>
+													{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
+													{#if m.addedBy.length}
+														{@const extra = Math.max(0, m.subscriberTotal - m.addedBy.length)}
+														<p class="subnav hint">Added by {m.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
+													{/if}
+													<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
+												</div>
 											</div>
-											{@render managePanel(m, 'm-')}
+											<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
+												<input type="hidden" name="sourceId" value={m.id} />
+												<input type="hidden" name="action" value="attribution-mode" />
+												<input type="hidden" name="commandId" value={memberAttrRetry ?? m.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
+												<label class="visually-hidden" for="attr-mode-{m.id}">Attribution mode</label>
+												<select id="attr-mode-{m.id}" name="attributionMode">
+													<option value="single_publisher">single publisher</option>
+													<option value="aggregate">aggregate</option>
+												</select>
+												<label class="visually-hidden" for="attr-cat-{m.id}">Moderation category</label>
+												<select id="attr-cat-{m.id}" name="category" required>
+													{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+												</select>
+												<label class="visually-hidden" for="attr-note-{m.id}">Note (optional)</label>
+												<input id="attr-note-{m.id}" name="note" placeholder="note (optional)" />
+												<button aria-label="Change attribution mode — {m.url}">Change attribution mode</button>
+											</form>
 										</li>
 									{/each}
 								</ul>
 							{/if}
 						{/if}
-						{@render managePanel(row)}
 						{#if detail === row.id && data.detail}
+							{@const attrRetry = retryFail?.sourceId === row.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
 							<section class="detail-panel">
 								<h4>Source acquisition</h4>
 								<form method="POST" action="?/refresh{otherParams() ? `&${otherParams()}` : ''}" use:enhance>
@@ -407,6 +437,23 @@
 										{/each}
 									</ul>
 								{/if}
+								<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
+									<input type="hidden" name="sourceId" value={row.id} />
+									<input type="hidden" name="action" value="attribution-mode" />
+									<input type="hidden" name="commandId" value={attrRetry ?? row.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
+									<label class="visually-hidden" for="detail-attr-mode">Attribution mode</label>
+									<select id="detail-attr-mode" name="attributionMode">
+										<option value="single_publisher">single publisher</option>
+										<option value="aggregate">aggregate</option>
+									</select>
+									<label class="visually-hidden" for="detail-attr-cat">Moderation category</label>
+									<select id="detail-attr-cat" name="category" required>
+										{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+									</select>
+									<label class="visually-hidden" for="detail-attr-note">Note (optional)</label>
+									<input id="detail-attr-note" name="note" placeholder="note (optional)" />
+									<button>Change attribution mode</button>
+								</form>
 								{#if data.detail.purgeEligible}
 									<form method="POST" action="?/purge{otherParams() ? `&${otherParams()}` : ''}" class="source-action destructive" use:enhance>
 										<input type="hidden" name="sourceId" value={data.detail.sourceId} />
@@ -430,62 +477,6 @@
 		{/if}
 	</section>
 {/each}
-
-<!-- C1 fix: the Manage panel is shared verbatim between an ordinary row and
-     a nested member row — both carry the same `actions` shape from toRow(),
-     so a member is moderated through the exact same forms, not a separate
-     read-only view. `expand` is carried forward alongside `cursor` so acting
-     on a member doesn't collapse its instance's expansion.
-     N1 fix: a blocked member renders twice (flat + nested in expanded instance),
-     so we add a scope discriminator to prevent duplicate DOM ids. -->
-{#snippet managePanel(row: Row, scope = '')}
-	{@const qs = otherParams()}
-	<details class="panel">
-		<summary aria-label="Manage {row.url}">Manage</summary>
-		<div class="source-actions">
-			{#each row.actions as a (a.action)}
-				{@const consequence = CONSEQUENCE[a.action]}
-				{@const retryCommandId = retryFail?.sourceId === row.id && retryFail?.action === a.action ? retryFail.commandId : undefined}
-				<form
-					method="POST"
-					action="?/source{qs ? `&${qs}` : ''}"
-					class="source-action"
-					class:destructive={a.action === 'block'}
-					use:enhance
-				>
-					<input type="hidden" name="sourceId" value={row.id} />
-					<input type="hidden" name="action" value={a.action} />
-					<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
-					{#if a.action === 'attribution-mode'}
-						<label class="visually-hidden" for="mode-{scope}{row.id}">Attribution mode</label>
-						<select id="mode-{scope}{row.id}" name="attributionMode">
-							<option value="single_publisher">single publisher</option>
-							<option value="aggregate">aggregate</option>
-						</select>
-					{/if}
-					{#if a.action !== 'pause' && a.action !== 'resume'}
-						<label class="visually-hidden" for="cat-{scope}{row.id}-{a.action}">Moderation category</label>
-						<select id="cat-{scope}{row.id}-{a.action}" name="category" required>
-							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-						</select>
-					{/if}
-					<label class="visually-hidden" for="note-{scope}{row.id}-{a.action}">Note (optional)</label>
-					<input id="note-{scope}{row.id}-{a.action}" name="note" placeholder="note (optional)" />
-					{#if consequence}
-						<details class="confirm-gate">
-							<summary><span class="action-name">{LABEL[a.action]}</span></summary>
-							<p class="consequence">{consequence}</p>
-							<button aria-label="Confirm {LABEL[a.action]} — {row.url}">Confirm {LABEL[a.action].toLowerCase()}</button>
-						</details>
-					{:else}
-						<span class="action-name">{LABEL[a.action]}</span>
-						<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
-					{/if}
-				</form>
-			{/each}
-		</div>
-	</details>
-{/snippet}
 
 {#if data.nextCursor}
 	{@const qs = [`cursor=${encodeURIComponent(data.nextCursor)}`, otherParams(new Set(['cursor']))].filter(Boolean).join('&')}
@@ -814,12 +805,6 @@
 
 	.bulk-outcomes .error {
 		color: var(--color-destructive);
-	}
-
-	.source-actions {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-md);
 	}
 
 	.source-action {
