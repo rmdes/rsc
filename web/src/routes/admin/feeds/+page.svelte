@@ -235,7 +235,7 @@
 				<span class="bulk-blurb-text">{group.blurb}</span>
 				<span class="bulk-tools">
 					{#if (selected[group.key]?.size ?? 0) > 0}<span>{selected[group.key]?.size} selected ·</span>{/if}
-					{#each bulkVerbs as actionName (actionName)}
+					{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
 						<button name="action" value={actionName}>{LABEL[actionName]}</button>
 					{/each}
 					{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
@@ -246,6 +246,20 @@
 					{/if}
 				</span>
 			</p>
+			<!-- The two verbs with a STATED consequence (block/unblock) are gated
+			     exactly as the per-row managePanel gates them — same CONSEQUENCE
+			     key, same reveal-to-confirm — so blocking N sources in one click
+			     can't be the one destructive path that skips the confirmation a
+			     single-row block requires (design §10). A sibling of the <p>, not
+			     inside it: <details> is not phrasing content, and this is the
+			     shape the orphan/tombstone/users bulk bars already use. -->
+			{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
+				<details class="confirm-gate">
+					<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
+					<p class="consequence">{CONSEQUENCE[actionName]}</p>
+					<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
+				</details>
+			{/each}
 		</form>
 		{#if group.rows.length === 0}
 			<p class="subnav">None.</p>
@@ -711,8 +725,10 @@
 	}
 
 	/* Same outline treatment as .source-action button: a bulk verb is no more
-	   a page CTA than a single-row one. */
-	.bulk-blurb button {
+	   a page CTA than a single-row one. Scoped to the whole bar, not just the
+	   blurb row, so a verb behind a confirm-gate (block/unblock, and the
+	   orphan/tombstone bars' own gated verbs) matches its ungated siblings. */
+	.bulk-bar button {
 		background: transparent;
 		color: var(--color-foreground);
 		border: 1px solid var(--color-border);

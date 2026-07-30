@@ -233,7 +233,11 @@ test('a block form with a consequence renders a collapsed <details> disclosure, 
 	// The consequence text and the actual submit button live INSIDE a
 	// <details>, collapsed by default — not sitting next to an always-active
 	// submit button (the old double-confirm shape).
-	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	// The group's bulk toolbar now gates block behind a confirm-gate of its own
+	// ABOVE the row list, so with one block-capable row there are two
+	// `.confirm-gate`s in the document — the row's own is the LAST one.
+	const gateStart = body.lastIndexOf('class="confirm-gate')
+	const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
 	expect(detailsChunk).toContain('Blocking stops all acquisition')
 	expect(detailsChunk).toContain('Confirm block')
 	// The <summary> (always visible, collapsed state) carries the plain action label.
@@ -620,6 +624,65 @@ test('the bulk toolbar offers a button per action present on EVERY checked row\'
 	expect(bulkFormChunk).not.toContain('has-selection')
 	// attribution-mode is never bulk-eligible (plan Global Constraints).
 	expect(bulkFormChunk).not.toContain('value="attribution-mode"')
+})
+
+// The single-row path (Task 1) gates block/unblock behind reveal-to-confirm on
+// CONSEQUENCE[action]; the bulk toolbar has to gate the SAME two verbs the same
+// way, or blocking N sources in one click would be the one destructive path on
+// the page with no stated consequence (spec §10's invariant, which this
+// redesign's Non-goals promise to preserve).
+test('the bulk toolbar gates block behind a confirm-gate stating its consequence, while the other verbs stay direct submits', () => {
+	const row = baseRow({
+		id: 'r1',
+		group: 'user',
+		federationStatus: 'none',
+		memberCounts: undefined,
+		actions: [
+			{ action: 'quarantine', commandId: 'c1' },
+			{ action: 'block', commandId: 'c2' }
+		]
+	})
+	const data = bulkData({ groups: [{ key: 'user', title: 'Allowed user sources', blurb: 'blurb text', rows: [row] }] })
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const formStart = body.indexOf('action="?/bulkSource')
+	const bulkFormChunk = body.slice(formStart, body.indexOf('</form>', formStart))
+	const gateStart = bulkFormChunk.indexOf('class="confirm-gate')
+	expect(gateStart).toBeGreaterThan(-1)
+	const gate = bulkFormChunk.slice(gateStart, bulkFormChunk.indexOf('</details>', gateStart))
+	// block's own distinct consequence, and the submit that carries the verb,
+	// both live INSIDE the gate.
+	expect(gate).toContain('Blocking stops all acquisition')
+	expect(gate).toContain('value="block"')
+	expect(gate).toContain('Confirm block')
+	// quarantine has no stated consequence, so it stays a bare button outside
+	// any gate — same split the per-row managePanel makes.
+	expect(bulkFormChunk.slice(0, gateStart)).toContain('value="quarantine"')
+	expect(gate).not.toContain('value="quarantine"')
+})
+
+test('the bulk toolbar gates unblock behind its own confirm-gate, with unblock\'s distinct consequence — not block\'s', () => {
+	const row = baseRow({
+		id: 'b1',
+		group: 'blocked',
+		governance: 'blocked',
+		federationStatus: 'none',
+		memberCounts: undefined,
+		actions: [
+			{ action: 'pause', commandId: 'c1' },
+			{ action: 'unblock', commandId: 'c2' }
+		]
+	})
+	const data = bulkData({ groups: [{ key: 'blocked', title: 'Blocked sources', blurb: 'blurb text', rows: [row] }] })
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const formStart = body.indexOf('action="?/bulkSource')
+	const bulkFormChunk = body.slice(formStart, body.indexOf('</form>', formStart))
+	const gateStart = bulkFormChunk.indexOf('class="confirm-gate')
+	const gate = bulkFormChunk.slice(gateStart, bulkFormChunk.indexOf('</details>', gateStart))
+	expect(gate).toContain('Unblocking returns this source to quarantine')
+	expect(gate).not.toContain('Blocking stops all acquisition')
+	expect(gate).toContain('value="unblock"')
+	expect(gate).toContain('Confirm unblock')
+	expect(bulkFormChunk.slice(0, gateStart)).toContain('value="pause"')
 })
 
 test('bulk outcome reporting: form.bulkResults renders a per-row outcome line naming each failure', () => {
