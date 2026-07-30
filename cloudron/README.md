@@ -7,9 +7,16 @@ the `localstorage` addon; email via the `sendmail` addon. See the design at
 ## Build & install
 
     # from the repo root — every step, no symlink dance
-    cloudron build --set-build-service <your-build-service> -f cloudron/Dockerfile
-    cloudron install --image <registry>/rsc:dev
-    cloudron update --app <id/location> --image <registry>/rsc:dev
+    cloudron build -f cloudron/Dockerfile
+    cloudron install --image <registry>/rsc:<tag> --location <domain>
+    cloudron update --app <id/location> --image <registry>/rsc:<tag>
+
+`cloudron build` needs a build service configured once per checkout —
+`cloudron build --build-service-url <url> --build-service-token <token>`
+for the Cloudron Build Service, or nothing at all if local Docker is already
+set up (`cloudron build info` shows the cached config; verified working here
+with `Build service type: local`). No `--set-build-service` flag exists on
+this CLI version — don't reach for it.
 
 `cloudron build`/`install`/`update` all read `CloudronManifest.json` from the
 current working directory — there's no flag to point them elsewhere — so it
