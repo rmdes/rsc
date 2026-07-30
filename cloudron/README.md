@@ -6,12 +6,18 @@ the `localstorage` addon; email via the `sendmail` addon. See the design at
 
 ## Build & install
 
-    # from the repo root
-    cloudron build --set-build-service <your-build-service>   # or: docker build -f cloudron/Dockerfile -t <registry>/rsc:dev .
+    # from the repo root — every step, no symlink dance
+    cloudron build --set-build-service <your-build-service> -f cloudron/Dockerfile
     cloudron install --image <registry>/rsc:dev
+    cloudron update --app <id/location> --image <registry>/rsc:dev
 
-`cloudron build` reads `cloudron/CloudronManifest.json`; run it from the repo
-root so the whole workspace is the build context, pointing at `cloudron/Dockerfile`.
+`cloudron build`/`install`/`update` all read `CloudronManifest.json` from the
+current working directory — there's no flag to point them elsewhere — so it
+(and `logo.png`, which the manifest's `icon: file://logo.png` resolves
+relative to) live at the **repo root**, not in `cloudron/`. Always run every
+`cloudron` command from the repo root, always with `-f cloudron/Dockerfile`
+(the Dockerfile's own `COPY` paths assume the whole workspace as build
+context, so it stays put alongside `nginx.conf`/`proxy_params`/`start.sh`).
 
 ## What it wires automatically
 

@@ -3,13 +3,13 @@ import assert from 'node:assert/strict'
 import { readFileSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-const dir = fileURLToPath(new URL('..', import.meta.url))
+const dir = fileURLToPath(new URL('../..', import.meta.url))
 const m = JSON.parse(readFileSync(dir + '/CloudronManifest.json', 'utf8'))
 
 test('manifest has the required Cloudron fields', () => {
   assert.equal(m.manifestVersion, 2)
   assert.equal(m.httpPort, 8000)
-  assert.equal(m.healthCheckPath, '/')
+  assert.equal(m.healthCheckPath, '/healthz')
   assert.ok(m.addons.localstorage, 'localstorage addon')
   assert.ok(m.addons.sendmail, 'sendmail addon')
   assert.ok(!m.addons.mongodb && !m.addons.postgresql, 'no db addon')
