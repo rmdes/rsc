@@ -285,12 +285,12 @@
 				</span>
 			</p>
 			<!-- The two verbs with a STATED consequence (block/unblock) are gated
-			     exactly as the per-row managePanel gates them — same CONSEQUENCE
-			     key, same reveal-to-confirm — so blocking N sources in one click
-			     can't be the one destructive path that skips the confirmation a
-			     single-row block requires (design §10). A sibling of the <p>, not
-			     inside it: <details> is not phrasing content, and this is the
-			     shape the orphan/tombstone/users bulk bars already use. -->
+			     behind reveal-to-confirm, keyed on the CONSEQUENCE map — this bulk
+			     toolbar is the ONLY way left to block or unblock a source, so it
+			     can't be a destructive action with no stated consequence (design
+			     §10). A sibling of the <p>, not inside it: <details> is not
+			     phrasing content, and this is the shape the orphan/tombstone/users
+			     bulk bars already use. -->
 			{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
 				<details class="confirm-gate">
 					<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
@@ -728,9 +728,12 @@
 	}
 
 	/* Checkbox + title/badges sit in one inline row (a .source-list li is
-	   otherwise a column — the manage panel etc. stack below this); without
-	   this wrapper the checkbox becomes its own full-width flex item, stacked
-	   above the row it selects with nothing visibly tying the two together. */
+	   otherwise a column — the row's own action form(s) stack below this: an
+	   ordinary row's inline ?detail= panel, a nested federation member's
+	   standalone attribution-mode form, or an orphan/tombstone row's single
+	   reap/unblock form); without this wrapper the checkbox becomes its own
+	   full-width flex item, stacked above the row it selects with nothing
+	   visibly tying the two together. */
 	.row-head {
 		display: flex;
 		align-items: flex-start;
@@ -820,8 +823,9 @@
 		border-top: none;
 	}
 
-	/* Outline, not the accent fill: half a dozen moderation verbs stacked in
-	   one panel are all equally weighted, none of them a page CTA. Block reads
+	/* Outline, not the accent fill: .source-action now styles one single-verb
+	   form per row/section — an attribution-mode change, a purge, a reap, or a
+	   tombstone unblock — none of them a page CTA. Purge and a forced reap read
 	   destructive on top of that, the same outline-destructive idea as
 	   .unfollow-form elsewhere (admin/users' delete-account button, the
 	   following-page's Unfollow/Unsubscribe). */

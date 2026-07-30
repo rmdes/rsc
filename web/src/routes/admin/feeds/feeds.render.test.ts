@@ -110,7 +110,7 @@ test('a member\'s attribution-mode form carries the expand param forward, so its
 	expect(memberChunk).toContain('name="action" value="attribution-mode"')
 })
 
-test('bulkActions narrows correctly when only a checked federation-member row is selected — not to nothing, not to the group\'s full union', () => {
+test('the union baseline includes an expanded federation-member\'s verbs for the federation group only, not for other groups', () => {
 	// memberRow()'s only action is `quarantine`; baseRow()'s is also `quarantine`
 	// by default, which wouldn't distinguish "member-aware narrowing" from
 	// "ordinary narrowing" — give the ordinary row an action the member
@@ -118,8 +118,16 @@ test('bulkActions narrows correctly when only a checked federation-member row is
 	// members folded in for every group) is actually observable.
 	const ordinary = baseRow({ actions: [{ action: 'revoke', commandId: 'inst-cmd-1' }] })
 	const member = memberRow({ actions: [{ action: 'quarantine', commandId: 'mem-cmd-1' }] })
+	// A SECOND group, with no member of its own: a bulkActions that dropped
+	// the `group.key === 'federation'` guard (folding data.expandedMembers
+	// into every group instead) would still pass a fixture with only ONE
+	// group unnoticed — this one catches that regression too.
+	const otherGroupRow = baseRow({ id: 'u1', group: 'user', federationStatus: 'none', memberCounts: undefined, actions: [{ action: 'pause', commandId: 'u1-cmd' }] })
 	const data = {
-		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [ordinary] }],
+		groups: [
+			{ key: 'federation', title: 'Approved federation', blurb: '', rows: [ordinary] },
+			{ key: 'user', title: 'Allowed user sources', blurb: '', rows: [otherGroupRow] }
+		],
 		expand: 'inst1',
 		expandedMembers: [member],
 		tombstones: [],
@@ -130,20 +138,24 @@ test('bulkActions narrows correctly when only a checked federation-member row is
 		...NO_ORPHANS,
 		establishCommandId: 'establish-1'
 	}
-	// Nothing checked: the union baseline must include the member's own verb
-	// too (a no-JS admin who expands the instance needs to see it without
-	// checking anything first) — 'quarantine' from the member AND 'revoke'
-	// from the ordinary row.
-	const { body: nothingChecked } = render(Page, { props: { data, form: null } } as never)
-	// The second indexOf must be scoped to start searching from the bulkSource
-	// form's own opening tag — an unscoped search finds the page's very FIRST
-	// </form> (the no-JS search form above it), which sits BEFORE this form
-	// even starts, producing an empty slice. Same scoped-search pattern the
-	// file's other bulk-toolbar tests already use.
-	const formStart = nothingChecked.indexOf('action="?/bulkSource')
-	const toolbarChunk = nothingChecked.slice(formStart, nothingChecked.indexOf('</form>', formStart))
-	expect(toolbarChunk).toContain('value="quarantine"')
-	expect(toolbarChunk).toContain('value="revoke"')
+	// Nothing checked in either group: the union baseline must include the
+	// member's own verb too (a no-JS admin who expands the instance needs to
+	// see it without checking anything first) — 'quarantine' from the member
+	// AND 'revoke' from the ordinary row, in the FEDERATION group's toolbar
+	// only.
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const fedStart = body.indexOf('id="bulk-federation"')
+	const fedChunk = body.slice(fedStart, body.indexOf('</form>', fedStart))
+	expect(fedChunk).toContain('value="quarantine"')
+	expect(fedChunk).toContain('value="revoke"')
+
+	// The 'user' group's own toolbar must NOT see the federation member's
+	// verb — proving the fold-in is scoped to group.key === 'federation'
+	// only, not applied to every group's bulkActions() call.
+	const userStart = body.indexOf('id="bulk-user"')
+	const userChunk = body.slice(userStart, body.indexOf('</form>', userStart))
+	expect(userChunk).toContain('value="pause"')
+	expect(userChunk).not.toContain('value="quarantine"')
 })
 
 // The source detail page (/admin/sources/[sourceId] — run history, item
@@ -610,11 +622,10 @@ test('the bulk toolbar offers a button per action present on EVERY checked row\'
 	expect(bulkFormChunk).not.toContain('value="attribution-mode"')
 })
 
-// The single-row path (Task 1) gates block/unblock behind reveal-to-confirm on
-// CONSEQUENCE[action]; the bulk toolbar has to gate the SAME two verbs the same
-// way, or blocking N sources in one click would be the one destructive path on
-// the page with no stated consequence (spec §10's invariant, which this
-// redesign's Non-goals promise to preserve).
+// The bulk toolbar gates block/unblock behind reveal-to-confirm, keyed on
+// CONSEQUENCE[action] — it's the only path that can act on either verb now,
+// so blocking N sources in one click can't be a destructive action with no
+// stated consequence (spec §10's invariant).
 test('the bulk toolbar gates block behind a confirm-gate stating its consequence, while the other verbs stay direct submits', () => {
 	const row = baseRow({
 		id: 'r1',
