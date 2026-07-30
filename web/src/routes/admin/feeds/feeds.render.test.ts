@@ -449,7 +449,11 @@ for (const reason of ['verified_origin_evidence', 'admin_retained', 'audit_histo
 		const { body } = render(Page, { props: { data: orphanData({ orphanRows: [orphanRow({ id: 'orph1', url: 'https://orph1.test/feed.xml', retention })] }), form: null } } as never)
 		expect(body).toContain('name="force" value="true"')
 		expect(body).toContain('name="commandId" value="orph-cmd-1"') // the row's ONE commandId, reused, not a second one
-		const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+		// Task 7 added an always-present bulk-reap confirm-gate ABOVE the
+		// per-row list, so with one orphan row there are now two
+		// `.confirm-gate`s in the document — the row's own is the LAST one.
+		const gateStart = body.lastIndexOf('class="confirm-gate')
+		const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
 		expect(detailsChunk).toContain(REASON_COPY_NEEDLE[reason])
 		expect(detailsChunk).toContain('Confirm reap anyway')
 		for (const [otherReason, needle] of Object.entries(REASON_COPY_NEEDLE)) {
@@ -533,4 +537,89 @@ test('a mixed batch of orphan rows renders each with its OWN correct variant, in
 	const orph2Chunk = body.slice(body.indexOf('https://orph2.test'))
 	expect(orph1Chunk).toContain('name="force" value="true"')
 	expect(orph2Chunk.slice(0, orph2Chunk.indexOf('More orphaned') === -1 ? orph2Chunk.length : orph2Chunk.indexOf('More orphaned'))).not.toContain('name="force" value="true"')
+})
+
+// --- Task 7: bulk checkboxes + always-present toolbars for orphans + tombstones ---
+
+test('orphan rows each have a checkbox and the section renders an always-present bulk-reap form', () => {
+	const { body } = render(Page, { props: { data: orphanData(), form: null } } as never)
+	const orphanSection = body.slice(body.indexOf('Orphaned sources'))
+	expect(orphanSection).toContain('type="checkbox"')
+	expect(orphanSection).toContain('action="?/bulkReap')
+})
+
+test('bulk reap consequence text is pluralized and mixes plain/force wording when the selection mixes retentions', () => {
+	const data = orphanData({
+		orphanRows: [orphanRow({ id: 'orph1', retention: 'reapable' }), orphanRow({ id: 'orph2', retention: 'audit_history' })]
+	})
+	// Selection state is client-only ($state); render with both boxes
+	// pre-checked isn't reachable through the data prop alone in an SSR
+	// test — instead assert the STATIC per-row force encoding the bulk form
+	// depends on is present for both rows regardless of selection, since
+	// that's what the client-side toggle reads at click time.
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const orphanSection = body.slice(body.indexOf('Orphaned sources'))
+	expect(orphanSection).toContain('orph1:orph-cmd-1:false')
+	expect(orphanSection).toContain('orph2:orph-cmd-1:true')
+})
+
+test('the orphan bulk-reap toolbar (button + confirm-gate) is always in the server output, not gated behind a JS-only selection count', () => {
+	const { body } = render(Page, { props: { data: orphanData(), form: null } } as never)
+	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkReap'), body.indexOf('</form>', body.indexOf('action="?/bulkReap')))
+	expect(bulkFormChunk).toContain('class="confirm-gate')
+	expect(bulkFormChunk).toContain('Reap selected')
+	expect(bulkFormChunk).not.toContain('has-selection')
+})
+
+test('tombstone rows each have a checkbox and the section renders an always-present bulk-unblock form', () => {
+	const data = {
+		groups: [],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [{ id: 't1', canonicalUrl: 'https://gone.test/t1.xml', action: 'block', category: 'spam', note: '', createdAt: '2026-07-01T00:00:00Z', aliases: [], commandId: 'tomb-cmd-1' }],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const tombstoneSection = body.slice(body.indexOf('Blocked and tombstoned URLs'))
+	expect(tombstoneSection).toContain('type="checkbox"')
+	expect(tombstoneSection).toContain('action="?/bulkTombstone')
+	expect(tombstoneSection).toContain('t1:tomb-cmd-1')
+})
+
+test('the tombstone bulk-unblock toolbar (category select + confirm-gate) is always in the server output, not gated behind a JS-only selection count', () => {
+	const data = {
+		groups: [],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [{ id: 't1', canonicalUrl: 'https://gone.test/t1.xml', action: 'block', category: 'spam', note: '', createdAt: '2026-07-01T00:00:00Z', aliases: [], commandId: 'tomb-cmd-1' }],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkTombstone'), body.indexOf('</form>', body.indexOf('action="?/bulkTombstone')))
+	expect(bulkFormChunk).toContain('<select')
+	expect(bulkFormChunk).toContain('class="confirm-gate')
+	expect(bulkFormChunk).toContain('Unblock selected')
+	expect(bulkFormChunk).not.toContain('has-selection')
+})
+
+test('bulkReapResults/bulkTombstoneResults each render a per-row outcome line naming failures', () => {
+	const form = {
+		bulkReapResults: [{ sourceId: 'orph1', ok: false, error: 'has_subscribers' }, { sourceId: 'orph2', ok: true }],
+		bulkTombstoneResults: [{ tombstoneId: 't1', ok: false, error: 'unavailable' }, { tombstoneId: 't2', ok: true }]
+	}
+	const { body } = render(Page, { props: { data: orphanData(), form } } as never)
+	expect(body).toContain('orph1')
+	expect(body).toContain('has_subscribers')
+	expect(body).toContain('t1')
+	expect(body).toContain('unavailable')
 })

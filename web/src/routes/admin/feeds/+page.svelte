@@ -20,7 +20,19 @@
 	// Task 5 adds bulkSource's SUCCESS shape here too (bulkResults/bulkAction):
 	// same reason as the fail fields — one loose read beats narrowing a union
 	// that now spans five actions.
-	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string; force?: boolean; bulkResults?: { sourceId: string; ok: boolean; error?: string }[]; bulkAction?: string }
+	// Task 7 adds bulkReap's/bulkTombstone's own per-row outcome arrays —
+	// same reasoning, now seven actions deep.
+	type RetryFail = {
+		sourceId?: string
+		action?: string
+		commandId?: string
+		tombstoneId?: string
+		force?: boolean
+		bulkResults?: { sourceId: string; ok: boolean; error?: string }[]
+		bulkAction?: string
+		bulkReapResults?: { sourceId: string; ok: boolean; error?: string }[]
+		bulkTombstoneResults?: { tombstoneId: string; ok: boolean; error?: string }[]
+	}
 	const retryFail = $derived(form as RetryFail | null)
 	// Retry id for the establish form specifically (no sourceId/tombstoneId of its
 	// own): was a template {@const}, which requires an enclosing block — hoisted
@@ -380,6 +392,44 @@
 	<p class="subnav">
 		Allowed, unsubscribed, and not federated — kept only by whatever's still retaining them. Paginates independently of the list above.
 	</p>
+	<!-- Same posture as the ordinary groups' bulk bar (Task 5, corrected):
+	     the confirm-gate/button ship visible in server output by default —
+	     never gated behind `{#if selected.orphans?.size}`, since `selected`
+	     only ever populates via onchange and stays empty forever with no JS.
+	     "N selected" is the only JS-cosmetic bit. -->
+	<form
+		id="bulk-orphans"
+		method="POST"
+		action="?/bulkReap{otherParams() ? `&${otherParams()}` : ''}"
+		class="bulk-bar"
+		use:enhance={() => {
+			selected = { ...selected, orphans: new Set() }
+		}}
+	>
+		{#if data.orphanRows.length > 0}
+			<p class="subnav bulk-blurb" class:has-selection={(selected.orphans?.size ?? 0) > 0}>
+				<span class="bulk-tools">
+					{#if (selected.orphans?.size ?? 0) > 0}<span>{selected.orphans?.size} selected ·</span>{/if}
+				</span>
+			</p>
+			<details class="confirm-gate">
+				<summary><span class="action-name">Reap selected</span></summary>
+				<p class="consequence">
+					Reaping the selected sources permanently deletes each one and its evidence.
+					{#if data.orphanRows.some((r) => selected.orphans?.has(r.id) && r.retention !== null && r.retention !== 'reapable')}
+						Some of the selected sources override retained evidence — that evidence is removed permanently too.
+					{/if}
+					This cannot be undone.
+				</p>
+				<button>Confirm reap selected</button>
+			</details>
+		{/if}
+	</form>
+	{#if retryFail?.bulkReapResults?.length}
+		<ul class="bulk-outcomes">
+			{#each retryFail.bulkReapResults as r (r.sourceId)}<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'reaped' : r.error}</li>{/each}
+		</ul>
+	{/if}
 	{#if data.orphanRows.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
@@ -389,6 +439,17 @@
 				{@const needsForce = row.retention !== null && row.retention !== 'reapable'}
 				{@const retryCommandId = retryFail?.sourceId === row.id && 'force' in retryFail ? retryFail.commandId : undefined}
 				<li>
+					<label class="row-select">
+						<input
+							type="checkbox"
+							name="candidate"
+							value="{row.id}:{row.commandId}:{needsForce}"
+							form="bulk-orphans"
+							checked={selected.orphans?.has(row.id) ?? false}
+							onchange={() => toggleSelected('orphans', row.id)}
+						/>
+						<span class="visually-hidden">Select {row.url}</span>
+					</label>
 					<div class="feed-info">
 						<strong class="feed-url">{row.url}</strong>
 						<span class="badge-kind">{RETENTION_LABEL[row.retention ?? 'reapable']}</span>
@@ -431,6 +492,38 @@
 		Reserved URLs: a block or purge leaves a tombstone so the URL can't be re-created. Unblocking a tombstone lifts the reservation so the
 		URL becomes creatable again — it restores nothing.
 	</p>
+	<!-- Same visible-by-default posture as the orphan bulk bar above. -->
+	<form
+		id="bulk-tombstones"
+		method="POST"
+		action="?/bulkTombstone"
+		class="bulk-bar"
+		use:enhance={() => {
+			selected = { ...selected, tombstones: new Set() }
+		}}
+	>
+		{#if data.tombstones.length > 0}
+			<p class="subnav bulk-blurb" class:has-selection={(selected.tombstones?.size ?? 0) > 0}>
+				<span class="bulk-tools">
+					{#if (selected.tombstones?.size ?? 0) > 0}<span>{selected.tombstones?.size} selected ·</span>{/if}
+					<label class="visually-hidden" for="bulk-tomb-cat">Moderation category</label>
+					<select id="bulk-tomb-cat" name="category" required>
+						{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+					</select>
+				</span>
+			</p>
+			<details class="confirm-gate">
+				<summary><span class="action-name">Unblock selected</span></summary>
+				<p class="consequence">{data.tombstoneConsequence}</p>
+				<button>Confirm unblock selected</button>
+			</details>
+		{/if}
+	</form>
+	{#if retryFail?.bulkTombstoneResults?.length}
+		<ul class="bulk-outcomes">
+			{#each retryFail.bulkTombstoneResults as r (r.tombstoneId)}<li class:error={!r.ok}>{r.tombstoneId}: {r.ok ? 'unblocked' : r.error}</li>{/each}
+		</ul>
+	{/if}
 	{#if data.tombstones.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
@@ -439,6 +532,17 @@
 				{@const retryCommandId = retryFail?.tombstoneId === t.id ? retryFail.commandId : undefined}
 				{@const tombstoneQs = otherParams()}
 				<li>
+					<label class="row-select">
+						<input
+							type="checkbox"
+							name="candidate"
+							value="{t.id}:{t.commandId}"
+							form="bulk-tombstones"
+							checked={selected.tombstones?.has(t.id) ?? false}
+							onchange={() => toggleSelected('tombstones', t.id)}
+						/>
+						<span class="visually-hidden">Select {t.canonicalUrl}</span>
+					</label>
 					<div class="feed-info">
 						<strong class="feed-url">{t.canonicalUrl}</strong>
 						<span>
