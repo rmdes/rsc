@@ -55,7 +55,8 @@
 			['cursor', data.cursor],
 			['q', data.q],
 			['orphanCursor', data.orphanCursor],
-			['expand', data.expand]
+			['expand', data.expand],
+			['detail', data.detail?.sourceId ?? null]
 		] as const)
 			.filter(([k, v]) => v && !exclude.has(k))
 			.map(([k, v]) => `${k}=${encodeURIComponent(v as string)}`)

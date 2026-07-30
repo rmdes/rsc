@@ -334,6 +334,26 @@ test('?detail=<id> renders the row\'s inline detail panel (refresh, status, item
 	expect(detailsChunk).toContain('Confirm purge')
 })
 
+test('the inline panel\'s refresh and purge forms forward ?detail= so the panel stays open (no-JS) instead of vanishing after the very action that updates it', () => {
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1',
+		detail: detailData()
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const panelChunk = body.slice(body.indexOf('class="detail-panel'))
+	expect(panelChunk).toContain('action="?/refresh&amp;detail=inst1"')
+	expect(panelChunk).toContain('action="?/purge&amp;detail=inst1"')
+})
+
 test('no ?detail= (data.detail null) renders no inline detail panel for any row', () => {
 	const data = {
 		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
