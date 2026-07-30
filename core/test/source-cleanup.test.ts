@@ -566,6 +566,32 @@ test('trimSourceToCap: an excess item with a surviving delivery from a DIFFERENT
   repo.close()
 })
 
+test('trimSourceToCap: an excess item with TWO deliveries from the SAME trimmed source is fully removed, not reselected onto itself', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const src = insertSourceRow(raw, { canonicalUrl: 'https://trim-dup-delivery.test/feed' })
+  const trimmed = seedItemAt(raw, src, '2020-01-01T00:00:00.000Z') // will be excess (beyond maxCount=1)
+  seedItemAt(raw, src, NOW) // keeps `src` at exactly maxCount=1, pushing `trimmed` out
+
+  // The SAME logical item ALSO has a second delivery from the SAME source
+  // (e.g. the feed re-issued a GUID for the same permalink) -- an older,
+  // not-selected delivery pointing at the same logical item id.
+  const otherDeliveryId = randomUUID()
+  raw.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, 'opaque', ?, ?, ?, ?, 1)`).run(otherDeliveryId, src, `${trimmed}-reissued-guid`, NOW, NOW, randomUUID())
+  raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(otherDeliveryId, trimmed)
+
+  const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 1, maxAgeDays: 0, now: NOW }))()
+  expect(result).toEqual({ trimmedCount: 1 })
+  // Both of this source's deliveries for the item are gone -- none survive to wrongly reselect onto.
+  expect(countRows(raw, 'deliveries_v2')).toBe(1) // only the surviving (non-excess) item's delivery remains
+  expect(countRows(raw, 'logical_identity_keys_v2')).toBe(1)
+  // The item itself is deleted (no child edges), not left behind reselected.
+  const row = raw.prepare(`SELECT id FROM logical_items_v2 WHERE id = ?`).get(trimmed)
+  expect(row).toBeUndefined()
+  expect(countRows(raw, 'logical_items_v2')).toBe(1)
+  repo.close()
+})
+
 test('trimSourceToCap never touches source-scoped tables or the source row itself', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw

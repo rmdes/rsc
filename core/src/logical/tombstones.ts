@@ -214,26 +214,41 @@ export function trimSourceToCap(tx: WriteTx, input: { sourceId: string; maxCount
   }
   if (excess.size === 0) return { trimmedCount: 0 }
 
-  const excessRows = rows.filter((r) => excess.has(r.id))
-  const deliveryIds = [...new Set(excessRows.map((r) => r.deliveryId))]
-  const dph = deliveryIds.map(() => '?').join(',')
+  // Every delivery FROM this source backing an excess item -- not just each
+  // item's currently-selected delivery. A feed that re-issues a GUID for the
+  // same permalink (verification.ts ~330-336 documents the same pattern) can
+  // leave an excess item with two same-source deliveries; collecting only the
+  // selected one would leave the other's identity key intact, and the
+  // hasDelivery check below would wrongly reselect the item onto its own
+  // trimmed source instead of removing/tombstoning it.
+  const excessIds = [...excess]
+  const eph = excessIds.map(() => '?').join(',')
+  const deliveryRows = tx.prepare(
+    `SELECT DISTINCT d.id AS id FROM deliveries_v2 d
+     JOIN logical_identity_keys_v2 lik ON lik.kind = 'delivery' AND lik.key = d.id
+     WHERE d.source_id = ? AND lik.logical_item_id IN (${eph})`,
+  ).all(sourceId, ...excessIds) as { id: string }[]
+  const deliveryIds = deliveryRows.map((r) => r.id)
 
   // ---- delete delivery/observation-scoped rows FIRST, so the per-item
   // hasDelivery check below (which relies on these rows already being gone)
   // correctly reflects whether a surviving delivery remains -- same ordering
   // constraint removeSourceEvidence's own equivalent step observes. ----
-  const versionRows = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).all(...deliveryIds) as { id: string }[]
-  const versionIds = versionRows.map((r) => r.id)
-  if (versionIds.length > 0) {
-    const vph = versionIds.map(() => '?').join(',')
-    tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
-    tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
-    tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+  if (deliveryIds.length > 0) {
+    const dph = deliveryIds.map(() => '?').join(',')
+    const versionRows = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).all(...deliveryIds) as { id: string }[]
+    const versionIds = versionRows.map((r) => r.id)
+    if (versionIds.length > 0) {
+      const vph = versionIds.map(() => '?').join(',')
+      tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+      tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+      tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+    }
+    tx.prepare(`DELETE FROM presentation_entries_v2 WHERE delivery_id IN (${dph})`).run(...deliveryIds)
+    tx.prepare(`DELETE FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).run(...deliveryIds)
+    tx.prepare(`DELETE FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND key IN (${dph})`).run(...deliveryIds)
+    tx.prepare(`DELETE FROM deliveries_v2 WHERE id IN (${dph})`).run(...deliveryIds)
   }
-  tx.prepare(`DELETE FROM presentation_entries_v2 WHERE delivery_id IN (${dph})`).run(...deliveryIds)
-  tx.prepare(`DELETE FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).run(...deliveryIds)
-  tx.prepare(`DELETE FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND key IN (${dph})`).run(...deliveryIds)
-  tx.prepare(`DELETE FROM deliveries_v2 WHERE id IN (${dph})`).run(...deliveryIds)
 
   // ---- per-item reselect/delete/tombstone -- identical sequence to
   // removeSourceEvidence's own loop, scoped to just the excess ids ----
