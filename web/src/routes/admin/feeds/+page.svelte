@@ -272,7 +272,15 @@
 					{group.blurb}
 					{#if (selected[group.key]?.size ?? 0) > 0}<span class="selected-count"> · {selected[group.key]?.size} selected</span>{/if}
 				</span>
-				<span class="bulk-tools">
+			</p>
+			<!-- Collapsed by default: this is the actual fix for a busy resting
+			     page, not just removing the duplicate Manage panel. Native
+			     <details> — same primitive as .confirm-gate and the mobile nav —
+			     so expanding needs no JavaScript; the no-JS invariant is
+			     unaffected, this only changes the default visual state. -->
+			<details class="panel">
+				<summary>Actions</summary>
+				<div class="bulk-tools">
 					{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
 						<button name="action" value={actionName}>{LABEL[actionName]}</button>
 					{/each}
@@ -282,22 +290,21 @@
 							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
 						</select>
 					{/if}
-				</span>
-			</p>
-			<!-- The two verbs with a STATED consequence (block/unblock) are gated
-			     behind reveal-to-confirm, keyed on the CONSEQUENCE map — this bulk
-			     toolbar is the ONLY way left to block or unblock a source, so it
-			     can't be a destructive action with no stated consequence (design
-			     §10). A sibling of the <p>, not inside it: <details> is not
-			     phrasing content, and this is the shape the orphan/tombstone/users
-			     bulk bars already use. -->
-			{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
-				<details class="confirm-gate">
-					<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
-					<p class="consequence">{CONSEQUENCE[actionName]}</p>
-					<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
-				</details>
-			{/each}
+				</div>
+				<!-- The two verbs with a STATED consequence (block/unblock) are
+				     gated the same way the deleted per-row Manage panel gated
+				     them — same CONSEQUENCE key, same reveal-to-confirm — so
+				     blocking N sources in one click can't be the one destructive
+				     path that skips the confirmation a single-row block requires
+				     (design §10). -->
+				{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
+					<details class="confirm-gate">
+						<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
+						<p class="consequence">{CONSEQUENCE[actionName]}</p>
+						<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
+					</details>
+				{/each}
+			</details>
 		</form>
 		{#if group.rows.length === 0}
 			<p class="subnav">None.</p>

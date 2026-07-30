@@ -622,6 +622,49 @@ test('the bulk toolbar offers a button per action present on EVERY checked row\'
 	expect(bulkFormChunk).not.toContain('value="attribution-mode"')
 })
 
+test('the shared action panel is collapsed by default (no `open` attribute) and its buttons still render inside it', () => {
+	const row = baseRow({ actions: [{ action: 'quarantine', commandId: 'inst-cmd-1' }] })
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const panelStart = body.indexOf('class="panel"', body.indexOf('action="?/bulkSource'))
+	const panelChunk = body.slice(panelStart, body.indexOf('</details>', panelStart) + '</details>'.length)
+	expect(panelChunk).not.toContain('open')
+	expect(panelChunk).toContain('>Actions<')
+	expect(panelChunk).toContain('value="quarantine"')
+})
+
+test('the group blurb stays visible outside the collapsed panel, with the selected count appended to it (not inside the panel)', () => {
+	const row = baseRow({ actions: [{ action: 'quarantine', commandId: 'inst-cmd-1' }] })
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: 'Federated with this instance.', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const formStart = body.indexOf('action="?/bulkSource')
+	const panelStart = body.indexOf('class="panel"', formStart)
+	const blurbChunk = body.slice(formStart, panelStart)
+	expect(blurbChunk).toContain('Federated with this instance.')
+})
+
 // The bulk toolbar gates block/unblock behind reveal-to-confirm, keyed on
 // CONSEQUENCE[action] — it's the only path that can act on either verb now,
 // so blocking N sources in one click can't be a destructive action with no
