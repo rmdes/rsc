@@ -1,93 +1,19 @@
 import { error, fail } from '@sveltejs/kit'
+import { loadSourceDetail } from '$lib/server/source-detail'
 import { authedFetch, base, cookieHeader } from '$lib/server/session'
-import { refreshSource, listSourceRuns, listSourceItems, purgeSource } from '$lib/logical-api'
-import { AUDIT_CATEGORIES } from '$lib/logical-types'
+import { refreshSource, purgeSource } from '$lib/logical-api'
 import type { Actions, PageServerLoad } from './$types'
-
-// Purge's consequence is DISTINCT from unblock's: it permanently deletes the
-// source's stored evidence, but the URL STAYS blocked by its tombstone (purge does
-// NOT lift the block). Rendered in the confirm form (no-JS) and reused as the
-// confirm() text when JS is on. Kept here (testable) beside the load, not only in
-// the .svelte, so a rewrite to a generic "Are you sure?" fails a server test.
-const PURGE_CONSEQUENCE =
-	'Purging permanently deletes all stored versions and evidence for this source — this cannot be undone. The URL stays blocked by its tombstone; purge does not restore anything or lift the block.'
 
 // The admin acquisition console for one source (spec §6.2-6.3): a manual
 // refresh action + a status panel (governance, latest run, nonterminal count).
 // It exposes NO evidence-review navigation (deliveries, conflicts, findings,
-// previews) — that is Vertical 3.
-
-// The V1 source-detail read (governance for quarantined labeling) is one inline
-// call here; the v2 run/status calls live in $lib/logical-api.ts.
-
-interface SourceGovernance {
-	id: string
-	canonicalUrl: string
-	attributionMode: string
-	operation: 'enabled' | 'paused'
-	governance: 'allowed' | 'quarantined' | 'blocked'
-}
-
-// The inbound-push lease as the panel shows it (V4 spec §1.5): delivery mechanism,
-// lease health, expiry. Core's endpointFingerprint is deliberately NOT carried —
-// it is an admin-side correlation handle, not something the page renders.
-interface SourcePush {
-	mode: 'websub' | 'rsscloud'
-	state: 'pending' | 'active'
-	expiresAt: string | null
-}
-
-// Only the governance fields the status panel renders reach the page. Everything
-// else the V1 detail carries (provenance, retention, subscription/audit) is dropped.
-async function sourceGovernance(f: typeof fetch, id: string): Promise<{ source: SourceGovernance; push: SourcePush | null } | null> {
-	const res = await f(`${base()}/admin/sources/${encodeURIComponent(id)}`)
-	if (res.status === 404) return null
-	if (!res.ok) throw new Error(`source ${res.status}`)
-	const body = (await res.json()) as { source: SourceGovernance; push?: Partial<SourcePush>; pushExpiresAt?: string | null }
-	const s = body.source
-	// No lease ⇒ null, so the page's push block is one `{#if data.push}` away from
-	// not rendering at all (rather than a block full of em dashes).
-	const p = body.push
-	return {
-		source: { id: s.id, canonicalUrl: s.canonicalUrl, attributionMode: s.attributionMode, operation: s.operation, governance: s.governance },
-		push: p && p.mode && p.state ? { mode: p.mode, state: p.state, expiresAt: body.pushExpiresAt ?? null } : null
-	}
-}
+// previews) — that is Vertical 3. The load itself is shared (Task 9) with the
+// ?detail= inline panel on /admin/feeds — see $lib/server/source-detail.ts.
 
 export const load: PageServerLoad = async ({ fetch, params, url, cookies }) => {
-	const f = authedFetch(fetch, url.origin, cookieHeader(cookies))
-	const detail = await sourceGovernance(f, params.sourceId)
+	const detail = await loadSourceDetail(fetch, url.origin, cookies, params.sourceId, url.searchParams.get('before'))
 	if (!detail) throw error(404, 'Not found')
-	const source = detail.source
-	const runs = await listSourceRuns(f, params.sourceId)
-	// V3: the source-wide conflict count + the item-review navigation rows (bounded
-	// state rows only — no evidence, no previews; that is the item-review page).
-	const itemsPage = await listSourceItems(f, params.sourceId, url.searchParams.get('before'))
-	return {
-		sourceId: params.sourceId,
-		source,
-		// The inbound-push lease, or null when there is none (V4 §1.5).
-		push: detail.push,
-		// Latest run first (runs order by startedAt DESC). nonterminalRuns.count is
-		// spec §6.3, but Task 5 shipped no source-summary route — derive the count
-		// from this first page of runs (honest for the common case; a dedicated
-		// summary route with durable health/scheduling reasons is a later task).
-		latestRun: runs.items[0] ?? null,
-		nonterminalCount: runs.items.filter((r) => r.status === 'processing').length,
-		conflictCount: itemsPage.conflictCount,
-		items: itemsPage.items,
-		itemsNextCursor: itemsPage.nextCursor,
-		// The purge form appears for a BLOCKED source alone (core 409s a purge on any
-		// other state); its consequence copy travels to the page for the confirm text.
-		purgeEligible: source.governance === 'blocked',
-		purgeConsequence: PURGE_CONSEQUENCE,
-		categories: AUDIT_CATEGORIES,
-		// One server-minted command id per rendered refresh form (spec §6.2): a
-		// resubmit — browser retry, back-and-resubmit — replays the identical id, so
-		// core returns the original run (disposition 'replayed') instead of a 2nd fetch.
-		refreshCommandId: crypto.randomUUID(),
-		purgeCommandId: crypto.randomUUID()
-	}
+	return detail
 }
 
 export const actions: Actions = {

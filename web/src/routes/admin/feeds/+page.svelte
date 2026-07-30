@@ -165,6 +165,11 @@
 	// row, so the panel — and the forms it renders — are identical, not a
 	// re-derivation.
 	type Row = PageData['expandedMembers'][number]
+
+	// Task 9: which row's inline ?detail= panel is open, if any. Deliberately
+	// separate from `expand` (federation member-list) — a federation row can
+	// legitimately want both open at once.
+	const detail = $derived(data.detail?.sourceId ?? null)
 </script>
 
 <svelte:head><title>Admin — Sources — RSC</title></svelte:head>
@@ -282,7 +287,12 @@
 								{@const extra = Math.max(0, row.subscriberTotal - row.addedBy.length)}
 								<p class="subnav hint">Added by {row.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
 							{/if}
-							<p class="subnav"><a href="/admin/sources/{encodeURIComponent(row.id)}">Details (run history, items, purge)</a></p>
+							<p class="subnav">
+								<a href="/admin/feeds?{[detail === row.id ? '' : `detail=${encodeURIComponent(row.id)}`, otherParams(new Set(['detail']))].filter(Boolean).join('&')}">
+									{detail === row.id ? 'Hide details' : 'Details (run history, items, purge)'}
+								</a>
+								<a href="/admin/sources/{encodeURIComponent(row.id)}/runs">Run history</a>
+							</p>
 						</div>
 						{#if row.group === 'federation' && row.memberCounts}
 							{@const qs = [expanded ? '' : `expand=${row.id}`, otherParams(new Set(['expand']))].filter(Boolean).join('&')}
@@ -319,6 +329,46 @@
 							{/if}
 						{/if}
 						{@render managePanel(row)}
+						{#if detail === row.id && data.detail}
+							<section class="detail-panel">
+								<h4>Source acquisition</h4>
+								<form method="POST" action="?/refresh{otherParams() ? `&${otherParams()}` : ''}" use:enhance>
+									<input type="hidden" name="sourceId" value={data.detail.sourceId} />
+									<input type="hidden" name="commandId" value={data.detail.refreshCommandId} />
+									<button>Refresh now</button>
+								</form>
+								{#if data.detail.latestRun}
+									<dl class="status">
+										<div><dt>Run status</dt><dd>{data.detail.latestRun.status}</dd></div>
+										<div><dt>Nonterminal runs</dt><dd>{data.detail.nonterminalCount}</dd></div>
+									</dl>
+								{:else}
+									<p class="subnav">No acquisition runs yet.</p>
+								{/if}
+								{#if data.detail.items.length > 0}
+									<ul class="item-list">
+										{#each data.detail.items as item (item.logicalItemId)}
+											<li><a class="mono" href="/admin/items/{encodeURIComponent(item.logicalItemId)}">{item.logicalItemId}</a></li>
+										{/each}
+									</ul>
+								{/if}
+								{#if data.detail.purgeEligible}
+									<form method="POST" action="?/purge{otherParams() ? `&${otherParams()}` : ''}" class="source-action destructive" use:enhance>
+										<input type="hidden" name="sourceId" value={data.detail.sourceId} />
+										<input type="hidden" name="commandId" value={data.detail.purgeCommandId} />
+										<label class="visually-hidden" for="detail-purge-cat">Moderation category</label>
+										<select id="detail-purge-cat" name="category" required>
+											{#each data.detail.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+										</select>
+										<details class="confirm-gate">
+											<summary><span class="action-name">Purge evidence</span></summary>
+											<p class="consequence">{data.detail.purgeConsequence}</p>
+											<button aria-label="Confirm purge — {data.detail.source.canonicalUrl}">Confirm purge</button>
+										</details>
+									</form>
+								{/if}
+							</section>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -766,5 +816,14 @@
 		flex-shrink: 0;
 		color: var(--color-secondary);
 		font-size: 0.875rem;
+	}
+
+	.detail-panel {
+		margin-top: var(--space-sm);
+		padding-top: var(--space-sm);
+		border-top: 1px solid var(--color-border);
+	}
+	.detail-panel h4 {
+		margin: 0 0 var(--space-sm);
 	}
 </style>

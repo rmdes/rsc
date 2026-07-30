@@ -190,7 +190,12 @@ test('a blocked member renders twice (flat + nested) with distinct DOM ids to av
 // The source detail page (/admin/sources/[sourceId] — run history, item
 // history, purge) had no link reaching it from this list at all; an admin
 // had to already know the source's id and type the URL by hand.
-test('every row, ordinary and nested member alike, links to its own source detail page', () => {
+// Task 9 (route consolidation): an ordinary row's own Details link now toggles
+// the inline ?detail= panel instead of navigating to the standalone page, and
+// gets its own "Run history" link to the /runs sub-route; a nested member row
+// is untouched (no inline panel plumbed for it) and still links to the
+// standalone page as before.
+test('every row, ordinary and nested member alike, links to its own source-detail surface', () => {
 	const data = {
 		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
 		expand: 'inst1',
@@ -205,7 +210,8 @@ test('every row, ordinary and nested member alike, links to its own source detai
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
 
-	expect(body).toContain('href="/admin/sources/inst1"')
+	expect(body).toContain('href="/admin/feeds?detail=inst1&amp;expand=inst1"')
+	expect(body).toContain('href="/admin/sources/inst1/runs"')
 	expect(body).toContain('href="/admin/sources/mem1"')
 })
 
@@ -275,6 +281,76 @@ test('the tombstone-unblock form renders its own confirm-gate with the distinct 
 	const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
 	expect(detailsChunk).toContain('lifts the URL reservation')
 	expect(detailsChunk).toContain('Confirm unblock')
+})
+
+// --- Task 9: the inline ?detail= panel -----------------------------------------
+
+function detailData(over: Record<string, unknown> = {}) {
+	return {
+		sourceId: 'inst1',
+		source: { canonicalUrl: 'https://inst1.test/feed.xml', governance: 'blocked', operation: 'paused', attributionMode: 'single_publisher' },
+		push: null,
+		latestRun: { runId: 'r1', status: 'terminal' },
+		nonterminalCount: 0,
+		conflictCount: 0,
+		items: [{ logicalItemId: 'li1' }],
+		itemsNextCursor: null,
+		purgeEligible: true,
+		purgeConsequence: 'Purging permanently deletes all stored versions and evidence — this cannot be undone.',
+		categories: ['spam'],
+		refreshCommandId: 'refresh-1',
+		purgeCommandId: 'purge-1',
+		...over
+	}
+}
+
+test('?detail=<id> renders the row\'s inline detail panel (refresh, status, items, purge) right where the row is, with the Details link now reading "Hide details"', () => {
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1',
+		detail: detailData()
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('>Hide details<')
+	const panelChunk = body.slice(body.indexOf('class="detail-panel'))
+	expect(panelChunk).toContain('Source acquisition')
+	expect(panelChunk).toContain('action="?/refresh')
+	expect(panelChunk).toContain('name="sourceId" value="inst1"')
+	expect(panelChunk).toContain('name="commandId" value="refresh-1"')
+	expect(panelChunk).toContain('li1')
+	// the purge form's confirm-gate reuses the established .confirm-gate shape
+	expect(panelChunk).toContain('action="?/purge')
+	const gateStart = panelChunk.indexOf('class="confirm-gate')
+	const detailsChunk = panelChunk.slice(gateStart, panelChunk.indexOf('</details>', gateStart) + '</details>'.length)
+	expect(detailsChunk).toContain('Purging permanently deletes')
+	expect(detailsChunk).toContain('Confirm purge')
+})
+
+test('no ?detail= (data.detail null) renders no inline detail panel for any row', () => {
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1',
+		detail: null
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('class="detail-panel')
+	expect(body).toContain('Details (run history, items, purge)')
 })
 
 // --- Task 4: search box, addedBy, the orphan group, the two-step reap confirm ---

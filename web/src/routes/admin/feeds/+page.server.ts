@@ -1,7 +1,8 @@
 import { fail } from '@sveltejs/kit'
 import { authedFetch, base, cookieHeader } from '$lib/server/session'
-import { listTombstones, unblockTombstone } from '$lib/logical-api'
+import { listTombstones, unblockTombstone, refreshSource, purgeSource } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
+import { loadSourceDetail } from '$lib/server/source-detail'
 import type { Actions, PageServerLoad } from './$types'
 
 // Tombstone-unblock's consequence is DISTINCT from source-governance unblock (which
@@ -237,10 +238,17 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	// V3: the reserved blocked/tombstoned URLs (unpaginated). One command id per
 	// rendered unblock form — a resubmit replays the identical id (design §11).
 	const tombstones = (await listTombstones(f)).map((t) => ({ ...t, commandId: crypto.randomUUID() }))
+	// Task 9: inline source detail, reached via ?detail= (deliberately a
+	// DIFFERENT param than ?expand=, which already means "show this
+	// instance's member list" — a federation row needs both to mean
+	// different things at once, per the redesign spec's Component 4).
+	const detailId = url.searchParams.get('detail')
+	const detail = detailId ? await loadSourceDetail(fetch, url.origin, cookies, detailId, url.searchParams.get('detailBefore')) : null
 	return {
 		groups: GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => r.group === g.key) })),
 		expand,
 		expandedMembers,
+		detail,
 		tombstones,
 		tombstoneConsequence: TOMBSTONE_CONSEQUENCE,
 		categories: AUDIT_CATEGORIES,
@@ -499,5 +507,47 @@ export const actions: Actions = {
 			})
 		)
 		return { bulkTombstoneResults }
+	},
+	// Thin wrappers so the inlined ?detail= panel's forms can post without a
+	// cross-route action reference (no precedent for that in this codebase).
+	// Bodies are identical to sources/[sourceId]/+page.server.ts's own
+	// refresh/purge — kept in sync by hand since SvelteKit actions can't be
+	// re-exported/imported across routes.
+	refresh: async (event) => {
+		const form = await event.request.formData()
+		const sourceId = String(form.get('sourceId') ?? '').trim()
+		const commandId = String(form.get('commandId') ?? '').trim()
+		if (!sourceId) return fail(400, { error: 'sourceId is required' })
+		if (!commandId) return fail(400, { error: 'commandId is required', sourceId })
+		let outcome
+		try {
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			outcome = await refreshSource(f, sourceId, commandId)
+		} catch (err) {
+			return fail(502, { error: err instanceof Error ? err.message : 'refresh failed', sourceId, commandId })
+		}
+		if (outcome.kind === 'refused') return { sourceId, commandId, refused: true }
+		if (outcome.kind === 'conflict') return fail(409, { error: 'idempotency conflict', sourceId, commandId })
+		return { sourceId, commandId, run: outcome.run, polling: outcome.kind === 'polling' }
+	},
+	purge: async (event) => {
+		const form = await event.request.formData()
+		const sourceId = String(form.get('sourceId') ?? '').trim()
+		const commandId = String(form.get('commandId') ?? '').trim()
+		const category = String(form.get('category') ?? '').trim()
+		const note = String(form.get('note') ?? '').trim()
+		if (!sourceId) return fail(400, { error: 'sourceId is required' })
+		if (!commandId) return fail(400, { error: 'commandId is required' })
+		if (!category) return fail(400, { error: 'a moderation category is required', commandId })
+		let outcome
+		try {
+			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+			outcome = await purgeSource(f, sourceId, { commandId, category, ...(note ? { note } : {}) })
+		} catch (err) {
+			return fail(502, { error: err instanceof Error ? err.message : 'purge failed', commandId, purge: true })
+		}
+		if (outcome.kind === 'unavailable') return fail(404, { error: 'This source is unavailable.', commandId, purge: true })
+		if (outcome.kind === 'conflict') return fail(409, { error: outcome.error, commandId, purge: true })
+		return { purged: true, commandId }
 	}
 }

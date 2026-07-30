@@ -625,6 +625,30 @@ test('the orphan group is fetched with filter=orphan, maps retention/commandId p
 	expect(orphanCall).not.toContain('cursor=ordinary-page2')
 })
 
+// --- Task 9: ?detail= inlines a source's own detail panel via loadSourceDetail ---
+
+test('?detail=<id> inlines that source\'s detail panel data into the feeds load result', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('filter=orphan') || u.includes('filter=governance')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		if (u.includes('/admin/tombstones')) return new Response(JSON.stringify({ model: 'logical-v2', tombstones: [] }), { status: 200 })
+		if (u.includes('/admin/sources/s1/runs')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		if (u.includes('/admin/sources/s1/items')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null, conflictCount: 0 }), { status: 200 })
+		if (u.includes('/admin/sources/s1')) return new Response(JSON.stringify({ source: { id: 's1', canonicalUrl: 'https://ex.test/feed.xml', attributionMode: 'single_publisher', operation: 'enabled', governance: 'allowed' } }), { status: 200 })
+		return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+	})
+	const result = (await loadAdminWith(fetch, '?detail=s1')) as LoadResult & { detail?: { sourceId: string; source: { canonicalUrl: string } } | null }
+	expect(result.detail?.sourceId).toBe('s1')
+	expect(result.detail?.source.canonicalUrl).toBe('https://ex.test/feed.xml')
+})
+
+test('no ?detail= on the request omits the detail fetches and echoes detail: null', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 }))
+	const result = (await loadAdminWith(fetch)) as LoadResult & { detail?: unknown }
+	expect(result.detail).toBeNull()
+	expect(urlsOf(fetch).some((u) => u.includes('/runs') || u.includes('/items'))).toBe(false)
+})
+
 test('the reap action refuses a missing sourceId/commandId without calling core', async () => {
 	const fetch = vi.fn()
 	expect(await actions.reap(formEvent('reap', { commandId: 'c' }, fetch) as never)).toMatchObject({ status: 400 })

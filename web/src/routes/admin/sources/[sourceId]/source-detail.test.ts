@@ -1,5 +1,7 @@
 import { test, expect, vi } from 'vitest'
 import { render } from 'svelte/server'
+import { loadSourceDetail } from '$lib/server/source-detail'
+import type { Cookies } from '@sveltejs/kit'
 
 // The admin acquisition console (spec §6.2-6.3): the source-detail page (refresh
 // action + status panel) and the runs/jobs history page. Every load case takes
@@ -80,6 +82,30 @@ async function loadRuns(fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search
 	const { load } = await import('./runs/+page.server.ts')
 	return (await load(loadEvent(fetch, sourceId, search) as never)) as LoadResult
 }
+
+// --- Task 9: loadSourceDetail, shared between this route and /admin/feeds's
+// ?detail= inline panel — same reads, same shape, not a re-derivation. ------
+
+test('loadSourceDetail returns null for an unknown source, same 404-as-null contract the route load used to have inline', async () => {
+	const fetch = vi.fn(async () => new Response(null, { status: 404 }))
+	const result = await loadSourceDetail(fetch as unknown as typeof globalThis.fetch, 'http://x', cookies as unknown as Cookies, 'missing', null)
+	expect(result).toBeNull()
+})
+
+test('loadSourceDetail returns the full detail shape for a known source', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/admin/sources/s1/runs')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		if (u.includes('/admin/sources/s1/items')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null, conflictCount: 0 }), { status: 200 })
+		if (u.includes('/admin/sources/s1')) return new Response(JSON.stringify({ source: { id: 's1', canonicalUrl: 'https://ex.test/feed.xml', attributionMode: 'single_publisher', operation: 'enabled', governance: 'blocked' } }), { status: 200 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const result = await loadSourceDetail(fetch as unknown as typeof globalThis.fetch, 'http://x', cookies as unknown as Cookies, 's1', null)
+	expect(result?.source.canonicalUrl).toBe('https://ex.test/feed.xml')
+	expect(result?.purgeEligible).toBe(true) // blocked ⇒ purge-eligible
+	expect(result?.refreshCommandId).toMatch(/^[0-9a-f]{8}-/)
+	expect(result?.purgeCommandId).toMatch(/^[0-9a-f]{8}-/)
+})
 
 // --- the source-detail status panel --------------------------------------------
 
