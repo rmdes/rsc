@@ -348,13 +348,15 @@ test('a refused purge from the inline panel pins the purge form\'s submitted com
 })
 
 test('an attribution-mode failure does not poison the inline panel\'s refresh commandId', () => {
-	// A different source's ('inst2') attribution-mode failure — not this
-	// panel's own row ('inst1') — so its commandId has no legitimate home
-	// anywhere in this panel and must not leak into the refresh form.
-	const form = { sourceId: 'inst2', action: 'attribution-mode', commandId: 'block-cmd-1', error: 'invalid transition' }
+	// This panel's own row ('inst1') failing its OWN attribution-mode submit
+	// legitimately pins that commandId into the attribution form — that's
+	// correct retry behavior, not poisoning. What must not happen is that
+	// pin leaking into the REFRESH form above it, which has its own id.
+	const form = { sourceId: 'inst1', action: 'attribution-mode', commandId: 'attr-cmd-1', error: 'invalid transition' }
 	const panel = detailPanelOf(render(Page, { props: { data: inlineDetailData(), form } } as never).body)
-	expect(panel).toContain('name="commandId" value="refresh-1"')
-	expect(panel).not.toContain('value="block-cmd-1"')
+	const attrStart = panel.indexOf('action="?/source')
+	expect(panel.slice(0, attrStart)).toContain('name="commandId" value="refresh-1"')
+	expect(panel.slice(0, attrStart)).not.toContain('attr-cmd-1')
 })
 
 test('no ?detail= (data.detail null) renders no inline detail panel for any row', () => {
