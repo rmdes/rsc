@@ -32,3 +32,11 @@ test('local user rows each have a checkbox and the page renders an always-presen
 	expect(body).toContain('action="?/bulkDelete')
 	expect(body).toContain('type="checkbox"')
 })
+
+test('the bulk-delete toolbar (button + confirm-gate) is always in the server output, not gated behind a JS-only selection count', () => {
+	const { body } = render(Page, { props: { data: baseData(), form: null } } as never)
+	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkDelete'), body.indexOf('</form>', body.indexOf('action="?/bulkDelete')))
+	expect(bulkFormChunk).toContain('class="confirm-gate')
+	expect(bulkFormChunk).toContain('Delete selected')
+	expect(bulkFormChunk).not.toContain('has-selection')
+})
