@@ -1,9 +1,19 @@
 import { test, expect, vi } from 'vitest'
+import { render } from 'svelte/server'
 
 // The admin acquisition console (spec §6.2-6.3): the source-detail page (refresh
 // action + status panel) and the runs/jobs history page. Every load case takes
 // a FRESH +page.server.ts import so module-level memoization never bleeds
 // between cases.
+
+// SvelteKit virtual module the page's <form use:enhance> pulls in — a bare
+// stub, not a dep (same pattern as feeds.render.test.ts). A top-level
+// vi.mock + top-level dynamic import (not vi.resetModules() inside a test)
+// so `render()` from 'svelte/server' below shares ONE module instance with
+// the compiled +page.svelte — resetModules() mid-test forks a second
+// instance of svelte's internal SSR context singleton, which throws.
+vi.mock('$app/forms', () => ({ enhance: () => ({}) }))
+const { default: Page } = await import('./+page.svelte')
 
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 
@@ -159,6 +169,28 @@ test('a blocked source is purge-eligible and the loader carries purge’s DISTIN
 	const copy = String(result.purgeConsequence)
 	expect(copy).toContain('permanently')
 	expect(copy).toMatch(/stays blocked|remains blocked/i)
+})
+
+test('the purge form renders a collapsed confirm-gate with the purge consequence, not an always-visible button', () => {
+	const data = {
+		sourceId: 's1',
+		source: { canonicalUrl: 'https://ex.test/feed.xml', governance: 'blocked', operation: 'paused', attributionMode: 'single_publisher' },
+		push: null,
+		latestRun: null,
+		nonterminalCount: 0,
+		conflictCount: 0,
+		items: [],
+		itemsNextCursor: null,
+		purgeEligible: true,
+		purgeConsequence: 'Purging permanently deletes all stored versions and evidence for this source — this cannot be undone.',
+		categories: ['spam'],
+		refreshCommandId: 'refresh-1',
+		purgeCommandId: 'purge-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	expect(detailsChunk).toContain('Purging permanently deletes')
+	expect(detailsChunk).toContain('Confirm purge')
 })
 
 async function purgeAction(fetch: ReturnType<typeof vi.fn>, fields: Record<string, string>) {

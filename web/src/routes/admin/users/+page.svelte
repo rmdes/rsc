@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import { enhance } from '$app/forms'
-	import { confirmSubmit } from '$lib/confirm'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -45,10 +44,14 @@
 								method="POST"
 								action="?/deleteUser{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}"
 								class="unfollow-form"
-								use:enhance={confirmSubmit(`Delete @${u.handle} and all their posts? This can't be undone.`)}
+								use:enhance
 							>
 								<input type="hidden" name="handle" value={u.handle} />
-								<button type="submit">Delete account</button>
+								<details class="confirm-gate">
+									<summary><span class="action-name">Delete account</span></summary>
+									<p class="consequence">Delete @{u.handle} and all their posts? This can't be undone.</p>
+									<button type="submit" aria-label="Confirm delete — @{u.handle}">Confirm delete</button>
+								</details>
 							</form>
 						{:else}
 							—
@@ -63,3 +66,27 @@
 {#if data.nextCursor}
 	<a class="older" href="/admin/users?cursor={encodeURIComponent(data.nextCursor)}">More users</a>
 {/if}
+
+<style>
+	.action-name {
+		font-weight: 600;
+	}
+	.consequence {
+		margin: 0;
+		color: var(--color-secondary);
+		font-size: 0.8125rem;
+	}
+	.confirm-gate summary {
+		cursor: pointer;
+		list-style: none;
+	}
+	.confirm-gate summary::-webkit-details-marker {
+		display: none;
+	}
+	.confirm-gate[open] summary .action-name {
+		color: var(--color-secondary);
+	}
+	.confirm-gate .consequence {
+		margin: var(--space-sm) 0;
+	}
+</style>
