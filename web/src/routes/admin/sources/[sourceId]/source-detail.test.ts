@@ -1,9 +1,21 @@
 import { test, expect, vi } from 'vitest'
+import { render } from 'svelte/server'
+import { loadSourceDetail } from '$lib/server/source-detail'
+import type { Cookies } from '@sveltejs/kit'
 
 // The admin acquisition console (spec §6.2-6.3): the source-detail page (refresh
 // action + status panel) and the runs/jobs history page. Every load case takes
 // a FRESH +page.server.ts import so module-level memoization never bleeds
 // between cases.
+
+// SvelteKit virtual module the page's <form use:enhance> pulls in — a bare
+// stub, not a dep (same pattern as feeds.render.test.ts). A top-level
+// vi.mock + top-level dynamic import (not vi.resetModules() inside a test)
+// so `render()` from 'svelte/server' below shares ONE module instance with
+// the compiled +page.svelte — resetModules() mid-test forks a second
+// instance of svelte's internal SSR context singleton, which throws.
+vi.mock('$app/forms', () => ({ enhance: () => ({}) }))
+const { default: Page } = await import('./+page.svelte')
 
 const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 
@@ -70,6 +82,30 @@ async function loadRuns(fetch: ReturnType<typeof vi.fn>, sourceId = 's1', search
 	const { load } = await import('./runs/+page.server.ts')
 	return (await load(loadEvent(fetch, sourceId, search) as never)) as LoadResult
 }
+
+// --- Task 9: loadSourceDetail, shared between this route and /admin/feeds's
+// ?detail= inline panel — same reads, same shape, not a re-derivation. ------
+
+test('loadSourceDetail returns null for an unknown source, same 404-as-null contract the route load used to have inline', async () => {
+	const fetch = vi.fn(async () => new Response(null, { status: 404 }))
+	const result = await loadSourceDetail(fetch as unknown as typeof globalThis.fetch, 'http://x', cookies as unknown as Cookies, 'missing', null)
+	expect(result).toBeNull()
+})
+
+test('loadSourceDetail returns the full detail shape for a known source', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/admin/sources/s1/runs')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		if (u.includes('/admin/sources/s1/items')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null, conflictCount: 0 }), { status: 200 })
+		if (u.includes('/admin/sources/s1')) return new Response(JSON.stringify({ source: { id: 's1', canonicalUrl: 'https://ex.test/feed.xml', attributionMode: 'single_publisher', operation: 'enabled', governance: 'blocked' } }), { status: 200 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const result = await loadSourceDetail(fetch as unknown as typeof globalThis.fetch, 'http://x', cookies as unknown as Cookies, 's1', null)
+	expect(result?.source.canonicalUrl).toBe('https://ex.test/feed.xml')
+	expect(result?.purgeEligible).toBe(true) // blocked ⇒ purge-eligible
+	expect(result?.refreshCommandId).toMatch(/^[0-9a-f]{8}-/)
+	expect(result?.purgeCommandId).toMatch(/^[0-9a-f]{8}-/)
+})
 
 // --- the source-detail status panel --------------------------------------------
 
@@ -159,6 +195,28 @@ test('a blocked source is purge-eligible and the loader carries purge’s DISTIN
 	const copy = String(result.purgeConsequence)
 	expect(copy).toContain('permanently')
 	expect(copy).toMatch(/stays blocked|remains blocked/i)
+})
+
+test('the purge form renders a collapsed confirm-gate with the purge consequence, not an always-visible button', () => {
+	const data = {
+		sourceId: 's1',
+		source: { canonicalUrl: 'https://ex.test/feed.xml', governance: 'blocked', operation: 'paused', attributionMode: 'single_publisher' },
+		push: null,
+		latestRun: null,
+		nonterminalCount: 0,
+		conflictCount: 0,
+		items: [],
+		itemsNextCursor: null,
+		purgeEligible: true,
+		purgeConsequence: 'Purging permanently deletes all stored versions and evidence for this source — this cannot be undone.',
+		categories: ['spam'],
+		refreshCommandId: 'refresh-1',
+		purgeCommandId: 'purge-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	expect(detailsChunk).toContain('Purging permanently deletes')
+	expect(detailsChunk).toContain('Confirm purge')
 })
 
 async function purgeAction(fetch: ReturnType<typeof vi.fn>, fields: Record<string, string>) {

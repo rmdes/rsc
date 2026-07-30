@@ -59,7 +59,7 @@ type Row = {
 	subscriberTotal: number
 	actions: Array<{ action: string; commandId: string }>
 }
-type OrphanRow = { id: string; url: string; retention: string | null; commandId: string; forceCommandId: string }
+type OrphanRow = { id: string; url: string; retention: string | null; commandId: string }
 type Group = { key: string; title: string; blurb: string; rows: Row[] }
 type LoadResult = {
 	groups?: Group[]
@@ -217,6 +217,109 @@ test("core's two distinct conflicts reach the admin verbatim", async () => {
 	const res = await actions.source(formEvent('source', { sourceId: 's1', action: 'allow', category: 'spam', commandId: 'cmd-4' }, fetch) as never)
 	expect(res).toMatchObject({ status: 400 })
 	expect((res as { data: { error: string } }).data.error).toBe('invalid transition')
+})
+
+test('bulkSource posts the same per-source endpoint once per row, using each row\'s OWN commandId, and returns per-row outcomes', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/s1/quarantine')) return new Response(JSON.stringify({ source: {} }), { status: 200 })
+		if (u.includes('/s2/quarantine')) return new Response(JSON.stringify({ error: 'invalid transition' }), { status: 409 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	// Task 5's request shape (as corrected mid-execution): ONE candidate per
+	// checked row — the checkbox's own value, "sourceId|action:commandId|…"
+	// listing every action that row offers. The clicked `action` picks each
+	// row's matching commandId; s3 offers only `block`, so it is skipped.
+	const form = new URLSearchParams()
+	form.append('action', 'quarantine')
+	form.append('candidate', 's1|quarantine:cmd-s1|block:cmd-s1-block')
+	form.append('candidate', 's2|quarantine:cmd-s2')
+	form.append('candidate', 's3|block:cmd-s3')
+	form.append('category', 'spam')
+	const res = (await actions.bulkSource({
+		request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }),
+		fetch,
+		url: new URL('http://x/admin/feeds'),
+		cookies
+	} as never)) as { bulkResults: { sourceId: string; ok: boolean; error?: string }[]; bulkAction: string }
+	expect(res.bulkAction).toBe('quarantine')
+	expect(res.bulkResults).toEqual([
+		{ sourceId: 's1', ok: true },
+		{ sourceId: 's2', ok: false, error: 'invalid transition' }
+	])
+	expect(fetch).toHaveBeenCalledTimes(2)
+	const [s1Url, s1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('/s1/'))! as unknown as [string, RequestInit]
+	expect(s1Url).toContain('/admin/sources/s1/quarantine')
+	expect(JSON.parse(String(s1Init.body))).toEqual({ commandId: 'cmd-s1', category: 'spam' })
+})
+
+test('bulkSource refuses attribution-mode and unknown actions without calling core', async () => {
+	const fetch = vi.fn()
+	for (const action of ['attribution-mode', 'constructor', 'purge']) {
+		const form = new URLSearchParams()
+		form.append('action', action)
+		form.append('candidate', `s1|${action}:cmd-1`)
+		form.append('category', 'spam')
+		const res = await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
+		expect(res).toMatchObject({ status: 400 })
+	}
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkSource with zero selected rows is a no-op, not an error', async () => {
+	const fetch = vi.fn()
+	const form = new URLSearchParams()
+	form.append('action', 'quarantine')
+	const res = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: unknown[] }
+	expect(res.bulkResults).toEqual([])
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+// A checked row that doesn't offer the clicked action is SKIPPED, not an
+// error: the toolbar offers the union of the group's actions until JS narrows
+// it to the selection's intersection, so a no-JS admin can legitimately click
+// "Quarantine" with a blocked row checked. Same for a value with no usable
+// pair at all — nothing reaches core with an undefined commandId.
+test('bulkSource silently skips a checked row that does not offer the clicked action', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ source: {} }), { status: 200 }))
+	const form = new URLSearchParams()
+	form.append('action', 'quarantine')
+	form.append('candidate', 's1|quarantine:cmd-s1')
+	form.append('candidate', 's2|unblock:cmd-s2|pause:cmd-s2-pause') // a blocked row: no quarantine
+	form.append('category', 'spam')
+	const res = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as {
+		bulkResults: { sourceId: string; ok: boolean }[]
+	}
+	expect(res.bulkResults).toEqual([{ sourceId: 's1', ok: true }])
+	expect(fetch).toHaveBeenCalledTimes(1)
+	expect(String((fetch.mock.calls[0] as unknown as [string])[0])).toContain('/admin/sources/s1/quarantine')
+})
+
+test('bulkSource treats a candidate with no usable action:commandId pair as nothing to do, never a call with an undefined id', async () => {
+	const fetch = vi.fn()
+	for (const candidate of ['', 's1', 's1|', 's1|quarantine:', '|quarantine:cmd-1', 's1|block:cmd-1']) {
+		const form = new URLSearchParams()
+		form.append('action', 'quarantine')
+		form.append('candidate', candidate)
+		form.append('category', 'spam')
+		const res = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: unknown[] }
+		expect(res.bulkResults).toEqual([])
+	}
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkSource requires a category unless every action is pause/resume', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
+	const withoutCategory = new URLSearchParams()
+	withoutCategory.append('action', 'quarantine')
+	withoutCategory.append('candidate', 's1|quarantine:cmd-1')
+	expect(await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: withoutCategory }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)).toMatchObject({ status: 400 })
+
+	const pauseForm = new URLSearchParams()
+	pauseForm.append('action', 'pause')
+	pauseForm.append('candidate', 's1|pause:cmd-1')
+	const pauseRes = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: pauseForm }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: { ok: boolean }[] }
+	expect(pauseRes.bulkResults[0].ok).toBe(true)
 })
 
 test('establish federation posts fixed aggregate/operator_policy with the url, note and command id', async () => {
@@ -496,7 +599,7 @@ test('no ?q= on the request omits it from every fetch and echoes result.q as nul
 	expect(urlsOf(fetch).some((u) => u.includes('q='))).toBe(false)
 })
 
-test('the orphan group is fetched with filter=orphan, maps retention/commandId/forceCommandId per row, and paginates on its OWN ?orphanCursor= param, independent of ?cursor=', async () => {
+test('the orphan group is fetched with filter=orphan, maps retention/commandId per row, and paginates on its OWN ?orphanCursor= param, independent of ?cursor=', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
 		const u = String(url)
 		if (u.includes('filter=orphan')) return new Response(JSON.stringify({ items: [orphanSummary('orph1', 'verified_origin'), orphanSummary('orph2', 'reapable')], nextCursor: 'orph-next' }), { status: 200 })
@@ -510,16 +613,40 @@ test('the orphan group is fetched with filter=orphan, maps retention/commandId/f
 	])
 	expect(result.orphanCursor).toBe('orph-page2') // echoed back like `cursor`, not conflated with it
 	expect(result.orphanNextCursor).toBe('orph-next')
-	// Distinct, well-formed command ids per row, and commandId !== forceCommandId.
+	// One command id per row now (not two) — the row renders exactly one
+	// reap form, plain or force, decided by retention, never both.
 	for (const r of result.orphanRows ?? []) {
 		expect(r.commandId).toMatch(/^[0-9a-f]{8}-/)
-		expect(r.forceCommandId).toMatch(/^[0-9a-f]{8}-/)
-		expect(r.commandId).not.toBe(r.forceCommandId)
+		expect('forceCommandId' in r).toBe(false)
 	}
 	// The orphan fetch used ITS OWN cursor param, never the ordinary list's.
 	const orphanCall = urlsOf(fetch).find((u) => u.includes('filter=orphan'))
 	expect(orphanCall).toContain('cursor=orph-page2')
 	expect(orphanCall).not.toContain('cursor=ordinary-page2')
+})
+
+// --- Task 9: ?detail= inlines a source's own detail panel via loadSourceDetail ---
+
+test('?detail=<id> inlines that source\'s detail panel data into the feeds load result', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('filter=orphan') || u.includes('filter=governance')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		if (u.includes('/admin/tombstones')) return new Response(JSON.stringify({ model: 'logical-v2', tombstones: [] }), { status: 200 })
+		if (u.includes('/admin/sources/s1/runs')) return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+		if (u.includes('/admin/sources/s1/items')) return new Response(JSON.stringify({ model: 'logical-v2', items: [], nextCursor: null, conflictCount: 0 }), { status: 200 })
+		if (u.includes('/admin/sources/s1')) return new Response(JSON.stringify({ source: { id: 's1', canonicalUrl: 'https://ex.test/feed.xml', attributionMode: 'single_publisher', operation: 'enabled', governance: 'allowed' } }), { status: 200 })
+		return new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 })
+	})
+	const result = (await loadAdminWith(fetch, '?detail=s1')) as LoadResult & { detail?: { sourceId: string; source: { canonicalUrl: string } } | null }
+	expect(result.detail?.sourceId).toBe('s1')
+	expect(result.detail?.source.canonicalUrl).toBe('https://ex.test/feed.xml')
+})
+
+test('no ?detail= on the request omits the detail fetches and echoes detail: null', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ items: [], nextCursor: null }), { status: 200 }))
+	const result = (await loadAdminWith(fetch)) as LoadResult & { detail?: unknown }
+	expect(result.detail).toBeNull()
+	expect(urlsOf(fetch).some((u) => u.includes('/runs') || u.includes('/items'))).toBe(false)
 })
 
 test('the reap action refuses a missing sourceId/commandId without calling core', async () => {
@@ -576,4 +703,77 @@ test('a network error on reap echoes sourceId/commandId/force so a retry can rep
 	})
 	const res = await actions.reap(formEvent('reap', { sourceId: 's9', commandId: 'retry-me', force: 'true' }, throwingFetch) as never)
 	expect((res as { data: { sourceId: string; commandId: string; force: boolean } }).data).toMatchObject({ sourceId: 's9', commandId: 'retry-me', force: true })
+})
+
+test('bulkReap posts per-row force values independently — a mixed batch sends force only for the rows that need it', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/orph1/reap')) return new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 })
+		if (u.includes('/orph2/reap')) return new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const form = new URLSearchParams()
+	form.append('candidate', 'orph1:cmd-orph1:false')
+	form.append('candidate', 'orph2:cmd-orph2:true')
+	const res = (await actions.bulkReap({ request: new Request('http://x/admin/feeds?/bulkReap', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkReapResults: { sourceId: string; ok: boolean }[] }
+	expect(res.bulkReapResults).toEqual([
+		{ sourceId: 'orph1', ok: true },
+		{ sourceId: 'orph2', ok: true }
+	])
+	const [orph1Url, orph1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('orph1'))! as unknown as [string, RequestInit]
+	expect(JSON.parse(String(orph1Init.body))).toEqual({ commandId: 'cmd-orph1' })
+	const [, orph2Init] = fetch.mock.calls.find((c) => String(c[0]).includes('orph2'))! as unknown as [string, RequestInit]
+	expect(JSON.parse(String(orph2Init.body))).toEqual({ commandId: 'cmd-orph2', force: true })
+})
+
+test('bulkReap with zero candidates is a no-op', async () => {
+	const fetch = vi.fn()
+	const res = (await actions.bulkReap({ request: new Request('http://x/admin/feeds?/bulkReap', { method: 'POST', body: new URLSearchParams() }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkReapResults: unknown[] }
+	expect(res.bulkReapResults).toEqual([])
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkTombstone posts {commandId, category, note} per selected tombstone and reports per-row outcomes', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/t1/unblock')) return new Response(JSON.stringify({ model: 'logical-v2', kind: 'unblocked' }), { status: 200 })
+		if (u.includes('/t2/unblock')) return new Response(JSON.stringify({ model: 'logical-v2', error: 'source not blocked' }), { status: 409 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const form = new URLSearchParams()
+	form.append('candidate', 't1:cmd-t1')
+	form.append('candidate', 't2:cmd-t2')
+	form.append('category', 'remediated')
+	form.append('note', 'appeal upheld')
+	const res = (await actions.bulkTombstone({ request: new Request('http://x/admin/feeds?/bulkTombstone', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkTombstoneResults: { tombstoneId: string; ok: boolean; error?: string }[] }
+	expect(res.bulkTombstoneResults).toEqual([
+		{ tombstoneId: 't1', ok: true },
+		{ tombstoneId: 't2', ok: false, error: 'source not blocked' }
+	])
+	const [, t1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('t1'))! as unknown as [string, RequestInit]
+	expect(JSON.parse(String(t1Init.body))).toEqual({ commandId: 'cmd-t1', category: 'remediated', note: 'appeal upheld' })
+})
+
+test('bulkTombstone refuses a missing category without calling core', async () => {
+	const fetch = vi.fn()
+	const form = new URLSearchParams()
+	form.append('candidate', 't1:cmd-t1')
+	const res = await actions.bulkTombstone({ request: new Request('http://x/admin/feeds?/bulkTombstone', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
+	expect(res).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+// The inline ?detail= panel's refresh/purge used to be hand-copied duplicates of
+// sources/[sourceId]/+page.server.ts's, carrying a "kept in sync by hand"
+// comment. They are now literally the same two functions (their behaviour is
+// covered by source-detail.test.ts's refresh/purge cases) — this is the guard
+// that fails if someone re-inlines a copy and the two drift again.
+test('the feeds route mounts the SHARED refresh/purge handlers rather than its own copies', () => {
+	// Identity (`toBe` against an imported reference) can't be used here: the
+	// vitest transform resolves `$lib/...` and the `./+page.server.ts` import
+	// chain to two module instances. The function NAME is the durable signal —
+	// a re-inlined copy would be an anonymous/`refresh`-named arrow, not the
+	// shared named declaration.
+	expect(actions.refresh?.name).toBe('refreshAction')
+	expect(actions.purge?.name).toBe('purgeAction')
 })

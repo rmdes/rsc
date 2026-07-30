@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import { enhance } from '$app/forms'
-	import { confirmSubmit } from '$lib/confirm'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -18,7 +17,27 @@
 	// `action` or `tombstone`'s `tombstoneId`, since `reap`'s fail() sets
 	// neither — `'force' in retryFail` is what distinguishes a reap failure
 	// from the other three actions' shapes below.
-	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string; force?: boolean }
+	// Task 5 adds bulkSource's SUCCESS shape here too (bulkResults/bulkAction):
+	// same reason as the fail fields — one loose read beats narrowing a union
+	// that now spans five actions.
+	// Task 7 adds bulkReap's/bulkTombstone's own per-row outcome arrays —
+	// same reasoning, now seven actions deep.
+	// Task 9's inlined refresh/purge add `purge`/`purged` — the same two markers
+	// the standalone /admin/sources/[sourceId] page reads to tell WHICH of its
+	// two forms a returned commandId belongs to.
+	type RetryFail = {
+		sourceId?: string
+		action?: string
+		commandId?: string
+		tombstoneId?: string
+		force?: boolean
+		purge?: boolean
+		purged?: boolean
+		bulkResults?: { sourceId: string; ok: boolean; error?: string }[]
+		bulkAction?: string
+		bulkReapResults?: { sourceId: string; ok: boolean; error?: string }[]
+		bulkTombstoneResults?: { tombstoneId: string; ok: boolean; error?: string }[]
+	}
 	const retryFail = $derived(form as RetryFail | null)
 	// Retry id for the establish form specifically (no sourceId/tombstoneId of its
 	// own): was a template {@const}, which requires an enclosing block — hoisted
@@ -41,7 +60,8 @@
 			['cursor', data.cursor],
 			['q', data.q],
 			['orphanCursor', data.orphanCursor],
-			['expand', data.expand]
+			['expand', data.expand],
+			['detail', data.detail?.sourceId ?? null]
 		] as const)
 			.filter(([k, v]) => v && !exclude.has(k))
 			.map(([k, v]) => `${k}=${encodeURIComponent(v as string)}`)
@@ -69,34 +89,26 @@
 		reapable: 'No retaining reason — reapable'
 	}
 
-	// Design §10 posture, extended to reap: the plain (no-force) attempt's
-	// consequence is stated up front; the SEPARATE force-confirm form (shown
-	// only once core has actually refused with one of the three force-liftable
-	// reasons — verified_origin_evidence, admin_retained, audit_history, per
-	// core's reapSource guard chain) states the sharper, reason-specific
-	// consequence of overriding THAT refusal — never the same sentence for all
-	// three, since the stakes differ per reason.
+	// Design §10, retention-driven (no round trip): retention is already
+	// known at load time (Task 4's toOrphanRow), so which consequence text
+	// and which button ("Reap" vs "Reap anyway") a row shows is decided
+	// directly from `row.retention` — never from a prior refusal. The three
+	// reasons below are exactly the ones core's reapSource lifts when
+	// force:true is sent (see the `!opts.force &&` guards in
+	// core/src/domain/source-repository.ts); every other reason
+	// (has_subscribers/not_allowed/federated) can never appear here, since
+	// the orphan list's own filter already excludes any source with those
+	// properties.
 	const REAP_CONSEQUENCE =
 		'Reaping permanently deletes this source and its evidence — items, publisher claims and any history of its own are removed for good. Only offered for sources with no subscribers and no federation relationship.'
-	// The three refusal reasons core's reapSource will actually lift when
-	// force:true is sent (admin_retained/audit_history/verified_origin_evidence
-	// — see reapSource's `!opts.force &&` guards); every other reason
-	// (has_subscribers/not_allowed/federated/idempotency conflict) is always
-	// enforced and gets no confirm form, just the plain error banner.
-	const FORCE_LIFTABLE = new Set(['verified_origin_evidence', 'admin_retained', 'audit_history'])
 	const FORCE_REAP_CONSEQUENCE: Record<string, string> = {
-		verified_origin_evidence:
+		verified_origin: // orphanRow.retention's spelling (no _evidence suffix), unlike the reason string core's 409 used to return
 			'This source backs verified-origin evidence for a logical item. Reaping anyway removes that evidence permanently — the affected item loses its verified-origin claim. This cannot be undone.',
 		admin_retained:
 			'This source was marked retained by an admin. Reaping anyway overrides that retention permanently — the source and its evidence are removed for good.',
 		audit_history:
 			'This source has audit history (past moderation decisions). Reaping anyway removes the source AND that history permanently — nothing will be left to show what was decided or why.'
 	}
-	// Fallback only for the rare case where a force retry itself fails for a
-	// reason that ISN'T one of the three above (e.g. a subscriber appeared in
-	// between) — the confirm form stays open for the retry, just with generic
-	// wording instead of a stale reason-specific sentence.
-	const GENERIC_FORCE_CONSEQUENCE = 'Reaping anyway overrides the refusal above and permanently removes this source and its evidence. This cannot be undone.'
 
 	const LABEL: Record<string, string> = {
 		pause: 'Pause acquisition',
@@ -125,11 +137,70 @@
 	// this select is the enum at the UI.
 	const CATEGORIES = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
 
+	// One Set of checked source ids per group. COSMETIC ONLY: it drives the
+	// live "N selected" count and the blurb↔toolbar swap class, nothing else.
+	// What a bulk submit actually carries comes from the checkboxes themselves
+	// (each one's `value` names its row and every action:commandId pair it
+	// offers), so the batch is exactly the checked boxes — browser-enforced,
+	// with or without JS. Reassigned rather than mutated on every toggle: a Set
+	// inside $state isn't deeply reactive, the new object reference is what
+	// re-renders.
+	let selected: Record<string, Set<string>> = $state({})
+	function toggleSelected(groupKey: string, id: string) {
+		const set = selected[groupKey] ?? new Set<string>()
+		if (set.has(id)) set.delete(id)
+		else set.add(id)
+		selected = { ...selected, [groupKey]: set }
+	}
+
+	// Which verbs a group's bulk bar offers. Nothing checked (the server
+	// baseline) → every bulk-eligible action any row in the group offers, so
+	// the bar ships in the SSR output instead of appearing only once JS ran.
+	// Rows checked → narrowed to the actions EVERY checked row offers, so the
+	// bar can't offer a verb part of the selection would only 409 on.
+	// attribution-mode is never bulk-eligible: it carries a per-row-meaningful
+	// extra field that doesn't generalize to N rows.
+	function bulkActions(group: PageData['groups'][number]): string[] {
+		const chosen = group.rows.filter((r) => selected[group.key]?.has(r.id))
+		const union = [...new Set(group.rows.flatMap((r) => r.actions.map((a) => a.action)))].filter((a) => a !== 'attribution-mode')
+		return chosen.length ? union.filter((a) => chosen.every((r) => r.actions.some((x) => x.action === a))) : union
+	}
+
 	// Shared by every row's Manage panel, ordinary or nested member (C1 fix):
 	// a member row's `actions` is computed by the SAME toRow() as an ordinary
 	// row, so the panel — and the forms it renders — are identical, not a
 	// re-derivation.
 	type Row = PageData['expandedMembers'][number]
+
+	// Task 9: which row's inline ?detail= panel is open, if any. Deliberately
+	// separate from `expand` (federation member-list) — a federation row can
+	// legitimately want both open at once.
+	const detail = $derived(data.detail?.sourceId ?? null)
+
+	// Command-id retention for the inline panel's two forms (design §11), the
+	// same pinning /admin/sources/[sourceId]/+page.svelte does with its own
+	// `commandId`/`purgeCommandId` $deriveds: loadSourceDetail mints a fresh
+	// uuid on EVERY load, so a re-render after a 202/refusal/blip has to reuse
+	// the id that was submitted — otherwise a retry mints a new command instead
+	// of replaying the original (a duplicate acquisition run, or a second
+	// audited purge). Unlike the standalone route, this page's `form` union
+	// spans seven actions, so refresh is identified POSITIVELY: it echoes
+	// sourceId+commandId for the open panel and carries none of the other
+	// actions' discriminators (source's `action`, reap's `force`, tombstone's
+	// `tombstoneId`, purge's `purge`/`purged`) — a failed block on the same row
+	// must not poison the refresh form's id.
+	const detailRefreshRetry = $derived(
+		retryFail?.commandId &&
+			retryFail.sourceId === detail &&
+			!retryFail.action &&
+			retryFail.force === undefined &&
+			!retryFail.tombstoneId &&
+			!retryFail.purge &&
+			!retryFail.purged
+			? retryFail.commandId
+			: undefined
+	)
+	const detailPurgeRetry = $derived((retryFail?.purge || retryFail?.purged) && retryFail.commandId ? retryFail.commandId : undefined)
 </script>
 
 <svelte:head><title>Admin — Sources — RSC</title></svelte:head>
@@ -141,6 +212,23 @@
 {#if form && 'established' in form && form.established}<p class="notice confirm" role="status">Federation established — the source is now approved.</p>{/if}
 {#if form && 'unblocked' in form && form.unblocked}<p class="notice confirm" role="status">Tombstone unblocked — the URL can be created again. Nothing was restored.</p>{/if}
 {#if form && 'reaped' in form && form.reaped}<p class="notice confirm" role="status">Source reaped — the source and its evidence are gone.</p>{/if}
+<!-- A bulk submit's per-row outcomes. Page-level, beside the other action
+     notices, not per group: bulkResults isn't group-scoped (and a quarantined
+     row has moved group by the time this renders), so repeating the list under
+     every group would print the same outcomes four times. -->
+{#if retryFail?.bulkResults?.length}
+	<ul class="bulk-outcomes">
+		{#each retryFail.bulkResults as r (r.sourceId)}
+			<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'done' : r.error}</li>
+		{/each}
+	</ul>
+{:else if retryFail?.bulkResults}
+	<!-- An EMPTY results array is a real outcome: nothing was checked, or no
+	     checked row offered the clicked verb. Rendering nothing for it left a
+	     no-JS submit (where there's no live "N selected" count either) looking
+	     like an identical, silent page. -->
+	<p class="notice" role="status">Nothing selected.</p>
+{/if}
 
 <!-- No-JS search: a plain GET submit replaces the whole querystring with
      just this form's own field, so a fresh search always starts back at
@@ -155,9 +243,60 @@
 </form>
 
 {#each data.groups as group (group.key)}
+	{@const bulkVerbs = bulkActions(group)}
 	<section>
 		<h3>{group.title}</h3>
-		<p class="subnav">{group.blurb}</p>
+		<!-- The bulk bar takes the blurb's place: a ruled row in normal flow
+		     (MASTER.md — nothing floats). Its buttons are always visible, so a
+		     no-JS admin can check boxes and submit; only the blurb text gives
+		     way to the "N selected" count once JS tracks a selection. The rows'
+		     checkboxes reach this form by id (`form=`), since a form can't nest
+		     inside the per-row moderation forms. -->
+		<form
+			id="bulk-{group.key}"
+			method="POST"
+			action="?/bulkSource{otherParams() ? `&${otherParams()}` : ''}"
+			class="bulk-bar"
+			use:enhance={() => {
+				// enhance's invalidateAll() re-runs load() without remounting, so a
+				// selection left in place would keep ids of rows that just moved
+				// group (a quarantined row leaves "Allowed user sources") — a stale
+				// "N selected" count over rows the next click can't act on. The
+				// FormData is captured before this runs, so clearing here is safe.
+				// Returning nothing keeps enhance's default update().
+				selected = { ...selected, [group.key]: new Set() }
+			}}
+		>
+			<p class="subnav bulk-blurb" class:has-selection={(selected[group.key]?.size ?? 0) > 0}>
+				<span class="bulk-blurb-text">{group.blurb}</span>
+				<span class="bulk-tools">
+					{#if (selected[group.key]?.size ?? 0) > 0}<span>{selected[group.key]?.size} selected ·</span>{/if}
+					{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
+						<button name="action" value={actionName}>{LABEL[actionName]}</button>
+					{/each}
+					{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
+						<label class="visually-hidden" for="bulk-cat-{group.key}">Moderation category</label>
+						<select id="bulk-cat-{group.key}" name="category" required>
+							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+						</select>
+					{/if}
+				</span>
+			</p>
+			<!-- The two verbs with a STATED consequence (block/unblock) are gated
+			     exactly as the per-row managePanel gates them — same CONSEQUENCE
+			     key, same reveal-to-confirm — so blocking N sources in one click
+			     can't be the one destructive path that skips the confirmation a
+			     single-row block requires (design §10). A sibling of the <p>, not
+			     inside it: <details> is not phrasing content, and this is the
+			     shape the orphan/tombstone/users bulk bars already use. -->
+			{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
+				<details class="confirm-gate">
+					<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
+					<p class="consequence">{CONSEQUENCE[actionName]}</p>
+					<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
+				</details>
+			{/each}
+		</form>
 		{#if group.rows.length === 0}
 			<p class="subnav">None.</p>
 		{:else}
@@ -165,6 +304,22 @@
 				{#each group.rows as row (row.id)}
 					{@const expanded = data.expand === row.id}
 					<li>
+						<label class="row-select">
+							<!-- Self-describing value: the row's id plus every action:commandId
+							     pair it offers. A checked box alone carries everything
+							     bulkSource needs, so a checkbox-then-submit works with zero JS
+							     — and only CHECKED boxes are in the submitted FormData, which
+							     is what keeps an unselected row out of the batch. -->
+							<input
+								type="checkbox"
+								name="candidate"
+								value="{row.id}|{row.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+								form="bulk-{group.key}"
+								checked={selected[group.key]?.has(row.id) ?? false}
+								onchange={() => toggleSelected(group.key, row.id)}
+							/>
+							<span class="visually-hidden">Select {row.url}</span>
+						</label>
 						<div class="feed-info">
 							<strong class="feed-url">{row.url}</strong>
 							<span>
@@ -183,7 +338,12 @@
 								{@const extra = Math.max(0, row.subscriberTotal - row.addedBy.length)}
 								<p class="subnav hint">Added by {row.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
 							{/if}
-							<p class="subnav"><a href="/admin/sources/{encodeURIComponent(row.id)}">Details (run history, items, purge)</a></p>
+							<p class="subnav">
+								<a href="/admin/feeds?{[detail === row.id ? '' : `detail=${encodeURIComponent(row.id)}`, otherParams(new Set(['detail']))].filter(Boolean).join('&')}">
+									{detail === row.id ? 'Hide details' : 'Details (run history, items, purge)'}
+								</a>
+								<a href="/admin/sources/{encodeURIComponent(row.id)}/runs">Run history</a>
+							</p>
 						</div>
 						{#if row.group === 'federation' && row.memberCounts}
 							{@const qs = [expanded ? '' : `expand=${row.id}`, otherParams(new Set(['expand']))].filter(Boolean).join('&')}
@@ -220,6 +380,46 @@
 							{/if}
 						{/if}
 						{@render managePanel(row)}
+						{#if detail === row.id && data.detail}
+							<section class="detail-panel">
+								<h4>Source acquisition</h4>
+								<form method="POST" action="?/refresh{otherParams() ? `&${otherParams()}` : ''}" use:enhance>
+									<input type="hidden" name="sourceId" value={data.detail.sourceId} />
+									<input type="hidden" name="commandId" value={detailRefreshRetry ?? data.detail.refreshCommandId} />
+									<button>Refresh now</button>
+								</form>
+								{#if data.detail.latestRun}
+									<dl class="status">
+										<div><dt>Run status</dt><dd>{data.detail.latestRun.status}</dd></div>
+										<div><dt>Nonterminal runs</dt><dd>{data.detail.nonterminalCount}</dd></div>
+									</dl>
+								{:else}
+									<p class="subnav">No acquisition runs yet.</p>
+								{/if}
+								{#if data.detail.items.length > 0}
+									<ul class="item-list">
+										{#each data.detail.items as item (item.logicalItemId)}
+											<li><a class="mono" href="/admin/items/{encodeURIComponent(item.logicalItemId)}">{item.logicalItemId}</a></li>
+										{/each}
+									</ul>
+								{/if}
+								{#if data.detail.purgeEligible}
+									<form method="POST" action="?/purge{otherParams() ? `&${otherParams()}` : ''}" class="source-action destructive" use:enhance>
+										<input type="hidden" name="sourceId" value={data.detail.sourceId} />
+										<input type="hidden" name="commandId" value={detailPurgeRetry ?? data.detail.purgeCommandId} />
+										<label class="visually-hidden" for="detail-purge-cat">Moderation category</label>
+										<select id="detail-purge-cat" name="category" required>
+											{#each data.detail.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+										</select>
+										<details class="confirm-gate">
+											<summary><span class="action-name">Purge evidence</span></summary>
+											<p class="consequence">{data.detail.purgeConsequence}</p>
+											<button aria-label="Confirm purge — {data.detail.source.canonicalUrl}">Confirm purge</button>
+										</details>
+									</form>
+								{/if}
+							</section>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -247,13 +447,11 @@
 					action="?/source{qs ? `&${qs}` : ''}"
 					class="source-action"
 					class:destructive={a.action === 'block'}
-					use:enhance={consequence ? confirmSubmit(`${consequence} Continue?`) : undefined}
+					use:enhance
 				>
 					<input type="hidden" name="sourceId" value={row.id} />
 					<input type="hidden" name="action" value={a.action} />
 					<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
-					<span class="action-name">{LABEL[a.action]}</span>
-					{#if consequence}<p class="consequence">{consequence}</p>{/if}
 					{#if a.action === 'attribution-mode'}
 						<label class="visually-hidden" for="mode-{scope}{row.id}">Attribution mode</label>
 						<select id="mode-{scope}{row.id}" name="attributionMode">
@@ -269,7 +467,16 @@
 					{/if}
 					<label class="visually-hidden" for="note-{scope}{row.id}-{a.action}">Note (optional)</label>
 					<input id="note-{scope}{row.id}-{a.action}" name="note" placeholder="note (optional)" />
-					<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
+					{#if consequence}
+						<details class="confirm-gate">
+							<summary><span class="action-name">{LABEL[a.action]}</span></summary>
+							<p class="consequence">{consequence}</p>
+							<button aria-label="Confirm {LABEL[a.action]} — {row.url}">Confirm {LABEL[a.action].toLowerCase()}</button>
+						</details>
+					{:else}
+						<span class="action-name">{LABEL[a.action]}</span>
+						<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
+					{/if}
 				</form>
 			{/each}
 		</div>
@@ -286,52 +493,86 @@
 	<p class="subnav">
 		Allowed, unsubscribed, and not federated — kept only by whatever's still retaining them. Paginates independently of the list above.
 	</p>
+	<!-- Same posture as the ordinary groups' bulk bar (Task 5, corrected):
+	     the confirm-gate/button ship visible in server output by default —
+	     never gated behind `{#if selected.orphans?.size}`, since `selected`
+	     only ever populates via onchange and stays empty forever with no JS.
+	     "N selected" is the only JS-cosmetic bit. -->
+	<form
+		id="bulk-orphans"
+		method="POST"
+		action="?/bulkReap{otherParams() ? `&${otherParams()}` : ''}"
+		class="bulk-bar"
+		use:enhance={() => {
+			selected = { ...selected, orphans: new Set() }
+		}}
+	>
+		{#if data.orphanRows.length > 0}
+			<p class="subnav bulk-blurb" class:has-selection={(selected.orphans?.size ?? 0) > 0}>
+				<span class="bulk-tools">
+					{#if (selected.orphans?.size ?? 0) > 0}<span>{selected.orphans?.size} selected ·</span>{/if}
+				</span>
+			</p>
+			<details class="confirm-gate">
+				<summary><span class="action-name">Reap selected</span></summary>
+				<p class="consequence">
+					Reaping the selected sources permanently deletes each one and its evidence.
+					<!-- Keyed on the SELECTION when one exists, and on the whole page
+					     when it doesn't: `selected.orphans` only ever populates via
+					     onchange, so with JS off this warning would never appear and a
+					     no-JS bulk reap of force-needed orphans would be silently
+					     under-warned about permanent evidence deletion. Irreversible
+					     action: over-warn rather than under-warn. -->
+					{#if data.orphanRows.some((r) => (selected.orphans?.size ? selected.orphans.has(r.id) : true) && r.retention !== null && r.retention !== 'reapable')}
+						Some of the selected sources override retained evidence — that evidence is removed permanently too.
+					{/if}
+					This cannot be undone.
+				</p>
+				<button>Confirm reap selected</button>
+			</details>
+		{/if}
+	</form>
+	{#if retryFail?.bulkReapResults?.length}
+		<ul class="bulk-outcomes">
+			{#each retryFail.bulkReapResults as r (r.sourceId)}<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'reaped' : r.error}</li>{/each}
+		</ul>
+	{:else if retryFail?.bulkReapResults}
+		<p class="notice" role="status">Nothing selected.</p>
+	{/if}
 	{#if data.orphanRows.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
 		<ul class="following-list source-list">
 			{#each data.orphanRows as row (row.id)}
 				{@const orphanQs = otherParams()}
-				<!-- Task 2's guard-refusal ladder (subscribers > governance >
-				     federation > admin_retained > audit_history >
-				     verified_origin_evidence) is NOT the same ladder as the
-				     `retention` label above (verified_origin first) — the two are
-				     computed for independent purposes, so `reapFail`/`forceReason`
-				     below are gated on core's ACTUAL 409 reason, never on the
-				     displayed retention. -->
-				{@const reapFail = retryFail && 'force' in retryFail && retryFail.sourceId === row.id ? retryFail : undefined}
-				{@const forceReason = form?.error && FORCE_LIFTABLE.has(form.error) ? form.error : undefined}
-				{@const showForceConfirm = !!reapFail && (forceReason !== undefined || reapFail.force === true)}
+				{@const needsForce = row.retention !== null && row.retention !== 'reapable'}
+				{@const retryCommandId = retryFail?.sourceId === row.id && 'force' in retryFail ? retryFail.commandId : undefined}
 				<li>
+					<label class="row-select">
+						<input
+							type="checkbox"
+							name="candidate"
+							value="{row.id}:{row.commandId}:{needsForce}"
+							form="bulk-orphans"
+							checked={selected.orphans?.has(row.id) ?? false}
+							onchange={() => toggleSelected('orphans', row.id)}
+						/>
+						<span class="visually-hidden">Select {row.url}</span>
+					</label>
 					<div class="feed-info">
 						<strong class="feed-url">{row.url}</strong>
 						<span class="badge-kind">{RETENTION_LABEL[row.retention ?? 'reapable']}</span>
 					</div>
-					<form method="POST" action="?/reap{orphanQs ? `&${orphanQs}` : ''}" class="source-action" use:enhance={confirmSubmit(`${REAP_CONSEQUENCE} Continue?`)}>
+					<form method="POST" action="?/reap{orphanQs ? `&${orphanQs}` : ''}" class="source-action" class:destructive={needsForce} use:enhance>
 						<input type="hidden" name="sourceId" value={row.id} />
-						<input type="hidden" name="commandId" value={reapFail?.force === false ? reapFail.commandId : row.commandId} />
-						<p class="consequence">{REAP_CONSEQUENCE}</p>
-						<button aria-label="Reap {row.url}">Reap</button>
+						<input type="hidden" name="commandId" value={retryCommandId ?? row.commandId} />
+						{#if needsForce}<input type="hidden" name="force" value="true" />{/if}
+						<details class="confirm-gate">
+							<summary><span class="action-name">{needsForce ? 'Reap anyway' : 'Reap'}</span></summary>
+							<p class="consequence">{needsForce ? FORCE_REAP_CONSEQUENCE[row.retention ?? ''] : REAP_CONSEQUENCE}</p>
+							<button aria-label="Confirm reap {needsForce ? 'anyway ' : ''}— {row.url}">{needsForce ? 'Confirm reap anyway' : 'Confirm reap'}</button>
+						</details>
 					</form>
-					{#if showForceConfirm}
-						{@const forceConsequence = FORCE_REAP_CONSEQUENCE[forceReason ?? ''] ?? GENERIC_FORCE_CONSEQUENCE}
-						<!-- Distinct, freshly-minted commandId (row.forceCommandId), never
-						     the refused plain attempt's id — replaying THAT id would just
-						     replay its stored refusal from the ledger, not re-run the guard
-						     chain with force:true. -->
-						<form
-							method="POST"
-							action="?/reap{orphanQs ? `&${orphanQs}` : ''}"
-							class="source-action destructive"
-							use:enhance={confirmSubmit(`${forceConsequence} Continue?`)}
-						>
-							<input type="hidden" name="sourceId" value={row.id} />
-							<input type="hidden" name="force" value="true" />
-							<input type="hidden" name="commandId" value={reapFail?.force === true ? reapFail.commandId : row.forceCommandId} />
-							<p class="consequence">{forceConsequence}</p>
-							<button aria-label="Reap {row.url} anyway">Reap anyway</button>
-						</form>
-					{/if}
 				</li>
 			{/each}
 		</ul>
@@ -360,6 +601,40 @@
 		Reserved URLs: a block or purge leaves a tombstone so the URL can't be re-created. Unblocking a tombstone lifts the reservation so the
 		URL becomes creatable again — it restores nothing.
 	</p>
+	<!-- Same visible-by-default posture as the orphan bulk bar above. -->
+	<form
+		id="bulk-tombstones"
+		method="POST"
+		action="?/bulkTombstone{otherParams() ? `&${otherParams()}` : ''}"
+		class="bulk-bar"
+		use:enhance={() => {
+			selected = { ...selected, tombstones: new Set() }
+		}}
+	>
+		{#if data.tombstones.length > 0}
+			<p class="subnav bulk-blurb" class:has-selection={(selected.tombstones?.size ?? 0) > 0}>
+				<span class="bulk-tools">
+					{#if (selected.tombstones?.size ?? 0) > 0}<span>{selected.tombstones?.size} selected ·</span>{/if}
+					<label class="visually-hidden" for="bulk-tomb-cat">Moderation category</label>
+					<select id="bulk-tomb-cat" name="category" required>
+						{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+					</select>
+				</span>
+			</p>
+			<details class="confirm-gate">
+				<summary><span class="action-name">Unblock selected</span></summary>
+				<p class="consequence">{data.tombstoneConsequence}</p>
+				<button>Confirm unblock selected</button>
+			</details>
+		{/if}
+	</form>
+	{#if retryFail?.bulkTombstoneResults?.length}
+		<ul class="bulk-outcomes">
+			{#each retryFail.bulkTombstoneResults as r (r.tombstoneId)}<li class:error={!r.ok}>{r.tombstoneId}: {r.ok ? 'unblocked' : r.error}</li>{/each}
+		</ul>
+	{:else if retryFail?.bulkTombstoneResults}
+		<p class="notice" role="status">Nothing selected.</p>
+	{/if}
 	{#if data.tombstones.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
@@ -368,6 +643,17 @@
 				{@const retryCommandId = retryFail?.tombstoneId === t.id ? retryFail.commandId : undefined}
 				{@const tombstoneQs = otherParams()}
 				<li>
+					<label class="row-select">
+						<input
+							type="checkbox"
+							name="candidate"
+							value="{t.id}:{t.commandId}"
+							form="bulk-tombstones"
+							checked={selected.tombstones?.has(t.id) ?? false}
+							onchange={() => toggleSelected('tombstones', t.id)}
+						/>
+						<span class="visually-hidden">Select {t.canonicalUrl}</span>
+					</label>
 					<div class="feed-info">
 						<strong class="feed-url">{t.canonicalUrl}</strong>
 						<span>
@@ -378,17 +664,20 @@
 						{#if t.aliases.length}<span class="subnav feed-url">aliases: {t.aliases.join(', ')}</span>{/if}
 						{#if t.note}<span class="subnav">{t.note}</span>{/if}
 					</div>
-					<form method="POST" action="?/tombstone{tombstoneQs ? `&${tombstoneQs}` : ''}" class="source-action" use:enhance={confirmSubmit(`${data.tombstoneConsequence} Continue?`)}>
+					<form method="POST" action="?/tombstone{tombstoneQs ? `&${tombstoneQs}` : ''}" class="source-action" use:enhance>
 						<input type="hidden" name="tombstoneId" value={t.id} />
 						<input type="hidden" name="commandId" value={retryCommandId ?? t.commandId} />
-						<p class="consequence">{data.tombstoneConsequence}</p>
 						<label class="visually-hidden" for="tomb-cat-{t.id}">Moderation category</label>
 						<select id="tomb-cat-{t.id}" name="category" required>
 							{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
 						</select>
 						<label class="visually-hidden" for="tomb-note-{t.id}">Note (optional)</label>
 						<input id="tomb-note-{t.id}" name="note" placeholder="note (optional)" />
-						<button aria-label="Unblock {t.canonicalUrl}">Unblock URL</button>
+						<details class="confirm-gate">
+							<summary><span class="action-name">Unblock URL</span></summary>
+							<p class="consequence">{data.tombstoneConsequence}</p>
+							<button aria-label="Confirm unblock — {t.canonicalUrl}">Confirm unblock</button>
+						</details>
 					</form>
 				</li>
 			{/each}
@@ -439,6 +728,71 @@
 		padding-left: var(--space-sm);
 	}
 
+	/* The row's bulk-select toggle sits at the top of the row card (a
+	   .source-list li is a stack, not a two-column row); its label text is
+	   hidden because the URL directly below already names the row. */
+	.row-select {
+		align-self: flex-start;
+		padding: 2px 0;
+		cursor: pointer;
+	}
+
+	.bulk-bar {
+		margin: 0 0 var(--space-sm);
+	}
+
+	.bulk-blurb {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	/* A ruled edge under the bar only while it holds actions — the selected
+	   state reads as a section of its own, same rules-divide idea as the rest
+	   of the page. */
+	.bulk-blurb.has-selection {
+		border-bottom: 2px solid var(--color-border);
+		padding-bottom: var(--space-sm);
+	}
+
+	/* The action buttons are always visible — never display:none behind
+	   $state, which would hide the only submit path with scripts off. Only the
+	   blurb gives way once rows are checked (JS-driven, cosmetic). */
+	.bulk-tools {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	.bulk-blurb.has-selection .bulk-blurb-text {
+		display: none;
+	}
+
+	/* Same outline treatment as .source-action button: a bulk verb is no more
+	   a page CTA than a single-row one. Scoped to the whole bar, not just the
+	   blurb row, so a verb behind a confirm-gate (block/unblock, and the
+	   orphan/tombstone bars' own gated verbs) matches its ungated siblings. */
+	.bulk-bar button {
+		background: transparent;
+		color: var(--color-foreground);
+		border: 1px solid var(--color-border);
+		font-size: 0.8125rem;
+		padding: 2px var(--space-sm);
+	}
+
+	.bulk-outcomes {
+		list-style: none;
+		margin: 0 0 var(--space-md);
+		padding: 0;
+		font-size: 0.8125rem;
+	}
+
+	.bulk-outcomes .error {
+		color: var(--color-destructive);
+	}
+
 	.source-actions {
 		display: flex;
 		flex-direction: column;
@@ -483,6 +837,41 @@
 		font-size: 0.8125rem;
 	}
 
+	.confirm-gate summary {
+		cursor: pointer;
+		list-style: none;
+	}
+
+	.confirm-gate summary::-webkit-details-marker {
+		display: none;
+	}
+
+	/* The native marker is removed just above, so the summary needs an
+	   affordance of its own — without one every destructive action in /admin
+	   reads as static bold text with no hint that it expands. A CSS-only glyph
+	   that turns when open; no icon font, no asset. Duplicated verbatim in the
+	   three admin pages that own .confirm-gate, same as .consequence /
+	   .action-name already are. */
+	.confirm-gate summary::before {
+		content: '▸';
+		display: inline-block;
+		margin-right: var(--space-xs);
+		color: var(--color-secondary);
+		transition: transform 0.15s ease;
+	}
+
+	.confirm-gate[open] summary::before {
+		transform: rotate(90deg);
+	}
+
+	.confirm-gate[open] summary .action-name {
+		color: var(--color-secondary);
+	}
+
+	.confirm-gate .consequence {
+		margin: var(--space-sm) 0;
+	}
+
 	/* A one-line search bar, not the stacked .add-remote layout: input grows,
 	   button and clear link stay their natural width. Reuses the global
 	   input/button tokens (border, radius, focus ring) — nothing new here but
@@ -508,5 +897,14 @@
 		flex-shrink: 0;
 		color: var(--color-secondary);
 		font-size: 0.875rem;
+	}
+
+	.detail-panel {
+		margin-top: var(--space-sm);
+		padding-top: var(--space-sm);
+		border-top: 1px solid var(--color-border);
+	}
+	.detail-panel h4 {
+		margin: 0 0 var(--space-sm);
 	}
 </style>

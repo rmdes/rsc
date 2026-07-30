@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import { enhance } from '$app/forms'
-	import { confirmSubmit } from '$lib/confirm'
 	import type { AdminRefreshResult, AdminRunProjection } from '$lib/logical-api'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -145,17 +144,20 @@
 	     unblock: evidence is permanently deleted, but the URL STAYS blocked. -->
 	<section class="panel-block">
 		<h3>Purge evidence</h3>
-		<form method="POST" action="?/purge" class="source-action destructive" use:enhance={confirmSubmit(`${data.purgeConsequence} Continue?`)}>
+		<form method="POST" action="?/purge" class="source-action destructive" use:enhance>
 			<input type="hidden" name="sourceId" value={data.sourceId} />
 			<input type="hidden" name="commandId" value={purgeCommandId} />
-			<p class="consequence">{data.purgeConsequence}</p>
 			<label class="visually-hidden" for="purge-cat">Moderation category</label>
 			<select id="purge-cat" name="category" required>
 				{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
 			</select>
 			<label class="visually-hidden" for="purge-note">Note (optional)</label>
 			<input id="purge-note" name="note" placeholder="note (optional)" />
-			<button aria-label="Purge evidence for {data.source.canonicalUrl}">Purge evidence</button>
+			<details class="confirm-gate">
+				<summary><span class="action-name">Purge evidence</span></summary>
+				<p class="consequence">{data.purgeConsequence}</p>
+				<button aria-label="Confirm purge — {data.source.canonicalUrl}">Confirm purge</button>
+			</details>
 		</form>
 	</section>
 {/if}
@@ -240,5 +242,39 @@
 		margin: 0;
 		color: var(--color-secondary);
 		font-size: 0.8125rem;
+	}
+	.action-name {
+		font-weight: 600;
+	}
+	.confirm-gate summary {
+		cursor: pointer;
+		list-style: none;
+	}
+	.confirm-gate summary::-webkit-details-marker {
+		display: none;
+	}
+
+	/* The native marker is removed just above, so the summary needs an
+	   affordance of its own — without one every destructive action in /admin
+	   reads as static bold text with no hint that it expands. A CSS-only glyph
+	   that turns when open; no icon font, no asset. Duplicated verbatim in the
+	   three admin pages that own .confirm-gate, same as .consequence /
+	   .action-name already are. */
+	.confirm-gate summary::before {
+		content: '▸';
+		display: inline-block;
+		margin-right: var(--space-xs);
+		color: var(--color-secondary);
+		transition: transform 0.15s ease;
+	}
+
+	.confirm-gate[open] summary::before {
+		transform: rotate(90deg);
+	}
+	.confirm-gate[open] summary .action-name {
+		color: var(--color-secondary);
+	}
+	.confirm-gate .consequence {
+		margin: var(--space-sm) 0;
 	}
 </style>

@@ -2,6 +2,7 @@ import { fail } from '@sveltejs/kit'
 import { authedFetch, base, cookieHeader } from '$lib/server/session'
 import { listTombstones, unblockTombstone } from '$lib/logical-api'
 import { AUDIT_CATEGORIES } from '$lib/logical-types'
+import { loadSourceDetail, refreshAction, purgeAction } from '$lib/server/source-detail'
 import type { Actions, PageServerLoad } from './$types'
 
 // Tombstone-unblock's consequence is DISTINCT from source-governance unblock (which
@@ -154,19 +155,17 @@ const toRow = (s: SourceSummary, isMember: boolean) => ({
 // Orphan rows (Task 4): shown in their own always-visible, independently
 // paginated group. They carry `retention` (the display-oriented ladder,
 // verified_origin > admin_retained > audit_history > reapable — Task 1's
-// retentionFor) instead of the ordinary transition-action list, plus TWO
-// command ids: `commandId` for the plain (no-force) reap attempt, and
-// `forceCommandId` for the separate confirm-with-force form — kept in
-// distinct namespaces so a force retry can never replay the plain attempt's
-// (already-ledgered) refusal. An orphan by definition has zero subscriptions
-// (the core WHERE clause enforces it), so addedBy is always empty here — no
-// point rendering it.
+// retentionFor) instead of the ordinary transition-action list. One
+// commandId per row: retention alone decides, at render time, whether the
+// row shows a plain Reap form or a force Reap-anyway form — never both, so
+// there's nothing left to disambiguate a second id for. An orphan by
+// definition has zero subscriptions (the core WHERE clause enforces it), so
+// addedBy is always empty here — no point rendering it.
 const toOrphanRow = (s: SourceSummary) => ({
 	id: s.source.id,
 	url: s.source.canonicalUrl,
 	retention: s.retention,
-	commandId: crypto.randomUUID(),
-	forceCommandId: crypto.randomUUID()
+	commandId: crypto.randomUUID()
 })
 
 async function listSources(f: typeof fetch, cursor: string | null, filter?: 'governance' | 'orphan', q?: string): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {
@@ -239,10 +238,17 @@ export const load: PageServerLoad = async ({ fetch, url, cookies }) => {
 	// V3: the reserved blocked/tombstoned URLs (unpaginated). One command id per
 	// rendered unblock form — a resubmit replays the identical id (design §11).
 	const tombstones = (await listTombstones(f)).map((t) => ({ ...t, commandId: crypto.randomUUID() }))
+	// Task 9: inline source detail, reached via ?detail= (deliberately a
+	// DIFFERENT param than ?expand=, which already means "show this
+	// instance's member list" — a federation row needs both to mean
+	// different things at once, per the redesign spec's Component 4).
+	const detailId = url.searchParams.get('detail')
+	const detail = detailId ? await loadSourceDetail(fetch, url.origin, cookies, detailId, url.searchParams.get('detailBefore')) : null
 	return {
 		groups: GROUPS.map((g) => ({ ...g, rows: rows.filter((r) => r.group === g.key) })),
 		expand,
 		expandedMembers,
+		detail,
 		tombstones,
 		tombstoneConsequence: TOMBSTONE_CONSEQUENCE,
 		categories: AUDIT_CATEGORIES,
@@ -390,5 +396,126 @@ export const actions: Actions = {
 			return fail(400, { error: err instanceof Error ? err.message : 'reap failed', sourceId, commandId, force })
 		}
 		return { reaped: true }
-	}
+	},
+	// Bulk governance transitions across N rows in one submit. Reuses each
+	// row's OWN already-minted commandId (from toRow's actions[], the exact
+	// same id a lone submit of that row would use) — no new idempotency
+	// scheme, no batch-wide id. attribution-mode is excluded: it's the one
+	// action needing a per-row-meaningful extra field (the new mode) that
+	// doesn't generalize to "the same value for every selected row" without
+	// design this spec never scoped.
+	bulkSource: async (event) => {
+		const form = await event.request.formData()
+		const action = String(form.get('action') ?? '')
+		// One candidate per CHECKED row — the checkbox's own value, describing
+		// the whole row: "sourceId|action:commandId|action:commandId|…". Only
+		// checked boxes reach here (browser-enforced, no JS involved), so the
+		// batch is the selection. The clicked `action` picks each row's matching
+		// commandId — the exact id toRow() minted for that row's own form, so a
+		// bulk click replays like a lone submit would. A row that doesn't offer
+		// the clicked action is skipped, not an error: the toolbar's button set
+		// is the union of the group's actions until JS narrows it.
+		// The three candidate encodings on this page (here, bulkReap's
+		// `id:commandId:force`, bulkTombstone's `id:commandId`) all assume an id
+		// contains neither `|` nor `:` — true for core's UUIDs, and the reason
+		// they're four one-liners instead of a shared codec (spec §3, rev 4).
+		if (!ACTIONS.includes(action as SourceAction) || action === 'attribution-mode') return fail(400, { error: 'unknown or unsupported bulk action' })
+		const picked = form.getAll('candidate').flatMap((c) => {
+			const [sourceId, ...pairs] = String(c).split('|')
+			const match = pairs.find((p) => p.startsWith(`${action}:`))
+			if (!sourceId || !match) return []
+			const commandId = match.slice(action.length + 1)
+			return commandId ? [{ sourceId, commandId }] : []
+		})
+		if (picked.length === 0) return { bulkResults: [], bulkAction: action }
+		const category = String(form.get('category') ?? '').trim()
+		const note = String(form.get('note') ?? '').trim()
+		if (!category && !CATEGORY_OPTIONAL.has(action)) return fail(400, { error: 'a moderation category is required' })
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkResults = await Promise.all(
+			picked.map(async ({ sourceId, commandId }) => {
+				try {
+					const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/${action}`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ commandId, ...(category ? { category } : {}), ...(note ? { note } : {}) })
+					})
+					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, `${action} failed`) }
+					return { sourceId, ok: true }
+				} catch (err) {
+					return { sourceId, ok: false, error: err instanceof Error ? err.message : `${action} failed` }
+				}
+			})
+		)
+		return { bulkResults, bulkAction: action }
+	},
+	// Bulk reap: per-row force, never a batch-wide toggle — each candidate
+	// already carries the force value §2's retention-driven UI decided for
+	// that specific row (Task 7 renders it), so there is nothing to
+	// re-derive here, only to apply.
+	bulkReap: async (event) => {
+		const form = await event.request.formData()
+		const candidates = form
+			.getAll('candidate')
+			.map(String)
+			.map((c) => {
+				const [sourceId, commandId, force] = c.split(':')
+				return { sourceId, commandId, force: force === 'true' }
+			})
+		if (candidates.length === 0) return { bulkReapResults: [] }
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkReapResults = await Promise.all(
+			candidates.map(async ({ sourceId, commandId, force }) => {
+				try {
+					const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/reap`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ commandId, ...(force ? { force: true } : {}) })
+					})
+					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, 'reap failed') }
+					return { sourceId, ok: true }
+				} catch (err) {
+					return { sourceId, ok: false, error: err instanceof Error ? err.message : 'reap failed' }
+				}
+			})
+		)
+		return { bulkReapResults }
+	},
+	// Bulk tombstone-unblock: same commandId-reuse posture as bulkSource —
+	// each tombstone row already carries its own commandId from load.
+	bulkTombstone: async (event) => {
+		const form = await event.request.formData()
+		const candidates = form
+			.getAll('candidate')
+			.map(String)
+			.map((c) => {
+				const [tombstoneId, commandId] = c.split(':')
+				return { tombstoneId, commandId }
+			})
+		if (candidates.length === 0) return { bulkTombstoneResults: [] }
+		const category = String(form.get('category') ?? '').trim()
+		const note = String(form.get('note') ?? '').trim()
+		if (!category) return fail(400, { error: 'a moderation category is required' })
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkTombstoneResults = await Promise.all(
+			candidates.map(async ({ tombstoneId, commandId }) => {
+				let outcome
+				try {
+					outcome = await unblockTombstone(f, tombstoneId, { commandId, category, ...(note ? { note } : {}) })
+				} catch (err) {
+					return { tombstoneId, ok: false, error: err instanceof Error ? err.message : 'unblock failed' }
+				}
+				if (outcome.kind === 'unavailable') return { tombstoneId, ok: false, error: 'unavailable' }
+				if (outcome.kind === 'conflict') return { tombstoneId, ok: false, error: outcome.error }
+				return { tombstoneId, ok: true }
+			})
+		)
+		return { bulkTombstoneResults }
+	},
+	// The inlined ?detail= panel's forms post here. Both handlers are the SAME
+	// functions /admin/sources/[sourceId] mounts, shared from
+	// $lib/server/source-detail.ts beside the load they act on — one
+	// implementation, not two hand-synced copies.
+	refresh: refreshAction,
+	purge: purgeAction
 }
