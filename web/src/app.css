@@ -768,7 +768,7 @@ form.auth-form {
 	font-size: 0.75rem;
 }
 
-input,
+input:not([type='checkbox']),
 textarea,
 select {
 	background: var(--color-surface);
@@ -784,19 +784,33 @@ select {
 	transition: border-color 200ms ease;
 }
 
-input:hover,
+input:not([type='checkbox']):hover,
 textarea:hover,
 select:hover {
 	border-color: color-mix(in srgb, var(--color-foreground) 45%, transparent);
 }
 
 /* The ring is :focus-visible now — no soft 3px glow. */
-input:focus,
+input:not([type='checkbox']):focus,
 textarea:focus,
 select:focus {
 	border-color: var(--color-accent);
 	outline: none;
 	box-shadow: none;
+}
+
+/* Excluded from the text-input rule above (that width:100%/min-height:36px
+   was stretching every checkbox in the app into a giant rectangle inside
+   any wide container — most visible in /admin/users' table). A checkbox is
+   a fixed-size control, not a growable field. */
+input[type='checkbox'] {
+	width: 16px;
+	height: 16px;
+	min-height: 0;
+	padding: 0;
+	margin: 0;
+	accent-color: var(--color-accent);
+	cursor: pointer;
 }
 
 textarea {
