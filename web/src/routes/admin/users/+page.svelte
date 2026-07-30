@@ -43,7 +43,12 @@
 {:else}
 	<table class="table table-records">
 		<thead>
-			<tr><th class="visually-hidden">Select</th><th>Handle</th><th>Kind</th><th>Name</th><th>Verified</th><th>Joined</th><th>Feed</th><th>Action</th></tr>
+			<!-- The checkbox column's header is a real, in-flow cell with only its
+			     LABEL hidden: .visually-hidden is `position: absolute`, so putting
+			     it on the <th> itself drops that cell out of flow and misaligns
+			     every column against the body rows. Same shape feeds/+page.svelte
+			     uses for its own row-select labels. -->
+			<tr><th><span class="visually-hidden">Select</span></th><th>Handle</th><th>Kind</th><th>Name</th><th>Verified</th><th>Joined</th><th>Feed</th><th>Action</th></tr>
 		</thead>
 		<tbody>
 			{#each data.users as u (u.handle)}

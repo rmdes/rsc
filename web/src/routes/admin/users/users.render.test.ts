@@ -27,6 +27,21 @@ test('a remote user renders no delete affordance at all', () => {
 	expect(body).toContain('—') // the em-dash placeholder for a non-local row's Action cell
 })
 
+// .visually-hidden is `position: absolute` (app.css) — putting it ON the <th>
+// itself takes that header cell out of document flow, so the header row
+// contributes one fewer cell than every body row and every column below is
+// misaligned. Only the LABEL TEXT may be hidden; the cell stays in flow.
+test('the select column header is a real in-flow <th> with only its label visually hidden, so header and body rows have equal cell counts', () => {
+	const { body } = render(Page, { props: { data: baseData(), form: null } } as never)
+	expect(body).not.toContain('<th class="visually-hidden"')
+	const thead = body.slice(body.indexOf('<thead'), body.indexOf('</thead>'))
+	expect(thead).toContain('<span class="visually-hidden">Select</span>')
+	const bodyStart = body.indexOf('<tbody')
+	const firstRow = body.slice(bodyStart, body.indexOf('</tr>', bodyStart))
+	// `<th[ >]` so the enclosing `<thead>` isn't counted as a cell.
+	expect((thead.match(/<th[ >]/g) ?? []).length).toBe((firstRow.match(/<td[ >]/g) ?? []).length)
+})
+
 test('local user rows each have a checkbox and the page renders an always-present bulk-delete form', () => {
 	const { body } = render(Page, { props: { data: baseData(), form: null } } as never)
 	expect(body).toContain('action="?/bulkDelete')
