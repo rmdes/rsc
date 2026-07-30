@@ -227,12 +227,12 @@ test('a block form with a consequence renders a collapsed <details> disclosure, 
 	// The consequence text and the actual submit button live INSIDE a
 	// <details>, collapsed by default — not sitting next to an always-active
 	// submit button (the old double-confirm shape).
-	expect(body).toContain('class="confirm-gate')
-	expect(body).toContain('Blocking stops all acquisition')
-	expect(body).toContain('Confirm block')
+	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	expect(detailsChunk).toContain('Blocking stops all acquisition')
+	expect(detailsChunk).toContain('Confirm block')
 	// The <summary> (always visible, collapsed state) carries the plain action label.
-	expect(body).toContain('class="action-name')
-	expect(body).toContain('>Block<')
+	const summaryChunk = detailsChunk.slice(0, detailsChunk.indexOf('</summary>'))
+	expect(summaryChunk).toContain('>Block<')
 })
 
 test('an action with no stated consequence (pause) has no confirm-gate at all — direct submit', () => {
@@ -268,9 +268,9 @@ test('the tombstone-unblock form renders its own confirm-gate with the distinct 
 		establishCommandId: 'establish-1'
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
-	expect(body).toContain('class="confirm-gate')
-	expect(body).toContain('lifts the URL reservation')
-	expect(body).toContain('Confirm unblock')
+	const detailsChunk = body.slice(body.indexOf('class="confirm-gate'), body.indexOf('</details>', body.indexOf('class="confirm-gate')) + '</details>'.length)
+	expect(detailsChunk).toContain('lifts the URL reservation')
+	expect(detailsChunk).toContain('Confirm unblock')
 })
 
 // --- Task 4: search box, addedBy, the orphan group, the two-step reap confirm ---
