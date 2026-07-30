@@ -182,6 +182,87 @@ export function removeSourceEvidence(tx: WriteTx, input: { sourceId: string; now
   return { ordinaryAffected }
 }
 
+// Remote content retention (spec 2026-07-29, rev 4): trims a source's OLDEST
+// remote items once it exceeds an admin-configured count and/or age cap.
+// Deliberately standalone -- NOT a generalization of removeSourceEvidence.
+// Most of that function's FK deletes are source-scoped (acquisition_runs_v2,
+// source_health_v2, source_validators_v2, verification_checks_v2,
+// policy_fanout_v2, publisher_names_v2) and must NEVER run here: a trim keeps
+// the source polling, only removing some of its old items, so this owns only
+// the delivery/observation-version-scoped tables a partial removal needs.
+// Local items are never candidates (origin='remote' only); the source row,
+// its health/validator/run history, and unreferenced-publisher cleanup are
+// untouched -- those belong only to a full source removal (purge/reap).
+export function trimSourceToCap(tx: WriteTx, input: { sourceId: string; maxCount: number; maxAgeDays: number; now: string }): { trimmedCount: number } {
+  const { sourceId, maxCount, maxAgeDays, now } = input
+  if (maxCount <= 0 && maxAgeDays <= 0) return { trimmedCount: 0 }
+
+  const rows = tx.prepare(
+    `SELECT li.id AS id, li.selected_delivery_id AS deliveryId, li.timeline_sort_at AS timelineSortAt
+     FROM logical_items_v2 li JOIN deliveries_v2 d ON d.id = li.selected_delivery_id
+     WHERE d.source_id = ? AND li.origin = 'remote'
+     ORDER BY li.timeline_sort_at DESC`,
+  ).all(sourceId) as { id: string; deliveryId: string; timelineSortAt: string }[]
+
+  const excess = new Set<string>()
+  if (maxAgeDays > 0) {
+    const cutoff = new Date(Date.parse(now) - maxAgeDays * 86400000).toISOString()
+    for (const r of rows) if (r.timelineSortAt < cutoff) excess.add(r.id)
+  }
+  if (maxCount > 0) {
+    for (const r of rows.slice(maxCount)) excess.add(r.id)
+  }
+  if (excess.size === 0) return { trimmedCount: 0 }
+
+  const excessRows = rows.filter((r) => excess.has(r.id))
+  const deliveryIds = [...new Set(excessRows.map((r) => r.deliveryId))]
+  const dph = deliveryIds.map(() => '?').join(',')
+
+  // ---- delete delivery/observation-scoped rows FIRST, so the per-item
+  // hasDelivery check below (which relies on these rows already being gone)
+  // correctly reflects whether a surviving delivery remains -- same ordering
+  // constraint removeSourceEvidence's own equivalent step observes. ----
+  const versionRows = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).all(...deliveryIds) as { id: string }[]
+  const versionIds = versionRows.map((r) => r.id)
+  if (versionIds.length > 0) {
+    const vph = versionIds.map(() => '?').join(',')
+    tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+    tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+    tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${vph})`).run(...versionIds)
+  }
+  tx.prepare(`DELETE FROM presentation_entries_v2 WHERE delivery_id IN (${dph})`).run(...deliveryIds)
+  tx.prepare(`DELETE FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).run(...deliveryIds)
+  tx.prepare(`DELETE FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND key IN (${dph})`).run(...deliveryIds)
+  tx.prepare(`DELETE FROM deliveries_v2 WHERE id IN (${dph})`).run(...deliveryIds)
+
+  // ---- per-item reselect/delete/tombstone -- identical sequence to
+  // removeSourceEvidence's own loop, scoped to just the excess ids ----
+  const hasDelivery = (id: string): boolean =>
+    tx.prepare(`SELECT 1 FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ? LIMIT 1`).get(id) !== undefined
+  const unsupported = new Set<string>()
+  for (const id of excess) {
+    if (hasDelivery(id)) applySelectionHints(tx, id, '') // a different source's delivery still backs it
+    else unsupported.add(id)
+  }
+  const deletedParents: Array<string | null> = []
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const id of [...unsupported]) {
+      if (hasChildEdge(tx, id)) continue
+      const row = tx.prepare(`SELECT parent_logical_item_id AS p FROM logical_items_v2 WHERE id = ?`).get(id) as { p: string | null } | undefined
+      deleteLogicalNode(tx, id)
+      unsupported.delete(id)
+      deletedParents.push(row ? row.p : null)
+      changed = true
+    }
+  }
+  for (const id of unsupported) convertToStructuralTombstone(tx, id)
+  sweepStructuralTombstones(tx, deletedParents, now)
+
+  return { trimmedCount: excess.size }
+}
+
 // The purge command (spec §5.2): one ledger-backed transaction. A non-blocked or
 // unknown source refuses without writing anything (the guard runs before the
 // tombstone). The single reset is the uniform barrier — block already made this
