@@ -227,10 +227,15 @@ test('acquireSource (through the runtime wrapper) trims a source to its configur
   seedJob(deps.raw, { sourceId: 's1', deliveryKey: { kind: 'link', key: 'https://blog.test/existing' }, committedAt: '2026-07-23T00:00:00.000Z', material: { permalink: 'https://blog.test/existing' } })
   drainReconciliation({ store: deps.store, now: () => NOW })
   expect(count(deps.raw, 'logical_items_v2', "WHERE origin = 'remote'")).toBe(1)
+  const existingItemId = (deps.raw.prepare(`SELECT id FROM logical_items_v2 WHERE origin = 'remote'`).get() as { id: string }).id
 
   const engine = createAcquisition({ db: deps.db, fetchFn: fakeFetch({ 'https://feed.test/s1': () => ok(RSS(linkItem('https://blog.test/new'))) }), lookupFn: publicLookup, now: () => NOW })
   const runtime = mkRuntime(deps, engine, undefined, (key) => deps.repo.getSetting(key))
   await runtime.ready
+  // captured AFTER activation's own one-time barrier reset, so the assertion
+  // below isolates what the trim itself appends.
+  const resetsBeforeTrim = count(deps.raw, 'logical_journal_v2', "WHERE kind = 'reset'")
+  const journalRowsBefore = count(deps.raw, 'logical_journal_v2')
   await runtime.acquisition.acquireSource('s1', { kind: 'scheduled' }, undefined)
   await runtime.stop()
 
@@ -240,6 +245,15 @@ test('acquireSource (through the runtime wrapper) trims a source to its configur
   const remaining = deps.raw.prepare(`SELECT selected_delivery_id FROM logical_items_v2 WHERE origin = 'remote'`).get() as { selected_delivery_id: string }
   const survivingKey = (deps.raw.prepare(`SELECT key FROM deliveries_v2 WHERE id = ?`).get(remaining.selected_delivery_id) as { key: string }).key
   expect(survivingKey).toBe('https://blog.test/new')
+
+  // finding 2: the trimmed-and-deleted item gets exactly one 'remove' journal
+  // effect (not a reset -- a reset would tear down every connected client's
+  // SSE stream on every over-cap poll), so a connected/resuming client learns
+  // it's gone instead of showing it forever.
+  expect(count(deps.raw, 'logical_journal_v2')).toBeGreaterThan(journalRowsBefore)
+  const removeRow = deps.raw.prepare(`SELECT kind, change_mask FROM logical_journal_v2 WHERE logical_item_id = ? ORDER BY sequence DESC LIMIT 1`).get(existingItemId) as { kind: string; change_mask: number } | undefined
+  expect(removeRow?.kind).toBe('remove')
+  expect(count(deps.raw, 'logical_journal_v2', "WHERE kind = 'reset'")).toBe(resetsBeforeTrim) // no barrier reset from the trim itself
 })
 
 test('crash recovery: a crashed `processing` run is healed to terminal; the in-flight flag clears with the process', async () => {

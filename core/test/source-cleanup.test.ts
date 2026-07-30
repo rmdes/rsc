@@ -458,7 +458,7 @@ test('trimSourceToCap: 0/0 is a no-op fast path', async () => {
   const src = insertSourceRow(raw, { canonicalUrl: 'https://trim-noop.test/feed' })
   seedItemAt(raw, src, NOW)
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 0, maxAgeDays: 0, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 0 })
+  expect(result).toEqual({ trimmedCount: 0, removedItemIds: [] })
   expect(countRows(raw, 'logical_items_v2')).toBe(1)
   repo.close()
 })
@@ -471,7 +471,7 @@ test('trimSourceToCap: count cap keeps the N most recent, deletes the rest', asy
   const middle = seedItemAt(raw, src, '2023-01-01T00:00:00.000Z')
   const newest = seedItemAt(raw, src, '2026-01-01T00:00:00.000Z')
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 2, maxAgeDays: 0, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 1 })
+  expect(result).toEqual({ trimmedCount: 1, removedItemIds: [oldest] })
   const remaining = raw.prepare(`SELECT id FROM logical_items_v2`).all().map((r) => (r as { id: string }).id)
   expect(remaining.sort()).toEqual([middle, newest].sort())
   expect(remaining).not.toContain(oldest)
@@ -487,10 +487,9 @@ test('trimSourceToCap: age cap deletes anything older than the cutoff, regardles
   const old = seedItemAt(raw, src, new Date(NOW_MS - 40 * 86400000).toISOString()) // 40 days old
   const recent = seedItemAt(raw, src, new Date(NOW_MS - 5 * 86400000).toISOString()) // 5 days old
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 0, maxAgeDays: 30, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 1 })
+  expect(result).toEqual({ trimmedCount: 1, removedItemIds: [old] })
   const remaining = raw.prepare(`SELECT id FROM logical_items_v2`).all().map((r) => (r as { id: string }).id)
   expect(remaining).toEqual([recent])
-  void old
   repo.close()
 })
 
@@ -504,10 +503,9 @@ test('trimSourceToCap: count and age union — whichever catches an item removes
   const mid = seedItemAt(raw, src, new Date(NOW_MS - 10 * 86400000).toISOString())
   const recent = seedItemAt(raw, src, NOW)
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 5, maxAgeDays: 30, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 1 })
+  expect(result).toEqual({ trimmedCount: 1, removedItemIds: [veryOld] })
   const remaining = raw.prepare(`SELECT id FROM logical_items_v2`).all().map((r) => (r as { id: string }).id)
   expect(remaining.sort()).toEqual([mid, recent].sort())
-  void veryOld
   repo.close()
 })
 
@@ -533,7 +531,10 @@ test('trimSourceToCap: a reply surviving its trimmed parent becomes a structural
   raw.prepare(`UPDATE logical_items_v2 SET parent_logical_item_id = ?, parent_state = 'resolved' WHERE id = ?`).run(parent, reply)
 
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 1, maxAgeDays: 0, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 1 })
+  // finding 2: a tombstoned item is no longer ordinarily visible either, so it
+  // is a removed id too, exactly like a fully-deleted one -- the caller
+  // (runtime.ts) journals a 'remove' for every id in this list.
+  expect(result).toEqual({ trimmedCount: 1, removedItemIds: [parent] })
   const parentRow = raw.prepare(`SELECT structural_tombstone, selected_delivery_id FROM logical_items_v2 WHERE id = ?`).get(parent) as { structural_tombstone: number; selected_delivery_id: string | null }
   expect(parentRow.structural_tombstone).toBe(1)
   expect(parentRow.selected_delivery_id).toBeNull()
@@ -557,7 +558,9 @@ test('trimSourceToCap: an excess item with a surviving delivery from a DIFFERENT
   raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(otherDeliveryId, trimmed)
 
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 1, maxAgeDays: 0, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 1 })
+  // finding 2: reselected onto a surviving delivery ⇒ still ordinarily visible
+  // ⇒ NOT a removed id (no 'remove' journal effect for it).
+  expect(result).toEqual({ trimmedCount: 1, removedItemIds: [] })
   // Reselected, not deleted or tombstoned: the item row still exists, not a tombstone.
   const row = raw.prepare(`SELECT structural_tombstone FROM logical_items_v2 WHERE id = ?`).get(trimmed) as { structural_tombstone: number } | undefined
   expect(row).toBeDefined()
@@ -581,7 +584,7 @@ test('trimSourceToCap: an excess item with TWO deliveries from the SAME trimmed 
   raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(otherDeliveryId, trimmed)
 
   const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 1, maxAgeDays: 0, now: NOW }))()
-  expect(result).toEqual({ trimmedCount: 1 })
+  expect(result).toEqual({ trimmedCount: 1, removedItemIds: [trimmed] })
   // Both of this source's deliveries for the item are gone -- none survive to wrongly reselect onto.
   expect(countRows(raw, 'deliveries_v2')).toBe(1) // only the surviving (non-excess) item's delivery remains
   expect(countRows(raw, 'logical_identity_keys_v2')).toBe(1)
@@ -605,5 +608,30 @@ test('trimSourceToCap never touches source-scoped tables or the source row itsel
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
   expect(countRows(raw, 'source_health_v2')).toBe(1)
   expect(countRows(raw, 'acquisition_runs_v2')).toBe(1)
+  repo.close()
+})
+
+// finding 1 (critical): trimSourceToCap builds three dynamic IN (...) clauses
+// (excess ids, delivery ids, observation-version ids) whose placeholder count
+// scales with result-set size. Below better-sqlite3's real bound-parameter
+// ceiling (32766, probed directly) this worked; past it `prepare()` throws
+// "too many SQL variables" and a scheduled poll's db.write rolls back with no
+// partial progress, so the source is stuck failing identically forever. This
+// seeds enough excess items to force the excess-id list alone past the
+// chunking helper's 500-per-chunk size (proving it chunks, not that it
+// reaches the real 32766 ceiling -- that would be needlessly slow to seed).
+test('trimSourceToCap chunks its dynamic IN (...) clauses so an excess set past one chunk still trims correctly', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const src = insertSourceRow(raw, { canonicalUrl: 'https://trim-chunk.test/feed' })
+  const TOTAL = 600
+  const base = Date.parse('2020-01-01T00:00:00.000Z')
+  for (let i = 0; i < TOTAL; i++) seedItemAt(raw, src, new Date(base + i * 1000).toISOString())
+
+  const result = raw.transaction(() => trimSourceToCap(raw, { sourceId: src, maxCount: 1, maxAgeDays: 0, now: NOW }))()
+  expect(result.trimmedCount).toBe(TOTAL - 1)
+  expect(result.removedItemIds.length).toBe(TOTAL - 1)
+  expect(countRows(raw, 'logical_items_v2')).toBe(1)
+  expect(countRows(raw, 'deliveries_v2')).toBe(1)
   repo.close()
 })

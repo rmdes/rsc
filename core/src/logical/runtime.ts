@@ -420,7 +420,18 @@ export function createLogicalRuntime(input: {
         const maxCount = Number((await getSetting('max_remote_items_per_source')) ?? '0')
         const maxAgeDays = Number((await getSetting('max_remote_item_age_days')) ?? '0')
         if (maxCount > 0 || maxAgeDays > 0) {
-          db.write((tx) => trimSourceToCap(tx, { sourceId: id, maxCount, maxAgeDays, now: now() }))
+          db.write((tx) => {
+            const trimNow = now()
+            const { removedItemIds } = trimSourceToCap(tx, { sourceId: id, maxCount, maxAgeDays, now: trimNow })
+            // Trim can run on every poll of an over-cap source, so it appends a
+            // 'remove' per actually-removed item -- NOT a reset (finding 2): an
+            // unconditional reset closes every connected client's stream
+            // (see the stored-reset `done: true` handling below), which is fine
+            // for the rare purge/reap path but wrong for a routine, repeatable trim.
+            for (const removedId of removedItemIds) {
+              appendJournal(tx, { kind: 'remove', logicalItemId: removedId, changeMask: 'presentation' }, trimNow)
+            }
+          })
         }
       }
       return r

@@ -16,7 +16,7 @@
 	<div class="field">
 		<label for="max-subs">Max subscriptions per user</label>
 		<input id="max-subs" name="maxSubsPerUser" type="number" min="0" required value={data.settings.maxSubsPerUser} />
-		<p class="field-hint">Self-serve subscriptions (person + web feeds) each registered user may hold. Default 500.</p>
+		<p class="field-hint">Self-serve subscriptions (person + web feeds) each registered user may hold. Default 500. 0 disables subscribing entirely.</p>
 	</div>
 	<div class="field">
 		<label for="max-remote-items">Max remote items per source</label>
