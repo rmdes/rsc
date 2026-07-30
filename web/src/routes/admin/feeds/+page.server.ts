@@ -440,10 +440,16 @@ export const actions: Actions = {
 						headers: { 'content-type': 'application/json' },
 						body: JSON.stringify({ commandId, ...(category ? { category } : {}), ...(note ? { note } : {}) })
 					})
-					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, `${action} failed`) }
+					// A FAILED row echoes back the command id core already saw, so the
+					// retry replays that command instead of minting a second one
+					// (design §11). The invalidateAll after this submit re-runs
+					// load(), which mints fresh ids for every row — without the echo
+					// the checkbox would carry a different id on the retry. Only
+					// failures carry it: a succeeded row has nothing to replay.
+					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, `${action} failed`), commandId }
 					return { sourceId, ok: true }
 				} catch (err) {
-					return { sourceId, ok: false, error: err instanceof Error ? err.message : `${action} failed` }
+					return { sourceId, ok: false, error: err instanceof Error ? err.message : `${action} failed`, commandId }
 				}
 			})
 		)
@@ -472,10 +478,12 @@ export const actions: Actions = {
 						headers: { 'content-type': 'application/json' },
 						body: JSON.stringify({ commandId, ...(force ? { force: true } : {}) })
 					})
-					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, 'reap failed') }
+					// Failed rows echo their command id — same replay contract as
+					// bulkSource above (design §11).
+					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, 'reap failed'), commandId }
 					return { sourceId, ok: true }
 				} catch (err) {
-					return { sourceId, ok: false, error: err instanceof Error ? err.message : 'reap failed' }
+					return { sourceId, ok: false, error: err instanceof Error ? err.message : 'reap failed', commandId }
 				}
 			})
 		)
@@ -503,10 +511,12 @@ export const actions: Actions = {
 				try {
 					outcome = await unblockTombstone(f, tombstoneId, { commandId, category, ...(note ? { note } : {}) })
 				} catch (err) {
-					return { tombstoneId, ok: false, error: err instanceof Error ? err.message : 'unblock failed' }
+					// Failed rows echo their command id — same replay contract as
+					// bulkSource above (design §11).
+					return { tombstoneId, ok: false, error: err instanceof Error ? err.message : 'unblock failed', commandId }
 				}
-				if (outcome.kind === 'unavailable') return { tombstoneId, ok: false, error: 'unavailable' }
-				if (outcome.kind === 'conflict') return { tombstoneId, ok: false, error: outcome.error }
+				if (outcome.kind === 'unavailable') return { tombstoneId, ok: false, error: 'unavailable', commandId }
+				if (outcome.kind === 'conflict') return { tombstoneId, ok: false, error: outcome.error, commandId }
 				return { tombstoneId, ok: true }
 			})
 		)

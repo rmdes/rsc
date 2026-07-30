@@ -243,9 +243,13 @@ test('bulkSource posts the same per-source endpoint once per row, using each row
 		cookies
 	} as never)) as { bulkResults: { sourceId: string; ok: boolean; error?: string }[]; bulkAction: string }
 	expect(res.bulkAction).toBe('quarantine')
+	// A FAILED row echoes the command id core already saw. `load()` re-mints
+	// every row's ids on the invalidateAll that follows this submit, so without
+	// the echo the retry would carry a different id and core's ledger would read
+	// it as a second command instead of a replay (design §11).
 	expect(res.bulkResults).toEqual([
 		{ sourceId: 's1', ok: true },
-		{ sourceId: 's2', ok: false, error: 'invalid transition' }
+		{ sourceId: 's2', ok: false, error: 'invalid transition', commandId: 'cmd-s2' }
 	])
 	expect(fetch).toHaveBeenCalledTimes(2)
 	const [s1Url, s1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('/s1/'))! as unknown as [string, RequestInit]
@@ -709,7 +713,10 @@ test('bulkReap posts per-row force values independently — a mixed batch sends 
 	const fetch = vi.fn(async (url: string | URL) => {
 		const u = String(url)
 		if (u.includes('/orph1/reap')) return new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 })
-		if (u.includes('/orph2/reap')) return new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 })
+		// orph2 REFUSES: the per-row force assertion below is about the request
+		// body, so failing it here costs the test nothing and lets the same case
+		// cover the failed-row command-id echo (design §11, as bulkSource does).
+		if (u.includes('/orph2/reap')) return new Response(JSON.stringify({ error: 'has_subscribers' }), { status: 409 })
 		throw new Error(`unexpected fetch ${u}`)
 	})
 	const form = new URLSearchParams()
@@ -718,7 +725,7 @@ test('bulkReap posts per-row force values independently — a mixed batch sends 
 	const res = (await actions.bulkReap({ request: new Request('http://x/admin/feeds?/bulkReap', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkReapResults: { sourceId: string; ok: boolean }[] }
 	expect(res.bulkReapResults).toEqual([
 		{ sourceId: 'orph1', ok: true },
-		{ sourceId: 'orph2', ok: true }
+		{ sourceId: 'orph2', ok: false, error: 'has_subscribers', commandId: 'cmd-orph2' }
 	])
 	const [orph1Url, orph1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('orph1'))! as unknown as [string, RequestInit]
 	expect(JSON.parse(String(orph1Init.body))).toEqual({ commandId: 'cmd-orph1' })
@@ -748,7 +755,7 @@ test('bulkTombstone posts {commandId, category, note} per selected tombstone and
 	const res = (await actions.bulkTombstone({ request: new Request('http://x/admin/feeds?/bulkTombstone', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkTombstoneResults: { tombstoneId: string; ok: boolean; error?: string }[] }
 	expect(res.bulkTombstoneResults).toEqual([
 		{ tombstoneId: 't1', ok: true },
-		{ tombstoneId: 't2', ok: false, error: 'source not blocked' }
+		{ tombstoneId: 't2', ok: false, error: 'source not blocked', commandId: 'cmd-t2' }
 	])
 	const [, t1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('t1'))! as unknown as [string, RequestInit]
 	expect(JSON.parse(String(t1Init.body))).toEqual({ commandId: 'cmd-t1', category: 'remediated', note: 'appeal upheld' })

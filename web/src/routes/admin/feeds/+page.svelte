@@ -33,12 +33,34 @@
 		force?: boolean
 		purge?: boolean
 		purged?: boolean
-		bulkResults?: { sourceId: string; ok: boolean; error?: string }[]
+		bulkResults?: { sourceId: string; ok: boolean; error?: string; commandId?: string }[]
 		bulkAction?: string
-		bulkReapResults?: { sourceId: string; ok: boolean; error?: string }[]
-		bulkTombstoneResults?: { tombstoneId: string; ok: boolean; error?: string }[]
+		bulkReapResults?: { sourceId: string; ok: boolean; error?: string; commandId?: string }[]
+		bulkTombstoneResults?: { tombstoneId: string; ok: boolean; error?: string; commandId?: string }[]
 	}
 	const retryFail = $derived(form as RetryFail | null)
+
+	// Design §11: a retry must REPLAY the command core already saw, never mint a
+	// second one. Every checkbox below carries a command id minted by load() —
+	// and load() re-runs on the invalidateAll that follows each submit, minting
+	// FRESH ids. So for a row that just failed, the freshly minted id is the
+	// wrong one: the three helpers below prefer the id the failed submit echoed
+	// back. Since the per-row Manage panel was removed, these checkboxes are the
+	// only retry path for the nine bulk-eligible verbs.
+	// Only failures echo a command id, so a succeeded row falls through to its
+	// fresh id — as it should, being a new command rather than a replay.
+	function pinnedBulkId(rowId: string, action: string, minted: string): string {
+		// Guarded on bulkAction: retrying a DIFFERENT verb on the same row is a
+		// new command, so only the verb that actually failed is pinned.
+		if (retryFail?.bulkAction !== action) return minted
+		return retryFail.bulkResults?.find((r) => r.sourceId === rowId && !r.ok)?.commandId ?? minted
+	}
+	function pinnedReapId(rowId: string, minted: string): string {
+		return retryFail?.bulkReapResults?.find((r) => r.sourceId === rowId && !r.ok)?.commandId ?? minted
+	}
+	function pinnedTombstoneId(tombstoneId: string, minted: string): string {
+		return retryFail?.bulkTombstoneResults?.find((r) => r.tombstoneId === tombstoneId && !r.ok)?.commandId ?? minted
+	}
 	// Retry id for the establish form specifically (no sourceId/tombstoneId of its
 	// own): was a template {@const}, which requires an enclosing block — hoisted
 	// here once the page's only {#if} (the dead v1 arm) was deleted.
@@ -313,7 +335,7 @@
 								<input
 									type="checkbox"
 									name="candidate"
-									value="{row.id}|{row.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+									value="{row.id}|{row.actions.map((a) => `${a.action}:${pinnedBulkId(row.id, a.action, a.commandId)}`).join('|')}"
 									form="bulk-{group.key}"
 									checked={selected[group.key]?.has(row.id) ?? false}
 									onchange={() => toggleSelected(group.key, row.id)}
@@ -366,7 +388,7 @@
 													<input
 														type="checkbox"
 														name="candidate"
-														value="{m.id}|{m.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+														value="{m.id}|{m.actions.map((a) => `${a.action}:${pinnedBulkId(m.id, a.action, a.commandId)}`).join('|')}"
 														form="bulk-{group.key}"
 														checked={selected[group.key]?.has(m.id) ?? false}
 														onchange={() => toggleSelected(group.key, m.id)}
@@ -558,7 +580,7 @@
 							<input
 								type="checkbox"
 								name="candidate"
-								value="{row.id}:{row.commandId}:{needsForce}"
+								value="{row.id}:{pinnedReapId(row.id, row.commandId)}:{needsForce}"
 								form="bulk-orphans"
 								checked={selected.orphans?.has(row.id) ?? false}
 								onchange={() => toggleSelected('orphans', row.id)}
@@ -649,7 +671,7 @@
 							<input
 								type="checkbox"
 								name="candidate"
-								value="{t.id}:{t.commandId}"
+								value="{t.id}:{pinnedTombstoneId(t.id, t.commandId)}"
 								form="bulk-tombstones"
 								checked={selected.tombstones?.has(t.id) ?? false}
 								onchange={() => toggleSelected('tombstones', t.id)}

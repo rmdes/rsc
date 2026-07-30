@@ -736,6 +736,46 @@ test('bulk outcome reporting: form.bulkResults renders a per-row outcome line na
 	expect(body).toContain('invalid transition')
 })
 
+// Design §11: retrying a failed command must REPLAY it (same id), never mint a
+// second one. `load()` re-mints every row's action ids on the invalidateAll that
+// follows a submit, so the checkbox must prefer the id the failed submit echoed
+// back — otherwise core's ledger sees a brand-new command and applies it again
+// rather than recognising the retry. Deleting the per-row Manage panel made the
+// checkbox the ONLY retry path, so this is the whole contract for nine verbs.
+test('a row whose bulk action failed retries with the command id core already saw, not the freshly minted one', () => {
+	const data = bulkData({
+		groups: [
+			{
+				key: 'user',
+				title: 'Allowed user sources',
+				blurb: 'blurb text',
+				rows: [
+					baseRow({
+						id: 'r1',
+						group: 'user',
+						federationStatus: 'none',
+						memberCounts: undefined,
+						actions: [
+							{ action: 'quarantine', commandId: 'freshly-minted' },
+							{ action: 'block', commandId: 'block-minted' }
+						]
+					})
+				]
+			}
+		]
+	})
+	const form = {
+		bulkResults: [{ sourceId: 'r1', ok: false, error: 'invalid transition', commandId: 'the-id-core-saw' }],
+		bulkAction: 'quarantine'
+	}
+	const { body } = render(Page, { props: { data, form } } as never)
+	expect(body).toContain('quarantine:the-id-core-saw')
+	expect(body).not.toContain('quarantine:freshly-minted')
+	// Only the action that failed is pinned: retrying a DIFFERENT verb on the
+	// same row is a new command and keeps its fresh id.
+	expect(body).toContain('block:block-minted')
+})
+
 test('a mixed batch of orphan rows renders each with its OWN correct variant, independent of the others', () => {
 	const data = orphanData({
 		orphanRows: [
