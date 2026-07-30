@@ -762,3 +762,18 @@ test('bulkTombstone refuses a missing category without calling core', async () =
 	expect(res).toMatchObject({ status: 400 })
 	expect(fetch).not.toHaveBeenCalled()
 })
+
+// The inline ?detail= panel's refresh/purge used to be hand-copied duplicates of
+// sources/[sourceId]/+page.server.ts's, carrying a "kept in sync by hand"
+// comment. They are now literally the same two functions (their behaviour is
+// covered by source-detail.test.ts's refresh/purge cases) — this is the guard
+// that fails if someone re-inlines a copy and the two drift again.
+test('the feeds route mounts the SHARED refresh/purge handlers rather than its own copies', () => {
+	// Identity (`toBe` against an imported reference) can't be used here: the
+	// vitest transform resolves `$lib/...` and the `./+page.server.ts` import
+	// chain to two module instances. The function NAME is the durable signal —
+	// a re-inlined copy would be an anonymous/`refresh`-named arrow, not the
+	// shared named declaration.
+	expect(actions.refresh?.name).toBe('refreshAction')
+	expect(actions.purge?.name).toBe('purgeAction')
+})
