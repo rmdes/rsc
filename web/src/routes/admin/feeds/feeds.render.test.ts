@@ -347,8 +347,11 @@ test('a refused purge from the inline panel pins the purge form\'s submitted com
 	expect(panel.slice(0, purgeStart)).toContain('name="commandId" value="refresh-1"')
 })
 
-test('another action\'s failure (a per-row block) does not poison the inline panel\'s refresh commandId', () => {
-	const form = { sourceId: 'inst1', action: 'block', commandId: 'block-cmd-1', error: 'invalid transition' }
+test('an attribution-mode failure does not poison the inline panel\'s refresh commandId', () => {
+	// A different source's ('inst2') attribution-mode failure — not this
+	// panel's own row ('inst1') — so its commandId has no legitimate home
+	// anywhere in this panel and must not leak into the refresh form.
+	const form = { sourceId: 'inst2', action: 'attribution-mode', commandId: 'block-cmd-1', error: 'invalid transition' }
 	const panel = detailPanelOf(render(Page, { props: { data: inlineDetailData(), form } } as never).body)
 	expect(panel).toContain('name="commandId" value="refresh-1"')
 	expect(panel).not.toContain('value="block-cmd-1"')

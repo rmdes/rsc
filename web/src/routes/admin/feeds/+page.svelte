@@ -266,33 +266,35 @@
 			     <details> — same primitive as .confirm-gate and the mobile nav —
 			     so expanding needs no JavaScript; the no-JS invariant is
 			     unaffected, this only changes the default visual state. -->
-			<details class="panel">
-				<summary>Actions</summary>
-				<div class="bulk-tools">
-					{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
-						<button name="action" value={actionName}>{LABEL[actionName]}</button>
+			{#if bulkVerbs.length}
+				<details class="panel">
+					<summary>Actions</summary>
+					<div class="bulk-tools">
+						{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
+							<button name="action" value={actionName}>{LABEL[actionName]}</button>
+						{/each}
+						{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
+							<label class="visually-hidden" for="bulk-cat-{group.key}">Moderation category</label>
+							<select id="bulk-cat-{group.key}" name="category" required>
+								{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+							</select>
+						{/if}
+					</div>
+					<!-- The two verbs with a STATED consequence (block/unblock) are
+					     gated the same way the deleted per-row Manage panel gated
+					     them — same CONSEQUENCE key, same reveal-to-confirm — so
+					     blocking N sources in one click can't be the one destructive
+					     path that skips the confirmation a single-row block requires
+					     (design §10). -->
+					{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
+						<details class="confirm-gate">
+							<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
+							<p class="consequence">{CONSEQUENCE[actionName]}</p>
+							<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
+						</details>
 					{/each}
-					{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
-						<label class="visually-hidden" for="bulk-cat-{group.key}">Moderation category</label>
-						<select id="bulk-cat-{group.key}" name="category" required>
-							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-						</select>
-					{/if}
-				</div>
-				<!-- The two verbs with a STATED consequence (block/unblock) are
-				     gated the same way the deleted per-row Manage panel gated
-				     them — same CONSEQUENCE key, same reveal-to-confirm — so
-				     blocking N sources in one click can't be the one destructive
-				     path that skips the confirmation a single-row block requires
-				     (design §10). -->
-				{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
-					<details class="confirm-gate">
-						<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
-						<p class="consequence">{CONSEQUENCE[actionName]}</p>
-						<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
-					</details>
-				{/each}
-			</details>
+				</details>
+			{/if}
 		</form>
 		{#if group.rows.length === 0}
 			<p class="subnav">None.</p>
@@ -386,23 +388,26 @@
 													<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
 												</div>
 											</div>
-											<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
-												<input type="hidden" name="sourceId" value={m.id} />
-												<input type="hidden" name="action" value="attribution-mode" />
-												<input type="hidden" name="commandId" value={memberAttrRetry ?? m.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
-												<label class="visually-hidden" for="attr-mode-{m.id}">Attribution mode</label>
-												<select id="attr-mode-{m.id}" name="attributionMode">
-													<option value="single_publisher">single publisher</option>
-													<option value="aggregate">aggregate</option>
-												</select>
-												<label class="visually-hidden" for="attr-cat-{m.id}">Moderation category</label>
-												<select id="attr-cat-{m.id}" name="category" required>
-													{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-												</select>
-												<label class="visually-hidden" for="attr-note-{m.id}">Note (optional)</label>
-												<input id="attr-note-{m.id}" name="note" placeholder="note (optional)" />
-												<button aria-label="Change attribution mode — {m.url}">Change attribution mode</button>
-											</form>
+											<details class="panel">
+												<summary>Attribution mode</summary>
+												<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
+													<input type="hidden" name="sourceId" value={m.id} />
+													<input type="hidden" name="action" value="attribution-mode" />
+													<input type="hidden" name="commandId" value={memberAttrRetry ?? m.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
+													<label class="visually-hidden" for="attr-mode-{m.id}">Attribution mode</label>
+													<select id="attr-mode-{m.id}" name="attributionMode">
+														<option value="single_publisher">single publisher</option>
+														<option value="aggregate">aggregate</option>
+													</select>
+													<label class="visually-hidden" for="attr-cat-{m.id}">Moderation category</label>
+													<select id="attr-cat-{m.id}" name="category" required>
+														{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+													</select>
+													<label class="visually-hidden" for="attr-note-{m.id}">Note (optional)</label>
+													<input id="attr-note-{m.id}" name="note" placeholder="note (optional)" />
+													<button aria-label="Change attribution mode — {m.url}">Change attribution mode</button>
+												</form>
+											</details>
 										</li>
 									{/each}
 								</ul>
@@ -473,6 +478,10 @@
 	</section>
 {/each}
 
+<!-- Partial is load-bearing here: each of the three callers' result arrays
+     (bulkResults, bulkReapResults, bulkTombstoneResults) carries only ONE of
+     sourceId/tombstoneId, never both — a non-Partial Record requiring both
+     keys would fail to type-check against any of the three callers. -->
 {#snippet bulkOutcomes(results: (Partial<Record<'sourceId' | 'tombstoneId', string>> & { ok: boolean; error?: string })[] | undefined, idKey: 'sourceId' | 'tombstoneId', verb: string)}
 	{#if results?.length}
 		<ul class="bulk-outcomes">
@@ -814,10 +823,6 @@
 		gap: var(--space-sm);
 		padding-top: var(--space-sm);
 		border-top: 1px solid var(--color-border);
-	}
-
-	.source-action:first-child {
-		border-top: none;
 	}
 
 	/* Outline, not the accent fill: .source-action now styles one single-verb
