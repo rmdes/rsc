@@ -23,4 +23,24 @@ export const actions: Actions = {
 		}
 		return { deleted: true }
 	},
+	// No commandId — deleteLocalAccount has none today (verified: it's a
+	// plain DELETE with no idempotency body), so bulk matches that posture
+	// exactly rather than inventing one.
+	bulkDelete: async (event) => {
+		const form = await event.request.formData()
+		const handles = form.getAll('handle').map(String)
+		if (handles.length === 0) return { bulkDeleteResults: [] }
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkDeleteResults = await Promise.all(
+			handles.map(async (handle) => {
+				try {
+					await deleteLocalAccount(f, handle)
+					return { handle, ok: true }
+				} catch (err) {
+					return { handle, ok: false, error: err instanceof Error ? err.message : 'delete failed' }
+				}
+			})
+		)
+		return { bulkDeleteResults }
+	}
 }

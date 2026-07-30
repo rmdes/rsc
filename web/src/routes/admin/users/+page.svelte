@@ -4,12 +4,31 @@
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
+	// ActionData is a union across deleteUser (error/deleted) and bulkDelete
+	// (bulkDeleteResults) — same loose-read reasoning as feeds/+page.svelte's
+	// RetryFail, one field doesn't collide with the other action's shape.
+	type BulkForm = { bulkDeleteResults?: { handle: string; ok: boolean; error?: string }[] }
+	const bulkForm = $derived(form as BulkForm | null)
+
 	function formatDate(iso: string): string {
 		return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 	}
 
 	function verified(v: boolean | null): string {
 		return v === null ? '—' : v ? 'Yes' : 'No'
+	}
+
+	// COSMETIC ONLY: drives the live "N selected" count and the blurb↔toolbar
+	// swap class. What a bulk submit actually carries comes from the checked
+	// boxes themselves (each one's own `value` is the handle) — the confirm-gate
+	// and its button below are never gated on this Set's size, only on whether
+	// any local user exists at all, so they stay reachable with JS off.
+	let selected: Set<string> = $state(new Set())
+	function toggleSelected(handle: string) {
+		const next = new Set(selected)
+		if (next.has(handle)) next.delete(handle)
+		else next.add(handle)
+		selected = next
 	}
 </script>
 
@@ -24,11 +43,16 @@
 {:else}
 	<table class="table table-records">
 		<thead>
-			<tr><th>Handle</th><th>Kind</th><th>Name</th><th>Verified</th><th>Joined</th><th>Feed</th><th>Action</th></tr>
+			<tr><th class="visually-hidden">Select</th><th>Handle</th><th>Kind</th><th>Name</th><th>Verified</th><th>Joined</th><th>Feed</th><th>Action</th></tr>
 		</thead>
 		<tbody>
 			{#each data.users as u (u.handle)}
 				<tr>
+					<td data-label="Select">
+						{#if u.kind === 'local'}
+							<input type="checkbox" form="bulk-delete-users" name="handle" value={u.handle} checked={selected.has(u.handle)} onchange={() => toggleSelected(u.handle)} />
+						{/if}
+					</td>
 					<td data-label="Handle">@{u.handle}</td>
 					<td data-label="Kind">{u.kind}</td>
 					<td data-label="Name">{u.displayName}</td>
@@ -61,6 +85,40 @@
 			{/each}
 		</tbody>
 	</table>
+	<!-- Same always-visible posture as feeds/+page.svelte's orphan/tombstone
+	     bulk bars (Task 7, corrected): the confirm-gate/button ship in server
+	     output whenever there's at least one local user to act on — never
+	     gated on `selected.size`, which would make the submit path
+	     unreachable with JS off. "N selected" is the only JS-cosmetic bit. -->
+	<form
+		id="bulk-delete-users"
+		method="POST"
+		action="?/bulkDelete{data.cursor ? `&cursor=${encodeURIComponent(data.cursor)}` : ''}"
+		class="bulk-bar"
+		use:enhance={() => {
+			// invalidateAll() re-runs load() without remounting, so a stale
+			// selection would keep handles of now-deleted users otherwise.
+			selected = new Set()
+		}}
+	>
+		{#if data.users.some((u) => u.kind === 'local')}
+			<p class="subnav bulk-blurb" class:has-selection={selected.size > 0}>
+				<span class="bulk-tools">
+					{#if selected.size > 0}<span>{selected.size} selected ·</span>{/if}
+				</span>
+			</p>
+			<details class="confirm-gate">
+				<summary><span class="action-name">Delete selected</span></summary>
+				<p class="consequence">Delete the selected accounts and all their posts? This can't be undone.</p>
+				<button>Confirm delete selected</button>
+			</details>
+		{/if}
+	</form>
+	{#if bulkForm?.bulkDeleteResults?.length}
+		<ul class="bulk-outcomes">
+			{#each bulkForm.bulkDeleteResults as r (r.handle)}<li class:error={!r.ok}>@{r.handle}: {r.ok ? 'deleted' : r.error}</li>{/each}
+		</ul>
+	{/if}
 {/if}
 
 {#if data.nextCursor}
@@ -68,6 +126,40 @@
 {/if}
 
 <style>
+	.bulk-bar {
+		margin: 0 0 var(--space-sm);
+	}
+
+	.bulk-blurb {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	.bulk-blurb.has-selection {
+		border-bottom: 2px solid var(--color-border);
+		padding-bottom: var(--space-sm);
+	}
+
+	.bulk-tools {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	.bulk-outcomes {
+		list-style: none;
+		margin: 0 0 var(--space-md);
+		padding: 0;
+		font-size: 0.8125rem;
+	}
+
+	.bulk-outcomes .error {
+		color: var(--color-destructive);
+	}
+
 	.action-name {
 		font-weight: 600;
 	}

@@ -26,3 +26,9 @@ test('a remote user renders no delete affordance at all', () => {
 	expect(body).not.toContain('confirm-gate')
 	expect(body).toContain('—') // the em-dash placeholder for a non-local row's Action cell
 })
+
+test('local user rows each have a checkbox and the page renders an always-present bulk-delete form', () => {
+	const { body } = render(Page, { props: { data: baseData(), form: null } } as never)
+	expect(body).toContain('action="?/bulkDelete')
+	expect(body).toContain('type="checkbox"')
+})
