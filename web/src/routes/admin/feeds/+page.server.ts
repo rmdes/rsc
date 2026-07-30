@@ -415,6 +415,10 @@ export const actions: Actions = {
 		// bulk click replays like a lone submit would. A row that doesn't offer
 		// the clicked action is skipped, not an error: the toolbar's button set
 		// is the union of the group's actions until JS narrows it.
+		// The three candidate encodings on this page (here, bulkReap's
+		// `id:commandId:force`, bulkTombstone's `id:commandId`) all assume an id
+		// contains neither `|` nor `:` — true for core's UUIDs, and the reason
+		// they're four one-liners instead of a shared codec (spec §3, rev 4).
 		if (!ACTIONS.includes(action as SourceAction) || action === 'attribution-mode') return fail(400, { error: 'unknown or unsupported bulk action' })
 		const picked = form.getAll('candidate').flatMap((c) => {
 			const [sourceId, ...pairs] = String(c).split('|')
