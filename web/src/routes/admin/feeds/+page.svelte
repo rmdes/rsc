@@ -161,16 +161,16 @@
 	// attribution-mode is never bulk-eligible: it carries a per-row-meaningful
 	// extra field that doesn't generalize to N rows.
 	function bulkActions(group: PageData['groups'][number]): string[] {
-		const chosen = group.rows.filter((r) => selected[group.key]?.has(r.id))
-		const union = [...new Set(group.rows.flatMap((r) => r.actions.map((a) => a.action)))].filter((a) => a !== 'attribution-mode')
+		// Nested federation-member rows (data.expandedMembers) render inside
+		// the federation group's section (whichever instance is ?expand=ed)
+		// and share ITS toolbar/form via form="bulk-federation" — they're the
+		// only rows outside group.rows a bulk panel ever needs to see, and
+		// only for group 'federation' (no other group ever nests members).
+		const candidateRows = group.key === 'federation' ? [...group.rows, ...data.expandedMembers] : group.rows
+		const chosen = candidateRows.filter((r) => selected[group.key]?.has(r.id))
+		const union = [...new Set(candidateRows.flatMap((r) => r.actions.map((a) => a.action)))].filter((a) => a !== 'attribution-mode')
 		return chosen.length ? union.filter((a) => chosen.every((r) => r.actions.some((x) => x.action === a))) : union
 	}
-
-	// Shared by every row's Manage panel, ordinary or nested member (C1 fix):
-	// a member row's `actions` is computed by the SAME toRow() as an ordinary
-	// row, so the panel — and the forms it renders — are identical, not a
-	// re-derivation.
-	type Row = PageData['expandedMembers'][number]
 
 	// Task 9: which row's inline ?detail= panel is open, if any. Deliberately
 	// separate from `expand` (federation member-list) — a federation row can
@@ -216,19 +216,7 @@
      notices, not per group: bulkResults isn't group-scoped (and a quarantined
      row has moved group by the time this renders), so repeating the list under
      every group would print the same outcomes four times. -->
-{#if retryFail?.bulkResults?.length}
-	<ul class="bulk-outcomes">
-		{#each retryFail.bulkResults as r (r.sourceId)}
-			<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'done' : r.error}</li>
-		{/each}
-	</ul>
-{:else if retryFail?.bulkResults}
-	<!-- An EMPTY results array is a real outcome: nothing was checked, or no
-	     checked row offered the clicked verb. Rendering nothing for it left a
-	     no-JS submit (where there's no live "N selected" count either) looking
-	     like an identical, silent page. -->
-	<p class="notice" role="status">Nothing selected.</p>
-{/if}
+{@render bulkOutcomes(retryFail?.bulkResults, 'sourceId', 'done')}
 
 <!-- No-JS search: a plain GET submit replaces the whole querystring with
      just this form's own field, so a fresh search always starts back at
@@ -272,32 +260,41 @@
 					{group.blurb}
 					{#if (selected[group.key]?.size ?? 0) > 0}<span class="selected-count"> · {selected[group.key]?.size} selected</span>{/if}
 				</span>
-				<span class="bulk-tools">
-					{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
-						<button name="action" value={actionName}>{LABEL[actionName]}</button>
-					{/each}
-					{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
-						<label class="visually-hidden" for="bulk-cat-{group.key}">Moderation category</label>
-						<select id="bulk-cat-{group.key}" name="category" required>
-							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-						</select>
-					{/if}
-				</span>
 			</p>
-			<!-- The two verbs with a STATED consequence (block/unblock) are gated
-			     exactly as the per-row managePanel gates them — same CONSEQUENCE
-			     key, same reveal-to-confirm — so blocking N sources in one click
-			     can't be the one destructive path that skips the confirmation a
-			     single-row block requires (design §10). A sibling of the <p>, not
-			     inside it: <details> is not phrasing content, and this is the
-			     shape the orphan/tombstone/users bulk bars already use. -->
-			{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
-				<details class="confirm-gate">
-					<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
-					<p class="consequence">{CONSEQUENCE[actionName]}</p>
-					<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
+			<!-- Collapsed by default: this is the actual fix for a busy resting
+			     page, not just removing the duplicate Manage panel. Native
+			     <details> — same primitive as .confirm-gate and the mobile nav —
+			     so expanding needs no JavaScript; the no-JS invariant is
+			     unaffected, this only changes the default visual state. -->
+			{#if bulkVerbs.length}
+				<details class="panel">
+					<summary>Actions</summary>
+					<div class="bulk-tools">
+						{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
+							<button name="action" value={actionName}>{LABEL[actionName]}</button>
+						{/each}
+						{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
+							<label class="visually-hidden" for="bulk-cat-{group.key}">Moderation category</label>
+							<select id="bulk-cat-{group.key}" name="category" required>
+								{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+							</select>
+						{/if}
+					</div>
+					<!-- The two verbs with a STATED consequence (block/unblock) are
+					     gated the same way the deleted per-row Manage panel gated
+					     them — same CONSEQUENCE key, same reveal-to-confirm — so
+					     blocking N sources in one click can't be the one destructive
+					     path that skips the confirmation a single-row block requires
+					     (design §10). -->
+					{#each bulkVerbs.filter((a) => CONSEQUENCE[a]) as actionName (actionName)}
+						<details class="confirm-gate">
+							<summary><span class="action-name">{LABEL[actionName]} selected</span></summary>
+							<p class="consequence">{CONSEQUENCE[actionName]}</p>
+							<button name="action" value={actionName}>Confirm {LABEL[actionName].toLowerCase()} selected</button>
+						</details>
+					{/each}
 				</details>
-			{/each}
+			{/if}
 		</form>
 		{#if group.rows.length === 0}
 			<p class="subnav">None.</p>
@@ -362,29 +359,62 @@
 							{#if expanded}
 								<ul class="following-list source-list member-list">
 									{#each data.expandedMembers as m (m.id)}
+										{@const memberAttrRetry = retryFail?.sourceId === m.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
 										<li>
-											<div class="feed-info">
-												<strong class="feed-url">{m.url}</strong>
-												<span>
-													<span class="badge-kind">{m.governance}</span>
-													<span class="badge-kind">{m.operation}</span>
-													{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
-												</span>
-												{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
-												{#if m.addedBy.length}
-													{@const extra = Math.max(0, m.subscriberTotal - m.addedBy.length)}
-													<p class="subnav hint">Added by {m.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
-												{/if}
-												<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
+											<div class="row-head">
+												<label class="row-select">
+													<input
+														type="checkbox"
+														name="candidate"
+														value="{m.id}|{m.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+														form="bulk-{group.key}"
+														checked={selected[group.key]?.has(m.id) ?? false}
+														onchange={() => toggleSelected(group.key, m.id)}
+													/>
+													<span class="visually-hidden">Select {m.url}</span>
+												</label>
+												<div class="feed-info">
+													<strong class="feed-url">{m.url}</strong>
+													<span>
+														<span class="badge-kind">{m.governance}</span>
+														<span class="badge-kind">{m.operation}</span>
+														{#if m.overridden}<span class="badge-kind on">overridden</span>{/if}
+													</span>
+													{#if m.viaVerification}<p class="subnav hint">via verification</p>{/if}
+													{#if m.addedBy.length}
+														{@const extra = Math.max(0, m.subscriberTotal - m.addedBy.length)}
+														<p class="subnav hint">Added by {m.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
+													{/if}
+													<p class="subnav"><a href="/admin/sources/{encodeURIComponent(m.id)}">Details (run history, items, purge)</a></p>
+												</div>
 											</div>
-											{@render managePanel(m, 'm-')}
+											<details class="panel">
+												<summary>Attribution mode</summary>
+												<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
+													<input type="hidden" name="sourceId" value={m.id} />
+													<input type="hidden" name="action" value="attribution-mode" />
+													<input type="hidden" name="commandId" value={memberAttrRetry ?? m.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
+													<label class="visually-hidden" for="attr-mode-{m.id}">Attribution mode</label>
+													<select id="attr-mode-{m.id}" name="attributionMode">
+														<option value="single_publisher">single publisher</option>
+														<option value="aggregate">aggregate</option>
+													</select>
+													<label class="visually-hidden" for="attr-cat-{m.id}">Moderation category</label>
+													<select id="attr-cat-{m.id}" name="category" required>
+														{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+													</select>
+													<label class="visually-hidden" for="attr-note-{m.id}">Note (optional)</label>
+													<input id="attr-note-{m.id}" name="note" placeholder="note (optional)" />
+													<button aria-label="Change attribution mode — {m.url}">Change attribution mode</button>
+												</form>
+											</details>
 										</li>
 									{/each}
 								</ul>
 							{/if}
 						{/if}
-						{@render managePanel(row)}
 						{#if detail === row.id && data.detail}
+							{@const attrRetry = retryFail?.sourceId === row.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
 							<section class="detail-panel">
 								<h4>Source acquisition</h4>
 								<form method="POST" action="?/refresh{otherParams() ? `&${otherParams()}` : ''}" use:enhance>
@@ -407,6 +437,23 @@
 										{/each}
 									</ul>
 								{/if}
+								<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
+									<input type="hidden" name="sourceId" value={row.id} />
+									<input type="hidden" name="action" value="attribution-mode" />
+									<input type="hidden" name="commandId" value={attrRetry ?? row.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
+									<label class="visually-hidden" for="detail-attr-mode">Attribution mode</label>
+									<select id="detail-attr-mode" name="attributionMode">
+										<option value="single_publisher">single publisher</option>
+										<option value="aggregate">aggregate</option>
+									</select>
+									<label class="visually-hidden" for="detail-attr-cat">Moderation category</label>
+									<select id="detail-attr-cat" name="category" required>
+										{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+									</select>
+									<label class="visually-hidden" for="detail-attr-note">Note (optional)</label>
+									<input id="detail-attr-note" name="note" placeholder="note (optional)" />
+									<button>Change attribution mode</button>
+								</form>
 								{#if data.detail.purgeEligible}
 									<form method="POST" action="?/purge{otherParams() ? `&${otherParams()}` : ''}" class="source-action destructive" use:enhance>
 										<input type="hidden" name="sourceId" value={data.detail.sourceId} />
@@ -431,60 +478,20 @@
 	</section>
 {/each}
 
-<!-- C1 fix: the Manage panel is shared verbatim between an ordinary row and
-     a nested member row — both carry the same `actions` shape from toRow(),
-     so a member is moderated through the exact same forms, not a separate
-     read-only view. `expand` is carried forward alongside `cursor` so acting
-     on a member doesn't collapse its instance's expansion.
-     N1 fix: a blocked member renders twice (flat + nested in expanded instance),
-     so we add a scope discriminator to prevent duplicate DOM ids. -->
-{#snippet managePanel(row: Row, scope = '')}
-	{@const qs = otherParams()}
-	<details class="panel">
-		<summary aria-label="Manage {row.url}">Manage</summary>
-		<div class="source-actions">
-			{#each row.actions as a (a.action)}
-				{@const consequence = CONSEQUENCE[a.action]}
-				{@const retryCommandId = retryFail?.sourceId === row.id && retryFail?.action === a.action ? retryFail.commandId : undefined}
-				<form
-					method="POST"
-					action="?/source{qs ? `&${qs}` : ''}"
-					class="source-action"
-					class:destructive={a.action === 'block'}
-					use:enhance
-				>
-					<input type="hidden" name="sourceId" value={row.id} />
-					<input type="hidden" name="action" value={a.action} />
-					<input type="hidden" name="commandId" value={retryCommandId ?? a.commandId} />
-					{#if a.action === 'attribution-mode'}
-						<label class="visually-hidden" for="mode-{scope}{row.id}">Attribution mode</label>
-						<select id="mode-{scope}{row.id}" name="attributionMode">
-							<option value="single_publisher">single publisher</option>
-							<option value="aggregate">aggregate</option>
-						</select>
-					{/if}
-					{#if a.action !== 'pause' && a.action !== 'resume'}
-						<label class="visually-hidden" for="cat-{scope}{row.id}-{a.action}">Moderation category</label>
-						<select id="cat-{scope}{row.id}-{a.action}" name="category" required>
-							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-						</select>
-					{/if}
-					<label class="visually-hidden" for="note-{scope}{row.id}-{a.action}">Note (optional)</label>
-					<input id="note-{scope}{row.id}-{a.action}" name="note" placeholder="note (optional)" />
-					{#if consequence}
-						<details class="confirm-gate">
-							<summary><span class="action-name">{LABEL[a.action]}</span></summary>
-							<p class="consequence">{consequence}</p>
-							<button aria-label="Confirm {LABEL[a.action]} — {row.url}">Confirm {LABEL[a.action].toLowerCase()}</button>
-						</details>
-					{:else}
-						<span class="action-name">{LABEL[a.action]}</span>
-						<button aria-label="{LABEL[a.action]} — {row.url}">{LABEL[a.action]}</button>
-					{/if}
-				</form>
+<!-- Partial is load-bearing here: each of the three callers' result arrays
+     (bulkResults, bulkReapResults, bulkTombstoneResults) carries only ONE of
+     sourceId/tombstoneId, never both — a non-Partial Record requiring both
+     keys would fail to type-check against any of the three callers. -->
+{#snippet bulkOutcomes(results: (Partial<Record<'sourceId' | 'tombstoneId', string>> & { ok: boolean; error?: string })[] | undefined, idKey: 'sourceId' | 'tombstoneId', verb: string)}
+	{#if results?.length}
+		<ul class="bulk-outcomes">
+			{#each results as r (r[idKey])}
+				<li class:error={!r.ok}>{r[idKey]}: {r.ok ? verb : r.error}</li>
 			{/each}
-		</div>
-	</details>
+		</ul>
+	{:else if results}
+		<p class="notice" role="status">Nothing selected.</p>
+	{/if}
 {/snippet}
 
 {#if data.nextCursor}
@@ -536,13 +543,7 @@
 			</details>
 		{/if}
 	</form>
-	{#if retryFail?.bulkReapResults?.length}
-		<ul class="bulk-outcomes">
-			{#each retryFail.bulkReapResults as r (r.sourceId)}<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'reaped' : r.error}</li>{/each}
-		</ul>
-	{:else if retryFail?.bulkReapResults}
-		<p class="notice" role="status">Nothing selected.</p>
-	{/if}
+	{@render bulkOutcomes(retryFail?.bulkReapResults, 'sourceId', 'reaped')}
 	{#if data.orphanRows.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
@@ -634,13 +635,7 @@
 			</details>
 		{/if}
 	</form>
-	{#if retryFail?.bulkTombstoneResults?.length}
-		<ul class="bulk-outcomes">
-			{#each retryFail.bulkTombstoneResults as r (r.tombstoneId)}<li class:error={!r.ok}>{r.tombstoneId}: {r.ok ? 'unblocked' : r.error}</li>{/each}
-		</ul>
-	{:else if retryFail?.bulkTombstoneResults}
-		<p class="notice" role="status">Nothing selected.</p>
-	{/if}
+	{@render bulkOutcomes(retryFail?.bulkTombstoneResults, 'tombstoneId', 'unblocked')}
 	{#if data.tombstones.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
@@ -707,9 +702,11 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* A source row is a card, not a two-column row: its manage panel is a
-	   stack of moderation forms, so the shared .following-list li (flex row,
-	   space-between) is turned upright here only. */
+	/* A source row is a card, not a two-column row: its own form(s) below the
+	   row-head — the inline ?detail= panel, a member's attribution-mode form,
+	   or an orphan/tombstone row's reap/unblock form — stack vertically, so
+	   the shared .following-list li (flex row, space-between) is turned
+	   upright here only. */
 	.source-list li {
 		flex-direction: column;
 		align-items: stretch;
@@ -737,9 +734,12 @@
 	}
 
 	/* Checkbox + title/badges sit in one inline row (a .source-list li is
-	   otherwise a column — the manage panel etc. stack below this); without
-	   this wrapper the checkbox becomes its own full-width flex item, stacked
-	   above the row it selects with nothing visibly tying the two together. */
+	   otherwise a column — the row's own action form(s) stack below this: an
+	   ordinary row's inline ?detail= panel, a nested federation member's
+	   standalone attribution-mode form, or an orphan/tombstone row's single
+	   reap/unblock form); without this wrapper the checkbox becomes its own
+	   full-width flex item, stacked above the row it selects with nothing
+	   visibly tying the two together. */
 	.row-head {
 		display: flex;
 		align-items: flex-start;
@@ -816,12 +816,6 @@
 		color: var(--color-destructive);
 	}
 
-	.source-actions {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-md);
-	}
-
 	.source-action {
 		display: flex;
 		flex-direction: column;
@@ -831,12 +825,9 @@
 		border-top: 1px solid var(--color-border);
 	}
 
-	.source-action:first-child {
-		border-top: none;
-	}
-
-	/* Outline, not the accent fill: half a dozen moderation verbs stacked in
-	   one panel are all equally weighted, none of them a page CTA. Block reads
+	/* Outline, not the accent fill: .source-action now styles one single-verb
+	   form per row/section — an attribution-mode change, a purge, a reap, or a
+	   tombstone unblock — none of them a page CTA. Purge and a forced reap read
 	   destructive on top of that, the same outline-destructive idea as
 	   .unfollow-form elsewhere (admin/users' delete-account button, the
 	   following-page's Unfollow/Unsubscribe). */

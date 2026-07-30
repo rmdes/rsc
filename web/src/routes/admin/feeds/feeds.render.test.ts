@@ -7,13 +7,14 @@ vi.mock('$app/forms', () => ({ enhance: () => ({}) }))
 
 const { default: Page } = await import('./+page.svelte')
 
-// C1 (whole-branch review): a nested instance-member row rendered NO Manage
-// panel at all — only URL + badges + hint — so an admin had no way to
-// moderate an overridden/instance-governed member through the UI, even
-// though the member row's `actions` were already computed by the same
-// toRow() an ordinary row uses. This proves the member <li> now renders the
-// SAME Manage panel/forms, posting to the SAME `?/source` action with the
-// member's own id — not a read-only view.
+// C1 (whole-branch review): a nested instance-member row originally rendered
+// NO moderation surface at all — only URL + badges + hint — so an admin had
+// no way to moderate an overridden/instance-governed member through the UI,
+// even though the member row's `actions` were already computed by the same
+// toRow() an ordinary row uses. The per-row Manage panel that first closed
+// this gap is gone as of this task; the member row now reaches the same
+// actions via a checkbox into its group's shared bulk toolbar, plus its own
+// small attribution-mode form (see the tests below).
 function baseRow(over: Record<string, unknown> = {}) {
 	return {
 		id: 'inst1',
@@ -61,34 +62,7 @@ function memberRow(over: Record<string, unknown> = {}) {
 // throws on a plain object that never had the key.
 const NO_ORPHANS = { q: null, orphanRows: [], orphanCursor: null, orphanNextCursor: null }
 
-test('a member row nested under ?expand= renders a Manage panel whose quarantine form posts to ?/source with the MEMBER\'s own id', () => {
-	const data = {
-		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
-		expand: 'inst1',
-		expandedMembers: [memberRow()],
-		tombstones: [],
-		tombstoneConsequence: 'nothing restored',
-		categories: ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other'],
-		cursor: null,
-		nextCursor: null,
-		...NO_ORPHANS,
-		establishCommandId: 'establish-1'
-	}
-	const { body } = render(Page, { props: { data, form: null } } as never)
-
-	// The member got its OWN Manage summary — the exact gap C1 found.
-	expect(body).toContain(`Manage ${memberRow().url}`)
-
-	// Its quarantine form posts sourceId=mem1 (the member's id, not the
-	// instance's) to the shared ?/source action.
-	const memberFormChunk = body.slice(body.indexOf(`Manage ${memberRow().url}`))
-	expect(memberFormChunk).toContain('action="?/source')
-	expect(memberFormChunk).toContain('name="sourceId" value="mem1"')
-	expect(memberFormChunk).toContain('name="action" value="quarantine"')
-	expect(memberFormChunk).toContain('name="commandId" value="mem-cmd-1"')
-})
-
-test('acting on a member (?/source) carries the expand param forward so its instance stays expanded after the mutation', () => {
+test('a member row nested under ?expand= carries a checkbox wired to the federation group\'s shared panel form, with its own action:commandId pair', () => {
 	const data = {
 		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
 		expand: 'inst1',
@@ -102,46 +76,60 @@ test('acting on a member (?/source) carries the expand param forward so its inst
 		establishCommandId: 'establish-1'
 	}
 	const { body } = render(Page, { props: { data, form: null } } as never)
-	const memberFormChunk = body.slice(body.indexOf(`Manage ${memberRow().url}`))
+	// Scoped from the nested member <ul>'s own class, not memberRow().url: the
+	// checkbox is the FIRST child of the member <li> (same row-head convention
+	// as an ordinary row), so the url's own first occurrence — inside the
+	// checkbox's accessibility label ("Select {m.url}") — sits AFTER the
+	// checkbox already rendered, and a slice from there would miss it.
+	const memberChunk = body.slice(body.indexOf('member-list'))
+	expect(memberChunk).toContain('form="bulk-federation"')
+	expect(memberChunk).toContain('name="candidate"')
+	expect(memberChunk).toContain('value="mem1|quarantine:mem-cmd-1"')
+	// No more per-row Manage summary anywhere for this member.
+	expect(body).not.toContain(`Manage ${memberRow().url}`)
+})
+
+test('a member\'s attribution-mode form carries the expand param forward, so its instance stays expanded after the mutation', () => {
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [baseRow()] }],
+		expand: 'inst1',
+		expandedMembers: [memberRow()],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const memberChunk = body.slice(body.indexOf(memberRow().url))
 	// SSR HTML-escapes the attribute's literal `&` to `&amp;`.
-	expect(memberFormChunk).toContain('action="?/source&amp;expand=inst1"')
+	expect(memberChunk).toContain('action="?/source&amp;expand=inst1"')
+	expect(memberChunk).toContain('name="sourceId" value="mem1"')
+	expect(memberChunk).toContain('name="action" value="attribution-mode"')
 })
 
-test('a blocked member renders twice (flat + nested) with distinct DOM ids to avoid duplicate ids (N1 fix)', () => {
-	// A blocked member appears in both the flat 'blocked' group and nested
-	// under its instance's ?expand= expansion, both using the same Manage panel.
-	// The N1 fix adds a scope discriminator to ensure the two renders produce
-	// different ids.
-	const blockedMember = memberRow({
-		id: 'blocked-mem',
-		url: 'https://inst1.test/blocked/member.xml',
-		governance: 'blocked',
-		isInstanceMember: true,
-		group: 'blocked', // a blocked member renders in 'blocked', not 'member'
-		// A blocked source has actions: pause, unblock, attribution-mode
-		actions: [
-			{ action: 'pause', commandId: 'pause-1' },
-			{ action: 'unblock', commandId: 'unblock-1' },
-			{ action: 'attribution-mode', commandId: 'attr-1' }
-		]
-	})
-	// Create an instance that the blocked member belongs to.
-	const instance = baseRow({
-		id: 'inst1',
-		url: 'https://inst1.test/feed.xml',
-		governance: 'allowed',
-		federationStatus: 'approved'
-	})
-
+test('the union baseline includes an expanded federation-member\'s verbs for the federation group only, not for other groups', () => {
+	// memberRow()'s only action is `quarantine`; baseRow()'s is also `quarantine`
+	// by default, which wouldn't distinguish "member-aware narrowing" from
+	// "ordinary narrowing" — give the ordinary row an action the member
+	// DOESN'T have, so a union/narrowing bug (member's actions ignored, or
+	// members folded in for every group) is actually observable.
+	const ordinary = baseRow({ actions: [{ action: 'revoke', commandId: 'inst-cmd-1' }] })
+	const member = memberRow({ actions: [{ action: 'quarantine', commandId: 'mem-cmd-1' }] })
+	// A SECOND group, with no member of its own: a bulkActions that dropped
+	// the `group.key === 'federation'` guard (folding data.expandedMembers
+	// into every group instead) would still pass a fixture with only ONE
+	// group unnoticed — this one catches that regression too.
+	const otherGroupRow = baseRow({ id: 'u1', group: 'user', federationStatus: 'none', memberCounts: undefined, actions: [{ action: 'pause', commandId: 'u1-cmd' }] })
 	const data = {
-		// Flat render: blocked member in the 'blocked' group, instance in 'federation'.
 		groups: [
-			{ key: 'federation', title: 'Approved federation', blurb: '', rows: [instance] },
-			{ key: 'blocked', title: 'Blocked sources', blurb: '', rows: [blockedMember] }
+			{ key: 'federation', title: 'Approved federation', blurb: '', rows: [ordinary] },
+			{ key: 'user', title: 'Allowed user sources', blurb: '', rows: [otherGroupRow] }
 		],
-		expand: 'inst1', // instance expanded so its members show
-		// Nested render: same blocked member listed under the instance.
-		expandedMembers: [blockedMember],
+		expand: 'inst1',
+		expandedMembers: [member],
 		tombstones: [],
 		tombstoneConsequence: 'nothing restored',
 		categories: ['spam'],
@@ -150,41 +138,24 @@ test('a blocked member renders twice (flat + nested) with distinct DOM ids to av
 		...NO_ORPHANS,
 		establishCommandId: 'establish-1'
 	}
+	// Nothing checked in either group: the union baseline must include the
+	// member's own verb too (a no-JS admin who expands the instance needs to
+	// see it without checking anything first) — 'quarantine' from the member
+	// AND 'revoke' from the ordinary row, in the FEDERATION group's toolbar
+	// only.
 	const { body } = render(Page, { props: { data, form: null } } as never)
+	const fedStart = body.indexOf('id="bulk-federation"')
+	const fedChunk = body.slice(fedStart, body.indexOf('</form>', fedStart))
+	expect(fedChunk).toContain('value="quarantine"')
+	expect(fedChunk).toContain('value="revoke"')
 
-	// Both renders have the same row.id='blocked-mem', but the snippet uses a scope
-	// discriminator: flat render (no scope), nested render (scope='m-').
-	// They generate different id/for pairs to avoid HTML validity errors.
-
-	// Flat render ids (no scope): id="note-blocked-mem-pause", id="cat-blocked-mem-unblock", etc.
-	expect(body).toContain('id="note-blocked-mem-pause"')
-	expect(body).toContain('id="cat-blocked-mem-unblock"')
-	expect(body).toContain('id="note-blocked-mem-unblock"')
-	expect(body).toContain('id="mode-blocked-mem"')
-	expect(body).toContain('id="cat-blocked-mem-attribution-mode"')
-	expect(body).toContain('id="note-blocked-mem-attribution-mode"')
-
-	// Nested render ids (scope='m-'): id="note-m-blocked-mem-pause", id="cat-m-blocked-mem-unblock", etc.
-	expect(body).toContain('id="note-m-blocked-mem-pause"')
-	expect(body).toContain('id="cat-m-blocked-mem-unblock"')
-	expect(body).toContain('id="note-m-blocked-mem-unblock"')
-	expect(body).toContain('id="mode-m-blocked-mem"')
-	expect(body).toContain('id="cat-m-blocked-mem-attribution-mode"')
-	expect(body).toContain('id="note-m-blocked-mem-attribution-mode"')
-
-	// Verify corresponding <label for=> pairs exist for both flat and nested
-	const flatLabelFor = [
-		'for="note-blocked-mem-pause"',
-		'for="cat-blocked-mem-unblock"',
-		'for="note-blocked-mem-unblock"',
-		'for="mode-blocked-mem"',
-		'for="cat-blocked-mem-attribution-mode"',
-		'for="note-blocked-mem-attribution-mode"'
-	]
-	const nestedLabelFor = flatLabelFor.map(f => f.replace('-blocked-mem', '-m-blocked-mem'))
-
-	flatLabelFor.forEach((label) => expect(body).toContain(label))
-	nestedLabelFor.forEach((label) => expect(body).toContain(label))
+	// The 'user' group's own toolbar must NOT see the federation member's
+	// verb — proving the fold-in is scoped to group.key === 'federation'
+	// only, not applied to every group's bulkActions() call.
+	const userStart = body.indexOf('id="bulk-user"')
+	const userChunk = body.slice(userStart, body.indexOf('</form>', userStart))
+	expect(userChunk).toContain('value="pause"')
+	expect(userChunk).not.toContain('value="quarantine"')
 })
 
 // The source detail page (/admin/sources/[sourceId] — run history, item
@@ -215,36 +186,11 @@ test('every row, ordinary and nested member alike, links to its own source-detai
 	expect(body).toContain('href="/admin/sources/mem1"')
 })
 
-test('a block form with a consequence renders a collapsed <details> disclosure, not an always-visible confirm button', () => {
-	const row = baseRow({ actions: [{ action: 'block', commandId: 'block-cmd-1' }] })
-	const data = {
-		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [row] }],
-		expand: null,
-		expandedMembers: [],
-		tombstones: [],
-		tombstoneConsequence: 'nothing restored',
-		categories: ['spam'],
-		cursor: null,
-		nextCursor: null,
-		...NO_ORPHANS,
-		establishCommandId: 'establish-1'
-	}
-	const { body } = render(Page, { props: { data, form: null } } as never)
-	// The consequence text and the actual submit button live INSIDE a
-	// <details>, collapsed by default — not sitting next to an always-active
-	// submit button (the old double-confirm shape).
-	// The group's bulk toolbar now gates block behind a confirm-gate of its own
-	// ABOVE the row list, so with one block-capable row there are two
-	// `.confirm-gate`s in the document — the row's own is the LAST one.
-	const gateStart = body.lastIndexOf('class="confirm-gate')
-	const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
-	expect(detailsChunk).toContain('Blocking stops all acquisition')
-	expect(detailsChunk).toContain('Confirm block')
-	// The <summary> (always visible, collapsed state) carries the plain action label.
-	const summaryChunk = detailsChunk.slice(0, detailsChunk.indexOf('</summary>'))
-	expect(summaryChunk).toContain('>Block<')
-})
-
+// Once the Manage panel is gone, this assertion holds for a different
+// structural reason than its title suggests: the bulk toolbar only renders a
+// `.confirm-gate` for a verb present in CONSEQUENCE (block/unblock) — pause
+// has no CONSEQUENCE entry, so a group whose only offered action is pause
+// renders no gate at all. Same absence, different mechanism.
 test('an action with no stated consequence (pause) has no confirm-gate at all — direct submit', () => {
 	const row = baseRow({ actions: [{ action: 'pause', commandId: 'pause-cmd-1' }] })
 	const data = {
@@ -401,11 +347,16 @@ test('a refused purge from the inline panel pins the purge form\'s submitted com
 	expect(panel.slice(0, purgeStart)).toContain('name="commandId" value="refresh-1"')
 })
 
-test('another action\'s failure (a per-row block) does not poison the inline panel\'s refresh commandId', () => {
-	const form = { sourceId: 'inst1', action: 'block', commandId: 'block-cmd-1', error: 'invalid transition' }
+test('an attribution-mode failure does not poison the inline panel\'s refresh commandId', () => {
+	// This panel's own row ('inst1') failing its OWN attribution-mode submit
+	// legitimately pins that commandId into the attribution form — that's
+	// correct retry behavior, not poisoning. What must not happen is that
+	// pin leaking into the REFRESH form above it, which has its own id.
+	const form = { sourceId: 'inst1', action: 'attribution-mode', commandId: 'attr-cmd-1', error: 'invalid transition' }
 	const panel = detailPanelOf(render(Page, { props: { data: inlineDetailData(), form } } as never).body)
-	expect(panel).toContain('name="commandId" value="refresh-1"')
-	expect(panel).not.toContain('value="block-cmd-1"')
+	const attrStart = panel.indexOf('action="?/source')
+	expect(panel.slice(0, attrStart)).toContain('name="commandId" value="refresh-1"')
+	expect(panel.slice(0, attrStart)).not.toContain('attr-cmd-1')
 })
 
 test('no ?detail= (data.detail null) renders no inline detail panel for any row', () => {
@@ -676,11 +627,53 @@ test('the bulk toolbar offers a button per action present on EVERY checked row\'
 	expect(bulkFormChunk).not.toContain('value="attribution-mode"')
 })
 
-// The single-row path (Task 1) gates block/unblock behind reveal-to-confirm on
-// CONSEQUENCE[action]; the bulk toolbar has to gate the SAME two verbs the same
-// way, or blocking N sources in one click would be the one destructive path on
-// the page with no stated consequence (spec §10's invariant, which this
-// redesign's Non-goals promise to preserve).
+test('the shared action panel is collapsed by default (no `open` attribute) and its buttons still render inside it', () => {
+	const row = baseRow({ actions: [{ action: 'quarantine', commandId: 'inst-cmd-1' }] })
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: '', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const panelStart = body.indexOf('class="panel"', body.indexOf('action="?/bulkSource'))
+	const panelChunk = body.slice(panelStart, body.indexOf('</details>', panelStart) + '</details>'.length)
+	expect(panelChunk).not.toContain('open')
+	expect(panelChunk).toContain('>Actions<')
+	expect(panelChunk).toContain('value="quarantine"')
+})
+
+test('the group blurb stays visible outside the collapsed panel, with the selected count appended to it (not inside the panel)', () => {
+	const row = baseRow({ actions: [{ action: 'quarantine', commandId: 'inst-cmd-1' }] })
+	const data = {
+		groups: [{ key: 'federation', title: 'Approved federation', blurb: 'Federated with this instance.', rows: [row] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const formStart = body.indexOf('action="?/bulkSource')
+	const panelStart = body.indexOf('class="panel"', formStart)
+	const blurbChunk = body.slice(formStart, panelStart)
+	expect(blurbChunk).toContain('Federated with this instance.')
+})
+
+// The bulk toolbar gates block/unblock behind reveal-to-confirm, keyed on
+// CONSEQUENCE[action] — it's the only path that can act on either verb now,
+// so blocking N sources in one click can't be a destructive action with no
+// stated consequence (spec §10's invariant).
 test('the bulk toolbar gates block behind a confirm-gate stating its consequence, while the other verbs stay direct submits', () => {
 	const row = baseRow({
 		id: 'r1',
@@ -704,8 +697,9 @@ test('the bulk toolbar gates block behind a confirm-gate stating its consequence
 	expect(gate).toContain('Blocking stops all acquisition')
 	expect(gate).toContain('value="block"')
 	expect(gate).toContain('Confirm block')
-	// quarantine has no stated consequence, so it stays a bare button outside
-	// any gate — same split the per-row managePanel makes.
+	// quarantine has no stated consequence (it's not a CONSEQUENCE key), so it
+	// stays a bare button outside any gate; block, which IS a CONSEQUENCE key,
+	// is the only one gated.
 	expect(bulkFormChunk.slice(0, gateStart)).toContain('value="quarantine"')
 	expect(gate).not.toContain('value="quarantine"')
 })
