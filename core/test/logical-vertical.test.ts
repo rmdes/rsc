@@ -94,8 +94,8 @@ function seedJob(raw: Raw, input: { sourceId: string; deliveryKey: { kind: strin
 
 const ANON = { localAccountId: null, activeSourceIds: [] as string[] }
 const stubEngine: AcquisitionEngine = { acquireSource: async () => ({ kind: 'unavailable', reason: 'unscheduled' }), inFlight: () => false }
-const mkRuntime = (deps: Awaited<ReturnType<typeof fresh>>, acquisition: AcquisitionEngine = stubEngine, order?: string[]): LogicalRuntime =>
-  createLogicalRuntime({ db: deps.db, store: deps.store, acquisition, config: TEST_CONFIG, now: () => NOW, ...(order ? { trace: (p: string) => order.push(p) } : {}) })
+const mkRuntime = (deps: Awaited<ReturnType<typeof fresh>>, acquisition: AcquisitionEngine = stubEngine, order?: string[], getSetting?: (key: string) => Promise<string | undefined>): LogicalRuntime =>
+  createLogicalRuntime({ db: deps.db, store: deps.store, acquisition, config: TEST_CONFIG, now: () => NOW, ...(order ? { trace: (p: string) => order.push(p) } : {}), ...(getSetting ? { getSetting } : {}) })
 
 // ============================================================================
 // Cross-model isolation — v2 DISABLED (§7.4): v2 tables inert, legacy byte-identical
@@ -210,6 +210,36 @@ test('crash recovery: the startup drain picks up a pending reconciliation job a 
   const runtime = mkRuntime(deps, engine); await runtime.ready; await runtime.stop()
   expect((deps.raw.prepare(`SELECT status FROM reconciliation_jobs_v2`).get() as { status: string }).status).toBe('reconciled')
   expect(count(deps.raw, 'logical_items_v2', "WHERE origin = 'remote'")).toBe(1)
+})
+
+test('acquireSource (through the runtime wrapper) trims a source to its configured cap once the poll drains', async () => {
+  const deps = await fresh()
+  await deps.repo.setSetting('max_remote_items_per_source', '1')
+  seedSource(deps.raw, 's1', 'https://feed.test/s1')
+  // one existing remote item for s1, committed a day before NOW -- genuinely
+  // earlier (not just NOW itself) so its immutable timeline_sort_at sorts
+  // strictly older than the item the poll below acquires at NOW. mkRuntime
+  // fixes the runtime's own clock to NOW (below), so the poll's engine is ALSO
+  // built with now: () => NOW: drainReconciliation only claims a job whose
+  // next_attempt_at <= the draining clock, and this job's next_attempt_at is
+  // stamped from its own committedAt -- LATER would never be claimed by a
+  // runtime whose clock never advances past NOW.
+  seedJob(deps.raw, { sourceId: 's1', deliveryKey: { kind: 'link', key: 'https://blog.test/existing' }, committedAt: '2026-07-23T00:00:00.000Z', material: { permalink: 'https://blog.test/existing' } })
+  drainReconciliation({ store: deps.store, now: () => NOW })
+  expect(count(deps.raw, 'logical_items_v2', "WHERE origin = 'remote'")).toBe(1)
+
+  const engine = createAcquisition({ db: deps.db, fetchFn: fakeFetch({ 'https://feed.test/s1': () => ok(RSS(linkItem('https://blog.test/new'))) }), lookupFn: publicLookup, now: () => NOW })
+  const runtime = mkRuntime(deps, engine, undefined, (key) => deps.repo.getSetting(key))
+  await runtime.ready
+  await runtime.acquisition.acquireSource('s1', { kind: 'scheduled' }, undefined)
+  await runtime.stop()
+
+  // A second remote item just arrived (sorting newer than the existing one), but
+  // the cap is 1 -- the older one is trimmed once the poll's drain completes.
+  expect(count(deps.raw, 'logical_items_v2', "WHERE origin = 'remote'")).toBe(1)
+  const remaining = deps.raw.prepare(`SELECT selected_delivery_id FROM logical_items_v2 WHERE origin = 'remote'`).get() as { selected_delivery_id: string }
+  const survivingKey = (deps.raw.prepare(`SELECT key FROM deliveries_v2 WHERE id = ?`).get(remaining.selected_delivery_id) as { key: string }).key
+  expect(survivingKey).toBe('https://blog.test/new')
 })
 
 test('crash recovery: a crashed `processing` run is healed to terminal; the in-flight flag clears with the process', async () => {
