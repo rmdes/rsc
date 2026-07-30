@@ -829,6 +829,23 @@ test('the tombstone bulk-unblock toolbar (category select + confirm-gate) is alw
 	expect(bulkFormChunk).not.toContain('has-selection')
 })
 
+// All four bulk actions answer an ineffective submit with an EMPTY results
+// array (nothing checked, or nothing checked offered the clicked verb). The
+// outcome blocks gate on `?.length`, so that used to render nothing at all —
+// with JS off there is no live "N selected" count either, so the page came back
+// looking identical and silent. An empty array is a distinct outcome and says so.
+test('an empty bulkResults array (nothing effectively selected) reports "Nothing selected." instead of rendering nothing', () => {
+	const { body } = render(Page, { props: { data: bulkData(), form: { bulkResults: [], bulkAction: 'quarantine' } } } as never)
+	expect(body).toContain('Nothing selected.')
+})
+
+test('an empty bulkReapResults / bulkTombstoneResults array reports it too', () => {
+	const reap = render(Page, { props: { data: orphanData(), form: { bulkReapResults: [] } } } as never).body
+	expect(reap).toContain('Nothing selected.')
+	const tomb = render(Page, { props: { data: orphanData(), form: { bulkTombstoneResults: [] } } } as never).body
+	expect(tomb).toContain('Nothing selected.')
+})
+
 test('bulkReapResults/bulkTombstoneResults each render a per-row outcome line naming failures', () => {
 	const form = {
 		bulkReapResults: [{ sourceId: 'orph1', ok: false, error: 'has_subscribers' }, { sourceId: 'orph2', ok: true }],

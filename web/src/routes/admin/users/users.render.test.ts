@@ -48,6 +48,14 @@ test('local user rows each have a checkbox and the page renders an always-presen
 	expect(body).toContain('type="checkbox"')
 })
 
+// bulkDelete answers a submit with nothing checked with an EMPTY array; the
+// outcome list gates on `?.length`, so that rendered nothing at all — and with
+// JS off there is no live "N selected" count to contradict it either.
+test('an empty bulkDeleteResults array reports "Nothing selected." instead of rendering nothing', () => {
+	const { body } = render(Page, { props: { data: baseData(), form: { bulkDeleteResults: [] } } } as never)
+	expect(body).toContain('Nothing selected.')
+})
+
 test('the bulk-delete toolbar (button + confirm-gate) is always in the server output, not gated behind a JS-only selection count', () => {
 	const { body } = render(Page, { props: { data: baseData(), form: null } } as never)
 	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkDelete'), body.indexOf('</form>', body.indexOf('action="?/bulkDelete')))

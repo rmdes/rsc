@@ -123,6 +123,11 @@
 		<ul class="bulk-outcomes">
 			{#each bulkForm.bulkDeleteResults as r (r.handle)}<li class:error={!r.ok}>@{r.handle}: {r.ok ? 'deleted' : r.error}</li>{/each}
 		</ul>
+	{:else if bulkForm?.bulkDeleteResults}
+		<!-- An EMPTY array is a real outcome (nothing was checked); rendering
+		     nothing for it left a no-JS submit looking silent, since there's no
+		     live "N selected" count with scripts off either. -->
+		<p class="notice" role="status">Nothing selected.</p>
 	{/if}
 {/if}
 

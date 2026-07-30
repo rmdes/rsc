@@ -222,6 +222,12 @@
 			<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'done' : r.error}</li>
 		{/each}
 	</ul>
+{:else if retryFail?.bulkResults}
+	<!-- An EMPTY results array is a real outcome: nothing was checked, or no
+	     checked row offered the clicked verb. Rendering nothing for it left a
+	     no-JS submit (where there's no live "N selected" count either) looking
+	     like an identical, silent page. -->
+	<p class="notice" role="status">Nothing selected.</p>
 {/if}
 
 <!-- No-JS search: a plain GET submit replaces the whole querystring with
@@ -524,6 +530,8 @@
 		<ul class="bulk-outcomes">
 			{#each retryFail.bulkReapResults as r (r.sourceId)}<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'reaped' : r.error}</li>{/each}
 		</ul>
+	{:else if retryFail?.bulkReapResults}
+		<p class="notice" role="status">Nothing selected.</p>
 	{/if}
 	{#if data.orphanRows.length === 0}
 		<p class="subnav">None.</p>
@@ -618,6 +626,8 @@
 		<ul class="bulk-outcomes">
 			{#each retryFail.bulkTombstoneResults as r (r.tombstoneId)}<li class:error={!r.ok}>{r.tombstoneId}: {r.ok ? 'unblocked' : r.error}</li>{/each}
 		</ul>
+	{:else if retryFail?.bulkTombstoneResults}
+		<p class="notice" role="status">Nothing selected.</p>
 	{/if}
 	{#if data.tombstones.length === 0}
 		<p class="subnav">None.</p>
