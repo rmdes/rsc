@@ -698,9 +698,11 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* A source row is a card, not a two-column row: its manage panel is a
-	   stack of moderation forms, so the shared .following-list li (flex row,
-	   space-between) is turned upright here only. */
+	/* A source row is a card, not a two-column row: its own form(s) below the
+	   row-head — the inline ?detail= panel, a member's attribution-mode form,
+	   or an orphan/tombstone row's reap/unblock form — stack vertically, so
+	   the shared .following-list li (flex row, space-between) is turned
+	   upright here only. */
 	.source-list li {
 		flex-direction: column;
 		align-items: stretch;

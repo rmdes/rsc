@@ -649,8 +649,9 @@ test('the bulk toolbar gates block behind a confirm-gate stating its consequence
 	expect(gate).toContain('Blocking stops all acquisition')
 	expect(gate).toContain('value="block"')
 	expect(gate).toContain('Confirm block')
-	// quarantine has no stated consequence, so it stays a bare button outside
-	// any gate — same split the per-row managePanel makes.
+	// quarantine has no stated consequence (it's not a CONSEQUENCE key), so it
+	// stays a bare button outside any gate; block, which IS a CONSEQUENCE key,
+	// is the only one gated.
 	expect(bulkFormChunk.slice(0, gateStart)).toContain('value="quarantine"')
 	expect(gate).not.toContain('value="quarantine"')
 })
