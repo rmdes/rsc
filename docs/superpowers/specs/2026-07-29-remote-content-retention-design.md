@@ -1,9 +1,11 @@
 # Remote content retention — design
 
-**Status:** rev 3 (2026-07-30) — rev 2 folded a `ponytail:ponytail-audit`
-pass; rev 3 fixes a real sequencing bug in rev 2's trim algorithm, found
-by re-reading `removeSourceEvidence` a second time while drafting the
-implementation plan. Full history at the bottom.
+**Status:** rev 4 (2026-07-30) — rev 2 folded a `ponytail:ponytail-audit`
+pass; rev 3 fixed a sequencing bug in the trim algorithm; rev 4 replaces
+the entire Hook Point section — the original design integrated with the
+wrong subsystem (`commitAcquisition` never creates `logical_items_v2`
+rows; reconciliation is asynchronous and job-based). Full history at the
+bottom.
 
 ## Motivation
 
@@ -171,48 +173,83 @@ today is still old regardless of when this instance happened to find it.
 This directly targets the concentration pattern found in production: the
 32 archive-heavy sources are exactly the ones this will visibly shrink.
 
-### Hook point (`core/src/logical/acquisition.ts`, `commitAcquisition`)
+### Hook point (`core/src/logical/runtime.ts`, `createLogicalRuntime`)
 
-At the end of `commitAcquisition`, after this poll's observations are
-reconciled into items (same write transaction — trimming is atomic with
-the ingest that may have just pushed the source over its cap): if either
-setting is non-zero, call `trimSourceToCap` scoped to `input.sourceId`.
+**Rev 4 — replaces rev 1-3's entire hook-point design.** `commitAcquisition`
+(`acquisition.ts`) only ever writes `deliveries_v2`/
+`observation_versions_v2`/a `'pending'` `reconciliation_jobs_v2` row — it
+never creates or updates a `logical_items_v2` row. Reconciliation is a
+separate, asynchronous, job-based drain (`reconcile.ts`'s
+`claimReconciliation`/`reconcileClaim`, orchestrated by
+`drainReconciliation`), processing pending jobs in global
+`(nextAttemptAt ASC, jobId ASC)` order across *every* source's backlog —
+not grouped by poll or by source. A rev-1/2/3 hook inside
+`commitAcquisition` would check a count that doesn't yet reflect the
+poll that just ran.
 
-**Settings must be read live, not baked into `AcquisitionDeps` at boot.**
-`createAcquisition(deps)` is called once at server startup — `deps`
-values captured there (like `pollSeconds`) are effectively static for the
-process's lifetime. But `/admin/settings` can change these two values at
-any time, and `service.getSetting` is `async`, while `commitAcquisition`
-runs synchronously inside a `db.write((tx) => ...)` callback (settings
-can't be fetched mid-transaction). So the read has to happen in
-`commitFromBody` (the async function that calls `db.write(...)`, already
-in `createAcquisition`'s closure), *before* opening the transaction, and
-the resolved numbers get passed into `CommitAcquisitionInput` as plain
-values for `commitAcquisition` to act on. Concretely: `commitFromBody`
-gains two `await deps.getSetting(...)` calls (parsed to numbers, `0` on
-missing/unset) ahead of its `db.write(...)` call. Rev 2 (ponytail-audit
-shrink, accepted): `CommitAcquisitionInput`
-(`core/src/logical/types.ts:445-460`) gains ONE new field, not two —
-`retentionCap: { maxCount: number; maxAgeDays: number } | null` — that
-`commitFromBody` populates from the two resolved settings values (`null`
-when both are `0`, so `commitAcquisition` has a single check instead of
-two), and `commitAcquisition` reads at the point it calls
-`trimSourceToCap`.
+The right integration point already exists and needs no new plumbing:
+`createLogicalRuntime` (`core/src/logical/runtime.ts:338-410`) wraps the
+raw acquisition engine specifically so *every committed acquisition is
+followed by a reconciliation drain*:
 
-`AcquisitionDeps` (`core/src/logical/acquisition.ts:640-646`, currently
-`{ db, fetchFn?, lookupFn?, deadlineMs?, now? }`) has no settings access
-today — add `getSetting?: (key: string) => Promise<string | undefined>`,
-**optional**, matching every other field on this interface. 46 test files
-construct `createAcquisition` directly (`grep -rl "createAcquisition("
-core/test/ | wc -l`) — an optional field with an inert default (`const
-getSetting = deps.getSetting ?? (async () => undefined)`, i.e. unlimited)
-means none of those 46 need touching; only the one real production call
-site, `core/src/server.ts:37` (`createAcquisition({ db })`), needs
-widening — `repo` (which already has `getSetting`) is constructed at
-line 27, before this call, so the wiring is `createAcquisition({ db,
-getSetting: (key) => repo.getSetting(key) })`. A handful of NEW tests
-(§Testing below) will pass `getSetting` explicitly to exercise
-retention; the other 46 are unaffected.
+```ts
+const wrapped: AcquisitionEngine = {
+  inFlight: (id) => acquisition.inFlight(id),
+  async acquireSource(id, reason, signal) {
+    const r = await acquisition.acquireSource(id, reason, signal)
+    if (!('kind' in r)) drainSync()
+    return r
+  },
+}
+```
+
+`drainSync()` calls `drainReconciliation({ store, now })`, which drains
+the *entire* eligible job backlog (including whatever job this specific
+acquisition just queued) before returning — so immediately after
+`drainSync()`, source `id`'s newly-arrived items are guaranteed to be
+reflected in `logical_items_v2` (barring an unrelated retry/backoff on
+that job, in which case there's nothing new to trim yet anyway). This
+function is already `async`, so reading the two settings live needs no
+special-casing at all — unlike `commitAcquisition`, which runs
+synchronously inside a `db.write` callback and would have needed the
+settings pre-fetched and threaded through `CommitAcquisitionInput`
+(rev 1-3's now-discarded approach).
+
+```ts
+async acquireSource(id, reason, signal) {
+  const r = await acquisition.acquireSource(id, reason, signal)
+  if (!('kind' in r)) {
+    drainSync()
+    const getSetting = input.getSetting ?? (async () => undefined)
+    const maxCount = Number((await getSetting('max_remote_items_per_source')) ?? '0')
+    const maxAgeDays = Number((await getSetting('max_remote_item_age_days')) ?? '0')
+    if (maxCount > 0 || maxAgeDays > 0) {
+      db.write((tx) => trimSourceToCap(tx, { sourceId: id, maxCount, maxAgeDays, now: now() }))
+    }
+  }
+  return r
+},
+```
+
+`createLogicalRuntime`'s inline input type (`core/src/logical/runtime.ts:338-352`,
+currently `{ db, store, acquisition, config, now?, notify?, trace?,
+fetchFn?, lookupFn? }`) gains `getSetting?: (key: string) =>
+Promise<string | undefined>` — **optional**, matching every other field.
+5 test files construct `createLogicalRuntime` directly (`grep -rl
+"createLogicalRuntime(" core/test/ | wc -l`) — the optional field with
+an inert default means none need touching; only the one real production
+call site, `core/src/server.ts` (`createLogicalRuntime({ db, store:
+logicalStore, acquisition, config, notify: ... })`), needs widening —
+`repo` is already constructed earlier in that file, so the wiring is
+`getSetting: (key) => repo.getSetting(key)`. This entirely replaces the
+need for `CommitAcquisitionInput`/`AcquisitionDeps` changes — neither
+`acquisition.ts` nor `types.ts` needs to change for this feature at all.
+
+The trim runs in its own `db.write` transaction, separate from
+`drainSync()`'s reconciliation transactions and from the original
+`acquireSource` commit — correct because it only needs reconciliation to
+have already happened (guaranteed by running after `drainSync()`), not
+to share a transaction with it.
 
 ### Admin UI (`web/src/routes/admin/settings/`)
 
@@ -246,8 +283,10 @@ trim needs that a whole-source purge doesn't have to distinguish.
   path, local items never selected regardless of settings, and confirming
   the source-scoped tables (`acquisition_runs_v2`, `source_health_v2`,
   etc.) and the `remote_sources_v2` row are untouched after a trim.
-- `commitAcquisition` integration test: a poll that pushes a source over
-  its configured cap trims within the same commit.
+- `createLogicalRuntime` integration test: a full `acquireSource` call
+  that pushes a source over its configured cap trims by the time the
+  call resolves (asserted after `await wrapped.acquireSource(...)`
+  returns, against `repo`/`store` state directly).
 - Admin settings round-trip test mirroring the existing
   `maxSubsPerUser` one.
 
@@ -311,5 +350,28 @@ hasDelivery-reselect-or-dispose sequence `removeSourceEvidence` uses,
 in the same order. Added a test case for the specific scenario a naive
 implementation gets wrong (an item with a surviving delivery from a
 different source). No other section changed.
+
+**Rev 4 (2026-07-30).** Also found while drafting the implementation
+plan, and more significant than rev 3: rev 1-3's Hook Point section
+integrated with the wrong subsystem entirely. Verified by reading
+`acquisition.ts`'s `commitAcquisition` (writes only `deliveries_v2`/
+`observation_versions_v2`/a pending job row, never `logical_items_v2`),
+then `reconcile.ts`'s `claimReconciliation`/`drainReconciliation`
+(reconciliation is async, job-based, and processes every source's
+backlog in one global order, not scoped to a single poll), then
+`runtime.ts` (which already wraps every `acquireSource` call with a
+`drainSync()` right after — the actual "this source's new items just
+got reconciled" moment). Replaced the whole Hook Point section: the trim
+now hooks into `createLogicalRuntime`'s wrapped `acquireSource`, after
+`drainSync()`, instead of `commitAcquisition`. This is strictly simpler
+than rev 1-3's version, not just more correct: because
+`wrapped.acquireSource` is already `async`, settings can be read live
+with a plain `await` — no need for the `CommitAcquisitionInput`/
+`AcquisitionDeps` threading rev 1-3 built to work around
+`commitAcquisition`'s sync/transaction constraints. **Rev 2's finding 3
+(the `retentionCap` field collapse) is superseded, not just
+inapplicable** — `CommitAcquisitionInput` isn't touched by this feature
+at all anymore, so there's no field to collapse. `acquisition.ts` and
+`types.ts` need no changes for this feature.
 
 *developed with the help of AI tools*
