@@ -831,6 +831,27 @@ test('tombstone rows each have a checkbox and the section renders an always-pres
 	expect(tombstoneSection).toContain('t1:tomb-cmd-1')
 })
 
+// Every other mutating form on this page appends otherParams() so a no-JS
+// submit lands back on the same view; the bulk-tombstone form was the one that
+// dropped it, losing cursor/q/orphanCursor/expand/detail on its reload.
+test('the bulk-tombstone form carries the other view params forward, same as its sibling bulk forms and the per-row unblock form', () => {
+	const data = {
+		groups: [],
+		expand: 'inst1',
+		expandedMembers: [],
+		tombstones: [{ id: 't1', canonicalUrl: 'https://gone.test/t1.xml', action: 'block', category: 'spam', note: '', createdAt: '2026-07-01T00:00:00Z', aliases: [], commandId: 'tomb-cmd-1' }],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: 'page2',
+		nextCursor: null,
+		...NO_ORPHANS,
+		q: 'example.test',
+		establishCommandId: 'establish-1'
+	}
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('action="?/bulkTombstone&amp;cursor=page2&amp;q=example.test&amp;expand=inst1"')
+})
+
 test('the tombstone bulk-unblock toolbar (category select + confirm-gate) is always in the server output, not gated behind a JS-only selection count', () => {
 	const data = {
 		groups: [],

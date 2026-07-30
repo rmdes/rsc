@@ -605,7 +605,7 @@
 	<form
 		id="bulk-tombstones"
 		method="POST"
-		action="?/bulkTombstone"
+		action="?/bulkTombstone{otherParams() ? `&${otherParams()}` : ''}"
 		class="bulk-bar"
 		use:enhance={() => {
 			selected = { ...selected, tombstones: new Set() }
