@@ -180,6 +180,24 @@
 	.confirm-gate summary::-webkit-details-marker {
 		display: none;
 	}
+
+	/* The native marker is removed just above, so the summary needs an
+	   affordance of its own — without one every destructive action in /admin
+	   reads as static bold text with no hint that it expands. A CSS-only glyph
+	   that turns when open; no icon font, no asset. Duplicated verbatim in the
+	   three admin pages that own .confirm-gate, same as .consequence /
+	   .action-name already are. */
+	.confirm-gate summary::before {
+		content: '▸';
+		display: inline-block;
+		margin-right: var(--space-xs);
+		color: var(--color-secondary);
+		transition: transform 0.15s ease;
+	}
+
+	.confirm-gate[open] summary::before {
+		transform: rotate(90deg);
+	}
 	.confirm-gate[open] summary .action-name {
 		color: var(--color-secondary);
 	}
