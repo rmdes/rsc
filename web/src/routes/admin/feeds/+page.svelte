@@ -268,9 +268,11 @@
 			}}
 		>
 			<p class="subnav bulk-blurb" class:has-selection={(selected[group.key]?.size ?? 0) > 0}>
-				<span class="bulk-blurb-text">{group.blurb}</span>
+				<span class="bulk-blurb-text">
+					{group.blurb}
+					{#if (selected[group.key]?.size ?? 0) > 0}<span class="selected-count"> · {selected[group.key]?.size} selected</span>{/if}
+				</span>
 				<span class="bulk-tools">
-					{#if (selected[group.key]?.size ?? 0) > 0}<span>{selected[group.key]?.size} selected ·</span>{/if}
 					{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
 						<button name="action" value={actionName}>{LABEL[actionName]}</button>
 					{/each}
@@ -304,46 +306,48 @@
 				{#each group.rows as row (row.id)}
 					{@const expanded = data.expand === row.id}
 					<li>
-						<label class="row-select">
-							<!-- Self-describing value: the row's id plus every action:commandId
-							     pair it offers. A checked box alone carries everything
-							     bulkSource needs, so a checkbox-then-submit works with zero JS
-							     — and only CHECKED boxes are in the submitted FormData, which
-							     is what keeps an unselected row out of the batch. -->
-							<input
-								type="checkbox"
-								name="candidate"
-								value="{row.id}|{row.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
-								form="bulk-{group.key}"
-								checked={selected[group.key]?.has(row.id) ?? false}
-								onchange={() => toggleSelected(group.key, row.id)}
-							/>
-							<span class="visually-hidden">Select {row.url}</span>
-						</label>
-						<div class="feed-info">
-							<strong class="feed-url">{row.url}</strong>
-							<span>
-								<span class="badge-kind">{row.governance}</span>
-								<span class="badge-kind">{row.operation}</span>
-								{#if row.federationStatus !== 'none'}<span class="badge-kind on">federation {row.federationStatus}</span>{/if}
-								<span class="badge-kind">{row.attributionMode.replace('_', ' ')}</span>
-								{#if row.overridden}<span class="badge-kind on">overridden</span>{/if}
-							</span>
-							<!-- A moderated member no longer tracks its instance's governance
-							     (the overridden bit, Task 1); this hint marks WHERE a flatly-shown
-							     row came from — verification, not subscribe/OPML/admin — a nested
-							     member never reaches here at all (Task 6 exclusion). -->
-							{#if row.viaVerification}<p class="subnav hint">via verification</p>{/if}
-							{#if row.addedBy.length}
-								{@const extra = Math.max(0, row.subscriberTotal - row.addedBy.length)}
-								<p class="subnav hint">Added by {row.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
-							{/if}
-							<p class="subnav">
-								<a href="/admin/feeds?{[detail === row.id ? '' : `detail=${encodeURIComponent(row.id)}`, otherParams(new Set(['detail']))].filter(Boolean).join('&')}">
-									{detail === row.id ? 'Hide details' : 'Details (run history, items, purge)'}
-								</a>
-								<a href="/admin/sources/{encodeURIComponent(row.id)}/runs">Run history</a>
-							</p>
+						<div class="row-head">
+							<label class="row-select">
+								<!-- Self-describing value: the row's id plus every action:commandId
+								     pair it offers. A checked box alone carries everything
+								     bulkSource needs, so a checkbox-then-submit works with zero JS
+								     — and only CHECKED boxes are in the submitted FormData, which
+								     is what keeps an unselected row out of the batch. -->
+								<input
+									type="checkbox"
+									name="candidate"
+									value="{row.id}|{row.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+									form="bulk-{group.key}"
+									checked={selected[group.key]?.has(row.id) ?? false}
+									onchange={() => toggleSelected(group.key, row.id)}
+								/>
+								<span class="visually-hidden">Select {row.url}</span>
+							</label>
+							<div class="feed-info">
+								<strong class="feed-url">{row.url}</strong>
+								<span>
+									<span class="badge-kind">{row.governance}</span>
+									<span class="badge-kind">{row.operation}</span>
+									{#if row.federationStatus !== 'none'}<span class="badge-kind on">federation {row.federationStatus}</span>{/if}
+									<span class="badge-kind">{row.attributionMode.replace('_', ' ')}</span>
+									{#if row.overridden}<span class="badge-kind on">overridden</span>{/if}
+								</span>
+								<!-- A moderated member no longer tracks its instance's governance
+								     (the overridden bit, Task 1); this hint marks WHERE a flatly-shown
+								     row came from — verification, not subscribe/OPML/admin — a nested
+								     member never reaches here at all (Task 6 exclusion). -->
+								{#if row.viaVerification}<p class="subnav hint">via verification</p>{/if}
+								{#if row.addedBy.length}
+									{@const extra = Math.max(0, row.subscriberTotal - row.addedBy.length)}
+									<p class="subnav hint">Added by {row.addedBy.map((a) => `@${a.handle}`).join(', ')}{extra > 0 ? ` (+${extra})` : ''}</p>
+								{/if}
+								<p class="subnav">
+									<a href="/admin/feeds?{[detail === row.id ? '' : `detail=${encodeURIComponent(row.id)}`, otherParams(new Set(['detail']))].filter(Boolean).join('&')}">
+										{detail === row.id ? 'Hide details' : 'Details (run history, items, purge)'}
+									</a>
+									<a href="/admin/sources/{encodeURIComponent(row.id)}/runs">Run history</a>
+								</p>
+							</div>
 						</div>
 						{#if row.group === 'federation' && row.memberCounts}
 							{@const qs = [expanded ? '' : `expand=${row.id}`, otherParams(new Set(['expand']))].filter(Boolean).join('&')}
@@ -548,20 +552,22 @@
 				{@const needsForce = row.retention !== null && row.retention !== 'reapable'}
 				{@const retryCommandId = retryFail?.sourceId === row.id && 'force' in retryFail ? retryFail.commandId : undefined}
 				<li>
-					<label class="row-select">
-						<input
-							type="checkbox"
-							name="candidate"
-							value="{row.id}:{row.commandId}:{needsForce}"
-							form="bulk-orphans"
-							checked={selected.orphans?.has(row.id) ?? false}
-							onchange={() => toggleSelected('orphans', row.id)}
-						/>
-						<span class="visually-hidden">Select {row.url}</span>
-					</label>
-					<div class="feed-info">
-						<strong class="feed-url">{row.url}</strong>
-						<span class="badge-kind">{RETENTION_LABEL[row.retention ?? 'reapable']}</span>
+					<div class="row-head">
+						<label class="row-select">
+							<input
+								type="checkbox"
+								name="candidate"
+								value="{row.id}:{row.commandId}:{needsForce}"
+								form="bulk-orphans"
+								checked={selected.orphans?.has(row.id) ?? false}
+								onchange={() => toggleSelected('orphans', row.id)}
+							/>
+							<span class="visually-hidden">Select {row.url}</span>
+						</label>
+						<div class="feed-info">
+							<strong class="feed-url">{row.url}</strong>
+							<span class="badge-kind">{RETENTION_LABEL[row.retention ?? 'reapable']}</span>
+						</div>
 					</div>
 					<form method="POST" action="?/reap{orphanQs ? `&${orphanQs}` : ''}" class="source-action" class:destructive={needsForce} use:enhance>
 						<input type="hidden" name="sourceId" value={row.id} />
@@ -643,26 +649,28 @@
 				{@const retryCommandId = retryFail?.tombstoneId === t.id ? retryFail.commandId : undefined}
 				{@const tombstoneQs = otherParams()}
 				<li>
-					<label class="row-select">
-						<input
-							type="checkbox"
-							name="candidate"
-							value="{t.id}:{t.commandId}"
-							form="bulk-tombstones"
-							checked={selected.tombstones?.has(t.id) ?? false}
-							onchange={() => toggleSelected('tombstones', t.id)}
-						/>
-						<span class="visually-hidden">Select {t.canonicalUrl}</span>
-					</label>
-					<div class="feed-info">
-						<strong class="feed-url">{t.canonicalUrl}</strong>
-						<span>
-							<span class="badge-kind">{t.action}</span>
-							<span class="badge-kind">{t.category.replace(/_/g, ' ')}</span>
-							<span class="subnav">{t.createdAt}</span>
-						</span>
-						{#if t.aliases.length}<span class="subnav feed-url">aliases: {t.aliases.join(', ')}</span>{/if}
-						{#if t.note}<span class="subnav">{t.note}</span>{/if}
+					<div class="row-head">
+						<label class="row-select">
+							<input
+								type="checkbox"
+								name="candidate"
+								value="{t.id}:{t.commandId}"
+								form="bulk-tombstones"
+								checked={selected.tombstones?.has(t.id) ?? false}
+								onchange={() => toggleSelected('tombstones', t.id)}
+							/>
+							<span class="visually-hidden">Select {t.canonicalUrl}</span>
+						</label>
+						<div class="feed-info">
+							<strong class="feed-url">{t.canonicalUrl}</strong>
+							<span>
+								<span class="badge-kind">{t.action}</span>
+								<span class="badge-kind">{t.category.replace(/_/g, ' ')}</span>
+								<span class="subnav">{t.createdAt}</span>
+							</span>
+							{#if t.aliases.length}<span class="subnav feed-url">aliases: {t.aliases.join(', ')}</span>{/if}
+							{#if t.note}<span class="subnav">{t.note}</span>{/if}
+						</div>
 					</div>
 					<form method="POST" action="?/tombstone{tombstoneQs ? `&${tombstoneQs}` : ''}" class="source-action" use:enhance>
 						<input type="hidden" name="tombstoneId" value={t.id} />
@@ -728,12 +736,21 @@
 		padding-left: var(--space-sm);
 	}
 
-	/* The row's bulk-select toggle sits at the top of the row card (a
-	   .source-list li is a stack, not a two-column row); its label text is
-	   hidden because the URL directly below already names the row. */
+	/* Checkbox + title/badges sit in one inline row (a .source-list li is
+	   otherwise a column — the manage panel etc. stack below this); without
+	   this wrapper the checkbox becomes its own full-width flex item, stacked
+	   above the row it selects with nothing visibly tying the two together. */
+	.row-head {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-sm);
+	}
+
+	/* Its label text is hidden because the URL right beside it already names
+	   the row; the padding-top nudges the box to the cap-height of that text
+	   rather than the flex row's own top edge. */
 	.row-select {
-		align-self: flex-start;
-		padding: 2px 0;
+		padding: 2px 0 0;
 		cursor: pointer;
 	}
 
@@ -757,8 +774,9 @@
 	}
 
 	/* The action buttons are always visible — never display:none behind
-	   $state, which would hide the only submit path with scripts off. Only the
-	   blurb gives way once rows are checked (JS-driven, cosmetic). */
+	   $state, which would hide the only submit path with scripts off. The
+	   blurb stays too (see .selected-count) — only a "N selected" note is
+	   appended once rows are checked (JS-driven, cosmetic). */
 	.bulk-tools {
 		display: flex;
 		flex-wrap: wrap;
@@ -766,8 +784,13 @@
 		gap: var(--space-sm);
 	}
 
-	.bulk-blurb.has-selection .bulk-blurb-text {
-		display: none;
+	/* Appended to the blurb, never replacing it: swapping the whole sentence
+	   for a "N selected" count changes this element's height, which shifts
+	   everything below it — reserving the sentence's space and only adding a
+	   few words keeps the bar from visibly jumping when a row is checked. */
+	.selected-count {
+		color: var(--color-accent-text);
+		font-weight: 600;
 	}
 
 	/* Same outline treatment as .source-action button: a bulk verb is no more
