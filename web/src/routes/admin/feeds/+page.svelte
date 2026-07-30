@@ -517,7 +517,13 @@
 				<summary><span class="action-name">Reap selected</span></summary>
 				<p class="consequence">
 					Reaping the selected sources permanently deletes each one and its evidence.
-					{#if data.orphanRows.some((r) => selected.orphans?.has(r.id) && r.retention !== null && r.retention !== 'reapable')}
+					<!-- Keyed on the SELECTION when one exists, and on the whole page
+					     when it doesn't: `selected.orphans` only ever populates via
+					     onchange, so with JS off this warning would never appear and a
+					     no-JS bulk reap of force-needed orphans would be silently
+					     under-warned about permanent evidence deletion. Irreversible
+					     action: over-warn rather than under-warn. -->
+					{#if data.orphanRows.some((r) => (selected.orphans?.size ? selected.orphans.has(r.id) : true) && r.retention !== null && r.retention !== 'reapable')}
 						Some of the selected sources override retained evidence — that evidence is removed permanently too.
 					{/if}
 					This cannot be undone.

@@ -780,6 +780,29 @@ test('bulk reap consequence text is pluralized and mixes plain/force wording whe
 	expect(orphanSection).toContain('orph2:orph-cmd-1:true')
 })
 
+// The stronger "some sources override retained evidence" sentence used to be
+// keyed on `selected.orphans`, which is empty with JS off — so a no-JS bulk
+// reap of force-needed orphans saw only the generic wording and was
+// under-warned about permanent evidence deletion. With no selection tracked,
+// the predicate falls back to the whole page: over-warn, never under-warn, for
+// an irreversible action.
+test('the bulk-reap confirm text warns about overridden retained evidence from the SERVER render, with no selection state involved', () => {
+	const data = orphanData({ orphanRows: [orphanRow({ id: 'orph1', retention: 'audit_history' })] })
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const formStart = body.indexOf('action="?/bulkReap')
+	const bulkFormChunk = body.slice(formStart, body.indexOf('</form>', formStart))
+	expect(bulkFormChunk).toContain('override retained evidence')
+	expect(bulkFormChunk).toContain('This cannot be undone.')
+})
+
+test('the bulk-reap confirm text omits the retained-evidence warning when no orphan on the page needs force', () => {
+	const data = orphanData({ orphanRows: [orphanRow({ id: 'orph1', retention: 'reapable' })] })
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const formStart = body.indexOf('action="?/bulkReap')
+	const bulkFormChunk = body.slice(formStart, body.indexOf('</form>', formStart))
+	expect(bulkFormChunk).not.toContain('override retained evidence')
+})
+
 test('the orphan bulk-reap toolbar (button + confirm-gate) is always in the server output, not gated behind a JS-only selection count', () => {
 	const { body } = render(Page, { props: { data: orphanData(), form: null } } as never)
 	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkReap'), body.indexOf('</form>', body.indexOf('action="?/bulkReap')))
