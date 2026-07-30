@@ -7,6 +7,7 @@
 	import MarkdownComposer from '$lib/MarkdownComposer.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
+	import RelativeTime from '$lib/RelativeTime.svelte'
 	import { enhance } from '$app/forms'
 	import type { SubmitFunction } from '@sveltejs/kit'
 	import { loadDraft, saveDraft } from '$lib/draft'
@@ -90,7 +91,7 @@
 						<a class="handle" href="/u/{root.author.handle}">@{root.author.handle}</a>
 					{/if}
 					<span class="kind">{root.source}</span>
-					<a class="permalink" href="/post/{root.id}"><time datetime={root.publishedAt}>{root.publishedAt.slice(0, 10)}</time></a>
+					<a class="permalink" href="/post/{root.id}"><RelativeTime datetime={root.publishedAt} /></a>
 					<EditedMarker post={root} />
 					{#if root.id === data.postId}<span class="here">You are here</span>{/if}
 				</div>

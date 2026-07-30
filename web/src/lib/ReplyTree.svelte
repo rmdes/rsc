@@ -7,6 +7,7 @@
 	import ReplyToggle from './ReplyToggle.svelte'
 	import EditedMarker from './EditedMarker.svelte'
 	import ThreadPlaceholder from './ThreadPlaceholder.svelte'
+	import RelativeTime from './RelativeTime.svelte'
 
 	let {
 		thread,
@@ -43,7 +44,7 @@
 				{:else if reply.author.handle}
 					<a class="handle" id="rt-by-{reply.id}" href="/u/{reply.author.handle}">@{reply.author.handle}</a>
 				{/if}
-				<a class="permalink" href="/post/{reply.id}"><time datetime={reply.publishedAt}>{reply.publishedAt.slice(0, 10)}</time></a>
+				<a class="permalink" href="/post/{reply.id}"><RelativeTime datetime={reply.publishedAt} /></a>
 				<EditedMarker post={reply} />
 				{#if reply.id === highlightId}<span class="here">You are here</span>{/if}
 			</div>

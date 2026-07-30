@@ -8,6 +8,7 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
+	import RelativeTime from '$lib/RelativeTime.svelte'
 	import { fetchThread } from '$lib/wedge'
 
 	let { data }: { data: PageData } = $props()
@@ -99,7 +100,7 @@
 				<div class="byline">
 					<Avatar author={post.author} sourceName={post.sourceName} />
 					{#if post.sourceName}<strong>{post.sourceName}</strong>{/if}
-					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
 					<EditedMarker {post} />
 				</div>
 				{#if post.title}<h2 class="title">{post.title}</h2>{/if}
@@ -143,7 +144,7 @@
 					<ul class="replies">
 						{#each others as p (p.id)}
 							<li>
-								<span class="k"><time datetime={p.publishedAt}>{p.publishedAt.slice(5, 10)}</time></span>
+								<span class="k"><RelativeTime datetime={p.publishedAt} /></span>
 								<div>
 									{#if p.title}<h3 class="title">{p.title}</h3>{/if}
 									<PostBody post={p} />
