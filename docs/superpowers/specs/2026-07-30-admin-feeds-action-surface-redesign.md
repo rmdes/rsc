@@ -1,6 +1,14 @@
 # Admin /admin/feeds action-surface redesign
 
-Status: rev 1 (2026-07-30)
+Status: rev 2 (2026-07-30) — folds ponytail-review + ponytail-audit findings:
+cut the shared note field (scope creep against this spec's own Goals), fixed
+a real correctness gap in Component 1 (`bulkActions()` must fold in
+`data.expandedMembers`, not just `group.rows`, once members share the
+selection), made the deletion's full blast radius explicit (a now-unused
+type alias, dead CSS, three now-invalid tests to replace rather than leave
+in place), and folded in a cheap in-passing dedup of three duplicated
+outcome-list blocks since this redesign already restructures that area. See
+Revision history.
 
 ## Motivation
 
@@ -77,6 +85,25 @@ panel without a separate code path. A member is selected and acted on
 exactly like any other row in its group; nothing about being nested changes
 how it's moderated.
 
+**Correction (rev 2):** `bulkActions(group)` (`+page.svelte:163-167`) computes
+the verb union/narrowing by reading `group.rows` alone — `data.expandedMembers`
+is a separate array, so a checked member wouldn't be seen when the shared
+panel narrows its offered verbs to "only what every checked row has in
+common." `bulkActions` needs to fold `expandedMembers` into that computation
+wherever a member is checked, not just filter `group.rows`. Without this fix,
+checking a member and only a member would either narrow to nothing (if the
+filter treats an unmatched selection as empty) or silently ignore the
+member's selection — either way, not what Goal 4 requires.
+
+**Full deletion scope, made explicit so nothing is left half-removed:**
+`type Row` (`+page.svelte:173`, whose only consumer is `managePanel`'s
+parameter), the C1/N1 explanatory comments (`:169-172`, `:434-440`) that
+exist solely to justify `managePanel`'s sharing/scoping, and the
+`.source-actions` (plural) CSS rule (`:819-823`, whose only consumer is
+`managePanel`'s wrapper `<div>`) all go with it. `.source-action` (singular)
+stays — it's shared by the orphan-reap and tombstone-unblock forms, both
+out of scope per this spec's Non-goals.
+
 ### 2. The shared panel: single surface, collapsed by default
 
 The existing "bulk bar" (buttons + category select + block/unblock
@@ -93,12 +120,12 @@ button wall. Expanding needs no JavaScript (native `<details>`), so nothing
 about the no-JS invariant changes — the buttons and self-describing checkbox
 `value`s inside stay exactly as reachable as they are today once expanded.
 
-**Gains a shared, optional note field.** `bulkSource` already reads and
-forwards a `note` form field (found during this session's earlier
-whole-branch review — nothing in the UI ever sent one). Adding one input to
-the shared panel, applied uniformly to every row in the current selection,
-is a pure UI addition — no server-action change, since the field is already
-read and forwarded today.
+**Cut in rev 2: no shared note field.** The original rev 1 draft proposed
+adding one because `bulkSource` happens to already read a `note` form field
+— but none of this spec's Goals call for it, and an extra input works
+against Goal 2 (a quieter resting state), not toward it. Dropped from this
+redesign; if wanted later, it's a one-line follow-up in `ideas.md`, not
+bundled into a noise-reduction spec.
 
 ### 3. `attribution-mode` moves to the inline detail panel
 
@@ -111,6 +138,21 @@ that already exists specifically for single-row-only extras. This gives the
 whole page exactly two homes for actions: the shared panel for anything
 bulk-eligible, the detail panel for anything that structurally can't be.
 
+### 4. (rev 2, in passing) One shared outcome-list snippet instead of three copies
+
+`+page.svelte` has three structurally identical blocks rendering a bulk
+action's per-row outcomes — `bulkResults` (governance), `bulkReapResults`
+(orphans), `bulkTombstoneResults` (tombstones) — each the same
+`{#if X?.length}<ul>…{:else if X}<p>Nothing selected.</p>{/if}` shape,
+differing only in the id-field name (`sourceId`/`tombstoneId`) and the
+done-word (`done`/`reaped`/`unblocked`). Since this redesign is already
+restructuring the panel area these blocks sit next to, collapsing the three
+into one `{#snippet bulkOutcomes(results, idKey, verb)}` (called three times)
+is a cheap in-passing cleanup, not a separate effort. Orphans/tombstones stay
+out of scope for everything else in this spec (Non-goals) — this snippet
+covers their existing outcome-list markup unchanged in behavior, just
+de-duplicated.
+
 ## Testing
 
 - Render tests: the shared panel is collapsed by default (`<details>` with
@@ -121,29 +163,61 @@ bulk-eligible, the detail panel for anything that structurally can't be.
   to the same group's `form=`, and submitting its group's shared panel with
   only the member checked posts the member's own id — same assertion shape
   the existing "member row carries a working governance action" test already
-  uses, adapted to the new selection mechanism instead of a per-row form.
+  uses, adapted to the new selection mechanism instead of a per-row form. A
+  second test covers the rev-2 `bulkActions` fix directly: with only a member
+  checked (no ordinary row), the panel narrows to that member's own verbs,
+  not to nothing and not to the group's full union.
 - `attribution-mode`'s new home in the detail panel: a render test confirming
   the mode-change form appears in the inline panel and posts to the existing
   `source` action with `action=attribution-mode`.
-- The shared note field: `bulkSource` already has test coverage for
-  forwarding a non-empty `note` — no new server-action test needed, only the
-  render test confirming the new input posts to the `note` field name
-  `bulkSource` already reads.
 - No-JS regression coverage: reuse the existing chunk-isolation pattern to
   confirm the shared panel's buttons/checkboxes are present in the collapsed
   `<details>`'s content (not stripped from server output just because it's
   visually collapsed) — collapsed `<details>` content is still real DOM,
   same principle every `.confirm-gate` on this page already relies on.
+- The three now-invalid tests (the C1/N1 member-manage-panel tests, and the
+  two per-row confirm-gate isolation tests whose premise — "the row's own
+  gate is the last one in the document" — no longer holds once there's no
+  per-row gate) are **deleted, not left in place** covering markup that no
+  longer exists. They're replaced by the member-checkbox/shared-panel tests
+  above, not supplemented by them.
+- The `bulkOutcomes` snippet (Component 4): one test confirming all three
+  call sites (governance/orphans/tombstones) still render their existing
+  outcome text and "Nothing selected." fallback unchanged — a pure
+  refactor, so this is a behavior-preservation check, not new coverage.
 
 ## Rollout
 
 Web-only, markup-only change confined to `web/src/routes/admin/feeds/
-+page.svelte` — no server-action changes (`bulkSource` already reads
-`note`; every other field this redesign uses already exists). No migration,
-no feature flag — this is an operator-facing admin surface, ships as an
-ordinary change.
++page.svelte` — no server-action changes; every field this redesign uses
+already exists and is already read server-side. No migration, no feature
+flag — this is an operator-facing admin surface, ships as an ordinary
+change.
 
 ## Revision history
 
 - rev 1 (2026-07-30): initial design, from live dogfooding feedback on the
   source-management redesign that shipped earlier the same day.
+- rev 2 (2026-07-30): folds ponytail-review + ponytail-audit findings
+  (dispatched to two clean subagents, both verified their factual claims
+  against the current tree before I applied anything). Cut the shared note
+  field — ponytail-review correctly called it scope creep against this
+  spec's own Goals, added only because `bulkSource` happens to already
+  accept one, not because any stated goal needed it. Fixed a real
+  correctness gap ponytail-review found: `bulkActions()` only reads
+  `group.rows`, not `data.expandedMembers`, so a checked member's verbs
+  wouldn't be seen when narrowing — Component 1 now calls this out
+  explicitly with a test. Made the deletion's full blast radius explicit
+  per ponytail-audit (a now-orphaned `type Row` alias, the C1/N1
+  explanatory comments, the `.source-actions` plural CSS rule, and three
+  now-invalid tests that must be deleted rather than left covering dead
+  markup). Folded in ponytail-audit's cheap in-passing find: one shared
+  `bulkOutcomes` snippet replacing three structurally identical outcome-list
+  blocks (Component 4), since this redesign already restructures that area.
+  Two ponytail-audit findings were considered and explicitly NOT folded in,
+  per the audit's own calibration: deduplicating `bulkSource`/`bulkReap`/
+  `bulkTombstone`'s try/catch shape (marginal win, reopens a prior
+  deliberate decision to keep the three candidate encodings as separate
+  one-liners) and merging the three bulk-bar blurb blocks (differ enough in
+  real content that a shared snippet would trade a clear diff for a
+  parameterized one).
