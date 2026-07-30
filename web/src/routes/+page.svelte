@@ -9,6 +9,7 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
+	import RelativeTime from '$lib/RelativeTime.svelte'
 	import { applyLiveEvent, type LiveEvent } from '$lib/logical-live'
 	import { fetchThread } from '$lib/wedge'
 	import { enhance } from '$app/forms'
@@ -189,7 +190,7 @@
 					<div class="byline">
 						<span class="kind">{post.source}</span>
 						{#if post.source === 'remote' && post.url}<span class="source-host">{URL.parse(post.url)?.hostname}</span>{/if}
-						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+						<a class="permalink" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
 						<EditedMarker {post} />
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>

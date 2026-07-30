@@ -4,6 +4,7 @@
 	import PostBody from '$lib/PostBody.svelte'
 	import EditedMarker from '$lib/EditedMarker.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
+	import RelativeTime from '$lib/RelativeTime.svelte'
 
 	let { data }: { data: PageData } = $props()
 	// Publisher activity is snapshot-only (no live stream, no follow, no feed
@@ -27,7 +28,7 @@
 				<div class="byline">
 					<Avatar author={post.author} sourceName={null} />
 					<strong>{post.author.displayName}</strong>
-					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
 					<EditedMarker {post} />
 				</div>
 				{#if post.title}<h2 class="title">{post.title}</h2>{/if}

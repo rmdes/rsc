@@ -7,6 +7,7 @@
 	import Avatar from '$lib/Avatar.svelte'
 	import PostBody from '$lib/PostBody.svelte'
 	import ReplyContext from '$lib/ReplyContext.svelte'
+	import RelativeTime from '$lib/RelativeTime.svelte'
 	import { fetchThread } from '$lib/wedge'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -140,7 +141,7 @@
 							<a class="handle" id="by-{post.id}" href="/u/{post.author.handle}">@{post.author.handle}</a>
 						{/if}
 						<span class="kind">{post.source}</span>
-						<a class="permalink" href="/post/{post.id}"><time datetime={post.publishedAt}>{post.publishedAt.slice(0, 10)}</time></a>
+						<a class="permalink" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
 						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
