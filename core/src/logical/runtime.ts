@@ -22,6 +22,7 @@ import { loadManifest, runPreflight } from '../migration/preflight.ts'
 import type { Manifest } from '../migration/preflight.ts'
 import { runConversion } from '../migration/convert.ts'
 import type { ConversionCounts } from '../migration/convert.ts'
+import { trimSourceToCap } from './tombstones.ts'
 
 // Startup activation and worker composition (spec §7.1-7.2). This is the module
 // that REPLACES Task 2's temporary fail-closed guard: on every boot the runtime
@@ -349,6 +350,11 @@ export function createLogicalRuntime(input: {
   // global fetch and real DNS, the same posture acquisition takes in server.ts.
   fetchFn?: typeof fetch
   lookupFn?: LookupFn
+  // Remote content retention (spec 2026-07-29): read live (not baked in at
+  // construction) so an admin's setting change takes effect on the very next
+  // poll, with no restart. Production wires it to repo.getSetting; a test
+  // omitting it gets the inert default below (trim never runs).
+  getSetting?: (key: string) => Promise<string | undefined>
 }): LogicalRuntime {
   const { db, store, acquisition, config } = input
   const now = input.now ?? (() => new Date().toISOString())
@@ -405,7 +411,29 @@ export function createLogicalRuntime(input: {
     inFlight: (id) => acquisition.inFlight(id),
     async acquireSource(id, reason, signal) {
       const r = await acquisition.acquireSource(id, reason, signal)
-      if (!('kind' in r)) drainSync()
+      if (!('kind' in r)) {
+        drainSync()
+        // Retention settings are read LIVE, here, after the drain -- not baked
+        // in at construction -- so an admin's change to either cap takes
+        // effect on the very next poll of any source, no restart needed.
+        const getSetting = input.getSetting ?? (async () => undefined)
+        const maxCount = Number((await getSetting('max_remote_items_per_source')) ?? '0')
+        const maxAgeDays = Number((await getSetting('max_remote_item_age_days')) ?? '0')
+        if (maxCount > 0 || maxAgeDays > 0) {
+          db.write((tx) => {
+            const trimNow = now()
+            const { removedItemIds } = trimSourceToCap(tx, { sourceId: id, maxCount, maxAgeDays, now: trimNow })
+            // Trim can run on every poll of an over-cap source, so it appends a
+            // 'remove' per actually-removed item -- NOT a reset (finding 2): an
+            // unconditional reset closes every connected client's stream
+            // (see the stored-reset `done: true` handling below), which is fine
+            // for the rare purge/reap path but wrong for a routine, repeatable trim.
+            for (const removedId of removedItemIds) {
+              appendJournal(tx, { kind: 'remove', logicalItemId: removedId, changeMask: 'presentation' }, trimNow)
+            }
+          })
+        }
+      }
       return r
     },
   }

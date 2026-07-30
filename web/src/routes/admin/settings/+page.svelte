@@ -16,7 +16,17 @@
 	<div class="field">
 		<label for="max-subs">Max subscriptions per user</label>
 		<input id="max-subs" name="maxSubsPerUser" type="number" min="0" required value={data.settings.maxSubsPerUser} />
-		<p class="field-hint">Self-serve subscriptions (person + web feeds) each registered user may hold. Default 500.</p>
+		<p class="field-hint">Self-serve subscriptions (person + web feeds) each registered user may hold. Default 500. 0 disables subscribing entirely.</p>
+	</div>
+	<div class="field">
+		<label for="max-remote-items">Max remote items per source</label>
+		<input id="max-remote-items" name="maxRemoteItemsPerSource" type="number" min="0" required value={data.settings.maxRemoteItemsPerSource} />
+		<p class="field-hint">Keeps only the N most recent items from each remote source, trimming older ones after each poll. 0 means unlimited (default) — local posts are never affected.</p>
+	</div>
+	<div class="field">
+		<label for="max-remote-age">Max remote item age (days)</label>
+		<input id="max-remote-age" name="maxRemoteItemAgeDays" type="number" min="0" required value={data.settings.maxRemoteItemAgeDays} />
+		<p class="field-hint">Trims remote items older than this many days after each poll. 0 means unlimited (default) — local posts are never affected.</p>
 	</div>
 	<button>Save</button>
 </form>

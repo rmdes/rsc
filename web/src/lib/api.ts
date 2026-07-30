@@ -174,13 +174,13 @@ export async function revokeSession(f: typeof fetch, sessionToken: string): Prom
 	return res
 }
 
-export async function getAdminSettings(f: typeof fetch): Promise<{ maxSubsPerUser: number }> {
+export async function getAdminSettings(f: typeof fetch): Promise<{ maxSubsPerUser: number; maxRemoteItemsPerSource: number; maxRemoteItemAgeDays: number }> {
 	const res = await f(`${base()}/admin/settings`)
 	if (!res.ok) throw new Error(await errorMessage(res, 'getAdminSettings failed'))
-	return (await res.json()) as { maxSubsPerUser: number }
+	return (await res.json()) as { maxSubsPerUser: number; maxRemoteItemsPerSource: number; maxRemoteItemAgeDays: number }
 }
 
-export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser: number }): Promise<void> {
+export async function patchAdminSettings(f: typeof fetch, body: { maxSubsPerUser: number; maxRemoteItemsPerSource: number; maxRemoteItemAgeDays: number }): Promise<void> {
 	const res = await f(`${base()}/admin/settings`, {
 		method: 'PATCH',
 		headers: { 'content-type': 'application/json' },

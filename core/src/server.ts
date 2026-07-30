@@ -41,6 +41,7 @@ const runtime = createLogicalRuntime({
   acquisition,
   config,
   notify: (sequence) => bus.emitSequenceHint(sequence),
+  getSetting: (key) => repo.getSetting(key),
 })
 await runtime.ready
 

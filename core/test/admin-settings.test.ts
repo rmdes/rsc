@@ -34,7 +34,7 @@ test('GET /admin/settings: admin sees the seeded default', async () => {
   const cookie = await registeredSession(app, 'boss@x.test', repo)
   const res = await app.request('/admin/settings', { headers: { cookie } })
   expect(res.status).toBe(200)
-  expect(await res.json()).toEqual({ maxSubsPerUser: 500 })
+  expect(await res.json()).toEqual({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 })
 })
 
 test('PATCH /admin/settings: admin updates the cap, GET reflects it, and it is enforced on the next subscribe', async () => {
@@ -44,12 +44,12 @@ test('PATCH /admin/settings: admin updates the cap, GET reflects it, and it is e
   const patch = await app.request('/admin/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ maxSubsPerUser: 1 }),
+    body: JSON.stringify({ maxSubsPerUser: 1, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
   })
   expect(patch.status).toBe(200)
 
   const get = await app.request('/admin/settings', { headers: { cookie } })
-  expect(await get.json()).toEqual({ maxSubsPerUser: 1 })
+  expect(await get.json()).toEqual({ maxSubsPerUser: 1, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 })
 
   // v2 subscribe body: {url, commandId} — no `type` field (P4).
   const alice = await registeredSession(app, 'alice@x.test', repo)
@@ -75,13 +75,13 @@ test('PATCH /admin/settings: rejects non-integer and negative values', async () 
     const res = await app.request('/admin/settings', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json', cookie },
-      body: JSON.stringify({ maxSubsPerUser }),
+      body: JSON.stringify({ maxSubsPerUser, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
     })
     expect(res.status).toBe(400)
   }
   // untouched by the rejected attempts
   const get = await app.request('/admin/settings', { headers: { cookie } })
-  expect(await get.json()).toEqual({ maxSubsPerUser: 500 })
+  expect(await get.json()).toEqual({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 })
 })
 
 test('PATCH /admin/settings: accepts zero (disables subscribing)', async () => {
@@ -90,10 +90,59 @@ test('PATCH /admin/settings: accepts zero (disables subscribing)', async () => {
   const res = await app.request('/admin/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ maxSubsPerUser: 0 }),
+    body: JSON.stringify({ maxSubsPerUser: 0, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
   })
   expect(res.status).toBe(200)
-  expect(await (await app.request('/admin/settings', { headers: { cookie } })).json()).toEqual({ maxSubsPerUser: 0 })
+  expect(await (await app.request('/admin/settings', { headers: { cookie } })).json()).toEqual({ maxSubsPerUser: 0, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 })
+})
+
+test('GET /admin/settings: includes the retention defaults (unlimited)', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const res = await app.request('/admin/settings', { headers: { cookie } })
+  expect(res.status).toBe(200)
+  const body = await res.json()
+  expect(body.maxRemoteItemsPerSource).toBe(0)
+  expect(body.maxRemoteItemAgeDays).toBe(0)
+})
+
+test('PATCH /admin/settings: updates the retention caps, GET reflects it', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const patch = await app.request('/admin/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 200, maxRemoteItemAgeDays: 90 }),
+  })
+  expect(patch.status).toBe(200)
+  const get = await app.request('/admin/settings', { headers: { cookie } })
+  const body = await get.json()
+  expect(body.maxRemoteItemsPerSource).toBe(200)
+  expect(body.maxRemoteItemAgeDays).toBe(90)
+})
+
+test('PATCH /admin/settings: rejects non-integer or negative retention values', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  for (const bad of [{ maxRemoteItemsPerSource: -1 }, { maxRemoteItemsPerSource: 1.5 }, { maxRemoteItemAgeDays: -1 }, { maxRemoteItemAgeDays: 'ten' }]) {
+    const res = await app.request('/admin/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, ...bad }),
+    })
+    expect(res.status).toBe(400)
+  }
+})
+
+test('PATCH /admin/settings: accepts 0 for both retention fields (means unlimited, not disabled)', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const res = await app.request('/admin/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
+  })
+  expect(res.status).toBe(200)
 })
 
 test('GET/PATCH /admin/settings gate: non-admin 403, anon 403, no session 401', async () => {

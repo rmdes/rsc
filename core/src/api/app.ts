@@ -477,17 +477,33 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   })
 
   app.get('/admin/settings', async (c) =>
-    c.json({ maxSubsPerUser: Number(await service.getSetting('max_subs_per_user') ?? '500') }))
+    c.json({
+      maxSubsPerUser: Number(await service.getSetting('max_subs_per_user') ?? '500'),
+      // 0 here means "unlimited" -- a different meaning of 0 than maxSubsPerUser above (0 = disabled).
+      maxRemoteItemsPerSource: Number(await service.getSetting('max_remote_items_per_source') ?? '0'),
+      maxRemoteItemAgeDays: Number(await service.getSetting('max_remote_item_age_days') ?? '0'),
+    }))
 
   app.patch('/admin/settings', jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
-    const { maxSubsPerUser } = body
+    const { maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays } = body
+    // maxSubsPerUser: 0 disables subscribing entirely (existing convention).
     if (!(typeof maxSubsPerUser === 'number' && Number.isInteger(maxSubsPerUser) && maxSubsPerUser >= 0)) {
       return c.json({ error: 'maxSubsPerUser invalid' }, 400)
     }
+    // maxRemoteItemsPerSource / maxRemoteItemAgeDays: 0 means unlimited, NOT disabled --
+    // a different meaning of 0 than maxSubsPerUser's, kept intentionally separate.
+    if (!(typeof maxRemoteItemsPerSource === 'number' && Number.isInteger(maxRemoteItemsPerSource) && maxRemoteItemsPerSource >= 0)) {
+      return c.json({ error: 'maxRemoteItemsPerSource invalid' }, 400)
+    }
+    if (!(typeof maxRemoteItemAgeDays === 'number' && Number.isInteger(maxRemoteItemAgeDays) && maxRemoteItemAgeDays >= 0)) {
+      return c.json({ error: 'maxRemoteItemAgeDays invalid' }, 400)
+    }
     await service.setSetting('max_subs_per_user', String(maxSubsPerUser))
-    return c.json({ maxSubsPerUser }, 200)
+    await service.setSetting('max_remote_items_per_source', String(maxRemoteItemsPerSource))
+    await service.setSetting('max_remote_item_age_days', String(maxRemoteItemAgeDays))
+    return c.json({ maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays }, 200)
   })
 
   app.delete('/admin/users/:handle', async (c) => {
