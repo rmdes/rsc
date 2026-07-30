@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import { enhance } from '$app/forms'
-	import { confirmSubmit } from '$lib/confirm'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -69,34 +68,26 @@
 		reapable: 'No retaining reason — reapable'
 	}
 
-	// Design §10 posture, extended to reap: the plain (no-force) attempt's
-	// consequence is stated up front; the SEPARATE force-confirm form (shown
-	// only once core has actually refused with one of the three force-liftable
-	// reasons — verified_origin_evidence, admin_retained, audit_history, per
-	// core's reapSource guard chain) states the sharper, reason-specific
-	// consequence of overriding THAT refusal — never the same sentence for all
-	// three, since the stakes differ per reason.
+	// Design §10, retention-driven (no round trip): retention is already
+	// known at load time (Task 4's toOrphanRow), so which consequence text
+	// and which button ("Reap" vs "Reap anyway") a row shows is decided
+	// directly from `row.retention` — never from a prior refusal. The three
+	// reasons below are exactly the ones core's reapSource lifts when
+	// force:true is sent (see the `!opts.force &&` guards in
+	// core/src/domain/source-repository.ts); every other reason
+	// (has_subscribers/not_allowed/federated) can never appear here, since
+	// the orphan list's own filter already excludes any source with those
+	// properties.
 	const REAP_CONSEQUENCE =
 		'Reaping permanently deletes this source and its evidence — items, publisher claims and any history of its own are removed for good. Only offered for sources with no subscribers and no federation relationship.'
-	// The three refusal reasons core's reapSource will actually lift when
-	// force:true is sent (admin_retained/audit_history/verified_origin_evidence
-	// — see reapSource's `!opts.force &&` guards); every other reason
-	// (has_subscribers/not_allowed/federated/idempotency conflict) is always
-	// enforced and gets no confirm form, just the plain error banner.
-	const FORCE_LIFTABLE = new Set(['verified_origin_evidence', 'admin_retained', 'audit_history'])
 	const FORCE_REAP_CONSEQUENCE: Record<string, string> = {
-		verified_origin_evidence:
+		verified_origin: // orphanRow.retention's spelling (no _evidence suffix), unlike the reason string core's 409 used to return
 			'This source backs verified-origin evidence for a logical item. Reaping anyway removes that evidence permanently — the affected item loses its verified-origin claim. This cannot be undone.',
 		admin_retained:
 			'This source was marked retained by an admin. Reaping anyway overrides that retention permanently — the source and its evidence are removed for good.',
 		audit_history:
 			'This source has audit history (past moderation decisions). Reaping anyway removes the source AND that history permanently — nothing will be left to show what was decided or why.'
 	}
-	// Fallback only for the rare case where a force retry itself fails for a
-	// reason that ISN'T one of the three above (e.g. a subscriber appeared in
-	// between) — the confirm form stays open for the retry, just with generic
-	// wording instead of a stale reason-specific sentence.
-	const GENERIC_FORCE_CONSEQUENCE = 'Reaping anyway overrides the refusal above and permanently removes this source and its evidence. This cannot be undone.'
 
 	const LABEL: Record<string, string> = {
 		pause: 'Pause acquisition',
@@ -299,46 +290,23 @@
 		<ul class="following-list source-list">
 			{#each data.orphanRows as row (row.id)}
 				{@const orphanQs = otherParams()}
-				<!-- Task 2's guard-refusal ladder (subscribers > governance >
-				     federation > admin_retained > audit_history >
-				     verified_origin_evidence) is NOT the same ladder as the
-				     `retention` label above (verified_origin first) — the two are
-				     computed for independent purposes, so `reapFail`/`forceReason`
-				     below are gated on core's ACTUAL 409 reason, never on the
-				     displayed retention. -->
-				{@const reapFail = retryFail && 'force' in retryFail && retryFail.sourceId === row.id ? retryFail : undefined}
-				{@const forceReason = form?.error && FORCE_LIFTABLE.has(form.error) ? form.error : undefined}
-				{@const showForceConfirm = !!reapFail && (forceReason !== undefined || reapFail.force === true)}
+				{@const needsForce = row.retention !== null && row.retention !== 'reapable'}
+				{@const retryCommandId = retryFail?.sourceId === row.id && 'force' in retryFail ? retryFail.commandId : undefined}
 				<li>
 					<div class="feed-info">
 						<strong class="feed-url">{row.url}</strong>
 						<span class="badge-kind">{RETENTION_LABEL[row.retention ?? 'reapable']}</span>
 					</div>
-					<form method="POST" action="?/reap{orphanQs ? `&${orphanQs}` : ''}" class="source-action" use:enhance={confirmSubmit(`${REAP_CONSEQUENCE} Continue?`)}>
+					<form method="POST" action="?/reap{orphanQs ? `&${orphanQs}` : ''}" class="source-action" class:destructive={needsForce} use:enhance>
 						<input type="hidden" name="sourceId" value={row.id} />
-						<input type="hidden" name="commandId" value={reapFail?.force === false ? reapFail.commandId : row.commandId} />
-						<p class="consequence">{REAP_CONSEQUENCE}</p>
-						<button aria-label="Reap {row.url}">Reap</button>
+						<input type="hidden" name="commandId" value={retryCommandId ?? row.commandId} />
+						{#if needsForce}<input type="hidden" name="force" value="true" />{/if}
+						<details class="confirm-gate">
+							<summary><span class="action-name">{needsForce ? 'Reap anyway' : 'Reap'}</span></summary>
+							<p class="consequence">{needsForce ? FORCE_REAP_CONSEQUENCE[row.retention ?? ''] : REAP_CONSEQUENCE}</p>
+							<button aria-label="Confirm reap {needsForce ? 'anyway ' : ''}— {row.url}">{needsForce ? 'Confirm reap anyway' : 'Confirm reap'}</button>
+						</details>
 					</form>
-					{#if showForceConfirm}
-						{@const forceConsequence = FORCE_REAP_CONSEQUENCE[forceReason ?? ''] ?? GENERIC_FORCE_CONSEQUENCE}
-						<!-- Distinct, freshly-minted commandId (row.forceCommandId), never
-						     the refused plain attempt's id — replaying THAT id would just
-						     replay its stored refusal from the ledger, not re-run the guard
-						     chain with force:true. -->
-						<form
-							method="POST"
-							action="?/reap{orphanQs ? `&${orphanQs}` : ''}"
-							class="source-action destructive"
-							use:enhance={confirmSubmit(`${forceConsequence} Continue?`)}
-						>
-							<input type="hidden" name="sourceId" value={row.id} />
-							<input type="hidden" name="force" value="true" />
-							<input type="hidden" name="commandId" value={reapFail?.force === true ? reapFail.commandId : row.forceCommandId} />
-							<p class="consequence">{forceConsequence}</p>
-							<button aria-label="Reap {row.url} anyway">Reap anyway</button>
-						</form>
-					{/if}
 				</li>
 			{/each}
 		</ul>

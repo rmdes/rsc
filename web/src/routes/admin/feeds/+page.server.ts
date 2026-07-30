@@ -154,19 +154,17 @@ const toRow = (s: SourceSummary, isMember: boolean) => ({
 // Orphan rows (Task 4): shown in their own always-visible, independently
 // paginated group. They carry `retention` (the display-oriented ladder,
 // verified_origin > admin_retained > audit_history > reapable — Task 1's
-// retentionFor) instead of the ordinary transition-action list, plus TWO
-// command ids: `commandId` for the plain (no-force) reap attempt, and
-// `forceCommandId` for the separate confirm-with-force form — kept in
-// distinct namespaces so a force retry can never replay the plain attempt's
-// (already-ledgered) refusal. An orphan by definition has zero subscriptions
-// (the core WHERE clause enforces it), so addedBy is always empty here — no
-// point rendering it.
+// retentionFor) instead of the ordinary transition-action list. One
+// commandId per row: retention alone decides, at render time, whether the
+// row shows a plain Reap form or a force Reap-anyway form — never both, so
+// there's nothing left to disambiguate a second id for. An orphan by
+// definition has zero subscriptions (the core WHERE clause enforces it), so
+// addedBy is always empty here — no point rendering it.
 const toOrphanRow = (s: SourceSummary) => ({
 	id: s.source.id,
 	url: s.source.canonicalUrl,
 	retention: s.retention,
-	commandId: crypto.randomUUID(),
-	forceCommandId: crypto.randomUUID()
+	commandId: crypto.randomUUID()
 })
 
 async function listSources(f: typeof fetch, cursor: string | null, filter?: 'governance' | 'orphan', q?: string): Promise<{ items: SourceSummary[]; nextCursor: string | null }> {

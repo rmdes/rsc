@@ -59,7 +59,7 @@ type Row = {
 	subscriberTotal: number
 	actions: Array<{ action: string; commandId: string }>
 }
-type OrphanRow = { id: string; url: string; retention: string | null; commandId: string; forceCommandId: string }
+type OrphanRow = { id: string; url: string; retention: string | null; commandId: string }
 type Group = { key: string; title: string; blurb: string; rows: Row[] }
 type LoadResult = {
 	groups?: Group[]
@@ -496,7 +496,7 @@ test('no ?q= on the request omits it from every fetch and echoes result.q as nul
 	expect(urlsOf(fetch).some((u) => u.includes('q='))).toBe(false)
 })
 
-test('the orphan group is fetched with filter=orphan, maps retention/commandId/forceCommandId per row, and paginates on its OWN ?orphanCursor= param, independent of ?cursor=', async () => {
+test('the orphan group is fetched with filter=orphan, maps retention/commandId per row, and paginates on its OWN ?orphanCursor= param, independent of ?cursor=', async () => {
 	const fetch = vi.fn(async (url: string | URL) => {
 		const u = String(url)
 		if (u.includes('filter=orphan')) return new Response(JSON.stringify({ items: [orphanSummary('orph1', 'verified_origin'), orphanSummary('orph2', 'reapable')], nextCursor: 'orph-next' }), { status: 200 })
@@ -510,11 +510,11 @@ test('the orphan group is fetched with filter=orphan, maps retention/commandId/f
 	])
 	expect(result.orphanCursor).toBe('orph-page2') // echoed back like `cursor`, not conflated with it
 	expect(result.orphanNextCursor).toBe('orph-next')
-	// Distinct, well-formed command ids per row, and commandId !== forceCommandId.
+	// One command id per row now (not two) — the row renders exactly one
+	// reap form, plain or force, decided by retention, never both.
 	for (const r of result.orphanRows ?? []) {
 		expect(r.commandId).toMatch(/^[0-9a-f]{8}-/)
-		expect(r.forceCommandId).toMatch(/^[0-9a-f]{8}-/)
-		expect(r.commandId).not.toBe(r.forceCommandId)
+		expect('forceCommandId' in r).toBe(false)
 	}
 	// The orphan fetch used ITS OWN cursor param, never the ordinary list's.
 	const orphanCall = urlsOf(fetch).find((u) => u.includes('filter=orphan'))
