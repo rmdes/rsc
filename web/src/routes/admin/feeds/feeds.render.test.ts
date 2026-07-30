@@ -476,23 +476,26 @@ function bulkData(over: Record<string, unknown> = {}) {
 	}
 }
 
-test('each row in an ordinary group has a checkbox, and the group renders one always-present bulk toolbar (no-JS baseline)', () => {
+// The no-JS contract (plan's mid-execution correction): the checkbox is
+// self-describing — its value names the row AND every action:commandId pair
+// the row offers — so a checked box alone carries everything bulkSource needs.
+// Only checked boxes land in the submitted FormData, so the batch is the
+// selection without any client state involved.
+test('each row in an ordinary group has a self-describing candidate checkbox, and the group renders one always-present bulk toolbar (no-JS baseline)', () => {
 	const { body } = render(Page, { props: { data: bulkData(), form: null } } as never)
-	expect(body).toContain('name="sourceId" value="r1"')
 	expect(body).toContain('type="checkbox"')
-	// The bulk form posts to ?/bulkSource and is present even with nothing
-	// checked — a no-JS submit with zero boxes checked is a defined no-op
-	// (Task 4), not a missing affordance.
+	expect(body).toContain('name="candidate"')
+	expect(body).toContain('value="r1|quarantine:inst-cmd-1"')
+	// No separate hidden-input loop feeds this form: the checkboxes ARE the
+	// candidates, so nothing depends on JS having run.
+	expect(body).not.toContain('type="hidden" name="candidate"')
 	expect(body).toContain('action="?/bulkSource')
 })
 
-// The bug the plan's Step 4→5 correction exists to prevent: candidates
-// rendered by iterating group.rows would submit EVERY row's candidate on any
-// bulk click, checked or not. Nothing is checked in an SSR render, so a
-// correct implementation emits no candidate at all here.
-test('an unchecked row contributes NO candidate input — the hidden candidates iterate the selection, not the rows', () => {
-	const { body } = render(Page, { props: { data: bulkData(), form: null } } as never)
-	expect(body).not.toContain('name="candidate"')
+test('a multi-action row packs every action:commandId pair into its one checkbox value', () => {
+	const row = baseRow({ id: 'r1', group: 'user', federationStatus: 'none', memberCounts: undefined, actions: [{ action: 'pause', commandId: 'c-pause' }, { action: 'quarantine', commandId: 'c-quar' }] })
+	const { body } = render(Page, { props: { data: bulkData({ groups: [{ key: 'user', title: 'Allowed user sources', blurb: 'blurb text', rows: [row] }] }), form: null } } as never)
+	expect(body).toContain('value="r1|pause:c-pause|quarantine:c-quar"')
 })
 
 test('the bulk toolbar offers a button per action present on EVERY checked row\'s availableActions (server renders the full set; the intersection narrowing is a client-JS enhancement, not required for no-JS baseline)', () => {
@@ -502,6 +505,11 @@ test('the bulk toolbar offers a button per action present on EVERY checked row\'
 	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkSource'), body.indexOf('</form>', body.indexOf('action="?/bulkSource')))
 	expect(bulkFormChunk).toContain('value="quarantine"')
 	expect(bulkFormChunk).toContain('value="block"')
+	// Visible by default, not hidden behind the JS-only selection class: with
+	// nothing checked the bar carries no `has-selection`, and the buttons are
+	// still in the server output.
+	expect(bulkFormChunk).toContain('class="subnav bulk-blurb')
+	expect(bulkFormChunk).not.toContain('has-selection')
 	// attribution-mode is never bulk-eligible (plan Global Constraints).
 	expect(bulkFormChunk).not.toContain('value="attribution-mode"')
 })

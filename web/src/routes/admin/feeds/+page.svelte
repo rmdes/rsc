@@ -119,18 +119,14 @@
 	// this select is the enum at the UI.
 	const CATEGORIES = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
 
-	// One Set of checked source ids per group. Plain client-side UI state,
-	// never posted itself: the bulk bar's hidden `candidate` inputs are
-	// rendered by iterating THIS set, so a row that isn't checked contributes
-	// nothing — iterating group.rows there would submit every row on any bulk
-	// click. Reassigned (not mutated in place) on every toggle because a Set
-	// inside $state isn't itself deeply reactive; the new object reference is
-	// what re-renders the bar.
-	// ponytail: with JS off no candidate renders, so a bulk submit is a defined
-	// no-op and each row's own Manage form stays the script-free path (the bar
-	// itself is in the server output, but hidden until a box is checked).
-	// Ceiling: bulk needs JS. Upgrade path: pack a row's whole action list into
-	// the checkbox's own value — an unchecked box submits nothing natively.
+	// One Set of checked source ids per group. COSMETIC ONLY: it drives the
+	// live "N selected" count and the blurb↔toolbar swap class, nothing else.
+	// What a bulk submit actually carries comes from the checkboxes themselves
+	// (each one's `value` names its row and every action:commandId pair it
+	// offers), so the batch is exactly the checked boxes — browser-enforced,
+	// with or without JS. Reassigned rather than mutated on every toggle: a Set
+	// inside $state isn't deeply reactive, the new object reference is what
+	// re-renders.
 	let selected: Record<string, Set<string>> = $state({})
 	function toggleSelected(groupKey: string, id: string) {
 		const set = selected[groupKey] ?? new Set<string>()
@@ -197,22 +193,30 @@
 	<section>
 		<h3>{group.title}</h3>
 		<!-- The bulk bar takes the blurb's place: a ruled row in normal flow
-		     (MASTER.md — nothing floats), showing the group blurb until rows are
-		     checked and the action buttons after. Both halves are in the server
-		     output; only which one is visible is JS-driven. The rows' checkboxes
-		     reach this form by id (`form=`), since a form can't nest inside the
-		     per-row moderation forms. -->
-		<form id="bulk-{group.key}" method="POST" action="?/bulkSource{otherParams() ? `&${otherParams()}` : ''}" class="bulk-bar" use:enhance>
-			{#each Array.from(selected[group.key] ?? []) as id (id)}
-				{@const r = group.rows.find((gr) => gr.id === id)}
-				{#each r?.actions ?? [] as a (a.action)}
-					<input type="hidden" name="candidate" value="{id}:{a.action}:{a.commandId}" />
-				{/each}
-			{/each}
+		     (MASTER.md — nothing floats). Its buttons are always visible, so a
+		     no-JS admin can check boxes and submit; only the blurb text gives
+		     way to the "N selected" count once JS tracks a selection. The rows'
+		     checkboxes reach this form by id (`form=`), since a form can't nest
+		     inside the per-row moderation forms. -->
+		<form
+			id="bulk-{group.key}"
+			method="POST"
+			action="?/bulkSource{otherParams() ? `&${otherParams()}` : ''}"
+			class="bulk-bar"
+			use:enhance={() => {
+				// enhance's invalidateAll() re-runs load() without remounting, so a
+				// selection left in place would keep ids of rows that just moved
+				// group (a quarantined row leaves "Allowed user sources") — a stale
+				// "N selected" count over rows the next click can't act on. The
+				// FormData is captured before this runs, so clearing here is safe.
+				// Returning nothing keeps enhance's default update().
+				selected = { ...selected, [group.key]: new Set() }
+			}}
+		>
 			<p class="subnav bulk-blurb" class:has-selection={(selected[group.key]?.size ?? 0) > 0}>
 				<span class="bulk-blurb-text">{group.blurb}</span>
 				<span class="bulk-tools">
-					{selected[group.key]?.size ?? 0} selected ·
+					{#if (selected[group.key]?.size ?? 0) > 0}<span>{selected[group.key]?.size} selected ·</span>{/if}
 					{#each bulkVerbs as actionName (actionName)}
 						<button name="action" value={actionName}>{LABEL[actionName]}</button>
 					{/each}
@@ -233,10 +237,15 @@
 					{@const expanded = data.expand === row.id}
 					<li>
 						<label class="row-select">
+							<!-- Self-describing value: the row's id plus every action:commandId
+							     pair it offers. A checked box alone carries everything
+							     bulkSource needs, so a checkbox-then-submit works with zero JS
+							     — and only CHECKED boxes are in the submitted FormData, which
+							     is what keeps an unselected row out of the batch. -->
 							<input
 								type="checkbox"
-								name="sourceId"
-								value={row.id}
+								name="candidate"
+								value="{row.id}|{row.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
 								form="bulk-{group.key}"
 								checked={selected[group.key]?.has(row.id) ?? false}
 								onchange={() => toggleSelected(group.key, row.id)}
@@ -532,17 +541,18 @@
 		padding-bottom: var(--space-sm);
 	}
 
-	/* Both halves ship in the server output; the class decides which shows. */
-	.bulk-tools,
-	.bulk-blurb.has-selection .bulk-blurb-text {
-		display: none;
-	}
-
-	.bulk-blurb.has-selection .bulk-tools {
+	/* The action buttons are always visible — never display:none behind
+	   $state, which would hide the only submit path with scripts off. Only the
+	   blurb gives way once rows are checked (JS-driven, cosmetic). */
+	.bulk-tools {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--space-sm);
+	}
+
+	.bulk-blurb.has-selection .bulk-blurb-text {
+		display: none;
 	}
 
 	/* Same outline treatment as .source-action button: a bulk verb is no more

@@ -399,22 +399,29 @@ export const actions: Actions = {
 	bulkSource: async (event) => {
 		const form = await event.request.formData()
 		const action = String(form.get('action') ?? '')
-		// Each candidate is "sourceId:action:commandId" — one per (checked row ×
-		// action that row actually offers), so ONE form can hold several
-		// actions' worth of candidates and the clicked `action` picks which
-		// apply. Reuses each row's own already-minted commandId (from toRow's
-		// actions[]), so the id is the exact one a lone submit would have used.
-		const candidates = form.getAll('candidate').map((c) => String(c).split(':'))
+		// One candidate per CHECKED row — the checkbox's own value, describing
+		// the whole row: "sourceId|action:commandId|action:commandId|…". Only
+		// checked boxes reach here (browser-enforced, no JS involved), so the
+		// batch is the selection. The clicked `action` picks each row's matching
+		// commandId — the exact id toRow() minted for that row's own form, so a
+		// bulk click replays like a lone submit would. A row that doesn't offer
+		// the clicked action is skipped, not an error: the toolbar's button set
+		// is the union of the group's actions until JS narrows it.
 		if (!ACTIONS.includes(action as SourceAction) || action === 'attribution-mode') return fail(400, { error: 'unknown or unsupported bulk action' })
-		if (candidates.some((c) => c.length !== 3 || c.some((part) => !part))) return fail(400, { error: 'malformed candidate' })
-		const picked = candidates.filter(([, candidateAction]) => candidateAction === action)
+		const picked = form.getAll('candidate').flatMap((c) => {
+			const [sourceId, ...pairs] = String(c).split('|')
+			const match = pairs.find((p) => p.startsWith(`${action}:`))
+			if (!sourceId || !match) return []
+			const commandId = match.slice(action.length + 1)
+			return commandId ? [{ sourceId, commandId }] : []
+		})
 		if (picked.length === 0) return { bulkResults: [], bulkAction: action }
 		const category = String(form.get('category') ?? '').trim()
 		const note = String(form.get('note') ?? '').trim()
 		if (!category && !CATEGORY_OPTIONAL.has(action)) return fail(400, { error: 'a moderation category is required' })
 		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 		const bulkResults = await Promise.all(
-			picked.map(async ([sourceId, , commandId]) => {
+			picked.map(async ({ sourceId, commandId }) => {
 				try {
 					const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/${action}`, {
 						method: 'POST',
