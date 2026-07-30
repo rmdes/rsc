@@ -35,4 +35,5 @@ npm-debug.log*
 .worktrees/
 .opencode/opencode.json
 .opencode/plugins/graphify.js
-graphify-out/cache/stat-index.json
+graphify-out/
+
