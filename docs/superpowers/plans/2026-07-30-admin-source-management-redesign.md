@@ -1208,6 +1208,11 @@ Expected: FAIL — no checkbox/bulk form markup exists yet.
 
 - [ ] **Step 4: Add per-group selection state and the bulk toolbar markup**
 
+> **Superseded by the Mid-execution correction above.** This step's
+> `{#each Array.from(selected…)}` hidden-input loop and its `display:none`
+> toolbar gate are the JS-only design that correction replaced; read it, not
+> this, for the shipped shape. Kept verbatim as the historical record.
+
 In `web/src/routes/admin/feeds/+page.svelte`'s `<script>` block, add near the top (after the existing `$derived`/`$state` declarations, e.g. after `retryFail`):
 
 ```typescript
@@ -1278,6 +1283,13 @@ Replace the group's blurb line (currently `<p class="subnav">{group.blurb}</p>`,
 Note this Step's `commandId` fields use `r.actions[0]?.commandId` — this is a **known simplification for this task only**: it picks the first action's commandId per selected row rather than the commandId matching the SPECIFIC action button clicked. Fix this in Step 5 below once the action-to-commandId lookup is wired correctly — do not skip that fix, this intermediate shape is wrong and Step 5 corrects it.
 
 - [ ] **Step 5: Fix the commandId lookup to match the clicked action, not the first action**
+
+> **Superseded by the Mid-execution correction above.** The flat
+> `sourceId:action:commandId` triple format and the hidden-input loop feeding
+> it are gone; what shipped is one self-describing candidate string per row
+> (`sourceId|action:commandId|…`) carried by the checkbox itself. Read the
+> correction, not this, for the shipped format. Kept verbatim as the
+> historical record.
 
 Replace the hidden-input loop from Step 4:
 
@@ -1663,6 +1675,15 @@ Run: `docker compose exec -T web env -u CORE_API_URL npm test -w web -- --run fe
 Expected: FAIL — no orphan/tombstone checkboxes or bulk forms exist yet.
 
 - [ ] **Step 4: Add the orphan bulk-reap toolbar**
+
+> **Superseded by the Mid-execution correction above** (in part): this step's
+> retroactive advice for Task 5's ordinary groups — "keeping Task 5's checkbox
+> as a plain selection toggle" because "a bare checkbox can't carry the extra
+> action dimension" — is exactly the reasoning that correction overturned: a
+> checkbox CAN carry N `action:commandId` pairs in one self-describing value,
+> and that is what shipped. The orphan/tombstone checkbox-as-candidate shape
+> described here is correct and did ship. Kept verbatim as the historical
+> record.
 
 In the orphan section's `<ul class="following-list source-list">` (from Task 2's rewrite), add a checkbox to each `<li>` (same `form="bulk-orphans"` pattern as Task 5):
 
