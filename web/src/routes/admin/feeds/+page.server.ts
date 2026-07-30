@@ -436,5 +436,68 @@ export const actions: Actions = {
 			})
 		)
 		return { bulkResults, bulkAction: action }
+	},
+	// Bulk reap: per-row force, never a batch-wide toggle — each candidate
+	// already carries the force value §2's retention-driven UI decided for
+	// that specific row (Task 7 renders it), so there is nothing to
+	// re-derive here, only to apply.
+	bulkReap: async (event) => {
+		const form = await event.request.formData()
+		const candidates = form
+			.getAll('candidate')
+			.map(String)
+			.map((c) => {
+				const [sourceId, commandId, force] = c.split(':')
+				return { sourceId, commandId, force: force === 'true' }
+			})
+		if (candidates.length === 0) return { bulkReapResults: [] }
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkReapResults = await Promise.all(
+			candidates.map(async ({ sourceId, commandId, force }) => {
+				try {
+					const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/reap`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ commandId, ...(force ? { force: true } : {}) })
+					})
+					if (!res.ok) return { sourceId, ok: false, error: await coreError(res, 'reap failed') }
+					return { sourceId, ok: true }
+				} catch (err) {
+					return { sourceId, ok: false, error: err instanceof Error ? err.message : 'reap failed' }
+				}
+			})
+		)
+		return { bulkReapResults }
+	},
+	// Bulk tombstone-unblock: same commandId-reuse posture as bulkSource —
+	// each tombstone row already carries its own commandId from load.
+	bulkTombstone: async (event) => {
+		const form = await event.request.formData()
+		const candidates = form
+			.getAll('candidate')
+			.map(String)
+			.map((c) => {
+				const [tombstoneId, commandId] = c.split(':')
+				return { tombstoneId, commandId }
+			})
+		if (candidates.length === 0) return { bulkTombstoneResults: [] }
+		const category = String(form.get('category') ?? '').trim()
+		const note = String(form.get('note') ?? '').trim()
+		if (!category) return fail(400, { error: 'a moderation category is required' })
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		const bulkTombstoneResults = await Promise.all(
+			candidates.map(async ({ tombstoneId, commandId }) => {
+				let outcome
+				try {
+					outcome = await unblockTombstone(f, tombstoneId, { commandId, category, ...(note ? { note } : {}) })
+				} catch (err) {
+					return { tombstoneId, ok: false, error: err instanceof Error ? err.message : 'unblock failed' }
+				}
+				if (outcome.kind === 'unavailable') return { tombstoneId, ok: false, error: 'unavailable' }
+				if (outcome.kind === 'conflict') return { tombstoneId, ok: false, error: outcome.error }
+				return { tombstoneId, ok: true }
+			})
+		)
+		return { bulkTombstoneResults }
 	}
 }

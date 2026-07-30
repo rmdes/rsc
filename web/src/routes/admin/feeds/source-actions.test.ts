@@ -680,3 +680,61 @@ test('a network error on reap echoes sourceId/commandId/force so a retry can rep
 	const res = await actions.reap(formEvent('reap', { sourceId: 's9', commandId: 'retry-me', force: 'true' }, throwingFetch) as never)
 	expect((res as { data: { sourceId: string; commandId: string; force: boolean } }).data).toMatchObject({ sourceId: 's9', commandId: 'retry-me', force: true })
 })
+
+test('bulkReap posts per-row force values independently — a mixed batch sends force only for the rows that need it', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/orph1/reap')) return new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 })
+		if (u.includes('/orph2/reap')) return new Response(JSON.stringify({ kind: 'reaped' }), { status: 200 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const form = new URLSearchParams()
+	form.append('candidate', 'orph1:cmd-orph1:false')
+	form.append('candidate', 'orph2:cmd-orph2:true')
+	const res = (await actions.bulkReap({ request: new Request('http://x/admin/feeds?/bulkReap', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkReapResults: { sourceId: string; ok: boolean }[] }
+	expect(res.bulkReapResults).toEqual([
+		{ sourceId: 'orph1', ok: true },
+		{ sourceId: 'orph2', ok: true }
+	])
+	const [orph1Url, orph1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('orph1'))! as unknown as [string, RequestInit]
+	expect(JSON.parse(String(orph1Init.body))).toEqual({ commandId: 'cmd-orph1' })
+	const [, orph2Init] = fetch.mock.calls.find((c) => String(c[0]).includes('orph2'))! as unknown as [string, RequestInit]
+	expect(JSON.parse(String(orph2Init.body))).toEqual({ commandId: 'cmd-orph2', force: true })
+})
+
+test('bulkReap with zero candidates is a no-op', async () => {
+	const fetch = vi.fn()
+	const res = (await actions.bulkReap({ request: new Request('http://x/admin/feeds?/bulkReap', { method: 'POST', body: new URLSearchParams() }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkReapResults: unknown[] }
+	expect(res.bulkReapResults).toEqual([])
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+test('bulkTombstone posts {commandId, category, note} per selected tombstone and reports per-row outcomes', async () => {
+	const fetch = vi.fn(async (url: string | URL) => {
+		const u = String(url)
+		if (u.includes('/t1/unblock')) return new Response(JSON.stringify({ model: 'logical-v2', kind: 'unblocked' }), { status: 200 })
+		if (u.includes('/t2/unblock')) return new Response(JSON.stringify({ model: 'logical-v2', error: 'source not blocked' }), { status: 409 })
+		throw new Error(`unexpected fetch ${u}`)
+	})
+	const form = new URLSearchParams()
+	form.append('candidate', 't1:cmd-t1')
+	form.append('candidate', 't2:cmd-t2')
+	form.append('category', 'remediated')
+	form.append('note', 'appeal upheld')
+	const res = (await actions.bulkTombstone({ request: new Request('http://x/admin/feeds?/bulkTombstone', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkTombstoneResults: { tombstoneId: string; ok: boolean; error?: string }[] }
+	expect(res.bulkTombstoneResults).toEqual([
+		{ tombstoneId: 't1', ok: true },
+		{ tombstoneId: 't2', ok: false, error: 'source not blocked' }
+	])
+	const [, t1Init] = fetch.mock.calls.find((c) => String(c[0]).includes('t1'))! as unknown as [string, RequestInit]
+	expect(JSON.parse(String(t1Init.body))).toEqual({ commandId: 'cmd-t1', category: 'remediated', note: 'appeal upheld' })
+})
+
+test('bulkTombstone refuses a missing category without calling core', async () => {
+	const fetch = vi.fn()
+	const form = new URLSearchParams()
+	form.append('candidate', 't1:cmd-t1')
+	const res = await actions.bulkTombstone({ request: new Request('http://x/admin/feeds?/bulkTombstone', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
+	expect(res).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
+})
