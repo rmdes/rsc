@@ -458,6 +458,61 @@ for (const reason of ['verified_origin_evidence', 'admin_retained', 'audit_histo
 	})
 }
 
+// --- Task 5: bulk checkboxes + the per-group bulk toolbar ---
+
+function bulkData(over: Record<string, unknown> = {}) {
+	return {
+		groups: [{ key: 'user', title: 'Allowed user sources', blurb: 'blurb text', rows: [baseRow({ id: 'r1', group: 'user', federationStatus: 'none', memberCounts: undefined })] }],
+		expand: null,
+		expandedMembers: [],
+		tombstones: [],
+		tombstoneConsequence: 'nothing restored',
+		categories: ['spam'],
+		cursor: null,
+		nextCursor: null,
+		...NO_ORPHANS,
+		establishCommandId: 'establish-1',
+		...over
+	}
+}
+
+test('each row in an ordinary group has a checkbox, and the group renders one always-present bulk toolbar (no-JS baseline)', () => {
+	const { body } = render(Page, { props: { data: bulkData(), form: null } } as never)
+	expect(body).toContain('name="sourceId" value="r1"')
+	expect(body).toContain('type="checkbox"')
+	// The bulk form posts to ?/bulkSource and is present even with nothing
+	// checked — a no-JS submit with zero boxes checked is a defined no-op
+	// (Task 4), not a missing affordance.
+	expect(body).toContain('action="?/bulkSource')
+})
+
+// The bug the plan's Step 4→5 correction exists to prevent: candidates
+// rendered by iterating group.rows would submit EVERY row's candidate on any
+// bulk click, checked or not. Nothing is checked in an SSR render, so a
+// correct implementation emits no candidate at all here.
+test('an unchecked row contributes NO candidate input — the hidden candidates iterate the selection, not the rows', () => {
+	const { body } = render(Page, { props: { data: bulkData(), form: null } } as never)
+	expect(body).not.toContain('name="candidate"')
+})
+
+test('the bulk toolbar offers a button per action present on EVERY checked row\'s availableActions (server renders the full set; the intersection narrowing is a client-JS enhancement, not required for no-JS baseline)', () => {
+	const row = baseRow({ id: 'r1', group: 'user', federationStatus: 'none', memberCounts: undefined, actions: [{ action: 'quarantine', commandId: 'c1' }, { action: 'block', commandId: 'c2' }] })
+	const data = bulkData({ groups: [{ key: 'user', title: 'Allowed user sources', blurb: 'blurb text', rows: [row] }] })
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	const bulkFormChunk = body.slice(body.indexOf('action="?/bulkSource'), body.indexOf('</form>', body.indexOf('action="?/bulkSource')))
+	expect(bulkFormChunk).toContain('value="quarantine"')
+	expect(bulkFormChunk).toContain('value="block"')
+	// attribution-mode is never bulk-eligible (plan Global Constraints).
+	expect(bulkFormChunk).not.toContain('value="attribution-mode"')
+})
+
+test('bulk outcome reporting: form.bulkResults renders a per-row outcome line naming each failure', () => {
+	const form = { bulkResults: [{ sourceId: 'r1', ok: false, error: 'invalid transition' }, { sourceId: 'r2', ok: true }], bulkAction: 'quarantine' }
+	const { body } = render(Page, { props: { data: bulkData(), form } } as never)
+	expect(body).toContain('r1')
+	expect(body).toContain('invalid transition')
+})
+
 test('a mixed batch of orphan rows renders each with its OWN correct variant, independent of the others', () => {
 	const data = orphanData({
 		orphanRows: [

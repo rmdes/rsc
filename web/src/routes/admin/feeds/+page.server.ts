@@ -399,18 +399,22 @@ export const actions: Actions = {
 	bulkSource: async (event) => {
 		const form = await event.request.formData()
 		const action = String(form.get('action') ?? '')
-		const sourceIds = form.getAll('sourceId').map(String)
-		const commandIds = form.getAll('commandId').map(String)
+		// Each candidate is "sourceId:action:commandId" — one per (checked row ×
+		// action that row actually offers), so ONE form can hold several
+		// actions' worth of candidates and the clicked `action` picks which
+		// apply. Reuses each row's own already-minted commandId (from toRow's
+		// actions[]), so the id is the exact one a lone submit would have used.
+		const candidates = form.getAll('candidate').map((c) => String(c).split(':'))
 		if (!ACTIONS.includes(action as SourceAction) || action === 'attribution-mode') return fail(400, { error: 'unknown or unsupported bulk action' })
-		if (sourceIds.length === 0) return { bulkResults: [], bulkAction: action }
-		if (sourceIds.length !== commandIds.length) return fail(400, { error: 'sourceId/commandId length mismatch' })
+		if (candidates.some((c) => c.length !== 3 || c.some((part) => !part))) return fail(400, { error: 'malformed candidate' })
+		const picked = candidates.filter(([, candidateAction]) => candidateAction === action)
+		if (picked.length === 0) return { bulkResults: [], bulkAction: action }
 		const category = String(form.get('category') ?? '').trim()
 		const note = String(form.get('note') ?? '').trim()
 		if (!category && !CATEGORY_OPTIONAL.has(action)) return fail(400, { error: 'a moderation category is required' })
 		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
 		const bulkResults = await Promise.all(
-			sourceIds.map(async (sourceId, i) => {
-				const commandId = commandIds[i]
+			picked.map(async ([sourceId, , commandId]) => {
 				try {
 					const res = await f(`${base()}/admin/sources/${encodeURIComponent(sourceId)}/${action}`, {
 						method: 'POST',

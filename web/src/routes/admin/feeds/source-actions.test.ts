@@ -226,12 +226,16 @@ test('bulkSource posts the same per-source endpoint once per row, using each row
 		if (u.includes('/s2/quarantine')) return new Response(JSON.stringify({ error: 'invalid transition' }), { status: 409 })
 		throw new Error(`unexpected fetch ${u}`)
 	})
+	// Task 5's request shape: one "sourceId:action:commandId" candidate per
+	// (checked row × action that row offers). The clicked `action` selects
+	// which candidates apply — s1's `block` candidate below must be ignored,
+	// and s3 (a row offering only `block`) must not be touched at all.
 	const form = new URLSearchParams()
 	form.append('action', 'quarantine')
-	form.append('sourceId', 's1')
-	form.append('commandId', 'cmd-s1')
-	form.append('sourceId', 's2')
-	form.append('commandId', 'cmd-s2')
+	form.append('candidate', 's1:quarantine:cmd-s1')
+	form.append('candidate', 's1:block:cmd-s1-block')
+	form.append('candidate', 's2:quarantine:cmd-s2')
+	form.append('candidate', 's3:block:cmd-s3')
 	form.append('category', 'spam')
 	const res = (await actions.bulkSource({
 		request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }),
@@ -255,8 +259,7 @@ test('bulkSource refuses attribution-mode and unknown actions without calling co
 	for (const action of ['attribution-mode', 'constructor', 'purge']) {
 		const form = new URLSearchParams()
 		form.append('action', action)
-		form.append('sourceId', 's1')
-		form.append('commandId', 'cmd-1')
+		form.append('candidate', `s1:${action}:cmd-1`)
 		form.append('category', 'spam')
 		const res = await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
 		expect(res).toMatchObject({ status: 400 })
@@ -264,7 +267,7 @@ test('bulkSource refuses attribution-mode and unknown actions without calling co
 	expect(fetch).not.toHaveBeenCalled()
 })
 
-test('bulkSource with zero selected sourceIds is a no-op, not an error', async () => {
+test('bulkSource with zero selected rows is a no-op, not an error', async () => {
 	const fetch = vi.fn()
 	const form = new URLSearchParams()
 	form.append('action', 'quarantine')
@@ -273,16 +276,35 @@ test('bulkSource with zero selected sourceIds is a no-op, not an error', async (
 	expect(fetch).not.toHaveBeenCalled()
 })
 
-test('bulkSource refuses a sourceId/commandId length mismatch without calling core', async () => {
+// Task 4's sourceId/commandId length-mismatch guard is gone with the flat
+// shape it guarded: a candidate carries all three parts or none. What replaces
+// it is the same trust-boundary check on the triple itself — a candidate
+// missing a part must never reach core with an undefined id.
+test('bulkSource refuses a malformed candidate without calling core', async () => {
+	const fetch = vi.fn()
+	for (const candidate of ['s1:quarantine', 's1:quarantine:', ':quarantine:cmd-1', 's1::cmd-1', '']) {
+		const form = new URLSearchParams()
+		form.append('action', 'quarantine')
+		form.append('candidate', candidate)
+		form.append('category', 'spam')
+		const res = await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
+		expect(res).toMatchObject({ status: 400 })
+	}
+	expect(fetch).not.toHaveBeenCalled()
+})
+
+// The UI only renders candidates for CHECKED rows, so a form carrying none for
+// the clicked action means nothing was selected — a no-op, never "act on
+// whatever else was in the form".
+test('bulkSource ignores candidates belonging to other actions, and does nothing when none match', async () => {
 	const fetch = vi.fn()
 	const form = new URLSearchParams()
 	form.append('action', 'quarantine')
-	form.append('sourceId', 's1')
-	form.append('sourceId', 's2')
-	form.append('commandId', 'cmd-1')
+	form.append('candidate', 's1:block:cmd-1')
+	form.append('candidate', 's2:pause:cmd-2')
 	form.append('category', 'spam')
-	const res = await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)
-	expect(res).toMatchObject({ status: 400 })
+	const res = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: form }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: unknown[] }
+	expect(res.bulkResults).toEqual([])
 	expect(fetch).not.toHaveBeenCalled()
 })
 
@@ -290,14 +312,12 @@ test('bulkSource requires a category unless every action is pause/resume', async
 	const fetch = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
 	const withoutCategory = new URLSearchParams()
 	withoutCategory.append('action', 'quarantine')
-	withoutCategory.append('sourceId', 's1')
-	withoutCategory.append('commandId', 'cmd-1')
+	withoutCategory.append('candidate', 's1:quarantine:cmd-1')
 	expect(await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: withoutCategory }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)).toMatchObject({ status: 400 })
 
 	const pauseForm = new URLSearchParams()
 	pauseForm.append('action', 'pause')
-	pauseForm.append('sourceId', 's1')
-	pauseForm.append('commandId', 'cmd-1')
+	pauseForm.append('candidate', 's1:pause:cmd-1')
 	const pauseRes = (await actions.bulkSource({ request: new Request('http://x/admin/feeds?/bulkSource', { method: 'POST', body: pauseForm }), fetch, url: new URL('http://x/admin/feeds'), cookies } as never)) as { bulkResults: { ok: boolean }[] }
 	expect(pauseRes.bulkResults[0].ok).toBe(true)
 })

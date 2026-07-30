@@ -17,7 +17,10 @@
 	// `action` or `tombstone`'s `tombstoneId`, since `reap`'s fail() sets
 	// neither — `'force' in retryFail` is what distinguishes a reap failure
 	// from the other three actions' shapes below.
-	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string; force?: boolean }
+	// Task 5 adds bulkSource's SUCCESS shape here too (bulkResults/bulkAction):
+	// same reason as the fail fields — one loose read beats narrowing a union
+	// that now spans five actions.
+	type RetryFail = { sourceId?: string; action?: string; commandId?: string; tombstoneId?: string; force?: boolean; bulkResults?: { sourceId: string; ok: boolean; error?: string }[]; bulkAction?: string }
 	const retryFail = $derived(form as RetryFail | null)
 	// Retry id for the establish form specifically (no sourceId/tombstoneId of its
 	// own): was a template {@const}, which requires an enclosing block — hoisted
@@ -116,6 +119,39 @@
 	// this select is the enum at the UI.
 	const CATEGORIES = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
 
+	// One Set of checked source ids per group. Plain client-side UI state,
+	// never posted itself: the bulk bar's hidden `candidate` inputs are
+	// rendered by iterating THIS set, so a row that isn't checked contributes
+	// nothing — iterating group.rows there would submit every row on any bulk
+	// click. Reassigned (not mutated in place) on every toggle because a Set
+	// inside $state isn't itself deeply reactive; the new object reference is
+	// what re-renders the bar.
+	// ponytail: with JS off no candidate renders, so a bulk submit is a defined
+	// no-op and each row's own Manage form stays the script-free path (the bar
+	// itself is in the server output, but hidden until a box is checked).
+	// Ceiling: bulk needs JS. Upgrade path: pack a row's whole action list into
+	// the checkbox's own value — an unchecked box submits nothing natively.
+	let selected: Record<string, Set<string>> = $state({})
+	function toggleSelected(groupKey: string, id: string) {
+		const set = selected[groupKey] ?? new Set<string>()
+		if (set.has(id)) set.delete(id)
+		else set.add(id)
+		selected = { ...selected, [groupKey]: set }
+	}
+
+	// Which verbs a group's bulk bar offers. Nothing checked (the server
+	// baseline) → every bulk-eligible action any row in the group offers, so
+	// the bar ships in the SSR output instead of appearing only once JS ran.
+	// Rows checked → narrowed to the actions EVERY checked row offers, so the
+	// bar can't offer a verb part of the selection would only 409 on.
+	// attribution-mode is never bulk-eligible: it carries a per-row-meaningful
+	// extra field that doesn't generalize to N rows.
+	function bulkActions(group: PageData['groups'][number]): string[] {
+		const chosen = group.rows.filter((r) => selected[group.key]?.has(r.id))
+		const union = [...new Set(group.rows.flatMap((r) => r.actions.map((a) => a.action)))].filter((a) => a !== 'attribution-mode')
+		return chosen.length ? union.filter((a) => chosen.every((r) => r.actions.some((x) => x.action === a))) : union
+	}
+
 	// Shared by every row's Manage panel, ordinary or nested member (C1 fix):
 	// a member row's `actions` is computed by the SAME toRow() as an ordinary
 	// row, so the panel — and the forms it renders — are identical, not a
@@ -132,6 +168,17 @@
 {#if form && 'established' in form && form.established}<p class="notice confirm" role="status">Federation established — the source is now approved.</p>{/if}
 {#if form && 'unblocked' in form && form.unblocked}<p class="notice confirm" role="status">Tombstone unblocked — the URL can be created again. Nothing was restored.</p>{/if}
 {#if form && 'reaped' in form && form.reaped}<p class="notice confirm" role="status">Source reaped — the source and its evidence are gone.</p>{/if}
+<!-- A bulk submit's per-row outcomes. Page-level, beside the other action
+     notices, not per group: bulkResults isn't group-scoped (and a quarantined
+     row has moved group by the time this renders), so repeating the list under
+     every group would print the same outcomes four times. -->
+{#if retryFail?.bulkResults?.length}
+	<ul class="bulk-outcomes">
+		{#each retryFail.bulkResults as r (r.sourceId)}
+			<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'done' : r.error}</li>
+		{/each}
+	</ul>
+{/if}
 
 <!-- No-JS search: a plain GET submit replaces the whole querystring with
      just this form's own field, so a fresh search always starts back at
@@ -146,9 +193,38 @@
 </form>
 
 {#each data.groups as group (group.key)}
+	{@const bulkVerbs = bulkActions(group)}
 	<section>
 		<h3>{group.title}</h3>
-		<p class="subnav">{group.blurb}</p>
+		<!-- The bulk bar takes the blurb's place: a ruled row in normal flow
+		     (MASTER.md — nothing floats), showing the group blurb until rows are
+		     checked and the action buttons after. Both halves are in the server
+		     output; only which one is visible is JS-driven. The rows' checkboxes
+		     reach this form by id (`form=`), since a form can't nest inside the
+		     per-row moderation forms. -->
+		<form id="bulk-{group.key}" method="POST" action="?/bulkSource{otherParams() ? `&${otherParams()}` : ''}" class="bulk-bar" use:enhance>
+			{#each Array.from(selected[group.key] ?? []) as id (id)}
+				{@const r = group.rows.find((gr) => gr.id === id)}
+				{#each r?.actions ?? [] as a (a.action)}
+					<input type="hidden" name="candidate" value="{id}:{a.action}:{a.commandId}" />
+				{/each}
+			{/each}
+			<p class="subnav bulk-blurb" class:has-selection={(selected[group.key]?.size ?? 0) > 0}>
+				<span class="bulk-blurb-text">{group.blurb}</span>
+				<span class="bulk-tools">
+					{selected[group.key]?.size ?? 0} selected ·
+					{#each bulkVerbs as actionName (actionName)}
+						<button name="action" value={actionName}>{LABEL[actionName]}</button>
+					{/each}
+					{#if bulkVerbs.some((a) => a !== 'pause' && a !== 'resume')}
+						<label class="visually-hidden" for="bulk-cat-{group.key}">Moderation category</label>
+						<select id="bulk-cat-{group.key}" name="category" required>
+							{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+						</select>
+					{/if}
+				</span>
+			</p>
+		</form>
 		{#if group.rows.length === 0}
 			<p class="subnav">None.</p>
 		{:else}
@@ -156,6 +232,17 @@
 				{#each group.rows as row (row.id)}
 					{@const expanded = data.expand === row.id}
 					<li>
+						<label class="row-select">
+							<input
+								type="checkbox"
+								name="sourceId"
+								value={row.id}
+								form="bulk-{group.key}"
+								checked={selected[group.key]?.has(row.id) ?? false}
+								onchange={() => toggleSelected(group.key, row.id)}
+							/>
+							<span class="visually-hidden">Select {row.url}</span>
+						</label>
 						<div class="feed-info">
 							<strong class="feed-url">{row.url}</strong>
 							<span>
@@ -415,6 +502,68 @@
 		margin: var(--space-sm) 0 0 var(--space-lg);
 		border-left: 2px solid var(--color-border);
 		padding-left: var(--space-sm);
+	}
+
+	/* The row's bulk-select toggle sits at the top of the row card (a
+	   .source-list li is a stack, not a two-column row); its label text is
+	   hidden because the URL directly below already names the row. */
+	.row-select {
+		align-self: flex-start;
+		padding: 2px 0;
+		cursor: pointer;
+	}
+
+	.bulk-bar {
+		margin: 0 0 var(--space-sm);
+	}
+
+	.bulk-blurb {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	/* A ruled edge under the bar only while it holds actions — the selected
+	   state reads as a section of its own, same rules-divide idea as the rest
+	   of the page. */
+	.bulk-blurb.has-selection {
+		border-bottom: 2px solid var(--color-border);
+		padding-bottom: var(--space-sm);
+	}
+
+	/* Both halves ship in the server output; the class decides which shows. */
+	.bulk-tools,
+	.bulk-blurb.has-selection .bulk-blurb-text {
+		display: none;
+	}
+
+	.bulk-blurb.has-selection .bulk-tools {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-sm);
+	}
+
+	/* Same outline treatment as .source-action button: a bulk verb is no more
+	   a page CTA than a single-row one. */
+	.bulk-blurb button {
+		background: transparent;
+		color: var(--color-foreground);
+		border: 1px solid var(--color-border);
+		font-size: 0.8125rem;
+		padding: 2px var(--space-sm);
+	}
+
+	.bulk-outcomes {
+		list-style: none;
+		margin: 0 0 var(--space-md);
+		padding: 0;
+		font-size: 0.8125rem;
+	}
+
+	.bulk-outcomes .error {
+		color: var(--color-destructive);
 	}
 
 	.source-actions {
