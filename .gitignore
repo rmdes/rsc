@@ -33,3 +33,4 @@ npm-debug.log*
 .superpowers/
 .playwright-mcp/
 .worktrees/
+.opencode/opencode.json
