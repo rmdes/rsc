@@ -34,9 +34,109 @@ Web-only; no `core/` changes anywhere in this plan.
 - **Never `git add -A`** — shared checkout; a parallel session may commit to `main` concurrently. Stage explicit paths.
 - **Every task ends with the web suite green and `svelte-check` clean.**
 - **No raw hex colors, no rounded corners, no `box-shadow`** — every new element uses existing `--color-*`/`--space-*` tokens from `web/src/app.css`, matching the file's existing `<style>` blocks. `design-system/rsc/MASTER.md`'s "nothing floats" rule applies: the bulk toolbar is a ruled row in normal document flow, never `position: fixed`/`sticky`.
-- **No-JS baseline for every bulk toolbar:** the toolbar (buttons + hidden inputs) renders unconditionally in server output — a checkbox-then-submit works with zero JS. `$state`-driven show/hide (swapping the group blurb for the toolbar only once something is checked, matching the maintainer's chosen mockup) is a JS-only enhancement layered on top via `$effect`/reactive class binding — never the only path to a working bulk submit.
+- **No-JS baseline for every bulk toolbar (corrected 2026-07-30 — see "Mid-execution correction" below):** the toolbar's buttons and category `<select>` ship visible in server output by default — never `display:none`-gated behind `$state`, since that hides the only reachable submit path with scripts off. Each checkbox's own `value` is self-describing (its row's id plus every one of its actions' `action:commandId` pairs) so a checked box alone — no reactive state — contributes everything `bulkSource` needs; a plain checkbox-then-submit works with zero JS. `$state`/`onchange` exist ONLY for the cosmetic "N selected" live count and the blurb↔toolbar class swap — pure progressive enhancement, never gating whether a submit does anything.
 - **`attribution-mode` is excluded from bulk actions.** It's the one governance action needing an extra required field (the new mode) with a per-row meaning that doesn't generalize to "apply the same value to N rows" without design the spec never scoped. Every other action in `ACTIONS` (pause/resume/quarantine/allow/approve/reject/revoke/block/unblock) is a plain toggle and is bulk-eligible.
 - **Every new/changed test follows this codebase's existing fixture conventions** — see `web/src/routes/admin/feeds/source-actions.test.ts`'s `formEvent`/`loadAdminWith`/`urlsOf` helpers and `feeds.render.test.ts`'s `render(Page, { props: { data, form } })` SSR pattern (via `svelte/server`, `$app/forms`'s `enhance` stubbed to `() => ({})`). Reuse these helpers; don't invent new ones.
+
+## Mid-execution correction (after Task 5 review, 2026-07-30)
+
+Task 5 shipped exactly what this plan's original Step 5 code specified — a
+`{#each Array.from(selected[group.key] ?? [])}` loop generating `candidate`
+hidden inputs, and the toolbar's buttons hidden behind
+`class:has-selection={...}` resolving to `display:none` — and the task
+reviewer confirmed that design is **JS-only**: with scripts off, `selected`
+never populates (it's written only by an `onchange` handler) and the
+buttons stay `display:none`, so a bulk submit is unreachable regardless of
+which native checkboxes are checked. This directly contradicted the Global
+Constraint immediately above it in the plan's own original text — a plan
+self-contradiction, not an implementer error. The maintainer chose to fix
+the design rather than relax the constraint.
+
+**Corrected design:** each row's checkbox becomes self-describing. Its
+`value` carries the row's id plus every action it offers, pipe/colon
+encoded:
+
+```svelte
+<input
+	type="checkbox"
+	name="candidate"
+	value="{row.id}|{row.actions.map((a) => `${a.action}:${a.commandId}`).join('|')}"
+	checked={selected[group.key]?.has(row.id) ?? false}
+	onchange={() => toggleSelected(group.key, row.id)}
+/>
+```
+
+No hidden-input loop is needed at all — delete the
+`{#each Array.from(selected[group.key] ?? [])} ... {/each}` block Step 5
+added. A checked box alone, with zero JS, submits everything `bulkSource`
+needs.
+
+**Server-side parsing changes** (`web/src/routes/admin/feeds/+page.server.ts`,
+`bulkSource` — originally written in Task 4, migrated to a flat
+`sourceId:action:commandId` triple format in Task 5; now changes shape
+again since one candidate string now describes a whole row, not one
+action):
+
+```typescript
+const candidates = form
+	.getAll('candidate')
+	.map(String)
+	.flatMap((c) => {
+		const [sourceId, ...pairs] = c.split('|')
+		if (!sourceId) return []
+		const match = pairs.find((p) => p.startsWith(`${action}:`))
+		if (!match) return [] // this row doesn't offer the clicked action — skip it, not an error
+		const commandId = match.slice(action.length + 1)
+		return commandId ? [{ sourceId, commandId }] : []
+	})
+```
+
+Rows that don't offer the clicked action are silently skipped (not an
+error) — this can legitimately happen since the toolbar's button set is the
+UNION of checked rows' actions when JS hasn't narrowed it yet (see below).
+
+**Toolbar visibility:** the buttons and category `<select>` ship visible by
+default (no `display:none`/`has-selection` gate on whether they render) —
+`bulkActions()`'s existing union-when-nothing-checked / intersection-when-
+checked logic already handles which actions are OFFERED; visibility is not
+also required for correctness now that any checked+clicked combination that
+doesn't apply to a row is simply skipped server-side per the parsing above.
+`$state`/`selected`/`toggleSelected`/`onchange` survive **only** to drive
+the cosmetic "N selected" count and the blurb↔toolbar swap class — remove
+any behavior where they gate whether a submit reaches the server correctly.
+
+**Also fix, in the same pass (Important, not plan-mandated — an ordinary
+implementation bug the review found):** `selected` is never cleared after a
+bulk submit. Because `use:enhance` triggers `invalidateAll()` without
+remounting the component, `selected[group.key]` keeps the ids of rows that
+already moved to a different group (e.g. a just-quarantined row leaves
+"Allowed user sources"), so the toolbar shows a stale "N selected" count
+that produces zero candidates and a silent no-op on a second click. Add an
+`use:enhance` callback on each bulk form that clears
+`selected[group.key]` before `update()`.
+
+**Test changes required:** the `not.toContain('name="candidate"')`
+regression guard (added during Task 5, proving candidates don't leak when
+nothing is checked) is now obsolete and must be deleted — a checkbox's
+`value` now always contains a `candidate`-shaped string regardless of
+`checked` state (only *checked* boxes are included in the submitted
+`FormData`, which is what actually matters and is unaffected by this
+change; the DOM markup itself legitimately always carries the value now).
+Add a new test instead that submits with one candidate whose action does
+NOT match the clicked action and asserts that row is silently skipped (0
+results for it), covering the parsing's `match` guard above.
+
+**Task 7 (not yet executed) planning-text correction:** Task 7's original
+brief text argued a bare checkbox "can't carry the extra action dimension"
+multi-action ordinary rows need, and used that to justify keeping the
+reactive-Set approach for orphans/tombstones (which are single-action rows,
+so a bare checkbox genuinely was sufficient there). That reasoning is now
+moot given the fix above — a checkbox CAN carry N action:commandId pairs.
+Orphans and tombstones are still fine with a bare single-value checkbox
+(each row has exactly one relevant action — reap or unblock — so there's no
+N-pairs problem there to begin with), but when Task 7 is dispatched, its
+brief should be read alongside this correction, not as if the "checkboxes
+can't do this" reasoning were still the justification.
 
 ---
 
