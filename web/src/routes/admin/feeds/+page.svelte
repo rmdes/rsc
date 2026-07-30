@@ -216,19 +216,7 @@
      notices, not per group: bulkResults isn't group-scoped (and a quarantined
      row has moved group by the time this renders), so repeating the list under
      every group would print the same outcomes four times. -->
-{#if retryFail?.bulkResults?.length}
-	<ul class="bulk-outcomes">
-		{#each retryFail.bulkResults as r (r.sourceId)}
-			<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'done' : r.error}</li>
-		{/each}
-	</ul>
-{:else if retryFail?.bulkResults}
-	<!-- An EMPTY results array is a real outcome: nothing was checked, or no
-	     checked row offered the clicked verb. Rendering nothing for it left a
-	     no-JS submit (where there's no live "N selected" count either) looking
-	     like an identical, silent page. -->
-	<p class="notice" role="status">Nothing selected.</p>
-{/if}
+{@render bulkOutcomes(retryFail?.bulkResults, 'sourceId', 'done')}
 
 <!-- No-JS search: a plain GET submit replaces the whole querystring with
      just this form's own field, so a fresh search always starts back at
@@ -485,6 +473,18 @@
 	</section>
 {/each}
 
+{#snippet bulkOutcomes(results: (Partial<Record<'sourceId' | 'tombstoneId', string>> & { ok: boolean; error?: string })[] | undefined, idKey: 'sourceId' | 'tombstoneId', verb: string)}
+	{#if results?.length}
+		<ul class="bulk-outcomes">
+			{#each results as r (r[idKey])}
+				<li class:error={!r.ok}>{r[idKey]}: {r.ok ? verb : r.error}</li>
+			{/each}
+		</ul>
+	{:else if results}
+		<p class="notice" role="status">Nothing selected.</p>
+	{/if}
+{/snippet}
+
 {#if data.nextCursor}
 	{@const qs = [`cursor=${encodeURIComponent(data.nextCursor)}`, otherParams(new Set(['cursor']))].filter(Boolean).join('&')}
 	<a class="older" href="/admin/feeds?{qs}">More sources</a>
@@ -534,13 +534,7 @@
 			</details>
 		{/if}
 	</form>
-	{#if retryFail?.bulkReapResults?.length}
-		<ul class="bulk-outcomes">
-			{#each retryFail.bulkReapResults as r (r.sourceId)}<li class:error={!r.ok}>{r.sourceId}: {r.ok ? 'reaped' : r.error}</li>{/each}
-		</ul>
-	{:else if retryFail?.bulkReapResults}
-		<p class="notice" role="status">Nothing selected.</p>
-	{/if}
+	{@render bulkOutcomes(retryFail?.bulkReapResults, 'sourceId', 'reaped')}
 	{#if data.orphanRows.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
@@ -632,13 +626,7 @@
 			</details>
 		{/if}
 	</form>
-	{#if retryFail?.bulkTombstoneResults?.length}
-		<ul class="bulk-outcomes">
-			{#each retryFail.bulkTombstoneResults as r (r.tombstoneId)}<li class:error={!r.ok}>{r.tombstoneId}: {r.ok ? 'unblocked' : r.error}</li>{/each}
-		</ul>
-	{:else if retryFail?.bulkTombstoneResults}
-		<p class="notice" role="status">Nothing selected.</p>
-	{/if}
+	{@render bulkOutcomes(retryFail?.bulkTombstoneResults, 'tombstoneId', 'unblocked')}
 	{#if data.tombstones.length === 0}
 		<p class="subnav">None.</p>
 	{:else}
