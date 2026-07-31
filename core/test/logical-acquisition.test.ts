@@ -45,6 +45,40 @@ const guidItem = (guid: string, permalink: boolean, body = 'd'): string =>
 const linkOnly = (link: string, body = 'd'): string => `<item><link>${link}</link><title>t</title><description>${body}</description></item>`
 const bare = (title: string, body: string): string => `<item><title>${title}</title><description>${body}</description></item>`
 
+// ---- enclosure URL volatility must not churn the fingerprint ----------------
+// Podcast feeds wrap audio in tracking redirectors (podtrac/byspotify/mgln.ai/…)
+// whose URL rotates on the tracker's own cadence. The rotating URL must NOT count
+// as a material change, or every poll spawns a phantom version + "edited" marker
+// (the 2026-07-25 763k-row / 2.6 GB runaway; reproduced on rss.art19.com).
+const encItem = (url: string): string =>
+  `<item><guid isPermaLink="false">ep-1</guid><title>t</title><description>d</description><enclosure url="${url}" type="audio/mpeg" length="12345"/></item>`
+
+test('a rotated enclosure tracking URL does not change the fingerprint', () => {
+  const a = parseCandidates(RSS(encItem('https://pscrb.fm/rss/p/mgln.ai/e/441/traffic.megaphone.fm/EP.mp3')))
+  const b = parseCandidates(RSS(encItem('https://pscrb.fm/rss/p/mgln.ai/e/999/traffic.megaphone.fm/EP.mp3')))
+  // same episode, only the tracker prefix rotated → identical fingerprint, no phantom version
+  expect(a.candidates[0].fingerprint).toBe(b.candidates[0].fingerprint)
+})
+
+test('a changed publish date alone does not change the fingerprint', () => {
+  // Dateless h-feed entries get arrival time substituted into `published`
+  // (ingest toIsoOrNow), which churned the fingerprint every poll (blog.om.co,
+  // ratio 4+). Excluding it from the fingerprint fixes that; a real edit still
+  // shows via `updated` and via a content change.
+  const dated = (date: string): string => `<item><guid isPermaLink="false">ep-1</guid><title>t</title><description>d</description><pubDate>${date}</pubDate></item>`
+  const a = parseCandidates(RSS(dated('Mon, 28 Jul 2026 10:00:00 GMT')))
+  const b = parseCandidates(RSS(dated('Mon, 28 Jul 2026 11:00:00 GMT')))
+  expect(a.candidates[0].fingerprint).toBe(b.candidates[0].fingerprint)
+})
+
+test('a genuinely different enclosure (size) still changes the fingerprint', () => {
+  // guard: dropping the URL must not drop ALL enclosure signal — a real media
+  // change (different byte length) is still a material change.
+  const a = parseCandidates(RSS(encItem('https://x/EP.mp3').replace('length="12345"', 'length="12345"')))
+  const b = parseCandidates(RSS(`<item><guid isPermaLink="false">ep-1</guid><title>t</title><description>d</description><enclosure url="https://x/EP.mp3" type="audio/mpeg" length="99999"/></item>`))
+  expect(a.candidates[0].fingerprint).not.toBe(b.candidates[0].fingerprint)
+})
+
 // ---- delivery identity priority (spec §2.2) ---------------------------------
 
 test('an opaque GUID is the exact delivery key and is never URL-normalized', () => {
@@ -96,6 +130,26 @@ test('the observation version records the complete durable first-arrival tuple',
   expect(rows.map((r) => r.wire_ordinal)).toEqual([0, 1])
   expect(rows.every((r) => r.run_id === run.runId)).toBe(true)
   expect(rows.every((r) => r.arrival_at === NOW)).toBe(true)
+})
+
+test('a delivery retains at most 5 observation versions; older ones are evicted with their FK children', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  let body = ''
+  const fetchFn = fakeFetch({ 'https://feed.test/f': () => ok(RSS(guidItem('g1', false, body))) })
+  // 7 distinct bodies under one stable delivery key → 7 versions without a cap.
+  // Belt-and-suspenders against a feed that churns a fingerprinted field every
+  // poll (e.g. an arrival-substituted date); bounds storage AND jobs.
+  for (let i = 0; i < 7; i++) {
+    body = `body-${i}`
+    const eng = createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => `2026-07-23T00:0${i}:00.000Z` })
+    await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+  }
+  expect(count(raw, 'observation_versions_v2')).toBe(5)
+  // jobs cascaded with the evicted versions — an uncascaded RESTRICT would have thrown
+  expect(count(raw, 'reconciliation_jobs_v2')).toBe(5)
+  const newest = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 ORDER BY arrival_at DESC LIMIT 1`).get() as { canonical_material: Buffer }
+  expect(Buffer.from(newest.canonical_material).toString()).toContain('body-6') // newest kept
 })
 
 test('an unchanged refetch creates no new version or job and only bumps seen metadata', async () => {

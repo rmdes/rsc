@@ -265,10 +265,18 @@ function canonicalMaterialFor(it: RawItem, keyKind: KeyKind, key: string): Buffe
     title: it.title,
     content: it.content,
     link: it.link,
-    published: it.rawDate,
+    // NOT it.rawDate: dateless h-feed entries get arrival time substituted into
+    // it (ingest `toIsoOrNow`), which churned a new version + "edited" marker every
+    // poll (blog.om.co). A real edit still shows via `updated` (explicit, stable —
+    // null when absent) and via a content change; a date-only move is noise.
     updated: it.updatedAt,
     inReplyTo: it.inReplyTo,
-    enclosures: it.enclosures.map((e) => [e.url, e.mimeType, e.sizeBytes, e.durationSeconds]),
+    // NOT e.url: podcast feeds wrap audio in tracking redirectors (podtrac/
+    // byspotify/mgln.ai/…) whose URL rotates on the tracker's own cadence, which
+    // would otherwise churn the fingerprint → a phantom version + "edited" marker
+    // every poll (the 2026-07-25 runaway). The media's identity is its type/size/
+    // duration; the volatile URL is delivery metadata, still stored for playback.
+    enclosures: it.enclosures.map((e) => [e.mimeType, e.sizeBytes, e.durationSeconds]),
   }
   return Buffer.from(JSON.stringify(material), 'utf8')
 }
@@ -585,6 +593,14 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
   const bumpVersion = tx.prepare(`UPDATE observation_versions_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
   const insertVersion = tx.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
   const insertJob = tx.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`)
+  // Belt-and-suspenders retention cap: no single delivery may keep unbounded
+  // observation versions. The enclosure-URL fingerprint fix stops the known
+  // podcast-tracker churn, but a feed that churns any other fingerprinted field
+  // every poll (e.g. an arrival-substituted `published` date) would still grow
+  // one version per poll. This bounds that structurally — keep the newest N,
+  // evict the rest. `LIMIT -1 OFFSET N` = every row past the newest N.
+  const MAX_VERSIONS_PER_DELIVERY = 5
+  const findVictims = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ? ORDER BY arrival_at DESC, id DESC LIMIT -1 OFFSET ?`)
 
   for (const obs of input.observations) {
     const norm = JSON.parse(obs.normalizedJson) as { keyKind: KeyKind; key: string }
@@ -613,6 +629,20 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
     insertVersion.run(obs.id, deliveryId, BOUNDS.fingerprintVersion, obs.fingerprint, Buffer.from(obs.canonicalMaterial), committedAt, runId, obs.wireOrdinal, committedAt, runId, obs.rawEvidenceJson, obs.normalizedJson)
     insertJob.run(randomUUID(), runId, obs.id, committedAt, committedAt)
     counters.observed++
+    // Evict versions beyond the cap (oldest first), children before parents in
+    // FK order (mirrors tombstones.ts). Chunked to stay under the SQL variable
+    // limit on the one-time cleanup of a delivery that was already over-cap.
+    const victims = (findVictims.all(deliveryId, MAX_VERSIONS_PER_DELIVERY) as { id: string }[]).map((r) => r.id)
+    for (let i = 0; i < victims.length; i += 400) {
+      const chunk = victims.slice(i, i + 400)
+      const ph = chunk.map(() => '?').join(',')
+      tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
+      tx.prepare(`DELETE FROM presentation_entries_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
+      tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
+      tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
+      tx.prepare(`DELETE FROM publisher_names_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
+      tx.prepare(`DELETE FROM observation_versions_v2 WHERE id IN (${ph})`).run(...chunk)
+    }
   }
 
   insertFindings(tx, runId, parseFindings, committedAt)
