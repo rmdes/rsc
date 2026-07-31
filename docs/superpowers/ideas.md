@@ -208,9 +208,25 @@ less. Decide the trust posture deliberately.)
 
 ## Verified bylines — check a relayed post against its origin feed
 
-**Status:** candidate (strong — my top vet pick; a *security* capability).
+**Status:** ✅ substantially shipped (verified 2026-07-30) — under a different
+name and architecture than proposed below. The logical-v2 pipeline now has
+**`verified_origin`**, the strongest evidence-level rung
+(`core/src/logical/verification.ts`, `core/src/logical/reconcile.ts:224-334`,
+`core/src/logical/projector.ts:17-27`/`types.ts:22-24`), backed by
+`docs/superpowers/specs/2026-07-22-rsc-moderation-events-verification-design.md`.
+It fetches the claimed origin feed, confirms the item's guid is actually
+present, and writes a `verified_origin` publisher claim + audit entry on
+match — exactly this idea's mechanism. **Remaining gap** (the idea's stated
+payoff, not yet built): no public/SSR "verified" badge on post pages
+(evidence is surfaced only in the admin `/admin/feeds` view today,
+`+page.svelte:104-128`), and `adoptOrphans`/thread-resolution does not yet
+*refuse* to attach a relayed reply until its origin vouches — the
+byline-spoofing closure this idea named as the real payoff is still open.
+Mechanism/Grounding below describes the original v1-era design (predates the
+v2 rewrite) — kept for the record; the underlying idea is what shipped, just
+not via `ingest.ts`/`sourceFeedUrl`.
 
-**Mechanism.** When we consume an aggregate feed (rss.chat firehose, another
+**Mechanism (original, v1-era — superseded by `verification.ts` above).** When we consume an aggregate feed (rss.chat firehose, another
 instance's `/users/rss.xml`), authorship comes from the RSS `<source url>`
 element and is stored as `sourceName`/`sourceFeedUrl` with **no check that the
 named feed actually contains the item**. At ingest, an item whose arriving feed
@@ -1012,17 +1028,21 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
   diagnosability, not correctness. Status: backlog.
 
 - **`offFlagApp` is a hand-copy of `server.ts`'s flag-off branch, so the
-  off-flag gate cannot fail on a `server.ts` change.**
-  `core/test/logical-v4-vertical.test.ts:88-121` reassembles the disabled
-  composition by hand — tripwire, activation demotion, `compose`, v1 push-in
-  wiring — and omits the `pushInEffective` guard that `core/src/server.ts:118`
-  actually applies (`pushInApi: !pushInEffective(config) ? undefined : …`).
-  **Consequence:** the test asserts a *replica* of the off-flag posture, not the
-  posture itself, so a future edit to `server.ts`'s disabled branch can diverge
-  without turning the gate red — the exact failure the gate exists to catch.
-  **Fix:** export the flag-off composition from `server.ts` (or a small module
-  it calls) and have the test drive that one function, instead of mirroring it.
-  Status: backlog.
+  off-flag gate cannot fail on a `server.ts` change.** *(Original finding,
+  2026-07-24 — see resolution below.)* `core/test/logical-v4-vertical.test.ts:88-121`
+  reassembled the disabled composition by hand — tripwire, activation demotion,
+  `compose`, v1 push-in wiring — and omitted the `pushInEffective` guard that
+  `core/src/server.ts:118` actually applies. **Consequence:** the test asserted
+  a *replica* of the off-flag posture, not the posture itself, so a future edit
+  to `server.ts`'s disabled branch could diverge without turning the gate red.
+  **Status: ✅ moot (verified 2026-07-30) — resolved by retirement, not by the
+  fix described.** The V1 retirement milestone deleted the flag-off branch
+  entirely rather than fixing its test coverage:
+  `core/test/logical-v4-vertical.test.ts:28-29` now states *"The former Part A
+  (off-flag regression) retired with the v1 branch: there is no flag-off
+  composition left to gate."* `offFlagApp`/`pushInEffective` no longer appear
+  in the test file — the code path being tested doesn't exist anymore, so
+  there's nothing left to fix.
 
 - **Admin feeds page: surface federations above the bulk** — after an OPML
   import (60+ sources) the admin list's created_at-DESC pagination buries
@@ -1709,12 +1729,26 @@ the rail until there's enough like volume for "popular" to mean anything.
   brainstorm→spec.
 
 - **Dead client/service surface sweep (from V1 retirement's final
-  whole-branch review, 2026-07-27)** — a structural "exported, zero
-  importers" sweep (as opposed to the name-based v1-flavored greps this
-  release relied on elsewhere) turned up real residue the release's own
-  tasks didn't own, plus items each task's reviewer explicitly deferred
-  here. Mechanism: none of this is design work — it's inventory plus
-  careful deletion, one PR. Grounding, itemized:
+  whole-branch review, 2026-07-27)** — **Status: ✅ DONE (verified
+  2026-07-30) — nearly the entire itemized list below is now deleted.**
+  Re-swept fresh against current `main`: every mechanical item (the
+  `web/src/lib/api.ts`/`logical-api.ts`/`tabs.ts` dead exports, the
+  `+page.server.ts` `mode: 'v2'` field and its addendum's stale-flag
+  comments, the entire core-side v1 read chain in `service.ts` +
+  `Repository` interface + `sqlite.ts` — the one item flagged as "real
+  surgery," done anyway, the `isCap`/`capFetch` test-mock scaffolding, and
+  the stale-flag comments in `opml.test.ts`/`service.test.ts`) is gone.
+  The two non-mechanical judgment calls both resolved in favor of "keep, not
+  dead": `AdminRefreshResult` (`core/src/logical/types.ts`) is now actively
+  used by `core/src/api/logical-routes.ts` (imported + used building
+  refresh-endpoint responses) — it was a v2-era type someone meant to wire
+  up, not v1 residue; `core/test/subscribe.test.ts` was renamed to
+  `core/test/source-subscribe.test.ts`, correctly matching its subject. Only
+  one residual remains, and it's harmless: `core/test/logical-v4-vertical.test.ts:138`
+  still passes an inert `RSC_SOURCE_MODEL_V2: 'on'` key into `loadConfig` (the
+  key isn't read). Original write-up retained below for the record.
+  Mechanism (historical): none of this was design work — it was inventory
+  plus careful deletion. Grounding, itemized:
   - `web/src/lib/api.ts`: `addRemoteUser`, `listAdminFeeds`,
     `removeRemoteFeed` — zero production callers (their core endpoints
     `POST /users`, `GET /admin/feeds`, `DELETE /users/:handle` were
@@ -1766,28 +1800,18 @@ the rail until there's enough like volume for "popular" to mean anything.
     `core/src` comments (the file itself was deleted in Task 6) — lower
     value than the rest here, harder to sweep mechanically (each needs
     manual retargeting to whatever replaced the cited logic).
-  Why: every one of these is inert-but-misleading — code or comments
-  that read as "this might still matter" to the next person who greps
-  for `sourceModelV2` or traces a caller, when it provably doesn't.
-  Tradeoff: none of it is urgent (nothing here is reachable, so nothing
-  here is a correctness risk) — pure debt-interest reduction. The
-  Repository-interface item is the only piece that needs a real plan
-  rather than a mechanical PR. Status: backlog — bundle the mechanical
-  items into one PR; the Repository-interface item may want its own,
-  smaller spec if it turns out `repository-contract.ts` assumes any of
-  these methods exist for reasons beyond legacy coverage.
+  Why (historical): every one of these was inert-but-misleading — code or
+  comments that read as "this might still matter" to the next person who
+  greps for `sourceModelV2` or traces a caller, when it provably didn't.
 
   **Addendum (2026-07-27, the release's own final cleanup-commit
   review):** 3 more stale-flag sites the cleanup commit's itemized scope
-  didn't reach, same class as above: `web/src/routes/admin/feeds/
-  +page.server.ts:135,204` (two more "the flag is on" comments in a file
-  the cleanup batch never touched); `core/test/opml.test.ts:34` and
-  `core/test/service.test.ts:146` (stale flag language in test-file
-  comments, outside the batch's stated `core/src`/`web/src` scope);
-  `core/test/logical-v4-vertical.test.ts:138` passes an inert
-  `RSC_SOURCE_MODEL_V2: 'on'` key into `loadConfig` (harmless — the key
-  isn't read — not worth a special fix, just noting it's the last
-  remaining string literal of the flag anywhere in a test fixture).
+  didn't reach, same class as above — also now gone (verified 2026-07-30):
+  the two `+page.server.ts:135,204` "flag is on" comments (the whole file
+  was rewritten by the 2026-07-30 admin action-surface redesign, no
+  `sourceModelV2` language remains anywhere in it); `core/test/opml.test.ts:34`
+  and `core/test/service.test.ts:146` stale flag comments. Only the
+  `logical-v4-vertical.test.ts:138` inert fixture key (noted above) survives.
 
 ---
 
@@ -2149,10 +2173,40 @@ the gap [[Paste an image into the composer]] would close later if picked up.
 
 ## Observation-version churn has no cap or circuit-breaker — the 2026-07-25 incident's mechanism, not the incident itself
 
-**Status:** ⭐ candidate — 2026-07-28, backlog companion to the
-`2026-07-25-admin-governance-visibility-design.md` rev 2 fold (that spec's
-own review flagged this as more urgent than either spec it touched, and the
-maintainer's call on task-now-vs-backlog is still open).
+**Status:** ✅ MOSTLY RESOLVED 2026-07-31 (commit `00bc235`, on origin/main).
+The root-cause attribution below is **WRONG** — it was NOT an identity-key
+collision (ruled out empirically: all 295 feeds are 1:1 after import). The real
+cause is **volatile fingerprint fields**: the enclosure tracking URL (podcast
+redirectors — podtrac/byspotify/mgln.ai/pscrb.fm — rotate it every poll,
+reproduced on rss.art19.com: 351 items → 351 phantom versions) and the
+arrival-substituted `published` date on dateless h-feed entries (blog.om.co).
+Both are now excluded from the observation fingerprint, and a **per-delivery
+version cap of 5** (the "cap or circuit-breaker" this entry asked for) now bounds
+any residual volatility (`deleteObservationVersions` cascade helper, `94bfb7d`).
+STILL UNBUILT: mechanism (b) below — a churn-rate `acquisition_findings_v2`
+finding + auto-pause — but now low-value, since storage is structurally bounded.
+Historical (pre-fix, mis-attributed) framing retained below.
+
+**Status (historical, pre-fix):** ⭐ candidate, still open (verified 2026-07-30) — **an adjacent
+feature shipped, but it does not close this idea.** The
+remote-content-retention milestone (`26cc9ea`, spec
+`docs/superpowers/specs/2026-07-29-remote-content-retention-design.md`,
+`trimSourceToCap` in `core/src/logical/tombstones.ts:198-308`, wired via
+`core/src/logical/runtime.ts`) shipped a **per-source `logical_items_v2`
+count+age retention cap** — admin opt-in (two settings, `max_remote_items_per_source`/
+`max_remote_item_age_days`, both default `0`/unlimited). That is candidate
+mechanism (a) *reshaped* — but it caps **items**, not per-delivery
+`observation_versions_v2` rows, and the spec explicitly says so: its own
+Scope section states the 2026-07-25 incident's mechanism (an identity-key
+collision causing per-delivery re-registration as "new" versions) **is not
+fixed by this feature and this feature does not depend on it being fixed**.
+A source with a colliding delivery can still churn unbounded
+`observation_versions_v2` rows under one live, uncapped item. Candidate
+mechanism (b) — a churn-rate finding + auto-pause — remains **fully
+unbuilt**: no `acquisition_findings_v2` churn finding, no rate detection, no
+auto-pause exists anywhere. Original backlog framing below retained; treat
+it as still fully open, now with one more admin-opt-in mitigation available
+as a stopgap for the blast-radius half only.
 
 **What happened:** one per-user Gutenberg feed on `rsc.rmendes.net` churned
 763k `observation_versions_v2` rows / 2.6GB before anyone noticed (found via
@@ -2295,8 +2349,15 @@ already written and tested.
 
 ## About sidebar section
 
+**Status:** candidate, not started (verified 2026-07-30 — this entry's own
+2026-07-27 commit only logged the idea, touched no code).
+
 Allow the admin to replace the text in the sidebar about section with its own text and links, format markdown accepted
 
 ## About page
+
+**Status:** candidate, not started (verified 2026-07-30 — `grep -rn
+"rmdes.be\|rsc-site" web/src` is empty; the about page still lives in this
+repo and the footer still links to it, not to a landing page).
 
 Move the about page to the rsc-site repository, replace the about footer link with a link to landing page of RSC : https://rmdes.be
