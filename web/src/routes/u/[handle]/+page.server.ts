@@ -1,5 +1,5 @@
 import type { PageServerLoad } from './$types'
-import { redirect, isRedirect } from '@sveltejs/kit'
+import { error, redirect, isRedirect, isHttpError } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { getLogicalRiverOrEmpty } from '$lib/logical-api'
 import { enrichEntries } from '$lib/server/render'
@@ -23,21 +23,26 @@ async function reservedPublisher(f: typeof fetch, handle: string): Promise<strin
 export const load: PageServerLoad = async ({ fetch, params, url }) => {
 	const before = url.searchParams.get('before') ?? undefined
 	const isFirstPage = !before
-	// A stats failure must not down the whole page — same pattern as the home
-	// page's getPeers(fetch).catch(() => []).
-	const stats = await getHandleStats(fetch, params.handle).catch(() => null)
+	// Kept across the try so a river failure after stats succeeds still renders
+	// the coreDown page WITH its stats (same as before).
+	let stats: Awaited<ReturnType<typeof getHandleStats>> = null
 	try {
 		// The reservation lookup is a converted-instance fact; asking before the
-		// river avoids rendering a page we are about to leave. 308 keeps the
-		// method and marks the move permanent.
+		// stats/river avoids 404ing (or rendering) a page we are about to leave.
+		// 308 keeps the method and marks the move permanent.
 		const publisherId = await reservedPublisher(fetch, params.handle)
 		if (publisherId) throw redirect(308, `/p/${publisherId}`)
+		// Resolve the handle before rendering: an unknown handle (core 404 from
+		// stats) is a not-found, NOT a blank river. Any other stats failure falls
+		// through to the coreDown fallback below, same as a river failure.
+		stats = await getHandleStats(fetch, params.handle)
+		if (stats === null) throw error(404, 'No such user')
 		const { entries: timeline, nextCursor } = await getLogicalRiverOrEmpty(fetch, { before, author: params.handle })
 		return { handle: params.handle, timeline: enrichEntries(timeline), nextCursor, isFirstPage, stats }
 	} catch (e) {
-		// A redirect is control flow, not a core failure — it must not be swallowed
-		// into the coreDown fallback below.
-		if (isRedirect(e)) throw e
+		// A redirect or a 404 is control flow, not a core failure — never swallow
+		// them into the coreDown fallback below.
+		if (isRedirect(e) || isHttpError(e)) throw e
 		return { handle: params.handle, timeline: [], nextCursor: null, isFirstPage, coreDown: true, stats }
 	}
 }

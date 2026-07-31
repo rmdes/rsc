@@ -71,6 +71,15 @@ test('a live local handle renders as today — no redirect', async () => {
 	expect(fetch.mock.calls.some((c) => String(c[0]).includes('author=alice'))).toBe(true)
 })
 
+test('an unknown handle 404s instead of rendering a blank river', async () => {
+	// core /users/:handle/stats 404s an unresolved handle; the page must surface
+	// that as a not-found, not a blank timeline. The river is never fetched.
+	const stats404 = () => new Response(JSON.stringify({ error: 'unknown user' }), { status: 404 })
+	const fetch = vi.fn(async (u: string | URL) => (isHandle(u) ? notReserved() : isStats(u) ? stats404() : river()))
+	await expect(call(load, fetch)).rejects.toMatchObject({ status: 404 })
+	expect(fetch.mock.calls.some((c) => String(c[0]).includes('author=alice'))).toBe(false)
+})
+
 test('the redirect still fires after the target is purged — no post-purge branch (spec WP5)', async () => {
 	// The reservation outlives source removal and purge; core keeps answering the
 	// lookup, and /p/:publisherId 404s through the ordinary not-found path.
