@@ -339,6 +339,14 @@ edges are deleted (they depended on rounded corners).
 The soft 3px focus glow is gone — the ring is `:focus-visible`. Field labels are
 12px, weight 400, `--color-secondary` (not 600 bold).
 
+**Checkboxes are excluded from the rule above** — the selector is
+`input:not([type='checkbox'])`. Text-input sizing (`min-height: 36px`, the
+padding, the surface fill) turns a checkbox into a large empty box, which is
+what it did on `/admin/feeds`' row-select controls until 2026-07-30. A
+checkbox instead gets its native box at 16×16 with `accent-color:
+var(--color-accent)` and `cursor: pointer`; give the **label** enough padding
+to reach the 44px action-row hit target rather than inflating the box itself.
+
 ### Rail sections (was: `.panel`)
 
 The boxed `<details>` panel loses its border, radius and surface. It becomes a

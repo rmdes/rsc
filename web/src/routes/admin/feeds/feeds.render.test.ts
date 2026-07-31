@@ -647,6 +647,10 @@ test('the shared action panel is collapsed by default (no `open` attribute) and 
 	expect(panelChunk).not.toContain('open')
 	expect(panelChunk).toContain('>Actions<')
 	expect(panelChunk).toContain('value="quarantine"')
+	// The disclosure renders once per governance group, so the visible word
+	// alone would give a screen reader several identically-named controls —
+	// each is scoped by its group title.
+	expect(panelChunk).toContain('aria-label="Actions — Approved federation"')
 })
 
 test('the group blurb stays visible outside the collapsed panel, with the selected count appended to it (not inside the panel)', () => {

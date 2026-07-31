@@ -290,7 +290,11 @@
 			     unaffected, this only changes the default visual state. -->
 			{#if bulkVerbs.length}
 				<details class="panel">
-					<summary>Actions</summary>
+					<!-- One disclosure per governance group, so the visible word alone
+					     ("Actions") gives four identically-named controls to a screen
+					     reader. aria-label scopes each to its group without lengthening
+					     the visible label. -->
+					<summary aria-label="Actions — {group.title}">Actions</summary>
 					<div class="bulk-tools">
 						{#each bulkVerbs.filter((a) => !CONSEQUENCE[a]) as actionName (actionName)}
 							<button name="action" value={actionName}>{LABEL[actionName]}</button>
@@ -381,7 +385,6 @@
 							{#if expanded}
 								<ul class="following-list source-list member-list">
 									{#each data.expandedMembers as m (m.id)}
-										{@const memberAttrRetry = retryFail?.sourceId === m.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
 										<li>
 											<div class="row-head">
 												<label class="row-select">
@@ -412,23 +415,7 @@
 											</div>
 											<details class="panel">
 												<summary>Attribution mode</summary>
-												<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
-													<input type="hidden" name="sourceId" value={m.id} />
-													<input type="hidden" name="action" value="attribution-mode" />
-													<input type="hidden" name="commandId" value={memberAttrRetry ?? m.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
-													<label class="visually-hidden" for="attr-mode-{m.id}">Attribution mode</label>
-													<select id="attr-mode-{m.id}" name="attributionMode">
-														<option value="single_publisher">single publisher</option>
-														<option value="aggregate">aggregate</option>
-													</select>
-													<label class="visually-hidden" for="attr-cat-{m.id}">Moderation category</label>
-													<select id="attr-cat-{m.id}" name="category" required>
-														{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-													</select>
-													<label class="visually-hidden" for="attr-note-{m.id}">Note (optional)</label>
-													<input id="attr-note-{m.id}" name="note" placeholder="note (optional)" />
-													<button aria-label="Change attribution mode — {m.url}">Change attribution mode</button>
-												</form>
+												{@render attributionForm(m)}
 											</details>
 										</li>
 									{/each}
@@ -436,7 +423,6 @@
 							{/if}
 						{/if}
 						{#if detail === row.id && data.detail}
-							{@const attrRetry = retryFail?.sourceId === row.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
 							<section class="detail-panel">
 								<h4>Source acquisition</h4>
 								<form method="POST" action="?/refresh{otherParams() ? `&${otherParams()}` : ''}" use:enhance>
@@ -459,23 +445,7 @@
 										{/each}
 									</ul>
 								{/if}
-								<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
-									<input type="hidden" name="sourceId" value={row.id} />
-									<input type="hidden" name="action" value="attribution-mode" />
-									<input type="hidden" name="commandId" value={attrRetry ?? row.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
-									<label class="visually-hidden" for="detail-attr-mode">Attribution mode</label>
-									<select id="detail-attr-mode" name="attributionMode">
-										<option value="single_publisher">single publisher</option>
-										<option value="aggregate">aggregate</option>
-									</select>
-									<label class="visually-hidden" for="detail-attr-cat">Moderation category</label>
-									<select id="detail-attr-cat" name="category" required>
-										{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
-									</select>
-									<label class="visually-hidden" for="detail-attr-note">Note (optional)</label>
-									<input id="detail-attr-note" name="note" placeholder="note (optional)" />
-									<button>Change attribution mode</button>
-								</form>
+								{@render attributionForm(row)}
 								{#if data.detail.purgeEligible}
 									<form method="POST" action="?/purge{otherParams() ? `&${otherParams()}` : ''}" class="source-action destructive" use:enhance>
 										<input type="hidden" name="sourceId" value={data.detail.sourceId} />
@@ -499,6 +469,34 @@
 		{/if}
 	</section>
 {/each}
+
+<!-- ONE attribution-mode form for both of its homes (the ordinary row's inline
+     detail panel and a nested federation-member row). It is the one verb the
+     bulk panel can't carry — it needs a value, not just a verb — and writing it
+     out twice re-created exactly the duplication that deleting the per-row
+     Manage panel set out to remove. Ids key off row.id so the two homes can
+     never collide; the retry id is computed here rather than passed, since both
+     callers derived it identically. -->
+{#snippet attributionForm(row: { id: string; url: string; actions: { action: string; commandId: string }[] })}
+	{@const retry = retryFail?.sourceId === row.id && retryFail?.action === 'attribution-mode' ? retryFail.commandId : undefined}
+	<form method="POST" action="?/source{otherParams() ? `&${otherParams()}` : ''}" class="source-action" use:enhance>
+		<input type="hidden" name="sourceId" value={row.id} />
+		<input type="hidden" name="action" value="attribution-mode" />
+		<input type="hidden" name="commandId" value={retry ?? row.actions.find((a) => a.action === 'attribution-mode')?.commandId} />
+		<label class="visually-hidden" for="attr-mode-{row.id}">Attribution mode</label>
+		<select id="attr-mode-{row.id}" name="attributionMode">
+			<option value="single_publisher">single publisher</option>
+			<option value="aggregate">aggregate</option>
+		</select>
+		<label class="visually-hidden" for="attr-cat-{row.id}">Moderation category</label>
+		<select id="attr-cat-{row.id}" name="category" required>
+			{#each CATEGORIES as c (c)}<option value={c}>{c.replace('_', ' ')}</option>{/each}
+		</select>
+		<label class="visually-hidden" for="attr-note-{row.id}">Note (optional)</label>
+		<input id="attr-note-{row.id}" name="note" placeholder="note (optional)" />
+		<button aria-label="Change attribution mode — {row.url}">Change attribution mode</button>
+	</form>
+{/snippet}
 
 <!-- Partial is load-bearing here: each of the three callers' result arrays
      (bulkResults, bulkReapResults, bulkTombstoneResults) carries only ONE of
