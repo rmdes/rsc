@@ -3,6 +3,9 @@ import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition, parseCandidates, healOrphanedRuns } from '../src/logical/acquisition.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { drainReconciliation } from '../src/logical/reconcile.ts'
+import { projectTimeline } from '../src/logical/projector.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import type { CommandEnvelope } from '../src/domain/types.ts'
 
@@ -145,9 +148,12 @@ test('a delivery retains at most 5 observation versions; older ones are evicted 
     const eng = createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => `2026-07-23T00:0${i}:00.000Z` })
     await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
   }
-  expect(count(raw, 'observation_versions_v2')).toBe(5)
+  // newest 5 + the never-evicted FIRST version (byline/ordering stability — see
+  // findVictims): 6, not 5. Without that carve-out the earliest publisher claim
+  // would vanish and the byline could move on an item nobody edited.
+  expect(count(raw, 'observation_versions_v2')).toBe(6)
   // jobs cascaded with the evicted versions — an uncascaded RESTRICT would have thrown
-  expect(count(raw, 'reconciliation_jobs_v2')).toBe(5)
+  expect(count(raw, 'reconciliation_jobs_v2')).toBe(6)
   const newest = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 ORDER BY arrival_at DESC LIMIT 1`).get() as { canonical_material: Buffer }
   expect(Buffer.from(newest.canonical_material).toString()).toContain('body-6') // newest kept
 })
@@ -283,4 +289,46 @@ test('healOrphanedRuns never touches an already-terminal run', async () => {
   expect(healOrphanedRuns(db, LATER)).toBe(0)
   const row = raw.prepare(`SELECT status, outcome FROM acquisition_runs_v2 WHERE id = 'r1'`).get()
   expect(row).toEqual({ status: 'terminal', outcome: 'parsed' })
+})
+
+// The cap must never delete what a reader can see. `presentation_entries_v2`
+// IS the edit history the /post/:id/history page renders, and REMOTE_VISIBLE
+// (projector.ts) gates ordinary visibility on the delivery having BOTH a
+// presentation entry AND a version with a reconciled job — exactly the two row
+// kinds the eviction deletes. Evicting a presentation-backed version therefore
+// truncates visible history, can drop the item out of every timeline, and can
+// move the byline (author/name selection resolves ties by EARLIEST arrival, and
+// the earliest claim rides the first version). Churned versions carry none of
+// that, so protecting presentation-backed ones costs the cap nothing.
+test('eviction spares versions that back presentation history — history, visibility and byline all survive the cap', async () => {
+  const { raw, db } = await fresh()
+  const store = createLogicalStore(db)
+  seedSource(raw, 's1', 'https://feed.test/f')
+  let body = ''
+  const fetchFn = fakeFetch({ 'https://feed.test/f': () => ok(RSS(guidItem('g1', false, body))) })
+  // 7 real content changes on ONE delivery, each reconciled — so each lands an
+  // accepted presentation entry, unlike the churn case the cap targets.
+  for (let i = 0; i < 7; i++) {
+    body = `body-${i}`
+    const now = `2026-07-23T00:0${i}:00.000Z`
+    const eng = createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => now })
+    await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+    drainReconciliation({ store, now: () => now })
+  }
+
+  // The ORIGINAL revision survives — never evicted, however far the cap bites.
+  // (Middle history is deliberately dropped; that is the cap doing its job.)
+  const oldest = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 ORDER BY arrival_at ASC LIMIT 1`).get() as { canonical_material: Buffer }
+  expect(Buffer.from(oldest.canonical_material).toString()).toContain('body-0')
+  // …alongside the newest N: first + last, with the gap in between.
+  expect(count(raw, 'observation_versions_v2')).toBe(6)
+
+  // No presentation entry is ever orphaned of its version.
+  expect(count(raw, 'presentation_entries_v2 pe LEFT JOIN observation_versions_v2 v ON v.id = pe.observation_version_id', 'WHERE v.id IS NULL')).toBe(0)
+
+  // Visibility (REMOTE_VISIBLE) and the byline both hold: the earliest claim
+  // rides the first version, which is exactly what the eviction now spares.
+  const env = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 10, viewer: { localAccountId: null, activeSourceIds: [] } }))
+  expect(env.timeline).toHaveLength(1)
+  expect(env.timeline[0].selectedAuthor.displayName).toBe('T')
 })

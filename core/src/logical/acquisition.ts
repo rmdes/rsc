@@ -599,8 +599,30 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
   // every poll (e.g. an arrival-substituted `published` date) would still grow
   // one version per poll. This bounds that structurally — keep the newest N,
   // evict the rest. `LIMIT -1 OFFSET N` = every row past the newest N.
+  //
+  // The FIRST version is never a victim. Author and publisher-name selection
+  // resolve ties by EARLIEST arrival (compareFirstArrival), and the earliest
+  // claim/name rides the first version — evicting it silently moves the byline
+  // on an item nobody edited. Keeping it also keeps the original revision at the
+  // bottom of the history page, so a truncated history reads as "first … latest"
+  // with a gap, not as an arbitrary window.
+  //
+  // What this canNOT preserve: on a feed that genuinely churns a fingerprinted
+  // field every poll, each version is a real presentation revision, so bounding
+  // storage necessarily drops MIDDLE history — presentation_entries_v2 is what
+  // /post/:id/history renders. That trade is the whole point of a cap and is
+  // accepted here; it is NOT free, and protecting every presentation-backed
+  // version instead would make the cap a no-op (presentationFingerprint includes
+  // the enclosure URL, so churned versions carry entries too).
+  // Ordinary visibility is safe either way: REMOTE_VISIBLE needs one presentation
+  // entry AND one reconciled job on the delivery, and the survivors keep theirs.
   const MAX_VERSIONS_PER_DELIVERY = 5
-  const findVictims = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ? ORDER BY arrival_at DESC, id DESC LIMIT -1 OFFSET ?`)
+  const findVictims = tx.prepare(
+    `SELECT id FROM observation_versions_v2 v
+     WHERE v.delivery_id = ?
+       AND v.id != (SELECT id FROM observation_versions_v2 WHERE delivery_id = v.delivery_id ORDER BY arrival_at ASC, id ASC LIMIT 1)
+     ORDER BY v.arrival_at DESC, v.id DESC LIMIT -1 OFFSET ?`,
+  )
 
   for (const obs of input.observations) {
     const norm = JSON.parse(obs.normalizedJson) as { keyKind: KeyKind; key: string }
