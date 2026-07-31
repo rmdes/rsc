@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { resolveTab } from './tabs'
+import { resolveTab, TAB_LABELS } from './tabs'
 
 const registered = { isAnonymous: false }
 const anon = { isAnonymous: true }
@@ -19,4 +19,13 @@ test('invalid tab and guest-on-personal fall back to the viewer default', () => 
   expect(resolveTab('bogus', registered)).toBe('personal')
   expect(resolveTab('bogus', null)).toBe('public')
   expect(resolveTab('personal', null)).toBe('public')
+})
+
+test('labels rename personal→following and public→explore while URL keys stay personal/public', () => {
+  // The display label is decoupled from the routing key: renaming the tab must
+  // never change ?tab= or resolveTab (bookmarks + lens logic depend on the key).
+  expect(TAB_LABELS.personal).toBe('following')
+  expect(TAB_LABELS.public).toBe('explore')
+  expect(resolveTab('personal', registered)).toBe('personal')
+  expect(resolveTab('public', null)).toBe('public')
 })

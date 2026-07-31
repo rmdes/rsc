@@ -2,6 +2,17 @@
 export const TABS = ['local', 'federated', 'personal', 'public'] as const
 export type Tab = (typeof TABS)[number]
 
+// Display labels, decoupled from the routing key: `personal` reads as
+// "following" (the sources you chose, not a private view) and `public` as
+// "explore" (the whole-instance firehose). The keys stay personal/public so
+// ?tab= bookmarks and resolveTab keep working.
+export const TAB_LABELS: Record<Tab, string> = {
+	local: 'local',
+	federated: 'federated',
+	personal: 'following',
+	public: 'explore'
+}
+
 // Resolve ?tab= + viewer state to the tab actually rendered. Guests can never
 // resolve to personal (no handle to filter by); anons can select it explicitly
 // (they have a follow graph) but default to public.

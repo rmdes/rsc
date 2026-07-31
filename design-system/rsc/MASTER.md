@@ -422,7 +422,7 @@ grid runs edge to edge and the rules do the dividing.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ .nav  RSC · Local Federated Personal Public · Firehose       │  2px rule
+│ .nav  RSC · Local Federated Following Explore · Firehose     │  2px rule
 │       … @handle (no disclosure glyph) / Log in · Register    │
 ├────────────┬─────────────────────────────────┬───────────────┤
 │ tools rail │ river                           │ meta rail     │

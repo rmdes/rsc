@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
+	import { TAB_LABELS } from '$lib/tabs'
 	import Avatar from '$lib/Avatar.svelte'
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
@@ -161,7 +162,7 @@
 		<h1 class="visually-hidden">Timeline</h1>
 
 		<div class="page-head">
-			<span class="kicker">{data.tab} river</span>
+			<span class="kicker">{TAB_LABELS[data.tab]} river</span>
 			<h2>Everything from you and the people you follow</h2>
 		</div>
 
@@ -181,7 +182,7 @@
 		{#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 
 		{#if data.tab === 'personal' && posts.length === 0 && !data.coreDown}
-			<p class="notice">Your personal river is empty — <a href="/u/{data.me?.user.handle}/following">follow people and feeds</a> to fill it.</p>
+			<p class="notice">Your following river is empty — <a href="/u/{data.me?.user.handle}/following">follow people and feeds</a> to fill it.</p>
 		{/if}
 
 		<ul class="timeline">
