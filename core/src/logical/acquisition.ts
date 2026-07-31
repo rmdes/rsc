@@ -6,7 +6,7 @@ import type { LookupFn } from '../domain/push-guard.ts'
 import { parseFeedWithMeta, mergeDiscovery } from '../domain/ingest.ts'
 import { discoverFeed } from '../domain/discovery.ts'
 import { choosePushTarget } from './push.ts'
-import { isTombstoned } from './tombstones.ts'
+import { isTombstoned, deleteObservationVersions } from './tombstones.ts'
 import { normalizePermalink } from './roots.ts'
 import type {
   AcquisitionReason, AcquisitionRun, ClaimAcquisitionResult, CommitAcquisitionInput,
@@ -651,20 +651,10 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
     insertVersion.run(obs.id, deliveryId, BOUNDS.fingerprintVersion, obs.fingerprint, Buffer.from(obs.canonicalMaterial), committedAt, runId, obs.wireOrdinal, committedAt, runId, obs.rawEvidenceJson, obs.normalizedJson)
     insertJob.run(randomUUID(), runId, obs.id, committedAt, committedAt)
     counters.observed++
-    // Evict versions beyond the cap (oldest first), children before parents in
-    // FK order (mirrors tombstones.ts). Chunked to stay under the SQL variable
-    // limit on the one-time cleanup of a delivery that was already over-cap.
+    // Evict versions beyond the cap (oldest first) via the shared cascade helper —
+    // the single source of truth for observation-version deletes (tombstones.ts).
     const victims = (findVictims.all(deliveryId, MAX_VERSIONS_PER_DELIVERY) as { id: string }[]).map((r) => r.id)
-    for (let i = 0; i < victims.length; i += 400) {
-      const chunk = victims.slice(i, i + 400)
-      const ph = chunk.map(() => '?').join(',')
-      tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
-      tx.prepare(`DELETE FROM presentation_entries_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
-      tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
-      tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
-      tx.prepare(`DELETE FROM publisher_names_v2 WHERE observation_version_id IN (${ph})`).run(...chunk)
-      tx.prepare(`DELETE FROM observation_versions_v2 WHERE id IN (${ph})`).run(...chunk)
-    }
+    if (victims.length) deleteObservationVersions(tx, victims)
   }
 
   insertFindings(tx, runId, parseFindings, committedAt)

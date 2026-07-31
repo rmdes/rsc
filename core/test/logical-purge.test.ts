@@ -7,7 +7,7 @@ import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import {
-  PURGE_INVENTORY, PURGE_ROOT_TABLES, removeSourceEvidence, writePurgeTombstone,
+  PURGE_INVENTORY, PURGE_ROOT_TABLES, removeSourceEvidence, writePurgeTombstone, deleteObservationVersions,
 } from '../src/logical/tombstones.ts'
 import { resolveInitialParent } from '../src/logical/threading.ts'
 import { projectItem } from '../src/logical/projector.ts'
@@ -79,6 +79,28 @@ async function makeItem(db: Db, raw: Raw, store: Store, sourceId: string, url: s
   drain(store)
   return itemByLink(raw, link)
 }
+
+// ---- shared observation-version delete helper (used by cap eviction + trim) --
+
+test('deleteObservationVersions removes a version and every FK-RESTRICT child', async () => {
+  const { raw, db, store } = await fresh()
+  await makeItem(db, raw, store, 's1', 'https://a.test/f', 'https://a.test/p1')
+  const vid = (raw.prepare(`SELECT id FROM observation_versions_v2 LIMIT 1`).get() as { id: string }).id
+  // acquire + drain leaves the RESTRICT children in place — deleting the version
+  // WITHOUT clearing these first throws FOREIGN KEY constraint failed.
+  expect(count(raw, 'reconciliation_jobs_v2', `WHERE observation_version_id = ?`, vid)).toBeGreaterThan(0)
+  expect(count(raw, 'presentation_entries_v2', `WHERE observation_version_id = ?`, vid)).toBeGreaterThan(0)
+  expect(count(raw, 'publisher_claims_v2', `WHERE observation_version_id = ?`, vid)).toBeGreaterThan(0)
+
+  db.write((tx) => deleteObservationVersions(tx, [vid]))
+
+  expect(count(raw, 'observation_versions_v2', `WHERE id = ?`, vid)).toBe(0)
+  expect(count(raw, 'reconciliation_jobs_v2', `WHERE observation_version_id = ?`, vid)).toBe(0)
+  expect(count(raw, 'presentation_entries_v2', `WHERE observation_version_id = ?`, vid)).toBe(0)
+  expect(count(raw, 'publisher_claims_v2', `WHERE observation_version_id = ?`, vid)).toBe(0)
+  expect(count(raw, 'logical_conflicts_v2', `WHERE observation_version_id = ?`, vid)).toBe(0)
+  expect(count(raw, 'publisher_names_v2', `WHERE observation_version_id = ?`, vid)).toBe(0)
+})
 
 // ---- command matrix ---------------------------------------------------------
 

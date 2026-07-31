@@ -195,6 +195,25 @@ function chunk<T>(ids: T[], size = IN_CHUNK_SIZE): T[][] {
   return out
 }
 
+// Single source of truth for deleting a set of observation versions and every
+// row that FK-references them — children before parent (RESTRICT), chunked under
+// the SQL variable ceiling. Shared by the version-cap eviction (acquisition.ts)
+// and trimSourceToCap below; the full-source purge (removeSourceEvidence) deletes
+// the same set source-scoped and is guarded by the PURGE_INVENTORY walking test.
+// Centralising it means a new FK child of observation_versions_v2 is added in ONE
+// place, not silently missed at one of the three delete sites.
+export function deleteObservationVersions(tx: WriteTx, versionIds: string[]): void {
+  for (const ids of chunk(versionIds)) {
+    const ph = ids.map(() => '?').join(',')
+    tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${ph})`).run(...ids)
+    tx.prepare(`DELETE FROM presentation_entries_v2 WHERE observation_version_id IN (${ph})`).run(...ids)
+    tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${ph})`).run(...ids)
+    tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${ph})`).run(...ids)
+    tx.prepare(`DELETE FROM publisher_names_v2 WHERE observation_version_id IN (${ph})`).run(...ids)
+    tx.prepare(`DELETE FROM observation_versions_v2 WHERE id IN (${ph})`).run(...ids)
+  }
+}
+
 // Remote content retention (spec 2026-07-29, rev 4): trims a source's OLDEST
 // remote items once it exceeds an admin-configured count and/or age cap.
 // Deliberately standalone -- NOT a generalization of removeSourceEvidence.
@@ -260,18 +279,15 @@ export function trimSourceToCap(tx: WriteTx, input: { sourceId: string; maxCount
       const versionRows = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).all(...idsChunk) as { id: string }[]
       for (const r of versionRows) versionIds.push(r.id)
     }
-    if (versionIds.length > 0) {
-      for (const idsChunk of chunk(versionIds)) {
-        const vph = idsChunk.map(() => '?').join(',')
-        tx.prepare(`DELETE FROM reconciliation_jobs_v2 WHERE observation_version_id IN (${vph})`).run(...idsChunk)
-        tx.prepare(`DELETE FROM publisher_claims_v2 WHERE observation_version_id IN (${vph})`).run(...idsChunk)
-        tx.prepare(`DELETE FROM logical_conflicts_v2 WHERE observation_version_id IN (${vph})`).run(...idsChunk)
-      }
-    }
+    // version-scoped children + the versions via the shared helper — this also
+    // deletes publisher_names, which the hand-rolled block used to omit (leaving
+    // dangling name-evidence rows). presentation_entries + observation_versions
+    // were previously deleted by delivery_id here; the helper deletes them by
+    // observation_version_id, and versionIds covers every version of these
+    // deliveries, so the effect is identical.
+    if (versionIds.length > 0) deleteObservationVersions(tx, versionIds)
     for (const idsChunk of chunk(deliveryIds)) {
       const dph = idsChunk.map(() => '?').join(',')
-      tx.prepare(`DELETE FROM presentation_entries_v2 WHERE delivery_id IN (${dph})`).run(...idsChunk)
-      tx.prepare(`DELETE FROM observation_versions_v2 WHERE delivery_id IN (${dph})`).run(...idsChunk)
       tx.prepare(`DELETE FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND key IN (${dph})`).run(...idsChunk)
       tx.prepare(`DELETE FROM deliveries_v2 WHERE id IN (${dph})`).run(...idsChunk)
     }
