@@ -9,7 +9,8 @@
 **Tech Stack:** core = Hono + Kysely + better-sqlite3 (Node 22 native type-stripping, no build); web = SvelteKit (Svelte 5 runes, adapter-node). Dev in Docker.
 
 **Spec:** `docs/superpowers/specs/2026-08-01-configurable-tab-copy-design.md`
-**Review folded:** `docs/superpowers/reviews/2026-08-01-configurable-tab-copy-review.md`
+**Spec review folded:** `docs/superpowers/reviews/2026-08-01-configurable-tab-copy-review.md`
+**Plan review folded (rev 2):** `docs/superpowers/reviews/2026-08-01-configurable-tab-copy-plan-review.md` — C1 (numeric fields must accompany tab PATCH bodies), I2 (escaped `CONTROL_CHARS` literal), I3 (real `makeApp`/`registeredSession` harness; extend existing `admin-settings.test.ts`), plus a folder-found regression (the 4 existing GET `toEqual` assertions must gain `tabLabels`/`tabSubtitles`).
 
 ## Global Constraints
 
@@ -39,17 +40,23 @@
 
 - [ ] **Step 1: Write the failing test**
 
-Create `core/test/instance-config.test.ts`. Mirror the harness of an existing core route test (e.g. `core/test/admin-overview.test.ts`) for `createApp` wiring — copy its `deps` setup verbatim, with `mailEnabled: true`.
+Create `core/test/instance-config.test.ts`. **There is no shared `makeTestApp`
+helper** — copy the inline `makeApp()` factory from
+`core/test/admin-overview.test.ts:12-27` VERBATIM (it returns `{ app, repo }`,
+constructs `createApp` with `mailEnabled: true`, and imports from `auth-helper.ts`).
+`/instance/config` is unauthenticated, so no session is needed. Seed overrides
+with **`repo.setSetting`** (the app reads them via `service.getSetting`, which
+delegates to the same repo).
 
 ```ts
-import { test, expect, beforeEach } from 'vitest'
-import { makeTestApp } from './helpers/test-app.ts' // use the same factory the other core route tests use; if none, inline createApp like admin-overview.test.ts does
+import { test, expect } from 'vitest'
+// ...copy the exact imports + makeApp() from admin-overview.test.ts:1-27...
 
 // TAB KEYS are the cross-workspace contract — hardcoded here on purpose.
 const KEYS = ['local', 'federated', 'personal', 'public'] as const
 
 test('GET /instance/config returns mailEnabled and null tab overrides by default', async () => {
-  const { app } = await makeTestApp({ mailEnabled: true })
+  const { app } = await makeApp()
   const res = await app.request('/instance/config')
   expect(res.status).toBe(200)
   const body = await res.json()
@@ -61,8 +68,8 @@ test('GET /instance/config returns mailEnabled and null tab overrides by default
 })
 
 test('GET /instance/config echoes a stored override', async () => {
-  const { app, service } = await makeTestApp({ mailEnabled: true })
-  await service.setSetting('tab_label_personal', 'My feed')
+  const { app, repo } = await makeApp()
+  await repo.setSetting('tab_label_personal', 'My feed')
   const res = await app.request('/instance/config')
   const body = await res.json()
   expect(body.tabs.labels.personal).toBe('My feed')
@@ -70,14 +77,12 @@ test('GET /instance/config echoes a stored override', async () => {
 })
 
 test('GET /health is a bare probe with no mailEnabled', async () => {
-  const { app } = await makeTestApp({ mailEnabled: true })
+  const { app } = await makeApp()
   const res = await app.request('/health')
   expect(res.status).toBe(200)
   expect(await res.json()).toEqual({ ok: true })
 })
 ```
-
-> If the codebase has no shared `makeTestApp` helper, inline the `createApp(deps)` construction exactly as `admin-overview.test.ts` does and return `{ app, service }`. Read that file first.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -128,7 +133,7 @@ developed with the help of AI tools"
 
 **Files:**
 - Modify: `core/src/api/app.ts` (the `GET /admin/settings` ~line 479 and `PATCH /admin/settings` ~line 487)
-- Test: `core/test/admin-settings-tabs.test.ts` (create), OR extend an existing admin-settings test if one exists — check first.
+- Test: **extend the existing `core/test/admin-settings.test.ts`** (do NOT create a new file). It already has the admin-authed harness (`makeApp()` → `{ app, repo }`, `registeredSession(app, 'boss@x.test', repo)` returns a cookie string used as `headers: { cookie }`).
 
 **Interfaces:**
 - Consumes: `service.getSetting`, `service.setSetting`, existing `readJsonBody`, `jsonWrite`.
@@ -136,66 +141,75 @@ developed with the help of AI tools"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `core/test/admin-settings-tabs.test.ts`. Build the app admin-gated the same way existing `/admin/*` tests do (they pass an admin session/bearer token — copy that setup from an existing admin route test). Helper `patch(body)` and `get()` that hit `/admin/settings` with admin auth.
+**CRITICAL (plan-review C1): the numeric validation runs FIRST and 400s on a
+missing numeric field.** So every PATCH body that carries tab fields MUST also
+carry the three numeric fields, or it 400s for the wrong reason. Add a local
+helper to `admin-settings.test.ts` that injects the numeric defaults:
 
 ```ts
-import { test, expect } from 'vitest'
-// ... import the same admin-authed app factory used by other /admin/* tests
+// All PATCH bodies must include the numeric trio (validated before tab fields).
+const NUM = { maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }
+type App = Awaited<ReturnType<typeof makeApp>>['app'] // avoids importing the Hono type
+const patchTabs = (app: App, cookie: string, extra: Record<string, unknown>) =>
+  app.request('/admin/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ ...NUM, ...extra }),
+  })
+```
 
+**ALSO (plan-review, newly found): the four existing GET `toEqual` assertions
+in this file (currently lines ~37, ~52, ~84, ~96) assert the EXACT settings
+object. Extending GET with `tabLabels`/`tabSubtitles` breaks them.** Update each
+to include the two new keys. The default (nothing overridden) is all-null:
+
+```ts
+const NULL_TABS = {
+  tabLabels: { local: null, federated: null, personal: null, public: null },
+  tabSubtitles: { local: null, federated: null, personal: null, public: null },
+}
+// each existing `.toEqual({ maxSubsPerUser: X, maxRemoteItemsPerSource: Y, maxRemoteItemAgeDays: Z })`
+// becomes `.toEqual({ maxSubsPerUser: X, maxRemoteItemsPerSource: Y, maxRemoteItemAgeDays: Z, ...NULL_TABS })`
+```
+
+New tests to add:
+
+```ts
 test('PATCH accepts and GET echoes a label + subtitle override', async () => {
-  const { get, patch } = await adminApp()
-  const r = await patch({ tabLabels: { personal: 'My feed' }, tabSubtitles: { public: 'All of it' } })
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const r = await patchTabs(app, cookie, { tabLabels: { personal: 'My feed' }, tabSubtitles: { public: 'All of it' } })
   expect(r.status).toBe(200)
-  const g = await (await get()).json()
+  const g = await (await app.request('/admin/settings', { headers: { cookie } })).json()
   expect(g.tabLabels.personal).toBe('My feed')
   expect(g.tabSubtitles.public).toBe('All of it')
   expect(g.tabLabels.local).toBeNull()
 })
 
-test('empty string clears an override', async () => {
-  const { get, patch } = await adminApp()
-  await patch({ tabLabels: { personal: 'My feed' } })
-  await patch({ tabLabels: { personal: '' } })
-  expect((await (await get()).json()).tabLabels.personal).toBeNull()
+test('PATCH: empty string clears a tab override', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  await patchTabs(app, cookie, { tabLabels: { personal: 'My feed' } })
+  await patchTabs(app, cookie, { tabLabels: { personal: '' } })
+  const g = await (await app.request('/admin/settings', { headers: { cookie } })).json()
+  expect(g.tabLabels.personal).toBeNull()
 })
 
-test('a 25-char label is rejected 400', async () => {
-  const { patch } = await adminApp()
-  const r = await patch({ tabLabels: { personal: 'x'.repeat(25) } })
-  expect(r.status).toBe(400)
-})
-
-test('a 121-char subtitle is rejected 400', async () => {
-  const { patch } = await adminApp()
-  const r = await patch({ tabSubtitles: { local: 'x'.repeat(121) } })
-  expect(r.status).toBe(400)
-})
-
-test('a newline in copy is rejected 400', async () => {
-  const { patch } = await adminApp()
-  const r = await patch({ tabLabels: { local: 'a\nb' } })
-  expect(r.status).toBe(400)
-})
-
-test('an unknown tab key is rejected 400', async () => {
-  const { patch } = await adminApp()
-  const r = await patch({ tabLabels: { bogus: 'x' } })
-  expect(r.status).toBe(400)
-})
-
-test('numeric settings still round-trip (regression)', async () => {
-  const { get, patch } = await adminApp()
-  const r = await patch({ maxSubsPerUser: 10, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 })
-  expect(r.status).toBe(200)
-  expect((await (await get()).json()).maxSubsPerUser).toBe(10)
+test('PATCH: rejects an over-long label (25), over-long subtitle (121), newline, and unknown key', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  expect((await patchTabs(app, cookie, { tabLabels: { personal: 'x'.repeat(25) } })).status).toBe(400)
+  expect((await patchTabs(app, cookie, { tabSubtitles: { local: 'x'.repeat(121) } })).status).toBe(400)
+  expect((await patchTabs(app, cookie, { tabLabels: { local: 'a\nb' } })).status).toBe(400)
+  expect((await patchTabs(app, cookie, { tabLabels: { bogus: 'x' } })).status).toBe(400)
 })
 ```
 
-> Read an existing `/admin/*` test to copy the exact admin-auth setup and the `readJsonBody`/`jsonWrite` expectations. The final regression test guards that adding tab handling didn't break the existing all-numeric PATCH contract.
+> The updated existing tests are the regression guard that the all-numeric PATCH still round-trips.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `docker compose exec -T core npm test -w core -- admin-settings-tabs`
+Run: `docker compose exec -T core npm test -w core -- admin-settings`
 Expected: FAIL — tab keys ignored; GET has no `tabLabels`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -206,7 +220,7 @@ Add a shared helper near the settings routes in `core/src/api/app.ts`:
 const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
 type TabKey = (typeof TAB_KEYS)[number]
 const isTabKey = (k: string): k is TabKey => (TAB_KEYS as readonly string[]).includes(k)
-const CONTROL_CHARS = /[ -]/ // newlines + control chars break nav/h2 layout
+const CONTROL_CHARS = /[\x00-\x1F\x7F]/ // reject newlines + control chars (break nav/h2 layout). WRITE THIS ESCAPED FORM VERBATIM \x00-\x1F\x7F — never a rendered copy.
 
 // Returns { ok: pairs } to persist, or { error } to 400. `''` is a valid clear.
 function validateTabCopy(
@@ -268,17 +282,17 @@ And AFTER the three numeric `setSetting` calls:
 for (const [k, v] of [...labelResult.ok, ...subtitleResult.ok]) await service.setSetting(k, v)
 ```
 
-Refactor `readInstanceConfig`'s tab loop from Task 1 to reuse `readTabOverrides` if convenient (both read the same 8 keys) — optional, keep green.
+Keep Task 1's `/instance/config` loop (nested `tabs.labels`/`tabs.subtitles` shape) SEPARATE from `readTabOverrides` (flat `tabLabels`/`tabSubtitles` shape) — they serve different consumers; do NOT merge them (plan-review minor).
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `docker compose exec -T core npm test -w core -- admin-settings-tabs`
+Run: `docker compose exec -T core npm test -w core -- admin-settings`
 Expected: PASS. Then `docker compose exec -T core npx tsc --noEmit -p core/tsconfig.json` → 0 errors.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/src/api/app.ts core/test/admin-settings-tabs.test.ts
+git add core/src/api/app.ts core/test/admin-settings.test.ts
 git commit -m "feat(core): admin/settings reads+writes tab label/subtitle overrides
 
 developed with the help of AI tools"
