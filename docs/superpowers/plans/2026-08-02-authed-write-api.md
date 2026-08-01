@@ -213,14 +213,19 @@ EOF
 
 ---
 
-### Task 2: `POST/DELETE /api/v1/follows` + `POST/DELETE /api/v1/subscriptions` (follows:write)
+### Task 2a: `POST/DELETE /api/v1/follows` (follows:write)
+
+**Rev 2 note:** ponytail-review flagged that bundling this trivial pair
+with subscribe/unsubscribe's genuinely complex 4-way result switch into
+one task (as originally drafted) risks the complex half getting rushed
+under one review checkpoint — split into 2a/2b, still sharing the
+`follows:write` permission, landing as two separate small commits instead
+of one larger one.
 
 **Files:**
-- Modify: `core/src/api/logical-routes.ts` — extend `PersonalApiDeps` +
-  `mountPersonalApiRoutes` with four routes.
-- Modify: `core/src/api/app.ts` — pass `sources: {service, repo}` (or
-  whichever subset `v2`/the subscribe calls need) into the
-  `mountPersonalApiRoutes` call.
+- Modify: `core/src/api/logical-routes.ts` — extend `mountPersonalApiRoutes`
+  with two routes (no new deps needed — `service` already threaded in by
+  Task 1).
 - Test: `core/test/personal-api-routes.test.ts` (extend further).
 
 **Interfaces:**
@@ -231,32 +236,109 @@ EOF
   `removeFollow`'s exact parameters before use, do not assume it's
   identical in shape), `service.getUserByHandle(handle)` (for resolving a
   target handle, matching `app.ts`'s existing `resolveUser` helper — read
-  it fresh), and the source-plane's `v2.subscribeByUrl(user, url,
-  commandId)` / `v2.unsubscribe(userId, sourceId, commandId)` (read
-  `core/src/domain/source-service.ts`'s real exported shape, and re-read
-  `app.ts`'s `POST /me/subscriptions`/`DELETE /me/subscriptions/:sourceId`
-  handlers fresh for the exact response-shape switch/error mapping to
-  mirror — this is the most structurally complex pair in this plan, with a
-  4-way result switch (`source`/`local`/`cap`/`conflict`) that must be
-  reproduced exactly, not simplified).
-- Produces: four new routes. **Naming — a genuinely different case from
+  it fresh).
+- Produces: two new routes. **Naming — a genuinely different case from
   Task 1's, not the same pattern reused:** unlike `POST /me/posts` (no
   existing route at that exact method+path, so the bare name was free),
   `app.ts` already has `POST /me/follows` and `DELETE
   /me/follows/:target` at those EXACT method+path pairs — reusing them
   here would be a real collision (confirmed mechanism: Hono matches
   method+path, and identical pairs on one instance means the second
-  registration is unreachable). These four routes need genuinely distinct
-  paths: `POST /me/api-follows` / `DELETE /me/api-follows/:target` and
-  `POST /me/api-subscriptions` / `DELETE /me/api-subscriptions/:sourceId`
-  (the `api-` infix disambiguates from the cookie-authed siblings,
-  consistent in spirit with `POST /me/api-keys` from phase 2 — also a
-  path chosen specifically to avoid colliding with better-auth's own
-  `/api/auth/api-key/*`).
+  registration is unreachable). Use `POST /me/api-follows` / `DELETE
+  /me/api-follows/:target` — the `api-` infix disambiguates from the
+  cookie-authed siblings, consistent in spirit with `POST /me/api-keys`
+  from phase 2 (an unrelated route that also needed its own distinct name
+  — for a different reason, `SERVER_ONLY_PROPERTY` on better-auth's REST
+  endpoint, not a path collision — the naming convention is what's shared,
+  not the underlying cause).
+
+- [ ] **Step 1: Read the current file fresh**
+
+Read `core/src/api/logical-routes.ts`'s state after Task 1 landed,
+`core/src/api/app.ts`'s current `POST /me/follows`/`DELETE
+/me/follows/:target` handlers, fresh.
+
+- [ ] **Step 2: Write the failing tests**
+
+Cover, at minimum: follow success (`follows:write` key, `POST` with a
+valid target handle → the same shape `app.ts`'s route returns), follow
+with an unknown handle → 404 (matching), unfollow success, unfollow
+unknown target → 404, a `follows:write` key correctly REJECTED from the
+phase-2 `posts:read`-gated routes and vice versa (permission isolation,
+matching the cross-permission-rejection tests phase 2 already
+established).
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `docker compose exec -T core npm test -w core -- personal-api-routes`
+
+- [ ] **Step 4: Implement the two routes**
+
+Mirror `app.ts`'s exact body shape, error mapping, and response shape —
+a transcription task once Step 1's fresh read is done. Reuse
+`readJsonBody`/`isString` already defined at module scope in this file.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `docker compose exec -T core npm test -w core -- personal-api-routes`
+
+- [ ] **Step 6: Full core suite + typecheck**
+
+Run: `docker compose exec -T core npm test -w core` and
+`docker compose exec -T core npm run typecheck -w core`
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add core/src/api/logical-routes.ts core/test/personal-api-routes.test.ts
+git commit -m "$(cat <<'EOF'
+feat(core): key-authed follow/unfollow (follows:write)
+
+Key-authed twins of the existing cookie-authed follow routes, same
+validation/response shapes as their siblings.
+
+developed with the help of AI tools
+EOF
+)"
+```
+
+---
+
+### Task 2b: `POST/DELETE /api/v1/subscriptions` (follows:write)
+
+**Files:**
+- Modify: `core/src/api/logical-routes.ts` — extend `PersonalApiDeps` +
+  `mountPersonalApiRoutes` with two routes.
+- Modify: `core/src/api/app.ts` — pass the source plane's write surface
+  into the `mountPersonalApiRoutes` call. **Rev 2 correction (ponytail-audit):**
+  the original draft hedged this as `sources: {service, repo}` — checked
+  `core/src/domain/source-service.ts` directly: this task's two routes
+  only ever call `subscribeByUrl`/`unsubscribe`, both on `sources.service`
+  (`SourceService`); `sources.repo` (`SourceRepository`) is never called
+  by anything in this task's scope. Thread through exactly a
+  `SourceService`-typed field (e.g. `sourceService: SourceService`), not
+  a wider struct — don't give the implementer license to pass an unused
+  dependency through a struct that's supposed to be minimal.
+- Test: `core/test/personal-api-routes.test.ts` (extend further).
+
+**Interfaces:**
+- Consumes: `sourceService.subscribeByUrl(user, url, commandId)` /
+  `sourceService.unsubscribe(userId, sourceId, commandId)` (read
+  `core/src/domain/source-service.ts`'s real exported `SourceService`
+  shape, and re-read `app.ts`'s `POST /me/subscriptions`/`DELETE
+  /me/subscriptions/:sourceId` handlers fresh for the exact response-shape
+  switch/error mapping to mirror — this is the structurally complex half
+  of what was originally Task 2, with a 4-way result switch
+  (`source`/`local`/`cap`/`conflict`) that must be reproduced exactly, not
+  simplified).
+- Produces: two new routes, same naming reasoning as Task 2a (a real
+  collision with `app.ts`'s existing `POST /me/subscriptions`/`DELETE
+  /me/subscriptions/:sourceId`): `POST /me/api-subscriptions` / `DELETE
+  /me/api-subscriptions/:sourceId`.
 
 - [ ] **Step 1: Read the current file and real source fresh**
 
-Read `core/src/api/logical-routes.ts`'s state after Task 1 landed and
+Read `core/src/api/logical-routes.ts`'s state after Task 2a landed and
 `core/src/domain/source-service.ts`'s real `subscribeByUrl`/`unsubscribe`
 signatures and `core/src/api/app.ts`'s current `POST
 /me/subscriptions`/`DELETE /me/subscriptions/:sourceId` handlers in full,
@@ -264,42 +346,33 @@ fresh.
 
 - [ ] **Step 2: Write the failing tests**
 
-Cover, at minimum: follow success (`posts` — no, `follows:write` key,
-`POST` with a valid target handle → the same shape `app.ts`'s route
-returns), follow with an unknown handle → 404 (matching), unfollow
-success, unfollow unknown target → 404, subscribe success for a real feed
-URL (reuse whatever mock-fetch harness `core/test/logical-moderation.test.ts`
-or similar already established for a fake feed response, don't hand-roll
-a new one), subscribe with an invalid URL → 400, subscribe idempotency
-(same `commandId` replayed → the existing 409-conflict-or-200 semantics,
-not a duplicate), unsubscribe success, unsubscribe with a bad `commandId`
-→ 400, a `follows:write` key correctly REJECTED from the phase-2
-`posts:read`-gated routes and vice versa (permission isolation, matching
-the cross-permission-rejection tests phase 2 already established for
-`timeline`/`posts`).
+Cover, at minimum: subscribe success for a real feed URL (reuse whatever
+mock-fetch harness `core/test/logical-moderation.test.ts` or similar
+already established for a fake feed response, don't hand-roll a new one),
+subscribe with an invalid URL → 400, subscribe idempotency (same
+`commandId` replayed → the existing 409-conflict-or-200 semantics, not a
+duplicate), unsubscribe success, unsubscribe with a bad `commandId` → 400,
+permission isolation (this task's key vs. a `posts`/`timeline`-only key,
+matching Task 2a's pattern).
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
 Run: `docker compose exec -T core npm test -w core -- personal-api-routes`
 
-- [ ] **Step 4: Implement the four routes**
+- [ ] **Step 4: Implement the two routes**
 
-Mirror each cookie-authed sibling's exact body shape, error mapping, and
-response shape — this is a transcription task once Step 1's fresh read is
-done, not a redesign. Reuse `readJsonBody`/`isString` already defined at
-module scope in this file (do not re-import from `app.ts`, they're
-intentionally duplicated per-file in this codebase's house style — verify
-this is still true by checking whether `logical-routes.ts` already has its
-own copies, per what earlier grounding in this plan's own writing found).
-For the subscribe route's `isBadSourceUrl` error-classification check
-(used by `app.ts`'s handler): decide whether to export it from `app.ts`
-and import here, or duplicate it locally — `isBadSourceUrl` is a real
-behavioral classifier (not a trivial one-liner like `isString`), so
-duplicating it risks the two copies drifting; exporting+importing is
-likely the better call, but verify `app.ts` doesn't already export
-something usable before deciding, and use your judgment per this
-codebase's established "duplicate trivial validators, share real logic"
-pattern.
+Mirror `app.ts`'s exact body shape, error mapping, and response shape
+(the full 4-way switch) — a transcription task once Step 1's fresh read
+is done, not a redesign. Reuse `readJsonBody`/`isString` already defined
+at module scope in this file. For the subscribe route's `isBadSourceUrl`
+error-classification check (used by `app.ts`'s handler): decide whether
+to export it from `app.ts` and import here, or duplicate it locally —
+`isBadSourceUrl` is a real behavioral classifier (not a trivial one-liner
+like `isString`), so duplicating it risks the two copies drifting;
+exporting+importing is likely the better call, but verify `app.ts`
+doesn't already export something usable before deciding, and use your
+judgment per this codebase's established "duplicate trivial validators,
+share real logic" pattern.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -315,11 +388,11 @@ Run: `docker compose exec -T core npm test -w core` and
 ```bash
 git add core/src/api/logical-routes.ts core/src/api/app.ts core/test/personal-api-routes.test.ts
 git commit -m "$(cat <<'EOF'
-feat(core): key-authed follow/unfollow + subscribe/unsubscribe (follows:write)
+feat(core): key-authed subscribe/unsubscribe (follows:write)
 
-Four routes, key-authed twins of the existing cookie-authed follow
-and remote-source-subscription routes, same validation/response
-shapes/idempotency semantics as their siblings.
+Key-authed twins of the existing cookie-authed remote-source
+subscription routes, same validation/response-shape switch/
+idempotency semantics as their siblings.
 
 developed with the help of AI tools
 EOF
@@ -341,7 +414,7 @@ EOF
 - Produces: one route. Naming: `app.ts`'s bare `PATCH /me` is already
   registered at that exact method+path — a real collision (same kind as
   Task 2's follows/subscriptions routes, not Task 1's posts routes). Use
-  `PATCH /me/api-profile`, matching Task 2's `api-`-infix convention.
+  `PATCH /me/api-profile`, matching Task 2a's `api-`-infix convention.
 
 - [ ] **Step 1: Read the current state fresh**
 
@@ -400,6 +473,18 @@ EOF
 - Modify: `web/src/routes/settings/api-keys/permissions.ts` and
   `web/src/routes/settings/api-keys/+page.svelte` — offer the new
   permission checkboxes.
+- Modify: `web/src/routes/settings/api-keys/+page.server.ts` — **rev 2
+  addition (ponytail-audit found this, a real dormant bug, not a
+  hypothetical):** the `create` action's permission-building loop is
+  written to assume each resource appears at most once in
+  `PERMISSION_OPTIONS` (its own comment says so explicitly:
+  `permissions[opt.resource] = [opt.action]`, an overwrite, not an
+  accumulation). That assumption was TRUE in phase 2 (`timeline`/`posts`
+  each had exactly one checkbox) and becomes FALSE the moment this task
+  adds a second `posts` checkbox (`write`, alongside the existing `read`)
+  — check both boxes and whichever iterates last silently wins, the other
+  vanishes. Must be fixed as part of THIS task, not left dormant a second
+  time.
 - Test: `core/test/personal-api-routes.test.ts` + the relevant web test
   file for the settings page (read `web/src/routes/settings/api-keys/
   api-keys.server.test.ts` first for the existing pattern).
@@ -433,7 +518,11 @@ the phase-4 boundary staying closed).
 
 Web: a test proving the settings page now offers checkboxes for the new
 permissions (read the existing `api-keys.server.test.ts`/permissions
-tests for the exact assertion style already established).
+tests for the exact assertion style already established), AND a test
+proving the accumulation fix (Step 4a below): submit the `create` action
+with BOTH `posts:read` and `posts:write` checkboxes checked, assert the
+outgoing request's `permissions.posts` array contains BOTH `'read'` and
+`'write'`, not just one.
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
@@ -453,6 +542,26 @@ const ALLOWED_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
 
 (Read the real current constant first — this is illustrative of the
 INTENT, confirm the exact current shape/formatting before editing.)
+
+- [ ] **Step 4a: Fix the permission-accumulation bug in `+page.server.ts`'s `create` action**
+
+Read the current `create` action fresh (`web/src/routes/settings/api-keys/
++page.server.ts`) — it currently has a comment saying "Each resource in
+PERMISSION_OPTIONS appears at most once today, so no accumulation is
+needed" above a loop that does `permissions[opt.resource] = [opt.action]`
+(an overwrite). Once Step 5 below adds a second `posts` entry
+(`posts:write`, alongside the existing `posts:read`), that assumption is
+false. Fix the loop to accumulate instead of overwrite, and delete the
+now-inaccurate comment:
+
+```ts
+const permissions: Record<string, string[]> = {}
+for (const opt of PERMISSION_OPTIONS) {
+  if (form.get(opt.formKey)) {
+    permissions[opt.resource] = [...(permissions[opt.resource] ?? []), opt.action]
+  }
+}
+```
 
 - [ ] **Step 5: Extend the settings-page checkboxes**
 
@@ -491,7 +600,7 @@ ran, not just that tests passed.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add core/src/api/logical-routes.ts web/src/routes/settings/api-keys/permissions.ts web/src/routes/settings/api-keys/+page.svelte core/test/personal-api-routes.test.ts
+git add core/src/api/logical-routes.ts web/src/routes/settings/api-keys/permissions.ts web/src/routes/settings/api-keys/+page.svelte web/src/routes/settings/api-keys/+page.server.ts core/test/personal-api-routes.test.ts
 git commit -m "$(cat <<'EOF'
 feat(settings): offer the new write permissions as self-serve key options
 
@@ -499,6 +608,12 @@ The three new resource:write permissions from this phase are now
 mintable through the settings page's existing checkbox list, and the
 POST /me/api-keys whitelist that enforces the boundary regardless of
 what the UI offers is extended to match. admin.* stays closed.
+
+Also fixes a dormant bug the second posts checkbox exposes: the create
+action's permission-building loop overwrote same-resource entries
+instead of accumulating them (harmless while every resource had at
+most one checkbox, which stops being true the moment posts gets both
+read and write).
 
 developed with the help of AI tools
 EOF
@@ -509,14 +624,38 @@ EOF
 
 ## Self-Review
 
+**Rev 2 (2026-08-02):** folds ponytail-review + ponytail-audit findings
+(dispatched to two clean subagents in parallel, both verified claims
+against the real codebase rather than trusting the plan's own prose).
+Split the original Task 2 (follows + subscriptions bundled) into 2a/2b —
+ponytail-review correctly flagged that bundling a trivial pair with the
+plan's structurally most complex pair under one fresh-implementer/one-
+review-checkpoint task risked the complex half getting rushed. Cut a
+fabricated secondary justification for the `api-`-infix naming (it claimed
+`/me/api-keys` was ALSO chosen to avoid colliding with `/api/auth/api-key/*`
+— checked against the real code: that's not why it exists, the real reason
+is `SERVER_ONLY_PROPERTY` on a different endpoint entirely; the primary
+justification, real method+path collisions, already stood fine without
+the invented second reason). Tightened Task 2b's dependency injection from
+a hedged `sources: {service, repo}` to exactly the `SourceService` field
+its routes actually call, after confirming `sources.repo` is never used
+by anything in scope. Folded in the most substantial finding: ponytail-
+audit traced the already-merged phase-2 settings page's `create` action
+and found a real, currently-dormant bug — its permission-accumulation loop
+overwrites rather than accumulates same-resource entries, safe only
+because no resource has ever had two checkboxes before. This plan's own
+Task 4 is what first makes `posts` have two (`read` + `write`), so the fix
+is now explicit in that task rather than left to be rediscovered live.
+
 **Spec coverage:** "Write endpoints (phase 3)"'s three bullet groups map to
-Tasks 1 (posts), 2 (follows + subscription-management, per the spec's own
-"unfollow/subscription-management equivalents" phrasing bundling both
-under one `follows:['write']` permission), 3 (profile). Task 4 covers the
-part of "Key management UX" phase 2 explicitly deferred ("write/follows/
-profile checkboxes land with phase 3's routes, not before"). Explicitly
-out of scope: `configId:'admin'`/the admin tier (phase 4), CORS (non-goal,
-every phase).
+Tasks 1 (posts), 2a+2b (follows + subscription-management, per the spec's
+own "unfollow/subscription-management equivalents" phrasing bundling both
+under one `follows:['write']` permission, split across two tasks for
+execution-quality reasons — see Rev 2 above, not a scope split), 3
+(profile). Task 4 covers the part of "Key management UX" phase 2
+explicitly deferred ("write/follows/profile checkboxes land with phase
+3's routes, not before"). Explicitly out of scope: `configId:'admin'`/the
+admin tier (phase 4), CORS (non-goal, every phase).
 
 **Placeholder scan:** no open questions left for the implementer to guess
 at. One real question came up while writing this plan — whether the new
@@ -527,13 +666,14 @@ on the (method, path) pair (same as every standard REST router), which
 settled that `POST /me/posts` (no existing route at that exact pair) needs
 no workaround while `POST /me/follows`/`PATCH /me` (both already claimed
 by `app.ts`) genuinely do — hence Task 1's routes keep their natural
-names and Tasks 2-3's use an `api-`-infixed alternative, each for a
+names and Tasks 2a/2b/3 use an `api-`-infixed alternative, each for a
 concretely different, stated reason, not a guess.
 
-**Type consistency:** `PersonalApiDeps` grows across Tasks 1-3 (adding
-`service`, then subscription-related deps, no removal) — each task's
-`app.ts` wiring change is additive to the same call site, not a competing
-edit. `apiKeyAuth`'s call signature is unchanged from phase 2 throughout.
+**Type consistency:** `PersonalApiDeps` grows across Tasks 1-2b (adding
+`service`, then a narrowly-typed `SourceService` field, no removal) —
+each task's `app.ts` wiring change is additive to the same call site, not
+a competing edit. `apiKeyAuth`'s call signature is unchanged from phase 2
+throughout.
 
 **A design gap resolved during planning, not deferred silently:** phase
 3's spec text assumed a self-serve post-delete capability existed to
