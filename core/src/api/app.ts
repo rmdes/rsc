@@ -135,6 +135,42 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // Tab KEYS are hardcoded — core is a separate workspace and cannot import web's
   // TABS; the keys are the contract, the default STRINGS live only in web.
   const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+  type TabKey = (typeof TAB_KEYS)[number]
+  const isTabKey = (k: string): k is TabKey => (TAB_KEYS as readonly string[]).includes(k)
+  const CONTROL_CHARS = /[\x00-\x1F\x7F]/ // reject newlines + control chars (break nav/h2 layout)
+
+  // Returns { ok: pairs } to persist, or { error } to 400. `''` is a valid clear.
+  function validateTabCopy(
+    input: unknown,
+    prefix: 'tab_label_' | 'tab_subtitle_',
+    max: number
+  ): { ok: [string, string][] } | { error: string } {
+    if (input == null) return { ok: [] }
+    if (typeof input !== 'object') return { error: `${prefix} invalid` }
+    const pairs: [string, string][] = []
+    for (const [k, raw] of Object.entries(input as Record<string, unknown>)) {
+      if (!isTabKey(k)) return { error: `unknown tab key ${k}` }
+      if (typeof raw !== 'string') return { error: `${prefix}${k} invalid` }
+      const v = raw.trim()
+      if (v !== '' && CONTROL_CHARS.test(v)) return { error: `${prefix}${k} has invalid characters` }
+      if (v.length > max) return { error: `${prefix}${k} too long` }
+      pairs.push([`${prefix}${k}`, v])
+    }
+    return { ok: pairs }
+  }
+
+  async function readTabOverrides(getSetting: (k: string) => Promise<string | undefined>) {
+    const labels: Record<string, string | null> = {}
+    const subtitles: Record<string, string | null> = {}
+    for (const k of TAB_KEYS) {
+      const l = await getSetting(`tab_label_${k}`)
+      const s = await getSetting(`tab_subtitle_${k}`)
+      labels[k] = l && l !== '' ? l : null
+      subtitles[k] = s && s !== '' ? s : null
+    }
+    return { tabLabels: labels, tabSubtitles: subtitles }
+  }
+
   app.get('/instance/config', async (c) => {
     const nn = (v: string | undefined) => (v && v !== '' ? v : null)
     const labels: Record<string, string | null> = {}
@@ -498,6 +534,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       // 0 here means "unlimited" -- a different meaning of 0 than maxSubsPerUser above (0 = disabled).
       maxRemoteItemsPerSource: Number(await service.getSetting('max_remote_items_per_source') ?? '0'),
       maxRemoteItemAgeDays: Number(await service.getSetting('max_remote_item_age_days') ?? '0'),
+      ...(await readTabOverrides((k) => service.getSetting(k))),
     }))
 
   app.patch('/admin/settings', jsonWrite, async (c) => {
@@ -516,9 +553,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!(typeof maxRemoteItemAgeDays === 'number' && Number.isInteger(maxRemoteItemAgeDays) && maxRemoteItemAgeDays >= 0)) {
       return c.json({ error: 'maxRemoteItemAgeDays invalid' }, 400)
     }
+    const labelResult = validateTabCopy(body.tabLabels, 'tab_label_', 24)
+    if ('error' in labelResult) return c.json({ error: labelResult.error }, 400)
+    const subtitleResult = validateTabCopy(body.tabSubtitles, 'tab_subtitle_', 120)
+    if ('error' in subtitleResult) return c.json({ error: subtitleResult.error }, 400)
     await service.setSetting('max_subs_per_user', String(maxSubsPerUser))
     await service.setSetting('max_remote_items_per_source', String(maxRemoteItemsPerSource))
     await service.setSetting('max_remote_item_age_days', String(maxRemoteItemAgeDays))
+    for (const [k, v] of [...labelResult.ok, ...subtitleResult.ok]) await service.setSetting(k, v)
     return c.json({ maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays }, 200)
   })
 
