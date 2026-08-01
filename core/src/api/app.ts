@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, bearerAuth } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { mountLogicalRoutes, mountLogicalReadRoutes } from './logical-routes.ts'
+import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { buildFollowingOpml } from '../domain/opml.ts'
@@ -191,6 +191,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   // --- ordinary read + feed surface ---
   mountLogicalReadRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service, feeds })
+
+  // --- key-authed personal API (phase 2) ---
+  mountPersonalApiRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users })
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no

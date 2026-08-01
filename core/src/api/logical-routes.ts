@@ -9,9 +9,10 @@ import type { LogicalStore } from '../logical/store.ts'
 import type { ReadTx } from '../logical/database.ts'
 import type { AcquisitionEngine } from '../logical/acquisition.ts'
 import type { CommandEnvelope, AuditCategory } from '../domain/types.ts'
-import type { RunCursor, JobCursor, AdminRunProjection, AdminRefreshResult, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult } from '../logical/types.ts'
+import type { RunCursor, JobCursor, AdminRunProjection, AdminRefreshResult, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult, PublicLocalAccount } from '../logical/types.ts'
 import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
+import { apiKeyAuth } from './auth.ts'
 import type { Service } from '../domain/service.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, emittedGuid, logicalToFeedEntry, itemContentFields } from '../domain/feed.ts'
@@ -350,6 +351,18 @@ function clampLimit(raw: string | undefined): number {
   return Number.isInteger(n) ? Math.max(1, Math.min(100, n)) : FEED_LIMIT
 }
 
+// Shared ?before= decode for every TimelineCursorV2-paginated read (GET
+// /timeline and the two GET /me/* routes below): the tuple codec's raw
+// [timelineSortAt, logicalItemId] pair mapped onto the cursor shape, or the
+// single 'invalid' answer on any malformed input.
+function decodeBeforeCursor(c: Context): TimelineCursorV2 | null | 'invalid' {
+  const beforeRaw = c.req.query('before')
+  if (beforeRaw === undefined) return null
+  const dec = decodeCursor(beforeRaw)
+  if (!dec || dec.tuple.length !== 2) return 'invalid'
+  return { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
+}
+
 export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
   const { store, auth, users, service, feeds } = deps
   const ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
@@ -368,13 +381,8 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
   app.get('/timeline', async (c) => {
     const spec = parseLensSpec(c)
     if (spec === 'invalid') return c.json({ error: 'invalid lens' }, 400)
-    let before: TimelineCursorV2 | null = null
-    const beforeRaw = c.req.query('before')
-    if (beforeRaw !== undefined) {
-      const dec = decodeCursor(beforeRaw)
-      if (!dec || dec.tuple.length !== 2) return c.json({ error: 'invalid cursor' }, 400)
-      before = { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
-    }
+    const before = decodeBeforeCursor(c)
+    if (before === 'invalid') return c.json({ error: 'invalid cursor' }, 400)
     const limit = clampLimit(c.req.query('limit'))
     const viewer: ProjectionViewer = { localAccountId: await viewerAccount(c), activeSourceIds: [] }
     const result = store.snapshot((tx) => {
@@ -489,6 +497,53 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     let xml = renderCommentsFeed(logicalToFeedEntry(data.item), data.replies.map(logicalToFeedEntry), feeds)
     xml = injectComments(xml, data.replies)
     return c.body(xml, 200, XML)
+  })
+}
+
+// =============================================================================
+// Authed personal API (2026-08-01 design, phase 2) — GET /me/timeline, GET /me/posts
+// =============================================================================
+// Key-authed equivalents of the browser's own Personal tab / own-posts view.
+// Unlike GET /timeline (session-optional, handle-driven, never mints a
+// guest — see mountLogicalReadRoutes' viewerAccount comment), these always
+// require a key and resolve the account from its owner via ensureCoreUser —
+// a different trust class from that function's stated invariant, which is
+// why this is a SEPARATE mount function rather than two more app.get() calls
+// folded into mountLogicalReadRoutes (rev 2 — ponytail-review traced the
+// invariant collision this would cause).
+
+export interface PersonalApiDeps {
+  store: LogicalStore
+  auth: Auth
+  users: UserDirectory
+}
+
+export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
+  const { store, auth, users } = deps
+
+  function accountOf(c: Context): PublicLocalAccount {
+    const u = c.get('coreUser')
+    return { id: u.id, handle: u.handle, displayName: u.displayName }
+  }
+
+  app.get('/me/timeline', apiKeyAuth(auth, users, { timeline: ['read'] }), (c) => {
+    const before = decodeBeforeCursor(c)
+    if (before === 'invalid') return c.json({ error: 'invalid cursor' }, 400)
+    const limit = clampLimit(c.req.query('limit'))
+    const account = accountOf(c)
+    const viewer: ProjectionViewer = { localAccountId: account.id, activeSourceIds: [] }
+    const result = store.snapshot((tx) => tx.projectTimeline({ lens: { kind: 'personal', account }, before, limit, viewer }))
+    return c.json(result)
+  })
+
+  app.get('/me/posts', apiKeyAuth(auth, users, { posts: ['read'] }), (c) => {
+    const before = decodeBeforeCursor(c)
+    if (before === 'invalid') return c.json({ error: 'invalid cursor' }, 400)
+    const limit = clampLimit(c.req.query('limit'))
+    const account = accountOf(c)
+    const viewer: ProjectionViewer = { localAccountId: account.id, activeSourceIds: [] }
+    const result = store.snapshot((tx) => tx.projectTimeline({ lens: { kind: 'local_author', account }, before, limit, viewer }))
+    return c.json(result)
   })
 }
 
