@@ -14,6 +14,20 @@ function parseNonNegativeInt(raw: FormDataEntryValue | null, field: string): num
 	return value
 }
 
+const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+
+// Only keys actually present on the submitted form are forwarded — a form with
+// no "Timeline tabs" fields at all (e.g. a pre-feature caller) sends neither
+// key, leaving the numeric-only PATCH shape unchanged.
+function collectTabFields(form: FormData, prefix: string): Record<string, string> {
+	const out: Record<string, string> = {}
+	for (const key of TAB_KEYS) {
+		const value = form.get(`${prefix}${key}`)
+		if (value !== null) out[key] = String(value)
+	}
+	return out
+}
+
 export const actions: Actions = {
 	save: async (event) => {
 		const form = await event.request.formData()
@@ -25,9 +39,17 @@ export const actions: Actions = {
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'invalid input' })
 		}
+		const tabLabels = collectTabFields(form, 'tab_label_')
+		const tabSubtitles = collectTabFields(form, 'tab_subtitle_')
 		try {
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
-			await patchAdminSettings(f, { maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays })
+			await patchAdminSettings(f, {
+				maxSubsPerUser,
+				maxRemoteItemsPerSource,
+				maxRemoteItemAgeDays,
+				...(Object.keys(tabLabels).length ? { tabLabels } : {}),
+				...(Object.keys(tabSubtitles).length ? { tabSubtitles } : {})
+			})
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'save failed' })
 		}

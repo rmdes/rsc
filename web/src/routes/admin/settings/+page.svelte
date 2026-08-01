@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms'
+	import { TABS, TAB_LABELS, TAB_SUBTITLES } from '$lib/tabs'
 	import type { PageData, ActionData } from './$types'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
@@ -28,6 +29,30 @@
 		<input id="max-remote-age" name="maxRemoteItemAgeDays" type="number" min="0" required value={data.settings.maxRemoteItemAgeDays} />
 		<p class="field-hint">Trims remote items older than this many days after each poll. 0 means unlimited (default) — local posts are never affected.</p>
 	</div>
+	<h3>Timeline tabs</h3>
+	<p class="field-hint">Override the label and subtitle shown on each home-timeline tab. Leave a field blank to use the default (shown as placeholder).</p>
+	{#each TABS as key (key)}
+		<div class="field">
+			<label for="tab-label-{key}">{key} tab — label</label>
+			<input
+				id="tab-label-{key}"
+				name="tab_label_{key}"
+				maxlength="24"
+				value={data.settings.tabLabels[key] ?? ''}
+				placeholder={TAB_LABELS[key]}
+			/>
+		</div>
+		<div class="field">
+			<label for="tab-subtitle-{key}">{key} tab — subtitle</label>
+			<input
+				id="tab-subtitle-{key}"
+				name="tab_subtitle_{key}"
+				maxlength="120"
+				value={data.settings.tabSubtitles[key] ?? ''}
+				placeholder={TAB_SUBTITLES[key]}
+			/>
+		</div>
+	{/each}
 	<button>Save</button>
 </form>
 
