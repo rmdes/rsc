@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth'
 import type { BetterAuthPlugin } from 'better-auth'
 import { anonymous, magicLink, multiSession, openAPI } from 'better-auth/plugins'
+import { apiKey } from '@better-auth/api-key'
 import type Database from 'better-sqlite3'
 import type { User } from './domain/types.ts'
 import type { Mailer } from './mail.ts'
@@ -41,6 +42,22 @@ export function createAuth(deps: AuthDeps) {
       },
     }),
     multiSession({ maximumSessions: 4 }),
+    // Phase 2 of the external-API design (2026-07-30): one named config for
+    // personal read-only keys. Only the permissions phase 2's routes check
+    // are registered here — write/follows/profile land with phase 3, not
+    // pre-declared now.
+    apiKey({
+      configId: 'user',
+      references: 'user',
+      defaultPrefix: 'rsc_',
+      // A conservative shared default a personal read-only script won't hit
+      // under normal use; per-key override stays available via the plugin's
+      // own createApiKey options if a future caller needs more.
+      rateLimit: { enabled: true, timeWindow: 1000 * 60 * 60, maxRequests: 300 },
+      permissions: {
+        defaultPermissions: {},
+      },
+    }),
   ]
   // Dev-only OpenAPI reference (spec 2026-07-19). Routes ride the /api/auth/*
   // mount; the web proxy independently 404s them so this never goes public.
