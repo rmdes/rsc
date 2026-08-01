@@ -8,6 +8,7 @@ import { discoverFeed } from '../domain/discovery.ts'
 import { choosePushTarget } from './push.ts'
 import { isTombstoned, deleteObservationVersions } from './tombstones.ts'
 import { normalizePermalink } from './roots.ts'
+import { normalizeUtc } from './projector.ts'
 import type {
   AcquisitionReason, AcquisitionRun, ClaimAcquisitionResult, CommitAcquisitionInput,
   ConditionalValidators, RedirectObservation, AcquisitionFinding, AdminAcquisitionCounters,
@@ -457,7 +458,7 @@ function readSourcePolicy(tx: ReadTx, sourceId: string): SourcePolicy | undefine
   return r ? { id: r.id, canonicalUrl: r.canonical_url, governance: r.governance, operation: r.operation } : undefined
 }
 
-const ZERO_COUNTERS: AdminAcquisitionCounters = { candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false }
+const ZERO_COUNTERS: AdminAcquisitionCounters = { candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false, retentionFiltered: 0 }
 
 function loadRemoteSource(tx: ReadTx, sourceId: string): RemoteSource | undefined {
   const r = tx.prepare(`SELECT * FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as Record<string, unknown> | undefined
@@ -630,6 +631,22 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
     counters.seen++
     // resolve-or-create the delivery (spec §2.2 identity update rides here).
     const existing = findDelivery.get(sourceId, norm.keyKind, norm.key) as { id: string } | undefined
+
+    // Age ingest gate (retention loop-breaker): retention deletes items the feed
+    // still serves, so without this an old item would be deleted then re-ingested
+    // as "new" on the very next poll — a delete<->re-ingest flood. Applies ONLY to
+    // a NEW delivery (never an existing one — a genuine edit must always be
+    // recorded); uses the IDENTICAL content-date formula as the retention trim
+    // (Task 1) so gate/trim/timeline agree on what "old" means.
+    const maxAge = input.maxAgeDays ?? 0
+    if (!existing && maxAge > 0) {
+      const rawPub = (JSON.parse(obs.rawEvidenceJson) as { published?: string | null }).published ?? null
+      const pub = normalizeUtc(rawPub)
+      const contentDate = pub && pub <= committedAt ? pub : committedAt
+      const cutoff = new Date(Date.parse(committedAt) - maxAge * 86400000).toISOString()
+      if (contentDate < cutoff) { counters.retentionFiltered++; continue } // out-of-window: never create the delivery
+    }
+
     const deliveryId = existing?.id ?? obs.deliveryId
     if (existing) bumpDelivery.run(committedAt, runId, deliveryId)
     else insertDelivery.run(deliveryId, sourceId, norm.keyKind, norm.key, committedAt, committedAt, runId)
@@ -685,6 +702,9 @@ export interface AcquisitionDeps {
   lookupFn?: LookupFn
   deadlineMs?: number
   now?: () => string
+  // Read LIVE (not baked in at construction) so an admin's cap change takes
+  // effect on the very next poll — same posture as runtime.ts's trim cap.
+  getSetting?: (key: string) => Promise<string | undefined>
 }
 
 export interface AcquisitionEngine {
@@ -726,6 +746,7 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
   const { db } = deps
   const fetchFn = deps.fetchFn ?? fetch
   const now = deps.now ?? (() => new Date().toISOString())
+  const getSetting = deps.getSetting ?? (async () => undefined)
   const deadlineMs = deps.deadlineMs ?? BOUNDS.totalDeadlineMs
   // Per-source in-process in-flight flag (spec §1.4): covers fetch+parse+result
   // transaction, not later reconciliation. A crash clears it with the process
@@ -764,7 +785,12 @@ export function createAcquisition(deps: AcquisitionDeps): AcquisitionEngine {
     const counters: AdminAcquisitionCounters = { ...ZERO_COUNTERS, candidates: parsed.candidateCount, omitted: parsed.omitted, itemsTruncated: parsed.itemsTruncated }
     const outcome: AdminFetchProjection['outcome'] = parsed.itemsTruncated ? 'completed_truncated' : 'parsed'
 
-    return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl, validators, redirects, aliases, observations, findings: parsed.findings, counters, outcome, pushCapabilityJson }))
+    // Live cap (Task 2): read here, not baked in at construction, so an admin's
+    // change takes effect on the very next poll — same posture as runtime.ts's
+    // trim cap. Only this, the ONE real commit site, ever sets maxAgeDays.
+    const maxAgeDays = Number((await getSetting('max_remote_item_age_days')) ?? '0')
+
+    return db.write((tx) => commitAcquisition(tx, { runId, sourceId, committedAt, effectiveUrl, validators, redirects, aliases, observations, findings: parsed.findings, counters, outcome, pushCapabilityJson, maxAgeDays }))
   }
 
   async function acquireSource(sourceId: string, reason: AcquisitionReason, signal?: AbortSignal): Promise<AcquisitionRun | { kind: 'unavailable'; reason: string }> {

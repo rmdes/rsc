@@ -222,6 +222,9 @@ export type AdminAcquisitionCounters = {
   itemsTruncated: boolean
   bodyLimitExceeded: boolean
   notModified: boolean
+  // Task 2 (retention loop-breaker): incremented when an incoming item on a NEW
+  // delivery is older than the live max-age cap and is therefore never created.
+  retentionFiltered: number
 }
 
 export type AdminReconciliationCounters = {
@@ -457,6 +460,11 @@ export interface CommitAcquisitionInput {
   counters: AdminAcquisitionCounters
   outcome: AdminFetchProjection['outcome']
   pushCapabilityJson: string | null
+  // Optional (Task 2 plan review MF1): only the ONE real commit site
+  // (acquisition.ts's commitFromBody) passes this; the four observation-less
+  // terminal call sites (loop/ownership_collision/not_modified/body-limit)
+  // are untouched and default away via `?? 0`.
+  maxAgeDays?: number
 }
 
 export interface FailAcquisitionInput {

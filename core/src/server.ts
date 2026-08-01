@@ -34,7 +34,7 @@ const bus = createEventBus()
 // and fails startup.
 const db = createDatabaseContext(repo.raw)
 const logicalStore = createLogicalStore(db)
-const acquisition = createAcquisition({ db })
+const acquisition = createAcquisition({ db, getSetting: (key) => repo.getSetting(key) })
 const runtime = createLogicalRuntime({
   db,
   store: logicalStore,

@@ -205,7 +205,7 @@ test('GET run status, source run history, and jobs project the pinned shapes wit
   expect(run.status).toBe(200)
   const runJson = await run.json()
   expect(runJson).toMatchObject({ model: 'logical-v2', runId: created.runId, sourceId: 's1', reason: 'administrator_refresh' })
-  expect(Object.keys(runJson.acquisition).sort()).toEqual(['bodyLimitExceeded', 'candidates', 'itemsTruncated', 'notModified', 'observed', 'omitted', 'seen', 'skipped', 'unchanged'])
+  expect(Object.keys(runJson.acquisition).sort()).toEqual(['bodyLimitExceeded', 'candidates', 'itemsTruncated', 'notModified', 'observed', 'omitted', 'retentionFiltered', 'seen', 'skipped', 'unchanged'])
   expect(Object.keys(runJson.reconciliation).sort()).toEqual(['conflicted', 'failed', 'failedByCategory', 'pending', 'processing', 'reconciled', 'retrying'])
   expect(Object.keys(runJson.versions).sort()).toEqual(['boundsProfileVersion', 'fingerprintVersion', 'identifierNormalizationVersion', 'parserAdapter', 'parserVersion'])
   expect(JSON.stringify(runJson)).not.toMatch(/push[_C]apability|push_capability/i)

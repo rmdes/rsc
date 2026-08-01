@@ -236,7 +236,7 @@ const ANON_VIEWER: ProjectionViewer = { localAccountId: null, activeSourceIds: [
 // exception taken in Task 0 for the canary): migration/convert.ts's synthetic
 // run row needs the identical shape and shares this definition instead of a
 // byte-copy, so the two can never drift apart.
-export const EMPTY_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false })
+export const EMPTY_COUNTERS = JSON.stringify({ candidates: 0, seen: 0, observed: 0, unchanged: 0, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false, retentionFiltered: 0 })
 
 export function resolveVerificationBatch(tx: WriteTx, input: ResolveVerificationInput): void {
   const { claim, outcome, now } = input

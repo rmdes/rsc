@@ -194,6 +194,77 @@ test('a fingerprint collision under the same key is skipped and records evidence
   expect(counters.skipped).toBe(1)
 })
 
+// ---- age ingest gate (Task 2: the retention loop-breaker) -------------------
+// Retention deletes items the feed still serves, so without a gate the next
+// poll re-ingests them as "new" — a delete<->re-ingest flood. commitAcquisition
+// must refuse to create a delivery/version/job for an out-of-window item on a
+// NEW delivery, using the identical content-date formula the retention trim
+// (Task 1) uses so gate/trim/timeline never disagree about what "old" means.
+
+const datedItem = (guid: string, pubDate: string, body = 'd'): string =>
+  `<item><guid isPermaLink="false">${guid}</guid><title>t</title><description>${body}</description><pubDate>${pubDate}</pubDate></item>`
+
+const OLD_DATE = 'Mon, 23 Jul 2024 00:00:00 GMT' // ~2 years before NOW
+const TODAY_DATE = 'Thu, 23 Jul 2026 00:00:00 GMT' // == NOW
+
+test('an item older than the live max-age cap is never ingested on a new delivery, and increments retentionFiltered; a same-poll fresh item still ingests', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  const body = RSS(datedItem('old1', OLD_DATE) + datedItem('new1', TODAY_DATE))
+  const eng = createAcquisition({
+    db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(body) }), lookupFn: publicLookup, now: () => NOW,
+    getSetting: async (k) => (k === 'max_remote_item_age_days' ? '120' : undefined),
+  })
+  await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+
+  expect(count(raw, 'deliveries_v2', 'WHERE key = ?', 'old1')).toBe(0)
+  expect(count(raw, 'deliveries_v2', 'WHERE key = ?', 'new1')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+  expect(count(raw, 'reconciliation_jobs_v2')).toBe(1)
+  const counters = JSON.parse((raw.prepare(`SELECT counters_json FROM acquisition_runs_v2 ORDER BY started_at DESC LIMIT 1`).get() as { counters_json: string }).counters_json)
+  expect(counters.retentionFiltered).toBe(1)
+})
+
+test('loop-dead: polling the same old-dated feed twice under the cap creates zero new deliveries either time', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  const fetchFn = fakeFetch({ 'https://feed.test/f': () => ok(RSS(datedItem('old1', OLD_DATE))) })
+  const getSetting = async (k: string) => (k === 'max_remote_item_age_days' ? '120' : undefined)
+
+  await createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => NOW, getSetting }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(count(raw, 'deliveries_v2')).toBe(0)
+
+  await createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => LATER, getSetting }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(count(raw, 'deliveries_v2')).toBe(0) // still never created — no delete<->re-ingest flood
+})
+
+test('maxAgeDays=0 leaves the gate inert: the old item ingests normally', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  const eng = createAcquisition({ db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(RSS(datedItem('old1', OLD_DATE))) }), lookupFn: publicLookup, now: () => NOW })
+  await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+
+  expect(count(raw, 'deliveries_v2', 'WHERE key = ?', 'old1')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+})
+
+test('an existing delivery is never gated: a genuine edit to an already-ingested old item is still recorded as a new version', async () => {
+  const { raw, db } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  // first poll: no cap active — the old item ingests and creates the delivery.
+  await createAcquisition({ db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(RSS(datedItem('old1', OLD_DATE, 'v1'))) }), lookupFn: publicLookup, now: () => NOW }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(count(raw, 'deliveries_v2')).toBe(1)
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+
+  // second poll: cap now active, same old date, but the content changed — the
+  // delivery already exists, so the age gate must not apply to it.
+  const getSetting = async (k: string) => (k === 'max_remote_item_age_days' ? '120' : undefined)
+  await createAcquisition({ db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(RSS(datedItem('old1', OLD_DATE, 'v2'))) }), lookupFn: publicLookup, now: () => LATER, getSetting }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+
+  expect(count(raw, 'deliveries_v2')).toBe(1) // same delivery, not re-created
+  expect(count(raw, 'observation_versions_v2')).toBe(2) // the edit is recorded
+})
+
 // ---- two-transaction protocol (spec §1.4) -----------------------------------
 
 test('an administrator command associates a run in its own row that survives even a policy-rejected result', async () => {
