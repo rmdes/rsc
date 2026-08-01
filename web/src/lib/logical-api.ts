@@ -106,7 +106,7 @@ export interface AdminFetchProjection {
 	diagnostic: string | null
 }
 export interface AdminAcquisitionCounters {
-	candidates: number; seen: number; observed: number; unchanged: number; skipped: number; omitted: number; itemsTruncated: boolean; bodyLimitExceeded: boolean; notModified: boolean
+	candidates: number; seen: number; observed: number; unchanged: number; skipped: number; retentionFiltered: number; omitted: number; itemsTruncated: boolean; bodyLimitExceeded: boolean; notModified: boolean
 }
 export interface AdminReconciliationCounters {
 	reconciled: number; conflicted: number; pending: number; processing: number; retrying: number; failed: number

@@ -44,7 +44,7 @@ const runProjection = (runId: string, status: 'terminal' | 'processing', outcome
 	status,
 	statusLocation: `/admin/acquisition-runs/${runId}`,
 	fetch: { outcome, effectiveUrl: 'https://feed.test/s1', httpStatus: null, failureCategory: null, diagnostic: null },
-	acquisition: { candidates: 3, seen: 3, observed: 1, unchanged: 2, skipped: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false },
+	acquisition: { candidates: 3, seen: 3, observed: 1, unchanged: 2, skipped: 0, retentionFiltered: 0, omitted: 0, itemsTruncated: false, bodyLimitExceeded: false, notModified: false },
 	reconciliation: { reconciled: 1, conflicted: 0, pending: 0, processing: 0, retrying: 0, failed: 0, failedByCategory: { operationalExhausted: 0, invariantOrDataFailure: 0 } }
 })
 

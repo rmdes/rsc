@@ -90,7 +90,7 @@
 			<div><dt>Nonterminal runs</dt><dd>{data.nonterminalCount}</dd></div>
 			<div>
 				<dt>Acquisition</dt>
-				<dd>{runOf.acquisition.observed} observed · {runOf.acquisition.unchanged} unchanged · {runOf.acquisition.skipped} skipped{runOf.acquisition.itemsTruncated ? ' · truncated' : ''}</dd>
+				<dd>{runOf.acquisition.observed} observed · {runOf.acquisition.unchanged} unchanged · {runOf.acquisition.skipped} skipped{runOf.acquisition.retentionFiltered ? ` · ${runOf.acquisition.retentionFiltered} age-filtered` : ''}{runOf.acquisition.itemsTruncated ? ' · truncated' : ''}</dd>
 			</div>
 			<div>
 				<dt>Reconciliation</dt>
