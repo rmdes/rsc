@@ -336,6 +336,16 @@ function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: str
   // its job at 'processing' (never re-claimable, and it blocks every future job for
   // that batch key). An already-present version is reused as-is; only genuinely new
   // origin material creates a run, a version, and a presentation entry.
+  //
+  // This INSERT never needs the retention age-ingest gate (acquisition.ts's
+  // maxAgeDays check): it only runs on a matchContainment hit, which requires
+  // `match`'s permalink/opaqueId to already be a stored identity key of the
+  // (already-existing) `itemId` above — this path re-records verified evidence
+  // for an item that already passed the gate (or predates it); it never
+  // originates a logical item from arbitrary origin-feed content. A trimmed
+  // item's verification_checks_v2 row is deleted at trim time (threading.ts's
+  // deleteLogicalNode/convertToStructuralTombstone), so there's no leftover
+  // check for a later batch to resurrect it through here either.
   const existingDelivery = tx.prepare(`SELECT id FROM deliveries_v2 WHERE source_id = ? AND key_kind = ? AND key = ?`).get(sourceId, keyKind, key) as { id: string } | undefined
   const deliveryId = existingDelivery?.id ?? ev.deliveryId
   const existingVersion = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ? AND fingerprint_version = ? AND fingerprint = ?`).get(deliveryId, ev.fingerprintVersion, ev.fingerprint) as { id: string } | undefined
