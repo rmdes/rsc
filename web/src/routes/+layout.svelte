@@ -5,7 +5,7 @@
 	import { tick } from 'svelte';
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import AccountMenu from '$lib/AccountMenu.svelte'
-	import { TABS, TAB_LABELS } from '$lib/tabs'
+	import { TABS } from '$lib/tabs'
 	import { page } from '$app/state'
 
 	let { data, children }: { data: LayoutData; children: import('svelte').Snippet } = $props();
@@ -46,7 +46,7 @@
 	<a class="nav-brand" href="/">RSC</a>
 	<div class="nav-tabs">
 		{#each TABS as t (t)}
-			<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{TAB_LABELS[t]}</a>
+			<a href="/?tab={t}" aria-current={page.url.pathname === '/' && data.tab === t ? 'page' : undefined}>{data.tabLabels[t]}</a>
 		{/each}
 	</div>
 	{#if page.url.pathname === '/'}
