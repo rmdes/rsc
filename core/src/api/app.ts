@@ -128,7 +128,23 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ error: 'internal error' }, 500)
   })
 
-  app.get('/health', (c) => c.json({ ok: true, mailEnabled }))
+  app.get('/health', (c) => c.json({ ok: true }))
+
+  // Public instance display-config (internal web→core; NOT exposed via Caddy's
+  // @core matcher). Sits outside the /admin/* gate so guests' layout can read it.
+  // Tab KEYS are hardcoded — core is a separate workspace and cannot import web's
+  // TABS; the keys are the contract, the default STRINGS live only in web.
+  const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+  app.get('/instance/config', async (c) => {
+    const nn = (v: string | undefined) => (v && v !== '' ? v : null)
+    const labels: Record<string, string | null> = {}
+    const subtitles: Record<string, string | null> = {}
+    for (const k of TAB_KEYS) {
+      labels[k] = nn(await service.getSetting(`tab_label_${k}`))
+      subtitles[k] = nn(await service.getSetting(`tab_subtitle_${k}`))
+    }
+    return c.json({ mailEnabled, tabs: { labels, subtitles } })
+  })
 
   // Web discovers the source model before it picks an API path. V1 is retired,
   // so the answer is constant — but `sourceModelV2` stays in the payload: it is
