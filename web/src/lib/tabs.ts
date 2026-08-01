@@ -13,6 +13,15 @@ export const TAB_LABELS: Record<Tab, string> = {
 	public: 'explore'
 }
 
+// Page-head subtitle per tab — describes the scope each filter shows. Was
+// hardcoded to the `personal` line on every tab.
+export const TAB_SUBTITLES: Record<Tab, string> = {
+	local: 'Posts written here, on this instance',
+	federated: 'Posts from the instances this one federates with',
+	personal: 'Everything from you and the people you follow',
+	public: 'Every post and feed across this instance'
+}
+
 // Resolve ?tab= + viewer state to the tab actually rendered. Guests can never
 // resolve to personal (no handle to filter by); anons can select it explicitly
 // (they have a follow graph) but default to public.

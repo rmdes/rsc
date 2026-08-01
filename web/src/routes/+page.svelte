@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { PageData, ActionData } from './$types'
 	import type { TimelineEntry } from '$lib/types'
-	import { TAB_LABELS } from '$lib/tabs'
+	import { TAB_LABELS, TAB_SUBTITLES } from '$lib/tabs'
 	import Avatar from '$lib/Avatar.svelte'
 	import ComposerDialog from '$lib/ComposerDialog.svelte'
 	import ReplyTree from '$lib/ReplyTree.svelte'
@@ -163,7 +163,7 @@
 
 		<div class="page-head">
 			<span class="kicker">{TAB_LABELS[data.tab]} river</span>
-			<h2>Everything from you and the people you follow</h2>
+			<h2>{TAB_SUBTITLES[data.tab]}</h2>
 		</div>
 
 		{#if data.coreDown}
