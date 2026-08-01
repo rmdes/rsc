@@ -589,6 +589,18 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
   // any key exists to authenticate WITH) — not apiKeyAuth. See ApiKeyCreation
   // above for why this can't just be a web-side fetch to better-auth's own
   // /api-key/create REST endpoint.
+  //
+  // Breadcrumb for whoever builds phase 4: this route's own in-process call
+  // to apiKeyCreateApi.createApiKey below carries neither `ctx.request` nor
+  // `ctx.headers`, so it is invisible to a session-keyed better-auth
+  // `hooks.before` (auth.ts's own anonymous-session guard on the REST
+  // /api-key/create endpoint is exactly such a hook, and does not fire for
+  // this call — confirmed: that's why SERVER_ONLY_PROPERTY doesn't fire for
+  // this route's own `permissions` field either). This route is safe today
+  // only because it enforces its own registered-only check explicitly, right
+  // above. Any FUTURE in-process issuance path (a phase-4 admin equivalent of
+  // this route, say) must do the same — it cannot rely on a hook that only
+  // sees real HTTP requests.
   app.post('/me/api-keys', jsonWrite, async (c) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'authentication required' }, 401)

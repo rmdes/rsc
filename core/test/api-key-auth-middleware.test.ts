@@ -60,7 +60,7 @@ test('a valid key WITHOUT the required permission is rejected with 401, not a pa
   const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
   const app = new Hono()
   app.get('/protected', apiKeyAuth(auth, repo, { timeline: ['read'] }), (c) => c.json({ ok: true }))
-  const key = (await apiKeyApi.createApiKey({ body: { configId: 'user', userId: session!.user.id, permissions: { posts: ['write'] } } })).key!
+  const key = (await apiKeyApi.createApiKey({ body: { configId: 'user', userId: session!.user.id, permissions: { posts: ['read'] } } })).key!
   const res = await app.request('/protected', { headers: { 'x-api-key': key } })
   expect(res.status).toBe(401)
 })

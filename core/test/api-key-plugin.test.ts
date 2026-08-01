@@ -1,6 +1,6 @@
 import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
-import { makeAuth, registeredSession } from './auth-helper.ts'
+import { makeAuth, registeredSession, anonSession } from './auth-helper.ts'
 import { Hono } from 'hono'
 
 // createAuth's `plugins: BetterAuthPlugin[]` (auth.ts) widens every plugin to
@@ -64,4 +64,37 @@ test('a user-owned api key can be created, verified, listed, and deleted via the
   await apiKeyApi.deleteApiKey({ body: { configId: 'user', keyId: created.id }, headers: new Headers({ cookie }) })
   const afterDelete = await apiKeyApi.verifyApiKey({ body: { configId: 'user', key: created.key!, permissions: { timeline: ['read'] } } })
   expect(afterDelete.valid).toBe(false)
+})
+
+// Final review Finding 3: this app's own POST /me/api-keys already scoped
+// self-serve key creation to registered users, but better-auth's own REST
+// /api-key/create endpoint (still mounted, unmodified, under /api/auth/*)
+// had no equivalent guard — an anonymous guest session could mint a real key
+// directly via that endpoint. auth.ts's `reject-anon-api-key-create` plugin
+// closes that other half via a real HTTP call (through the Hono mount, not
+// the in-process `auth.api.createApiKey` cast above) so `ctx.headers` is
+// actually populated and the hook's own isClientRequest-style check fires.
+test('a REST call to /api-key/create is rejected for an anonymous session and still works for a registered one', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const auth = makeAuth(repo)
+  const app = new Hono()
+  app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+
+  const anonCookie = await anonSession(app)
+  const anonRes = await app.request('/api/auth/api-key/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie: anonCookie },
+    body: JSON.stringify({ configId: 'user', name: 'guest key' }),
+  })
+  expect(anonRes.status).toBe(403)
+
+  const cookie = await registeredSession(app, 'legit@x.test', repo)
+  const res = await app.request('/api/auth/api-key/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', cookie },
+    body: JSON.stringify({ configId: 'user', name: 'real key' }),
+  })
+  expect(res.status).toBe(200)
+  const body = (await res.json()) as { key?: string }
+  expect(body.key).toBeTruthy()
 })

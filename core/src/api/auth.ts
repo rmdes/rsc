@@ -100,9 +100,18 @@ export function apiKeyAuth(auth: Auth, users: UserDirectory, permissions: Record
   }
 }
 
+// Final review Finding 5: fails CLOSED. `apiKeyAuth` never sets
+// sessionIsAnonymous (only sessionAuth does), so composing registeredOnly()
+// after apiKeyAuth left it undefined — the old `if (c.get(...))` check
+// treated that as falsy and silently PASSED. Not reachable by any phase-2
+// route today, but phase 3's write routes will need exactly this
+// composition. Requiring `!== false` (not just truthy `=== true`) means an
+// unset value is rejected, not waved through, with no type error to catch
+// the old version. sessionAuth always sets this explicitly (true or false),
+// so this changes nothing for any existing sessionAuth + registeredOnly() route.
 export function registeredOnly(): MiddlewareHandler {
   return async (c, next) => {
-    if (c.get('sessionIsAnonymous')) return c.json({ error: 'registration required' }, 403)
+    if (c.get('sessionIsAnonymous') !== false) return c.json({ error: 'registration required' }, 403)
     return next() // see sessionAuth: same propagation contract applies here
   }
 }

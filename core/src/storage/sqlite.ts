@@ -405,6 +405,14 @@ export class SqliteRepository implements Repository, SourceRepository {
     raw.transaction(() => {
       raw.prepare(`DELETE FROM session WHERE userId = ?`).run(authUserId)
       raw.prepare(`DELETE FROM account WHERE userId = ?`).run(authUserId)
+      // Final review Finding 1: the apiKey plugin's `apikey` table has no FK
+      // on referenceId (migration #21), so a key outlived every prior
+      // deletion path here (admin hard-removal, self-serve, idle-guest
+      // sweep — all three route through this one function) — the surviving
+      // key then still verifyApiKey'd, and apiKeyAuth's ensureCoreUser
+      // lazily minted a brand new core account for the now-orphaned
+      // authUserId, resurrecting the "hard-removed" identity.
+      raw.prepare(`DELETE FROM apikey WHERE referenceId = ?`).run(authUserId)
       raw.prepare(`DELETE FROM user WHERE id = ?`).run(authUserId)
     })()
   }

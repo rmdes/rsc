@@ -14,6 +14,22 @@ function guard(me: { isAnonymous?: boolean } | null): asserts me is { isAnonymou
 	if (!me || me.isAnonymous) throw redirect(303, '/')
 }
 
+// Shared by both actions below (final review Finding 4 — the create action's
+// fix round already made this split for `create`; `revoke` got the same
+// blanket-500 treatment `create` had before that round, the identical defect
+// class left on the sibling action). A clean core rejection in `passthrough`
+// keeps its own status; a 401 means the session expired between page load
+// and submit (redirect matches this file's own load()/guard() precedent, not
+// a fail() — there's no form to re-render for an expired session); anything
+// else is a genuine server error. createApiKey/revokeApiKey (lib/api.ts)
+// attach the real status to the thrown error for this to read.
+function toActionFail(err: unknown, passthrough: number[], fallback: string) {
+	const status = err instanceof Error ? (err as { status?: unknown }).status : undefined
+	if (status === 401) throw redirect(303, '/')
+	const code = typeof status === 'number' && passthrough.includes(status) ? status : 500
+	return fail(code, { error: err instanceof Error ? err.message : fallback })
+}
+
 // Explicit OutputData (not the bare `PageServerLoad`), same reasoning as
 // accounts/+page.server.ts: the default generic's OutputDataShape wraps the
 // return in `T | void`, which the test's direct `out.keys` access can't see
@@ -47,14 +63,11 @@ export const actions = {
 			// it (brief's Step 2/4 requirement).
 			return { createdKey: created.key, createdName: created.name }
 		} catch (err) {
-			// A clean core rejection (bad name, guest session) passes its own
-			// status through; anything else is a genuine server error — the same
-			// kind of status split register/+page.server.ts and login/+page.server.ts
-			// make off res.status. createApiKey (lib/api.ts) attaches the real
+			// A clean core rejection (bad name, guest session, or an expired
+			// session) is handled by the shared helper; anything else is a
+			// genuine server error. createApiKey (lib/api.ts) attaches the real
 			// status to the thrown error.
-			const coreStatus = err instanceof Error ? (err as { status?: unknown }).status : undefined
-			const status = coreStatus === 400 || coreStatus === 403 ? coreStatus : 500
-			return fail(status, { error: err instanceof Error ? err.message : 'could not create key' })
+			return toActionFail(err, [400, 403], 'could not create key')
 		}
 	},
 
@@ -66,7 +79,9 @@ export const actions = {
 		try {
 			await revokeApiKey(f, id)
 		} catch (err) {
-			return fail(500, { error: err instanceof Error ? err.message : 'could not revoke key' })
+			// 404 (already-revoked/nonexistent key id) is a benign no-op from the
+			// user's perspective, not a server error — same split as `create`.
+			return toActionFail(err, [404], 'could not revoke key')
 		}
 		throw redirect(303, '/settings/api-keys')
 	}

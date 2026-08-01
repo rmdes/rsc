@@ -287,13 +287,17 @@ export async function createApiKey(f: typeof fetch, input: { name: string; permi
 }
 
 // Body field is `keyId`, not `id` (the plugin's deleteApiKeyBodySchema).
+// Status is attached to the thrown error, same as createApiKey above — the
+// revoke action (settings/api-keys/+page.server.ts) needs it to tell a clean
+// 4xx core rejection (e.g. an already-revoked/nonexistent key id, a real 404)
+// apart from a genuine server error (final review Finding 4).
 export async function revokeApiKey(f: typeof fetch, keyId: string): Promise<void> {
 	const res = await f(`${base()}/api/auth/api-key/delete`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ configId: 'user', keyId })
 	})
-	if (!res.ok) throw new Error(await errorMessage(res, `revokeApiKey ${res.status}`))
+	if (!res.ok) throw Object.assign(new Error(await errorMessage(res, `revokeApiKey ${res.status}`)), { status: res.status })
 }
 
 // --- v2 source registry -------------------------------------------------------

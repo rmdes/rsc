@@ -114,3 +114,42 @@ test('revoke action with no id fails without calling fetch', async () => {
 	expect(out).toMatchObject({ status: 400 })
 	expect(fetch).not.toHaveBeenCalled()
 })
+
+// Final review Finding 4: revoking an already-revoked/nonexistent key id
+// returns a real core 404 (better-auth's KEY_NOT_FOUND) — that used to
+// collapse to a blanket fail(500, ...), the same defect class Task 5's fix
+// round already closed on `create`. It must now surface as a clean 404.
+test('revoke action surfaces a core 404 (e.g. an already-revoked key) as a 404, not a 500', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'key not found' }), { status: 404 }))
+	const form = new URLSearchParams({ id: 'gone' })
+	const event = ctx({ fetch, request: new Request('http://x/settings/api-keys?/revoke', { method: 'POST', body: form }) })
+	const out = await actions.revoke(event as never)
+	expect(out).toMatchObject({ status: 404, data: { error: 'key not found' } })
+})
+
+// A genuine core-side failure still passes through as a 500 — revoke doesn't
+// collapse every error to 404 either.
+test('revoke action surfaces a genuine core server error as a 500', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }))
+	const form = new URLSearchParams({ id: 'k1' })
+	const event = ctx({ fetch, request: new Request('http://x/settings/api-keys?/revoke', { method: 'POST', body: form }) })
+	const out = await actions.revoke(event as never)
+	expect(out).toMatchObject({ status: 500, data: { error: 'boom' } })
+})
+
+// Final review Finding 4: a session that expired between page load and
+// form submit now redirects to '/' (matching load()/guard()'s own
+// precedent in this file) instead of surfacing as a raw 401 fail().
+test('create action redirects to / on a 401 (session expired mid-flow)', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'authentication required' }), { status: 401 }))
+	const form = new URLSearchParams({ name: 'script', 'timeline:read': 'on' })
+	const event = ctx({ fetch, request: new Request('http://x/settings/api-keys?/create', { method: 'POST', body: form }) })
+	await expect(actions.create(event as never)).rejects.toMatchObject({ status: 303, location: '/' })
+})
+
+test('revoke action redirects to / on a 401 (session expired mid-flow)', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'authentication required' }), { status: 401 }))
+	const form = new URLSearchParams({ id: 'k1' })
+	const event = ctx({ fetch, request: new Request('http://x/settings/api-keys?/revoke', { method: 'POST', body: form }) })
+	await expect(actions.revoke(event as never)).rejects.toMatchObject({ status: 303, location: '/' })
+})

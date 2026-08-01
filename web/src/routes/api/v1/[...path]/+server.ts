@@ -8,6 +8,14 @@ import { base } from '$lib/server/session'
 // Forwards x-api-key, not cookies — this app's api-key-authed routes never
 // accept a session, so there is nothing else to relay.
 const proxy: RequestHandler = async ({ request, params, url }) => {
+	// Final review Finding 2: no phase 2/3/4 route this proxy is meant to
+	// serve lives under an `api/` prefix — but core mounts better-auth at
+	// /api/auth/*, so without this guard a request to
+	// /api/v1/api/auth/reference reaches core's dev-only openAPI reference
+	// one path segment away from the auth proxy's own hard-404 guard
+	// (web/src/routes/api/auth/[...path]/+server.ts), which CLAUDE.md calls
+	// load-bearing. 404 (not 403), matching that guard's own reasoning.
+	if (params.path.startsWith('api/')) return new Response(null, { status: 404 })
 	const target = `${base()}/${params.path}${url.search}`
 	const headers: Record<string, string> = {}
 	const apiKey = request.headers.get('x-api-key')

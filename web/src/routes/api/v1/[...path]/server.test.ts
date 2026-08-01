@@ -41,3 +41,18 @@ test('GET returns a retryable 503 when core is unreachable', async () => {
 	const res = await GET({ params: { path: 'me/timeline' }, url: new URL('http://x/api/v1/me/timeline'), request: new Request('http://x/api/v1/me/timeline') } as never)
 	expect(res.status).toBe(503)
 })
+
+// Final review Finding 2: an `api/` path bypasses this generic forwarder
+// straight into core's /api/auth/* mount, one segment away from the auth
+// proxy's own hard-404 guard on the dev-only openAPI reference. The guard
+// must short-circuit before ever calling fetch — asserted here the same way
+// api/auth/proxy.test.ts asserts its own guard never reaches upstream.
+test('GET 404s an api/ path without ever calling fetch (the dev-only openAPI reference guard, one segment over)', async () => {
+	const fetchMock = vi.fn(async () => new Response('should not be called', { status: 200 }))
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	const res = await GET({ params: { path: 'api/auth/reference' }, url: new URL('http://x/api/v1/api/auth/reference'), request: new Request('http://x/api/v1/api/auth/reference') } as never)
+
+	expect(res.status).toBe(404)
+	expect(fetchMock).not.toHaveBeenCalled()
+})
