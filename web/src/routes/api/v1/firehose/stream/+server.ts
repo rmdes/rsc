@@ -7,15 +7,17 @@ import { base } from '$lib/server/session'
 // /users/rss.xml uses), so unlike web/src/routes/stream/+server.ts (which
 // renders raw internal DTOs through the sanitizer for the browser), this
 // proxy does no frame transformation at all.
-export const GET: RequestHandler = async ({ request }) => {
+export const GET: RequestHandler = async ({ request, getClientAddress }) => {
 	const url = new URL(request.url)
 	const lastEventId = request.headers.get('last-event-id') ?? url.searchParams.get('last')
 	const upstreamUrl = `${base()}/firehose/stream`
+	const headers = new Headers({ 'x-forwarded-for': getClientAddress() })
+	if (lastEventId) headers.set('Last-Event-ID', lastEventId)
 	let upstream: Response
 	try {
 		upstream = await fetch(upstreamUrl, {
 			signal: request.signal,
-			headers: lastEventId ? { 'Last-Event-ID': lastEventId } : {}
+			headers
 		})
 	} catch {
 		return new Response('core unavailable', { status: 503 })

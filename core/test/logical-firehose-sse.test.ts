@@ -92,6 +92,7 @@ test('a local post appears as an upsert with safe rendered content, RSC firehose
   expect(upsert.event).toBe('upsert')
   expect(upsert.data!.model).toBe('firehose-v1')
   expect(upsert.data!.content).toContain('<strong>hi</strong>')
+  expect(upsert.data!.contentMarkdown).toBe('**hi** there')
   expect(upsert.data!.author).toMatchObject({ displayName: 'Alice', url: 'https://rsc.test/u/alice' })
 })
 
@@ -109,9 +110,21 @@ test('a remote item is never emitted as an upsert — filtered by origin', async
   expect(dataFrames(frames).some((f) => f.data!.id === remoteId)).toBe(false)
 })
 
-test('a missing cursor is a reset, exactly like /stream', async () => {
-  const { app } = await setup()
+test('a missing cursor starts the stream live (no reset) — a fresh curl/EventSource client has nothing to send yet', async () => {
+  const { app, service } = await setup()
+  // No Last-Event-ID at all — the normal first-connection case for a public
+  // firehose (unlike /stream, which always has an SSR-derived cursor).
   const res = await app.request('/firehose/stream')
+  const post = await service.createLocalPostAs('alice', 'Alice', 'live from nothing')
+  const frames = await readStream(res, (f) => dataFrames(f).some((x) => x.data!.id === post.id))
+  expect(frames.some((f) => f.event === 'reset')).toBe(false)
+  const upsert = dataFrames(frames).find((f) => f.data!.id === post.id)!
+  expect(upsert.event).toBe('upsert')
+})
+
+test('a malformed/stale cursor still resets, unlike a missing one', async () => {
+  const { app } = await setup()
+  const res = await app.request('/firehose/stream', { headers: { 'Last-Event-ID': 'not-a-real-cursor' } })
   const frames = await readStream(res, (f) => f.some((x) => x.event === 'reset'))
   expect(frames.some((f) => f.event === 'reset' && f.data!.model === 'firehose-v1')).toBe(true)
 })

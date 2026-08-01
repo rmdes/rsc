@@ -641,6 +641,17 @@ Read the timeline (no auth required):
 curl http://localhost:8787/timeline
 ```
 
+Tail the public firehose — every local post/reply as an SSE stream, public,
+anonymous, no key: `GET /api/v1/firehose/stream` via web, or
+`GET /firehose/stream` directly on core in dev. Capped per source IP
+(default 5 concurrent connections; 429 past the cap). Resume with
+`Last-Event-ID` or `?last=` from a prior frame's `id`; a missing cursor is
+the normal first-connection case and just starts tailing live (no reset):
+
+```bash
+curl -N http://localhost:8787/firehose/stream
+```
+
 Posting requires a session — without one, `POST /posts` 401s:
 
 ```bash

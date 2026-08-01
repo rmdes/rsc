@@ -634,7 +634,7 @@ const FIREHOSE_BATCH = 200
 
 function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string, unknown> {
   const entry = logicalToFeedEntry(item)
-  const { description } = itemContentFields(entry)
+  const { description, sourceNs } = itemContentFields(entry)
   const authorUrl = entry.author.kind === 'local' && feeds.publicUrl ? `${feeds.publicUrl}/u/${entry.author.handle}` : entry.author.feedUrl
   return {
     model: 'firehose-v1',
@@ -642,7 +642,11 @@ function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string,
     id: item.id,
     title: entry.title,
     content: description,
-    contentMarkdown: entry.contentMarkdown,
+    // entry.contentMarkdown only ever holds a REMOTE peer's captured markdown;
+    // a local post's markdown lives in content and only surfaces here via
+    // itemContentFields' sourceNs.markdown (the same value /users/rss.xml emits
+    // as source:markdown).
+    contentMarkdown: sourceNs?.markdown ?? null,
     url: entry.url,
     publishedAt: entry.publishedAt,
     author: { displayName: entry.author.displayName, url: authorUrl },
@@ -655,6 +659,11 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const pollMs = deps.pollMs ?? 1000
   const heartbeatMs = deps.heartbeatMs ?? 15000
   const maxPerIp = deps.maxConnectionsPerIp ?? 5
+  // ponytail: single-process in-memory counter, resets on every deploy/restart.
+  // Both live prod paths (compose.prod.yaml, Cloudron package) run one Node
+  // process per instance today, so this is an accepted, named ceiling — would
+  // need a shared store (e.g. Redis) if an instance ever ran multiple replicas
+  // behind a load balancer.
   const ipCounts = new Map<string, number>()
 
   app.get('/firehose/stream', (c) => {
@@ -679,14 +688,27 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
         stream.onAbort(off)
 
         const cursor = c.req.header('Last-Event-ID') ?? c.req.query('last') ?? null
-        const start = source.start(cursor && cursor.length > 0 ? cursor : null)
-        if (start.kind === 'reset') {
-          await stream.writeSSE({ event: 'reset', data: FIREHOSE_RESET })
-          return
+        let after: number
+        let generation: number
+        if (cursor && cursor.length > 0) {
+          const start = source.start(cursor)
+          if (start.kind === 'reset') {
+            await stream.writeSSE({ event: 'reset', data: FIREHOSE_RESET })
+            return
+          }
+          after = start.afterSequence
+          generation = start.generation
+        } else {
+          // No cursor at all is the NORMAL case here (a fresh curl/EventSource
+          // client has nothing to send yet) — unlike /stream, which always has an
+          // SSR-derived cursor and treats "missing" as a real anomaly worth
+          // resetting on, the firehose has no such guarantee. Start tailing from
+          // now instead of reset-and-closing a client that never had a cursor to
+          // send in the first place.
+          const start = source.current()
+          after = start.afterSequence
+          generation = start.generation
         }
-
-        let after = start.afterSequence
-        const generation = start.generation
 
         const pump = async (): Promise<boolean> => {
           for (;;) {
@@ -700,6 +722,11 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
                 if (f.event.item.origin !== 'local') continue
                 await stream.writeSSE({ event: 'upsert', id: f.id, data: JSON.stringify(firehoseEntry(f.event.item, feeds)) })
               } else if (f.event.kind === 'remove') {
+                // No origin check here, unlike upserts above: a remove frame carries
+                // no content/origin, only an opaque id, so passing it through
+                // unfiltered is safe — a remove for an id whose upsert was filtered
+                // out (a remote item) is a harmless no-op for any consumer that
+                // never saw that id.
                 await stream.writeSSE({ event: 'remove', id: f.id, data: JSON.stringify({ model: 'firehose-v1', kind: 'remove', id: f.event.logicalItemId }) })
               }
             }
