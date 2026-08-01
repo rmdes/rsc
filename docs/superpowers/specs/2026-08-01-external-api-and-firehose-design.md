@@ -1,6 +1,13 @@
 # External API access + public firehose — Design
 
-**Status:** Draft, pre-review. Brainstormed 2026-08-01.
+**Status:** rev 2 (2026-08-01) — folds ponytail-review + ponytail-audit
+findings: collapsed the per-route-family web proxies (phases 2-4) into one
+catch-all, closed a real enforcement gap in admin-key issuance (a
+`before`-hook, not a bespoke route, is the actual security boundary — and
+this also simplifies the design by removing a route that turned out
+unnecessary), named phase 4's concrete consumer, and added the
+CLAUDE.md-required dependency justification for `@better-auth/api-key`. See
+Revision history.
 
 **Goal:** Give RSC an external, keyed API surface — read a user's own data,
 write on a user's behalf, drive admin/governance actions — plus a public,
@@ -37,6 +44,23 @@ and a `permissions: {resource: [action]}` model checked via
 `auth.api.verifyApiKey({body:{key, permissions}})`. Its `configId` option
 supports multiple named configurations (different prefix/rate-limit tiers)
 under one plugin instance.
+
+**Dependency justification (CLAUDE.md: propose a new package only after
+showing stdlib/existing-dependency won't do).** `@better-auth/api-key` is a
+separate package from core `better-auth` (confirmed: not in
+`better-auth@1.6.23`'s own plugin exports) — it is a genuinely new
+dependency, not something already installed. The hand-rolled alternative
+already exists in this file: `bearerAuth` (`core/src/api/auth.ts:14-22`,
+`timingSafeEqual` against one configured secret) is exactly what a
+single-secret grant needs, and is *not* being replaced here — the deploy
+smoke test keeps using it. What the smoke test's one-token compare cannot
+give us: per-key hashing, per-key rate limits, expiry, prefixes, individual
+revocation, and a management API (create/list/delete) — reimplementing that
+by hand is a real, multi-table feature, not "a few lines" the ladder would
+prefer. The package is from the already-adopted better-auth family (same
+vendor as `emailAndPassword`/`magicLink`/`anonymous`/`multiSession`, all
+already in `core/src/auth.ts`), not a new vendor relationship. On that
+basis: justified.
 
 ## Load-bearing invariants (do not break)
 
@@ -77,14 +101,22 @@ authenticated:
   +server.ts`) for free — better-auth plugin endpoints (including
   `api-key`'s `create`/`list`/`delete`/`get`) are grouped under the same
   `auth.handler` mount core already exposes there. No new proxy code.
-- **Key *use*** (calling `/api/v1/*` to read/write/act) needs a **new**,
-  purpose-built proxy, since the existing auth proxy only forwards
+- **Key *use*** (calling `/api/v1/*` to read/write/act) needs a **new**
+  proxy, since the existing auth proxy only forwards
   `cookie`/`origin`/`x-forwarded-for`/`content-type` — it does not forward
   `x-api-key` (checked directly against the file; it builds a fresh
-  `Headers()` for the emailed-link/cookie flow specifically). Shaped like the
-  existing `web/src/routes/stream/+server.ts` (one bespoke proxy per
-  concern), not a blanket catch-all: a small, known set of routes, each
-  explicitly forwarding `x-api-key`.
+  `Headers()` for the emailed-link/cookie flow specifically). **Shape
+  (rev 2, corrected):** the phase 2-4 routes (`/me/timeline`, posts, follows,
+  profile, admin) are all plain JSON REST with no framing concerns — one
+  catch-all `web/src/routes/api/v1/[...path]/+server.ts`, same shape as the
+  existing `/api/auth/[...path]` proxy, just forwarding `x-api-key` +
+  `content-type` instead of `cookie` + `origin`. Core's `apiKeyAuth`
+  enforces the actual permission check per-route regardless of how the
+  request arrived, so a generic forwarder here is exactly as safe as the
+  existing precedent. The **firehose** (`/api/v1/firehose/stream`) keeps its
+  own bespoke proxy file, matching `web/src/routes/stream/+server.ts` — SSE
+  framing genuinely differs from a JSON passthrough, the same reason that
+  file is bespoke today.
 - **CORS is out of scope for every phase below.** API-key auth is a header,
   not a cookie, so a script/curl/server-side caller never triggers a
   preflight. A future phase wanting *browser-based* third-party clients
@@ -137,11 +169,24 @@ Two configurations on one `apiKey` plugin instance:
   `timeline`-only key. Rate limit: a conservative shared default (exact
   numbers at plan time), overridable per key up to a ceiling, per the
   plugin's built-in `rateLimit` options.
-- **`configId: 'admin'`** — mintable *only* through a new route gated by
-  `requireAdmin()` (i.e. you must already be an admin, via the existing
-  cookie-session check, to ever get an admin-scoped key issued) — never
-  self-serve, never reachable from the regular Settings panel. Permission
-  vocabulary:
+- **`configId: 'admin'`** — never self-serve, never offered in the regular
+  Settings panel. **Enforcement correction (rev 2):** the original design
+  proposed a bespoke `requireAdmin()`-gated issuance *route* — but key
+  management already rides the existing cookie-authed `/api/auth/*` proxy
+  (see Namespace below), which forwards request bodies blindly with no
+  path/body inspection, and better-auth's `createApiKey`/`updateApiKey`
+  don't tie `configId`/`permissions` eligibility to caller identity the way
+  `userId` is `@serverOnly` — so a route-based gate alone would be
+  bypassable: any registered user could `POST` a `configId: 'admin'` key
+  request through that same proxy today. The real boundary has to live
+  **inside the plugin's own request path**, not beside it: a `before` hook
+  on the `apiKey` plugin config (`core/src/auth.ts`) that rejects any
+  `create`/`update` call requesting `configId: 'admin'` or any `admin.*`
+  permission unless `deriveIsAdmin` (the same per-request check
+  `sessionAuth` already runs) is true for the calling session. This is
+  simpler than the route it replaces — no new endpoint, no second proxy path
+  for admin keys — and it's the only place that's actually authoritative
+  regardless of which proxy or client reached it. Permission vocabulary:
   - `admin.read: ['read']` — source list, user list, governance/moderation
     state (read-only visibility)
   - `admin.sources: ['write']` — the governance verbs already built in
@@ -217,9 +262,17 @@ point:
   `adminEmails` config for the key's owning user, every request — a key
   minted while its owner was an admin stops working the moment they're
   removed from `adminEmails`, without needing to revoke the key itself.
-- **Admin key issuance route** (`POST /api/v1/admin/api-keys` or similar,
-  exact path at plan time) is itself `requireAdmin()`-gated (cookie session)
-  — the only way to mint a `configId: 'admin'` key.
+- **Admin key issuance** goes through the standard `authClient.apiKey.create`
+  call (same as any user key), gated entirely by the plugin-level `before`
+  hook described above — see rev 2's Enforcement correction under Key tiers.
+  No separate issuance route.
+- **Named consumer (rev 2):** RSC runs on multiple independent instances
+  (four live Cloudron deployments as of this writing). An admin applying the
+  same governance action (pause/block a misbehaving source, a moderation
+  removal) across several instances today means logging into each one's
+  `/admin` UI separately. A scripted admin client using one key per instance
+  is the concrete driver for this tier — not symmetry with the user tier for
+  its own sake.
 
 ## Key management UX
 
@@ -231,8 +284,10 @@ A new "API keys" panel in web Settings:
   apiKey.create/list/delete` directly — cookie-authed, existing `/api/auth/*`
   proxy, zero new web-to-core plumbing for this part.
 - **Admin tier:** a separate admin-only panel (e.g. under `/admin/`) for
-  minting `configId: 'admin'` keys, calling the new `requireAdmin()`-gated
-  issuance route above.
+  minting `configId: 'admin'` keys — calls the same `authClient.apiKey.create`
+  as the user panel, with the `admin.*` permission checkboxes only rendered
+  when `data.me?.isAdmin` (the plugin-level `before` hook is the real
+  enforcement; the UI simply doesn't offer the option to non-admins).
 - The key value is shown exactly once, at creation — standard practice,
   matches the plugin's own model (`get`/`list` never return `key`, only
   `getApiKey`'s omitted-`key` shape).
@@ -283,6 +338,35 @@ exactly the guarantee that matters here: no existing route's trust model
 changes, and a key's permissions are actually enforced, not just assumed.
 
 **Two key tiers (`user`/`admin`) instead of one** — a small amount of extra
-plugin configuration, in exchange for admin-key issuance being gated at the
-route level (`requireAdmin()`) rather than trusted purely on a permission
-string ever having been granted.
+plugin configuration, in exchange for admin-key issuance being gated inside
+the plugin's own request path (a `before` hook re-checking `deriveIsAdmin`)
+rather than trusted purely on a permission string ever having been granted.
+
+## Revision history
+
+- rev 1 (2026-08-01): initial design, from brainstorming — scope widened
+  mid-conversation from "phase 1 (firehose + read-only) only" to the full
+  4-phase architecture (firehose, read, write, admin) at the user's explicit
+  request, reasoning that specifying the whole surface now avoids a redesign
+  when write/admin phases land later. Implementation itself stays phased via
+  the plan, not the spec.
+- rev 2 (2026-08-01): folds ponytail-review + ponytail-audit findings
+  (dispatched to two clean subagents in parallel, both verified claims
+  against the installed better-auth version and the current tree rather than
+  trusting the spec's own prose). Collapsed the phase 2-4 per-route-family
+  web proxies into one catch-all (ponytail-review: no framing difference
+  between them, unlike the firehose's SSE proxy, which stays bespoke). Fixed
+  a real enforcement gap ponytail-audit found: the originally-proposed
+  bespoke `requireAdmin()`-gated issuance route did NOT actually stop a
+  non-admin from requesting `configId: 'admin'` through the existing generic
+  auth proxy, since better-auth's `createApiKey`/`updateApiKey` don't tie
+  `configId`/`permissions` eligibility to caller identity — replaced with a
+  plugin-level `before` hook, the only boundary that's authoritative
+  regardless of which proxy or client reached it (this also deleted a route
+  the design turned out not to need). Named phase 4's concrete consumer
+  (multi-instance admin scripting, ponytail-audit: previously the
+  weakest-justified section, symmetry-with-phase-3 rather than a stated
+  need). Added the CLAUDE.md-required stdlib/existing-dependency comparison
+  for `@better-auth/api-key` (ponytail-review: the spec named the mechanism
+  without showing that work, even though the reviewer expected it to
+  survive the comparison).
