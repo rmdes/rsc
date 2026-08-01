@@ -1,6 +1,8 @@
 import { betterAuth } from 'better-auth'
 import type { BetterAuthPlugin } from 'better-auth'
 import { anonymous, magicLink, multiSession, openAPI } from 'better-auth/plugins'
+import { apiKey } from '@better-auth/api-key'
+import { createAuthMiddleware, getSessionFromCtx, APIError } from 'better-auth/api'
 import type Database from 'better-sqlite3'
 import type { User } from './domain/types.ts'
 import type { Mailer } from './mail.ts'
@@ -41,6 +43,55 @@ export function createAuth(deps: AuthDeps) {
       },
     }),
     multiSession({ maximumSessions: 4 }),
+    // Phase 2 of the external-API design (2026-07-30): one named config for
+    // personal read-only keys. Only the permissions phase 2's routes check
+    // are registered here — write/follows/profile land with phase 3, not
+    // pre-declared now.
+    apiKey({
+      configId: 'user',
+      references: 'user',
+      defaultPrefix: 'rsc_',
+      // A conservative shared default a personal read-only script won't hit
+      // under normal use; per-key override stays available via the plugin's
+      // own createApiKey options if a future caller needs more.
+      rateLimit: { enabled: true, timeWindow: 1000 * 60 * 60, maxRequests: 300 },
+      permissions: {
+        defaultPermissions: {},
+      },
+    }),
+    // Final review Finding 3: Task 5's registered-only guard only covers this
+    // app's OWN POST /me/api-keys — better-auth's plugin-mounted REST
+    // endpoint (/api-key/create, still live under the /api/auth/* catch-all)
+    // had no equivalent guard, so an anonymous guest session could mint a
+    // real (if currently permission-less) key directly via better-auth's own
+    // API, an unbounded row-growth path in the new `apikey` table. Real
+    // mechanism confirmed by reading the installed source, not guessed: a
+    // hand-rolled BetterAuthPlugin's `hooks.before` (matcher + handler) is
+    // how better-auth's own bundled plugins do exactly this (e.g.
+    // node_modules/better-auth/dist/plugins/phone-number/index.mjs) — there
+    // is no such option inside apiKey()'s own config surface. getSessionFromCtx
+    // is the same helper the plugin's createApiKey handler itself uses; the
+    // `ctx.request || ctx.headers` check mirrors that handler's own
+    // `isClientRequest` test, so this hook is a no-op for this app's own
+    // in-process call from POST /me/api-keys (no headers on that call) —
+    // that route already enforces registered-only itself, one layer up.
+    {
+      id: 'reject-anon-api-key-create',
+      hooks: {
+        before: [
+          {
+            matcher: (ctx) => ctx.path === '/api-key/create',
+            handler: createAuthMiddleware(async (ctx) => {
+              if (!ctx.request && !ctx.headers) return // server-only call — not a real HTTP request
+              const session = await getSessionFromCtx(ctx)
+              if ((session?.user as { isAnonymous?: boolean | null } | undefined)?.isAnonymous === true) {
+                throw new APIError('FORBIDDEN', { message: 'registration required' })
+              }
+            }),
+          },
+        ],
+      },
+    },
   ]
   // Dev-only OpenAPI reference (spec 2026-07-19). Routes ride the /api/auth/*
   // mount; the web proxy independently 404s them so this never goes public.

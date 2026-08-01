@@ -15,12 +15,13 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
   const service = createService(repo, bus, null, store)
+  const auth = makeAuth(repo)
   const app = createApp({
-    service, bus, token: 'secret', auth: makeAuth(repo), users: repo, adminEmails: new Set(adminEmails),
+    service, bus, token: 'secret', auth, users: repo, adminEmails: new Set(adminEmails),
     sources: { service: createSourceService(repo, null), repo },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
-  return { app, repo, service }
+  return { app, repo, service, auth }
 }
 
 // A remote-authored `posts` row — the legacy shape v2 no longer writes but
@@ -148,4 +149,38 @@ test('deleteLocalAccount removes an account whose post was edited (clears post_r
   expect(await repo.getUserByHandle(handle)).toBeUndefined()
   expect(repo.instanceStats(false).posts).toBe(0)
   expect(revisionCount(repo, created.post.id)).toBe(0) // revisions cascaded away
+})
+
+// Final review Finding 1: the apiKey plugin's `apikey` table had no FK on
+// referenceId, so deleteAuthRows (called by this same deleteLocalAccount path,
+// and shared by admin hard-removal + the idle-guest sweep) never touched it —
+// a key outlived account deletion, still verifyApiKey'd, and apiKeyAuth's
+// ensureCoreUser lazily minted a fresh empty account for the orphaned
+// authUserId on the key's next use, resurrecting the "hard-removed" identity.
+// Same erasure cast api-key-plugin.test.ts uses for the same reason.
+interface ApiKeyCreation {
+  createApiKey(input: {
+    body: { configId?: string; userId?: string; permissions?: Record<string, string[]> }
+  }): Promise<{ key: string; id: string }>
+}
+
+test("deleteLocalAccount removes the account's api key too, so the key can't resurrect the deleted identity", async () => {
+  const { app, repo, service, auth } = await makeApp()
+  const cookie = await registeredSession(app, 'keyholder@x.test', repo)
+  const me = await (await app.request('/me', { headers: { cookie } })).json()
+  const handle = me.user.handle
+  const authRow = repo.raw.prepare('SELECT id FROM user WHERE email = ?').get('keyholder@x.test') as { id: string }
+
+  const apiKeyApi = auth.api as unknown as ApiKeyCreation
+  const created = await apiKeyApi.createApiKey({ body: { configId: 'user', userId: authRow.id, permissions: { timeline: ['read'] } } })
+  expect(created.key).toBeTruthy()
+
+  expect(await service.deleteLocalAccount(handle)).toEqual({ ok: true })
+  expect(repo.raw.prepare('SELECT id FROM apikey WHERE referenceId = ?').get(authRow.id)).toBeUndefined()
+
+  // The key must be rejected outright — not silently resurrect a fresh
+  // account for the now-orphaned authUserId via ensureCoreUser's lazy mint.
+  const res = await app.request('/me/timeline', { headers: { 'x-api-key': created.key! } })
+  expect(res.status).toBe(401)
+  expect(await repo.getUserByHandle(handle)).toBeUndefined() // still gone — nothing resurrected
 })
