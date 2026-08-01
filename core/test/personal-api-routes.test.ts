@@ -49,7 +49,7 @@ test('GET /me/timeline requires an api key', async () => {
   expect(res.status).toBe(401)
 })
 
-test("GET /me/timeline returns posts by people the key's owner follows, not their own posts", async () => {
+test("GET /me/timeline returns posts by people the key's owner follows (the personal/home-timeline lens)", async () => {
   const { app, key, service, me } = await setup()
   const followedPost = await service.createLocalPostAs('alice', 'Alice', 'alice post')
   const alice = await service.getUserByHandle('alice')
