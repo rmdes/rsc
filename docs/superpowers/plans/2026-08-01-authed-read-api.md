@@ -45,11 +45,18 @@ read path, SvelteKit form actions. No new web dependency.
   this plan** — do not add them, do not add the plugin-level `before` hook
   that gates them (that's phase 4's job, once an admin route actually needs
   it). This plan's plugin config has exactly one `configId: 'user'`.
-- Permission vocabulary added to the plugin config in this plan is limited to
-  what phase 2's routes actually check: `timeline: ['read']` and
-  `posts: ['read']`. Do **not** pre-register `write` actions or the
-  `follows`/`profile` resources — YAGNI; phase 3 adds those together with
-  the routes that check them.
+- The permission vocabulary this plan actually enforces is limited to what
+  phase 2's routes check: `timeline: ['read']` and `posts: ['read']`. Do
+  **not** wire any route, middleware call, or settings-UI checkbox for
+  `write` actions or the `follows`/`profile` resources — YAGNI; phase 3 adds
+  those together with the routes that check them. **Correction (rev 2 —
+  ponytail-review):** `@better-auth/api-key` has no plugin-level permission
+  allowlist (confirmed against its docs — `permissions.defaultPermissions`
+  is only a *default* applied when a key is created without explicit
+  permissions, not an enforced ceiling on what a key can request). This
+  scope is real because nothing built in this plan *checks* any other
+  permission — not because the plugin config gates it. Don't assume a
+  guarantee the plugin doesn't provide.
 - `/api/v1/*` routes are proxied through web; no Caddy/public-allowlist
   change anywhere in this plan.
 
@@ -120,7 +127,6 @@ apiKey({
   configId: 'user',
   references: 'user',
   defaultPrefix: 'rsc_',
-  enableMetadata: false,
   // A conservative shared default a personal read-only script won't hit
   // under normal use; per-key override stays available via the plugin's
   // own createApiKey options if a future caller needs more.
@@ -134,7 +140,13 @@ apiKey({
 Do **not** set `enableSessionForAPIKeys` (leave it at its default `false` —
 this plan never reads this option at all, so don't add the line even to set
 it explicitly to `false`; its absence is the correct, minimal statement of
-intent, and an explicit `false` invites a later "just flip it" edit).
+intent, and an explicit `false` invites a later "just flip it" edit). Same
+reasoning applies to `enableMetadata` (also left unset, at its default) —
+**rev 2 correction**: an earlier draft of this task set `enableMetadata:
+false` explicitly, which ponytail-audit correctly flagged as contradicting
+this exact principle one comment later — nothing in this plan reads or
+writes key metadata, so there is nothing to enable or disable an opinion
+about yet.
 
 - [ ] **Step 3: Write and run a smoke test proving the plugin mounts and a
   key round-trips through create → verify → list → delete**
@@ -267,7 +279,7 @@ async function setup() {
   app.get('/protected', apiKeyAuth(auth, repo, { timeline: ['read'] }), (c) => c.json({ userId: c.get('coreUser').id }))
 
   const key = (await auth.api.createApiKey({ body: { configId: 'user', userId: authUserId, permissions: { timeline: ['read'] } } })).key!
-  return { app, key, authUserId }
+  return { app, key, authUserId, repo }
 }
 
 test('a valid key with the required permission reaches the handler and sets coreUser', async () => {
@@ -305,13 +317,17 @@ test('a valid key WITHOUT the required permission is rejected with 401, not a pa
 })
 
 test('coreUser resolves to the same core user the key\'s session already had (lazy-mint reuse, not a duplicate)', async () => {
-  const { app, key, authUserId } = await setup()
+  const { app, key, authUserId, repo } = await setup()
   const res = await app.request('/protected', { headers: { 'x-api-key': key } })
   const body = (await res.json()) as { userId: string }
-  // ensureCoreUser must find the SAME core row the registeredSession flow
-  // already minted for this authUserId, not create a second one.
-  expect(body.userId).toBeTruthy()
-  void authUserId
+  // ensureCoreUser must find the SAME core row registeredSession's sign-up
+  // already minted for this authUserId, not create a second one. rev 2
+  // (ponytail-review): the original draft of this test only asserted
+  // body.userId is truthy — identical to (and no stronger than) the first
+  // test above, so it proved nothing about "not a duplicate" despite its
+  // name. This is the actual comparison that makes the claim real.
+  const existing = await repo.getUserByAuthUserId(authUserId)
+  expect(body.userId).toBe(existing!.id)
 })
 ```
 
@@ -503,9 +519,13 @@ its module-scope `clampLimit`/`decodeCursor`):
 // Authed personal API (2026-08-01 design, phase 2) — GET /me/timeline, GET /me/posts
 // =============================================================================
 // Key-authed equivalents of the browser's own Personal tab / own-posts view.
-// Unlike GET /timeline (session-optional, handle-driven), these always
-// resolve the account from the authenticated key's own owner — no handle
-// lookup needed, since "my own timeline"/"my own posts" IS the caller.
+// Unlike GET /timeline (session-optional, handle-driven, never mints a
+// guest — see mountLogicalReadRoutes' viewerAccount comment), these always
+// require a key and resolve the account from its owner via ensureCoreUser —
+// a different trust class from that function's stated invariant, which is
+// why this is a SEPARATE mount function rather than two more app.get() calls
+// folded into mountLogicalReadRoutes (rev 2 — ponytail-review traced the
+// invariant collision this would cause).
 
 export interface PersonalApiDeps {
   store: LogicalStore
@@ -521,16 +541,8 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     return { id: u.id, handle: u.handle, displayName: u.displayName }
   }
 
-  function parseBefore(c: Context): TimelineCursorV2 | null | 'invalid' {
-    const beforeRaw = c.req.query('before')
-    if (beforeRaw === undefined) return null
-    const dec = decodeCursor(beforeRaw)
-    if (!dec || dec.tuple.length !== 2) return 'invalid'
-    return { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
-  }
-
   app.get('/me/timeline', apiKeyAuth(auth, users, { timeline: ['read'] }), (c) => {
-    const before = parseBefore(c)
+    const before = decodeBeforeCursor(c)
     if (before === 'invalid') return c.json({ error: 'invalid cursor' }, 400)
     const limit = clampLimit(c.req.query('limit'))
     const account = accountOf(c)
@@ -540,7 +552,7 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
   })
 
   app.get('/me/posts', apiKeyAuth(auth, users, { posts: ['read'] }), (c) => {
-    const before = parseBefore(c)
+    const before = decodeBeforeCursor(c)
     if (before === 'invalid') return c.json({ error: 'invalid cursor' }, 400)
     const limit = clampLimit(c.req.query('limit'))
     const account = accountOf(c)
@@ -551,6 +563,29 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
 }
 ```
 
+**Also (rev 2 — ponytail-audit's dedup finding):** `GET /timeline`'s handler
+in `mountLogicalReadRoutes` inlines the exact same "decode `?before=` into a
+`TimelineCursorV2` or reject" block these two new routes need. Extract it
+once, at module scope (same scope `clampLimit` already lives in), and have
+BOTH `mountLogicalReadRoutes`' `/timeline` handler and the two new routes
+call it:
+
+```ts
+function decodeBeforeCursor(c: Context): TimelineCursorV2 | null | 'invalid' {
+  const beforeRaw = c.req.query('before')
+  if (beforeRaw === undefined) return null
+  const dec = decodeCursor(beforeRaw)
+  if (!dec || dec.tuple.length !== 2) return 'invalid'
+  return { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
+}
+```
+
+In `mountLogicalReadRoutes`'s `/timeline` handler, replace its inline
+`if (beforeRaw !== undefined) { const dec = decodeCursor(beforeRaw); ... }`
+block with `const before = decodeBeforeCursor(c); if (before === 'invalid')
+return c.json({ error: 'invalid cursor' }, 400)` — read that handler fresh
+first to match its exact current variable names before editing.
+
 `apiKeyAuth` is a VALUE import (called at mount time), while the file's
 existing `import type { UserDirectory } from './auth.ts'` is type-only —
 don't merge into that line. Add a separate line instead:
@@ -560,18 +595,28 @@ TimelineCursorV2, ProjectionViewer, ... } from '../logical/types.ts'` line
 — it is not currently in that list (checked during planning) and
 `accountOf`'s return type needs it.
 
-- [ ] **Step 5: Wire it in `server.ts`**
+- [ ] **Step 5: Wire it in `app.ts`, not `server.ts`**
 
-Read `core/src/server.ts` around the existing `mountPublicFirehoseRoute`
-call (added by the phase-1 branch) and add, right after it:
+**Rev 2 correction (ponytail-audit):** the original draft wired this from
+`server.ts`, matching the firehose's wiring location — but the firehose
+needs `runtime.streamSource`/`bus`, real transport machinery only `server.ts`
+has in scope, while these two routes need only `store`/`auth`/`users`,
+already available exactly where `mountLogicalReadRoutes` (the structurally
+closest sibling — same `TimelineLens`/cursor machinery) is wired: inside
+`core/src/api/app.ts`'s `createApp`. Wiring from `server.ts` would have been
+consistent with the wrong precedent.
+
+Read `core/src/api/app.ts` around the existing `mountLogicalReadRoutes(app,
+{ store: deps.logical.store, auth: deps.auth, users: deps.users, service,
+feeds })` call and add, right after it:
 
 ```ts
-mountPersonalApiRoutes(app, { store: logicalStore, auth, users: repo })
+mountPersonalApiRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users })
 ```
 
-Add `mountPersonalApiRoutes` to the existing `import { mountLogicalStreamRoute,
-mountLogicalHandleRoute, mountPublicFirehoseRoute } from
-'./api/logical-routes.ts'` line (confirm the exact current import list by
+Add `mountPersonalApiRoutes` to the existing `import { mountLogicalRoutes,
+mountLogicalReadRoutes } from './logical-routes.ts'` line in `app.ts`
+(confirm the exact current import list by
 reading the file — it may have evolved).
 
 - [ ] **Step 6: Run the tests to verify they pass**
@@ -887,6 +932,28 @@ EOF
 ---
 
 ## Self-Review
+
+**Rev 2 (2026-08-01):** folds ponytail-review + ponytail-audit findings
+(dispatched to two clean subagents in parallel, both verified claims against
+the real codebase and the better-auth docs rather than trusting the plan's
+own prose). The two reviews disagreed on one point — whether
+`mountPersonalApiRoutes` should be its own function or folded into
+`mountLogicalReadRoutes` — adjudicated by checking `mountLogicalReadRoutes`'s
+own documented invariant ("never mints a guest") against what the new
+routes actually do (`apiKeyAuth` calls `ensureCoreUser`, directly violating
+that invariant if folded in): kept as a separate function, but **re-wired
+from `app.ts` instead of `server.ts`** — the audit's real point, that its
+deps (`store`/`auth`/`users`) match where `mountLogicalReadRoutes` is
+already wired, not where the firehose's `runtime`/`bus`-dependent mounts are.
+Also: extracted a shared `decodeBeforeCursor` helper instead of duplicating
+`/timeline`'s inline cursor-decode block a third time; corrected a Global
+Constraints claim that overstated what `@better-auth/api-key`'s plugin
+config enforces (it has no permission allowlist — the scope is real because
+nothing built here checks anything else, not because the plugin gates it);
+removed an `enableMetadata: false` line that contradicted the plan's own
+adjacent "don't set what has no reader" reasoning one comment later; fixed a
+hollow test in Task 2 that asserted nothing beyond its neighbor despite its
+name claiming to prove non-duplication.
 
 **Spec coverage:** "Read endpoints (phase 2)" (Tasks 3-4), the `configId:
 'user'` half of "Key tiers" (Task 1), "Core mechanism: apiKeyAuth" (Task 2),
