@@ -70,6 +70,36 @@ export function sessionAuth(auth: Auth, users: UserDirectory, adminEmails: Reado
   }
 }
 
+// createAuth's `plugins: BetterAuthPlugin[]` (auth.ts) widens every plugin to
+// the base interface, so betterAuth()'s generic .api inference can't see
+// apiKey()'s endpoints — same erasure test/api-key-plugin.test.ts hits and
+// works around with an identical cast. Field shape transcribed from the
+// installed package's real .d.mts
+// (node_modules/@better-auth/api-key/dist/index-CgPDayNk.d.mts), not
+// invented, trimmed to only what apiKeyAuth reads.
+interface ApiKeyVerification {
+  verifyApiKey(input: {
+    body: { configId?: string; key: string; permissions?: Record<string, string[]> }
+  }): Promise<{ valid: boolean; key: { referenceId: string } | null }>
+}
+
+// Explicit verifyApiKey call, never better-auth's enableSessionForAPIKeys
+// shortcut (better-auth's own docs flag it as an impersonation risk, and it
+// has no per-route permission check). configId is required on every call to
+// this plugin — our one config is named 'user', not the implicit 'default'
+// the plugin falls back to when configId is omitted (Task 1 finding).
+export function apiKeyAuth(auth: Auth, users: UserDirectory, permissions: Record<string, string[]>): MiddlewareHandler {
+  const apiKeyApi = auth.api as unknown as ApiKeyVerification
+  return async (c, next) => {
+    const key = c.req.header('x-api-key')
+    if (!key) return c.json({ error: 'api key required' }, 401)
+    const result = await apiKeyApi.verifyApiKey({ body: { configId: 'user', key, permissions } })
+    if (!result.valid || !result.key) return c.json({ error: 'invalid or insufficient api key' }, 401)
+    c.set('coreUser', await ensureCoreUser(users, result.key.referenceId))
+    return next() // see sessionAuth: same propagation contract applies here
+  }
+}
+
 export function registeredOnly(): MiddlewareHandler {
   return async (c, next) => {
     if (c.get('sessionIsAnonymous')) return c.json({ error: 'registration required' }, 403)
