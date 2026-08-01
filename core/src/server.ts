@@ -6,7 +6,7 @@ import { createSqliteRepository } from './storage/sqlite.ts'
 import { createEventBus } from './domain/bus.ts'
 import { createService } from './domain/service.ts'
 import { createApp } from './api/app.ts'
-import { mountLogicalStreamRoute, mountLogicalHandleRoute } from './api/logical-routes.ts'
+import { mountLogicalStreamRoute, mountLogicalHandleRoute, mountPublicFirehoseRoute } from './api/logical-routes.ts'
 import { createAuth } from './auth.ts'
 import { createMailer } from './mail.ts'
 import { hubLinkUrl } from './domain/feed.ts'
@@ -54,6 +54,7 @@ if (config.pushIn && !config.publicUrl) console.log('push-in inactive: no public
 // logical store (V3 Task 7) as a REQUIRED argument, so the tombstone guard cannot
 // be silently dropped from subscribe/OPML/establishFederation again.
 const sources = createSourcePlane(repo, config.publicUrl, logicalStore)
+const feeds = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
 const app = createApp({
   service,
   bus,
@@ -62,7 +63,7 @@ const app = createApp({
   auth,
   users: repo,
   mailEnabled: config.mailEnabled,
-  feeds: { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud },
+  feeds,
   websub: config.websub.mode,
   pushIn: config.pushIn,
   pollSeconds: config.pollSeconds,
@@ -99,6 +100,7 @@ mountLogicalStreamRoute(app, {
     return { localAccountId: u ? u.id : null, activeSourceIds: [] }
   },
 })
+mountPublicFirehoseRoute(app, { source: runtime.streamSource, bus, feeds })
 // Local mutations still emit an after-commit hint so the stream catches up before
 // its heartbeat (spec §7.4); reads the coalesced high water once.
 bus.onNewPost(() => { bus.emitSequenceHint(logicalStore.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })
