@@ -92,6 +92,23 @@ export async function updateProfile(f: typeof fetch, patch: { handle?: string; d
 	if (!res.ok) throw new Error(await errorMessage(res, 'updateProfile failed'))
 }
 
+// Public instance config (mail capability + tab label/subtitle overrides).
+// Fail-soft: any fetch/parse error falls back to defaults, never crashes the layout.
+export async function getInstanceConfig(f: typeof fetch): Promise<{
+	mailEnabled: boolean
+	tabLabels: Record<string, string | null>
+	tabSubtitles: Record<string, string | null>
+}> {
+	try {
+		const res = await f(`${base()}/instance/config`)
+		if (!res.ok) throw new Error(`instance/config ${res.status}`)
+		const body = (await res.json()) as { mailEnabled?: boolean; tabs?: { labels?: Record<string, string | null>; subtitles?: Record<string, string | null> } }
+		return { mailEnabled: body.mailEnabled === true, tabLabels: body.tabs?.labels ?? {}, tabSubtitles: body.tabs?.subtitles ?? {} }
+	} catch {
+		return { mailEnabled: false, tabLabels: {}, tabSubtitles: {} }
+	}
+}
+
 export async function getAdminOverview(f: typeof fetch): Promise<{
 	counts: { registeredUsers: number; guests: number; remoteFeeds: number; posts: number }
 	federation: { websub: string; rssCloud: boolean; pushIn: boolean; publicUrl: string | null }

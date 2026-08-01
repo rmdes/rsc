@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest'
-import { resolveTab, TAB_LABELS, TAB_SUBTITLES, TABS } from './tabs'
+import { mergeTabCopy, resolveTab, TAB_LABELS, TAB_SUBTITLES, TABS } from './tabs'
 
 const registered = { isAnonymous: false }
 const anon = { isAnonymous: true }
@@ -37,4 +37,20 @@ test('labels rename personal→following and public→explore while URL keys sta
   expect(TAB_LABELS.public).toBe('explore')
   expect(resolveTab('personal', registered)).toBe('personal')
   expect(resolveTab('public', null)).toBe('public')
+})
+
+test('mergeTabCopy uses defaults for null/empty/missing overrides, override otherwise', () => {
+  const merged = mergeTabCopy({ labels: { personal: 'My feed', local: '', federated: null }, subtitles: { public: 'All of it' } })
+  expect(merged.labels.personal).toBe('My feed')
+  expect(merged.labels.local).toBe('local') // '' → default
+  expect(merged.labels.federated).toBe('federated') // null → default
+  expect(merged.labels.public).toBe('explore') // missing → default
+  expect(merged.subtitles.public).toBe('All of it')
+  expect(merged.subtitles.local).toBe('Posts written here, on this instance')
+})
+
+test('mergeTabCopy tolerates null overrides and always fully populates every key', () => {
+  const merged = mergeTabCopy(null)
+  expect(Object.keys(merged.labels).sort()).toEqual([...TABS].sort())
+  expect(merged.labels.personal).toBe('following')
 })
