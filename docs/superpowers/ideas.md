@@ -113,6 +113,26 @@ end for the record).
 - **Unknown handle → empty profile, no 404** — `u/[handle]` renders a blank
   timeline for a nonexistent user rather than a not-found page (core-down is
   handled separately via `coreDown`, so this is just a missing "user not found").
+- **`..%2f` defeats both `/api/auth/reference` guards (found 2026-08-01, authed-read-api final review)** —
+  `web/src/routes/api/auth/[...path]/+server.ts`'s hard-404 on `params.path
+  === 'reference'`/`.startsWith('open-api')` (and the new `/api/v1/[...path]`
+  proxy's identical `startsWith('api/')` guard) are both plain string matches
+  against SvelteKit's already-decoded `params.path` — `curl --path-as-is
+  '.../api/auth/..%2fauth/reference'` decodes past the string check, and
+  Node's `fetch` then normalizes the `/../` away when resolving the upstream
+  URL, landing on the real reference page (137KB Scalar UI) live-confirmed
+  via both proxies. Pre-existing on `main` (the auth proxy predates this
+  finding; the v1 proxy just inherited the same string-match pattern into
+  new code) — not a regression, but both guards CLAUDE.md calls load-bearing
+  are defeated the same way. Inert in prod (`RSC_AUTH_OPENAPI` off, so core
+  never serves the route at all), which is why this wasn't merge-blocking,
+  but it's the ONLY thing standing between "flag off" and "dev-only surface
+  public" if that assumption ever changes. Fix (same shape, both files):
+  resolve the URL first, match on the resolved path, not the raw segment —
+  `const t = new URL(params.path + url.search, base() + '/'); if
+  (t.pathname.startsWith('/api/')) return new Response(null, {status:404})`.
+  Status: backlog, cheap (~2 lines × 2 files), not urgent while the flag
+  stays off.
 
 **Documented / protocol residuals — probably leave as-is**
 - **`cloudScheme` 443-heuristic** (`push.ts:33`) — HTTPS on a non-default port
