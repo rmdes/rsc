@@ -33,7 +33,7 @@ async function acquireRemote(db: ReturnType<typeof createDatabaseContext>, sourc
   await eng.acquireSource(sourceId, { kind: 'scheduled' }, undefined)
 }
 
-async function setup() {
+async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number } = {}) {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw as Raw
   const db = createDatabaseContext(raw)
@@ -43,7 +43,7 @@ async function setup() {
   activateLogicalV2(db, NOW)
   bus.onNewPost(() => { bus.emitSequenceHint(store.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })
   const app = new Hono()
-  mountPublicFirehoseRoute(app, { source: createStreamSource(db), bus, feeds: FEEDS, pollMs: 5, heartbeatMs: 30 })
+  mountPublicFirehoseRoute(app, { source: createStreamSource(db), bus, feeds: FEEDS, pollMs: 5, heartbeatMs: 30, ...caps })
   return { repo, raw, db, store, bus, service, app }
 }
 // A resumable cursor at the current high water — connecting with THIS (not a
@@ -140,5 +140,23 @@ test('a per-IP connection cap rejects the (N+1)th concurrent connection with 429
   const statuses = responses.map((r) => r.status).sort()
   expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
   expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(5)
+  for (const r of responses) await r.body?.cancel()
+})
+
+// The per-IP cap above bounds ONE address, and addresses are free — an
+// anonymous endpoint needs a ceiling on the process itself, or N clients get
+// N*maxPerIp streams each holding a journal replay.
+test('a GLOBAL connection cap rejects once the process ceiling is reached, regardless of source address', async () => {
+  const { app, store } = await setup({ maxConnectionsPerIp: 100, maxConnectionsTotal: 3 })
+  const cursor = cursorNow(store)
+  // Every request from a DIFFERENT address, so only the global cap can reject.
+  const responses = await Promise.all(
+    Array.from({ length: 5 }, (_, i) =>
+      app.request('/firehose/stream', { headers: { 'x-forwarded-for': `203.0.113.${20 + i}`, 'Last-Event-ID': cursor } }),
+    ),
+  )
+  const statuses = responses.map((r) => r.status)
+  expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(3)
+  expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
   for (const r of responses) await r.body?.cancel()
 })

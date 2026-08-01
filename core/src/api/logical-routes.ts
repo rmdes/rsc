@@ -626,6 +626,7 @@ export interface PublicFirehoseDeps {
   pollMs?: number
   heartbeatMs?: number
   maxConnectionsPerIp?: number
+  maxConnectionsTotal?: number
 }
 
 const FIREHOSE_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
@@ -659,22 +660,39 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const pollMs = deps.pollMs ?? 1000
   const heartbeatMs = deps.heartbeatMs ?? 15000
   const maxPerIp = deps.maxConnectionsPerIp ?? 5
-  // ponytail: single-process in-memory counter, resets on every deploy/restart.
+  // A per-IP cap alone bounds nothing: addresses are free, so N attackers get
+  // N*5 streams. This endpoint is anonymous, so the GLOBAL ceiling is the one
+  // that actually protects the process.
+  const maxGlobal = deps.maxConnectionsTotal ?? 50
+  // ponytail: single-process in-memory counters, reset on every deploy/restart.
   // Both live prod paths (compose.prod.yaml, Cloudron package) run one Node
   // process per instance today, so this is an accepted, named ceiling — would
   // need a shared store (e.g. Redis) if an instance ever ran multiple replicas
   // behind a load balancer.
   const ipCounts = new Map<string, number>()
+  let totalConnections = 0
+
+  // One awaited MACROTASK yield between pump batches. A cursor is unauthenticated
+  // and `sequence = 0` is serveable against a journal that is never pruned, so any
+  // anonymous caller can demand a full-history replay: without this the `for(;;)`
+  // below drains 200-row batches of synchronous db.read + per-row projectItem
+  // back-to-back and starves the event loop. `await writeSSE` does NOT help —
+  // promise continuations resolve as microtasks, which never reach the check phase
+  // where incoming HTTP callbacks are queued (the f612128 poll-tick lesson).
+  const breathe = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve) })
 
   app.get('/firehose/stream', (c) => {
     const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    if (totalConnections >= maxGlobal) return c.json({ error: 'firehose at capacity' }, 429)
     const current = ipCounts.get(ip) ?? 0
     if (current >= maxPerIp) return c.json({ error: 'too many connections from this address' }, 429)
     ipCounts.set(ip, current + 1)
+    totalConnections++
     let released = false
     const release = (): void => {
       if (released) return
       released = true
+      totalConnections--
       const n = (ipCounts.get(ip) ?? 1) - 1
       if (n <= 0) ipCounts.delete(ip)
       else ipCounts.set(ip, n)
@@ -733,6 +751,7 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
             if (b.done) return true
             if (b.lastSequence <= after) break
             after = b.lastSequence
+            await breathe() // let HTTP in between batches — see `breathe` above
           }
           return false
         }
