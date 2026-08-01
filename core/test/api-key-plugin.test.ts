@@ -54,7 +54,7 @@ test('a user-owned api key can be created, verified, listed, and deleted via the
   expect(verified.valid).toBe(true)
   expect(verified.key?.referenceId).toBe(authUserId)
 
-  const insufficientlyScoped = await apiKeyApi.verifyApiKey({ body: { configId: 'user', key: created.key!, permissions: { posts: ['write'] } } })
+  const insufficientlyScoped = await apiKeyApi.verifyApiKey({ body: { configId: 'user', key: created.key!, permissions: { posts: ['read'] } } })
   expect(insufficientlyScoped.valid).toBe(false)
 
   const listed = await apiKeyApi.listApiKeys({ query: { configId: 'user' }, headers: new Headers({ cookie }) })
