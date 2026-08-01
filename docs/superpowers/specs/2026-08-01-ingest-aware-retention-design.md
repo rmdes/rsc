@@ -1,147 +1,159 @@
 # Ingest-Aware Retention — Design
 
-**Status:** Draft (brainstormed 2026-08-01, from a live root-cause investigation)
+**Status:** Rev 2 (brainstormed 2026-08-01; clean-context review folded —
+`docs/superpowers/reviews/2026-08-01-ingest-aware-retention-review.md`).
 
-**Goal:** Stop the retention delete↔re-ingest churn loop while keeping both
-retention caps (per-source item count + item age). Items outside a source's
-retention window are **never ingested**, instead of being ingested-then-deleted
-and re-ingested every poll.
+**Goal:** Stop the retention delete↔re-ingest churn loop, and repair the
+`timeline_sort_at` regression that amplifies it. Items outside a source's
+retention window are **never ingested** instead of ingested-then-deleted-then-
+re-ingested every poll.
 
 ## Background — the bug (root-caused live 2026-08-01)
 
 `trimSourceToCap` runs after **every** poll (`runtime.ts:412-433`) and deletes
-the deliveries + observation-versions of items older than `maxAgeDays` or beyond
-`maxCount` (`tombstones.ts:244-250`). But the source's feed **still serves those
+the deliveries + observation-versions of items beyond `maxCount` or older than
+`maxAgeDays` (`tombstones.ts:244-250`). But the feed **still serves those
 items**, so the next poll's `commitAcquisition` finds no delivery
 (`findDelivery` miss, `acquisition.ts:632`) → creates a **new** delivery +
 version + reconciliation job → the old item resurfaces as "new" and fires a
 journal `upsert` to every firehose client → the trim deletes it again → forever.
 
-**Confirmed on the live fleet (read-only):** rsc.rmdes.be (caps 200 items /
-120 days) spawned **1342 new deliveries/hour, all brand-new delivery rows**,
-re-ingesting **2020–2021** back-catalog every poll. rsc.rmendes.net has the
-same caps but is healthy — its feeds are under-cap, so retention never fires.
-The `runtime.ts:426` comment anticipated repeated trims but assumed trimmed
-items *stay gone*; nothing guards re-ingestion. This is independent of the
-fingerprint fix (that works: 6/1343 recent versions carried `published`); it
-surfaced when the caps were set. See [[remote-content-retention-milestone]],
-[[obs-versions-runaway-purge]].
+**Confirmed on the live fleet (read-only):** rsc.rmdes.be (caps 200 / 120 days)
+spawned **1342 new deliveries/hour, all brand-new delivery rows**, re-ingesting
+**2020–2021** back-catalog every poll. rsc.rmendes.net has the same caps but is
+healthy — its feeds are under-cap, so retention never fires.
 
-## The fix (Approach A): an ingest gate + a stored content-date
+### The compounding regression (review C1 — verified in code)
 
-### 1. Content-date on the delivery (`deliveries_v2.content_sort_at`)
+Reconciliation derives an item's `timeline_sort_at` from
+`material.published` (`reconcile.ts:378`), where `material` is parsed from
+`canonical_material` (`reconcile.ts:260`). But the fingerprint fix `00bc235`
+(2026-07-31) **removed `published` from `canonicalMaterialFor`** — so
+`material.published` is now `undefined` and **`timeline_sort_at = arrival` for
+every remote item.** Consequences:
+- Remote items sort by *when this instance first saw them*, not their publish
+  date. For fresh items arrival ≈ publish (invisible); for **back-catalog /
+  re-ingested items it's the amplifier** — a 2021 episode re-created by the loop
+  gets `timeline_sort_at = now` and rockets to the top as "just now" (a large
+  part of the "hundreds of thousands in the last X minutes" symptom).
+- The age trim keys off `timeline_sort_at`, so it currently trims by *arrival*
+  age, not content age.
 
-The count cap needs "the date of the source's N-th-newest item" **at commit
-time**, but `logical_items_v2` (which today's trim keys off via
-`timeline_sort_at`) don't exist yet at commit (reconciliation creates them
-later). So store the item's effective content-date on the delivery when it's
-created, using the **exact same formula reconciliation uses** for
-`timeline_sort_at` (`reconcile.ts:379`):
+See [[remote-content-retention-milestone]], [[obs-versions-runaway-purge]].
+
+## The fix
+
+### Phase 1 — ship now (no schema): regression fix + age gate
+
+**Task A — repair `timeline_sort_at` (review C1, prerequisite).**
+`createRemoteItem` (`reconcile.ts:375-381`) must read the published date from
+`raw_evidence_json` (already parsed as `raw` at `reconcile.ts:264`, and it
+carries `published: it.rawDate` from `acquisition.ts:324`) instead of from
+`material`. Restores content-date sorting for remote items AND makes the age
+trim key off real content age again. After this, the item's published date is
+the single, consistent "content date" that the timeline, the trim, and the gate
+all use.
+
+**Task B — the age ingest gate, in `commitAcquisition` (new-delivery branch).**
+In the observation loop (`acquisition.ts:627`), **only when about to create a
+new delivery** (`existing === undefined`, line 633) — an already-tracked
+delivery getting a new version (a genuine edit) is never gated out — compute the
+item's content date and skip if:
 
 ```
-content_sort_at = (pub && pub <= arrival) ? pub : arrival
+maxAgeDays > 0 && contentDate < (now − maxAgeDays)   →  skip
 ```
 
-where `pub` = the item's parsed published date (`rawDate`), `arrival` =
-`committedAt`. Dateless items → `arrival` (recent) → never age-gated, matching
-timeline behavior; a real 2020 date ≤ arrival → `2020` → correctly gated.
+where `contentDate = (pub && pub <= arrival) ? pub : arrival` (the SAME formula
+Task A restores in reconcile; `pub` = the item's `rawDate`, `arrival` =
+`committedAt`). "Skip" = create **no** delivery, version, or job; increment a new
+`retentionFiltered` field on `AdminAcquisitionCounters` so the filtering is
+observable, not a silent black hole.
 
-- **Migration** (append to `MIGRATIONS` in `sqlite.ts`): `ALTER TABLE
-  deliveries_v2 ADD COLUMN content_sort_at TEXT` + `CREATE INDEX
-  idx_deliveries_v2_source_sort ON deliveries_v2(source_id, content_sort_at)`.
-- **Backfill:** populate existing rows from each delivery's newest observation
-  version's date (same formula), so the count floor is correct immediately;
-  rows with no derivable date stay NULL and are treated as "keep" (never gated
-  out — conservative). *(Plan resolves the exact backfill SQL.)*
+This alone breaks the current live loop: the flooding items are old-published
+back-catalog, so even when the *count* cap is what deleted them, the age gate
+refuses to re-create them — they can never bounce back.
 
-### 2. The ingest gate — in `commitAcquisition`, on the NEW-delivery branch only
+**Task C — second insert path (review Important).** `verification.ts:352` is a
+second delivery-insert path outside `commitAcquisition`. Confirm whether it can
+ingest an out-of-window item; if so, the gate must cover it too (extract the
+window check into a shared helper both call).
 
-In the observation loop (`acquisition.ts:627`), the gate applies **only when
-about to create a new delivery** (`existing === undefined`, line 633) — an
-already-tracked delivery getting a new version (a genuine edit) is never gated
-out; the trim handles items that cross a threshold while stored. Before
-`insertDelivery`, compute `contentDate` for the observation and skip if the
-source's window excludes it:
+**Keep `trimSourceToCap`** for stored items that cross the age threshold over
+time; it's now loop-safe (the gate blocks re-ingest) and, post-Task-A, trims by
+real content age.
 
-- **Age:** `maxAgeDays > 0 && contentDate < (now − maxAgeDays)` → skip.
-- **Count:** `maxCount > 0 && (count of this source's deliveries with
-  content_sort_at > contentDate) >= maxCount` → skip (it's below the newest-N
-  floor).
+**Plumbing:** the caps are read live so an admin change takes effect next poll,
+no restart. The gate needs them during `acquireSource`; thread the live
+`getSetting` into the acquisition engine at its construction site
+(`server.ts:37`, per the review — NOT runtime), same source the trim reads.
 
-"Skip" = create **no** delivery, version, or job; increment a new
-`retentionFiltered` counter (added to `AdminAcquisitionCounters`) so the
-filtering is observable in admin acquisition stats, not a silent black hole.
+### Phase 2 — deferred (decide after the pipeline audit): the count gate
 
-This is the whole loop-breaker: an out-of-window item the feed re-serves is
-never re-created, so there is nothing for the trim to delete and re-detect.
+The count cap only loops for a source whose feed serves **> maxCount items all
+within the age window** (high-volume *recent* feed) — not the current flood
+(old back-catalog, handled by Phase 1). Closing it needs a per-source "N-th
+newest content date" queryable at commit, i.e. a stored
+`deliveries_v2.content_sort_at` column + index + a **synchronous** backfill in
+the migration (review Important: an async backfill leaves count-gating disabled
+during a window). That's the only part of this whole fix that needs schema —
+and a pipeline-simplification audit is queued immediately after Phase 1, which
+may change how (or whether) the count cap should exist. So Phase 2 is
+**explicitly deferred** until that audit informs it. If the audit is delayed and
+a high-volume-recent feed starts looping before then, promote Phase 2.
 
-### 3. Keep `trimSourceToCap` (threshold-crossers)
-
-The gate handles *incoming* items; the trim still handles *stored* items that
-cross a threshold over time — an in-window item that ages past the cutoff, or
-that falls below the newest-N as the source accrues newer items. It is now
-loop-safe: once trimmed, the gate blocks re-ingestion. **Open decision (resolve
-in the plan):** switch `trimSourceToCap` to key off `deliveries.content_sort_at`
-for one consistent date source, vs. keep `logical_items.timeline_sort_at`. They
-should agree by construction (same formula); a single source is less to reason
-about.
-
-### 4. Live settings, threaded into the commit path
-
-The caps are read live today in `runtime.ts` (so an admin change takes effect
-next poll, no restart). The gate needs them **during** `acquireSource`, before
-the trim. Thread the live caps into the commit path — via an injected
-`getRetentionCaps()` on the acquisition engine (same `getSetting` source
-`runtime.ts` uses) or a per-call parameter — so the gate and the existing trim
-read the same live values in the same poll.
+Also for Phase 2: reconcile the **cap unit** (review Important) — the gate would
+count *deliveries* while the cap/trim count *logical items*; they can diverge
+(a GUID-reissue leaves one item with two deliveries). Settle on logical items
+(the cap's stated meaning) when Phase 2 is designed.
 
 ## Load-bearing invariants
 
-- **`maxCount = 0` and `maxAgeDays = 0` ⇒ gate disabled** (ingest everything —
-  today's default behavior; unlimited). Both-zero is the inert default.
-- **Local items are never gated** (origin = remote / from a source only), same
-  exemption the trim already has.
-- **The gate's date formula MUST equal `reconcile.ts`'s `timeline_sort_at`
-  formula.** If they diverge, the gate, the trim, and the timeline sort would
-  disagree about an item's age — the whole point is one consistent notion of
-  "how old is this item."
-- **No user-facing data migration / no re-import.** On deploy the existing
-  over-window backlog is trimmed once and stays gone (gate blocks re-ingest) →
-  the churn self-converges. `content_sort_at` is backfilled by the migration.
-- House style: hand-rolled, `app.request` tests, `c.json` (invoke the `hono`
-  skill for any route touch — though this feature is mostly in the logical
-  layer, not HTTP).
+- **`maxAgeDays = 0` (and `maxCount = 0`) ⇒ gate disabled** — ingest everything,
+  today's unlimited default.
+- **Local items are never gated** (remote/source origin only), same exemption
+  the trim has.
+- **One content date, used everywhere.** After Task A, the item's published date
+  (clamped `pub <= arrival ? pub : arrival`) is what the timeline sort, the age
+  trim, and the age gate ALL use. The earlier draft's "gate must equal
+  `timeline_sort_at`" invariant was written before C1 was understood — the point
+  is not "match the current (broken) value" but "there is ONE content date and
+  Task A makes it correct everywhere."
+- **No user-facing data migration in Phase 1.** On deploy, Task A corrects sort
+  order going forward; the gate blocks re-ingest so the over-window backlog the
+  trim removes stays gone → self-converges. (No new column in Phase 1.)
 
 ## Testing
 
-- **core** (`core/test/`):
-  - Gate skips an over-age incoming item on a NEW delivery: no delivery/version/
-    job created, `retentionFiltered` incremented; a within-age item still
-    ingests fully.
-  - Gate skips an over-count incoming item (source at `maxCount`, item older
-    than the floor); a newer-than-floor item ingests and pushes the oldest below
-    the floor.
-  - **Loop is dead:** poll an over-window feed twice (same items) → zero new
-    deliveries on the second poll (today: N new deliveries every poll).
-  - `maxCount = 0 && maxAgeDays = 0` → gate inert, everything ingests.
-  - An existing in-window delivery still records a genuine edit (new version) —
-    the gate does not block updates to already-tracked items.
-  - `trimSourceToCap` still removes a stored item that crossed a threshold.
-  - `content_sort_at` is set on new deliveries using the reconcile formula
-    (published ≤ arrival ? published : arrival).
-- Migration test: the column + index are created; backfill populates existing
-  rows; NULL content_sort_at is treated as "keep."
+- **Task A:** a remote item with a real (old) published date gets
+  `timeline_sort_at = published`, not arrival — drive a DATED item through the
+  real pipeline (parse → commit → reconcile), NOT a hand-built
+  `canonical_material` blob. Review C2: the existing `logical-reconcile.test.ts`
+  seed hand-builds `canonical_material` **with** `published` — a shape
+  production no longer emits — so it green-tests dead code; replace/augment with
+  a real dated-item test.
+- **Task B:** gate skips an over-age incoming item on a NEW delivery (no
+  delivery/version/job created, `retentionFiltered` incremented); a within-age
+  item still ingests; an existing in-window delivery still records a genuine
+  edit (gate doesn't block updates); `maxAgeDays = 0` → gate inert.
+- **Loop is dead:** poll an over-age feed twice (same old items) → zero new
+  deliveries on the second poll (today: N new deliveries every poll).
+- **Task C:** if `verification.ts:352` can ingest, it honors the same gate.
+- `trimSourceToCap` still removes a stored item that aged past the cutoff (now
+  by real content age).
 
-## Out of scope (YAGNI)
+## Out of scope (YAGNI / deferred)
 
-- Per-user retention (this is instance-wide, per-source, as today).
-- Changing the admin UI or the cap semantics (still count + age, 0 = unlimited).
-- The form-reset bug on `/admin/settings` (separate one-line fix, already made).
+- **Phase 2 count-floor gate + `content_sort_at` migration** — deferred to after
+  the pipeline audit (see Phase 2).
+- Per-user retention; changing cap semantics or the admin UI.
+- The `/admin/settings` form-reset bug — already fixed separately (`db7de6d`).
 - A retroactive purge of already-created duplicates (the trim converges them).
 
 ## Execution
 
-Spec → user review → clean-context spec review (`docs/superpowers/reviews/`) →
-`superpowers:writing-plans` → `superpowers:subagent-driven-development`. Touches
-the logical/acquisition core (a load-bearing subsystem) + one migration, so the
-plan and a whole-branch review on the most capable model both matter.
+Spec → user review → clean-context review (done, folded) →
+`superpowers:writing-plans` → `superpowers:subagent-driven-development`. Phase 1
+touches the reconcile/acquisition core (load-bearing) — a whole-branch review on
+the most capable model at the end. The pipeline-simplification audit
+(`ponytail-audit` over `core/src/logical`) follows Phase 1 and informs Phase 2.
