@@ -13,7 +13,10 @@
 {#if form?.error}<p class="error" role="alert">{form.error}</p>{/if}
 {#if form?.saved}<p class="notice confirm" role="status">Saved.</p>{/if}
 
-<form method="POST" action="?/save" use:enhance>
+<!-- reset:false — default enhance resets the form on success, which blanks the
+     uncontrolled inputs; Svelte then only re-populates fields whose value changed,
+     leaving unedited fields empty (and a re-save would submit them as 0). -->
+<form method="POST" action="?/save" use:enhance={() => async ({ update }) => update({ reset: false })}>
 	<div class="field">
 		<label for="max-subs">Max subscriptions per user</label>
 		<input id="max-subs" name="maxSubsPerUser" type="number" min="0" required value={data.settings.maxSubsPerUser} />
