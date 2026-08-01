@@ -229,7 +229,7 @@ test('a per-IP connection cap rejects the (N+1)th concurrent connection with 429
 
 - [ ] **Step 3: Run the tests to verify they fail**
 
-Run: `docker compose exec -T core npm test -- logical-firehose-sse`
+Run: `docker compose exec -T core npm test -w core -- logical-firehose-sse`
 Expected: FAIL — `mountPublicFirehoseRoute` doesn't exist yet.
 
 - [ ] **Step 4: Implement `mountPublicFirehoseRoute`**
@@ -403,12 +403,12 @@ Add `mountPublicFirehoseRoute` to the existing
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `docker compose exec -T core npm test -- logical-firehose-sse`
+Run: `docker compose exec -T core npm test -w core -- logical-firehose-sse`
 Expected: all 4 tests pass.
 
 - [ ] **Step 7: Full core suite + typecheck**
 
-Run: `docker compose exec -T core npm test` and `docker compose exec -T core npx tsc --noEmit`
+Run: `docker compose exec -T core npm test -w core` and `docker compose exec -T core npm run typecheck -w core`
 Expected: all passing, 0 type errors (native type-stripping means vitest
 alone won't catch type errors — always run tsc too, per this repo's testing
 gotchas).
