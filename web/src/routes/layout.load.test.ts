@@ -1,28 +1,42 @@
 import { test, expect, vi } from 'vitest'
 import { load } from './+layout.server.ts'
 
-function healthResponse(mailEnabled: boolean) {
-	return new Response(JSON.stringify({ ok: true, mailEnabled }), { status: 200 })
+function configResponse(mailEnabled: boolean) {
+	return new Response(JSON.stringify({ ok: true, mailEnabled, tabs: { labels: {}, subtitles: {} } }), { status: 200 })
+}
+
+const DEFAULT_LABELS = { local: 'local', federated: 'federated', personal: 'following', public: 'explore' }
+const DEFAULT_SUBTITLES = {
+	local: 'Posts written here, on this instance',
+	federated: 'Posts from the instances this one federates with',
+	personal: 'Everything from you and the people you follow',
+	public: 'Every post and feed across this instance'
 }
 
 test('load returns me: null and the mail flag, without calling /me, when there is no session cookie', async () => {
-	const fetch = vi.fn(async (..._args: unknown[]) => healthResponse(true))
+	const fetch = vi.fn(async (..._args: unknown[]) => configResponse(true))
 	const result = await load({ fetch, cookies: { getAll: () => [] }, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ me: null, mailEnabled: true, tab: 'public' })
+	expect(result).toEqual({ me: null, mailEnabled: true, tab: 'public', tabLabels: DEFAULT_LABELS, tabSubtitles: DEFAULT_SUBTITLES })
 	expect(fetch).toHaveBeenCalledTimes(1)
-	expect(String(fetch.mock.calls[0][0])).toContain('/health')
+	expect(String(fetch.mock.calls[0][0])).toContain('/instance/config')
 })
 
 test('load forwards the session cookie and returns getMe() alongside the mail flag', async () => {
 	const fetch = vi.fn(async (..._args: unknown[]) => {
 		const input = _args[0]
-		if (String(input).includes('/health')) return healthResponse(false)
+		if (String(input).includes('/instance/config')) return configResponse(false)
 		return new Response(JSON.stringify({ user: { id: 'u1', handle: 'a' }, isAnonymous: true }), { status: 200 })
 	})
 	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 	const result = await load({ fetch, cookies, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ me: { user: { id: 'u1', handle: 'a' }, isAnonymous: true }, mailEnabled: false, tab: 'public' })
-	const [, init] = fetch.mock.calls.find((c) => !String(c[0]).includes('/health')) as [string, RequestInit]
+	expect(result).toEqual({
+		me: { user: { id: 'u1', handle: 'a' }, isAnonymous: true },
+		mailEnabled: false,
+		tab: 'public',
+		tabLabels: DEFAULT_LABELS,
+		tabSubtitles: DEFAULT_SUBTITLES
+	})
+	const [, init] = fetch.mock.calls.find((c) => !String(c[0]).includes('/instance/config')) as [string, RequestInit]
 	expect(new Headers(init.headers).get('cookie')).toBe('rsc.session_token=s1')
 })
 
@@ -32,16 +46,16 @@ test('load degrades to me: null, mailEnabled: false when the core is unreachable
 	})
 	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 	const result = await load({ fetch, cookies, url: new URL('http://x/') } as never)
-	expect(result).toEqual({ me: null, mailEnabled: false, tab: 'public' })
+	expect(result).toEqual({ me: null, mailEnabled: false, tab: 'public', tabLabels: DEFAULT_LABELS, tabSubtitles: DEFAULT_SUBTITLES })
 })
 
 test('subscribeCommandId mints a UUID only on / for a non-anonymous session, and is absent everywhere else', async () => {
-	const fetch = vi.fn(async (..._args: unknown[]) => healthResponse(true))
+	const fetch = vi.fn(async (..._args: unknown[]) => configResponse(true))
 	const cookies = { getAll: () => [{ name: 'rsc.session_token', value: 's1' }] }
 	// registered session, home page: minted
 	const registeredFetch = vi.fn(async (..._args: unknown[]) => {
 		const input = _args[0]
-		if (String(input).includes('/health')) return healthResponse(true)
+		if (String(input).includes('/instance/config')) return configResponse(true)
 		return new Response(JSON.stringify({ user: { id: 'u1', handle: 'a' }, isAnonymous: false }), { status: 200 })
 	})
 	const onHome = await load({ fetch: registeredFetch, cookies, url: new URL('http://x/') } as never)
