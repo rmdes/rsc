@@ -65,6 +65,10 @@ export interface LogicalStreamSource {
   // project each under CURRENT policy. Stops at the first stored reset / generation
   // change / unsafe reconstruction (spec §5.4). The in-memory bus is never authority.
   batch(input: { afterSequence: number; generation: number; viewer: ProjectionViewer; limit: number }): StreamBatch
+  // Current high water + generation, with NO reset semantics — for callers
+  // (the public firehose) where a missing cursor is the normal first-connection
+  // case, not an anomaly worth resetting on.
+  current(): { afterSequence: number; generation: number }
 }
 
 export interface LogicalRuntime {
@@ -123,6 +127,12 @@ export function createStreamSource(db: DatabaseContext): LogicalStreamSource {
         const dec = decodeJournalCursor(cursor)
         if (!dec || !isServeableCursor(meta, dec)) return { kind: 'reset', afterSequence: 0, generation: meta.resetGeneration }
         return { kind: 'serve', afterSequence: dec.sequence, generation: dec.resetGeneration }
+      })
+    },
+    current() {
+      return db.read((tx) => {
+        const meta = getJournalMetadata(tx)
+        return { afterSequence: meta.highWaterSeq, generation: meta.resetGeneration }
       })
     },
     batch({ afterSequence, generation, viewer, limit }) {

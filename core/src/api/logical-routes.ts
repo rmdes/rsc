@@ -14,7 +14,7 @@ import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
 import type { Service } from '../domain/service.ts'
 import type { FeedContext } from '../domain/feed.ts'
-import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, emittedGuid, logicalToFeedEntry } from '../domain/feed.ts'
+import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, emittedGuid, logicalToFeedEntry, itemContentFields } from '../domain/feed.ts'
 
 // The v2 administrative acquisition surface (spec §6.2-6.3): manual refresh plus
 // run status/history/job reads. Mounted onto the shared app AFTER the
@@ -604,4 +604,155 @@ export function mountLogicalStreamRoute(app: Hono, deps: LogicalStreamDeps): voi
       }
     }),
   )
+}
+
+// =============================================================================
+// Public firehose SSE (2026-08-01 design, phase 1) — GET /firehose/stream
+// =============================================================================
+// Public, anonymous, no key, no session lookup. Reuses the same
+// durable-journal transport as /stream (source.start/source.batch, the bus's
+// coalesced sequence hint) but hardcodes an anonymous viewer and reshapes
+// every frame: only origin==='local' upserts are emitted, and content is
+// rendered through the SAME safe-wire path /users/rss.xml already uses
+// (itemContentFields) — never the raw internal DTO, which may carry
+// unrendered markdown. A remove frame carries no origin info and is passed
+// through unfiltered: a remove for an id whose upsert was filtered out is a
+// harmless no-op for any consumer that never saw that id in the first place.
+
+export interface PublicFirehoseDeps {
+  source: LogicalStreamSource
+  bus: EventBus
+  feeds: FeedContext
+  pollMs?: number
+  heartbeatMs?: number
+  maxConnectionsPerIp?: number
+}
+
+const FIREHOSE_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
+const FIREHOSE_RESET = JSON.stringify({ model: 'firehose-v1', kind: 'reset' })
+const FIREHOSE_BATCH = 200
+
+function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string, unknown> {
+  const entry = logicalToFeedEntry(item)
+  const { description, sourceNs } = itemContentFields(entry)
+  const authorUrl = entry.author.kind === 'local' && feeds.publicUrl ? `${feeds.publicUrl}/u/${entry.author.handle}` : entry.author.feedUrl
+  return {
+    model: 'firehose-v1',
+    kind: 'upsert',
+    id: item.id,
+    title: entry.title,
+    content: description,
+    // entry.contentMarkdown only ever holds a REMOTE peer's captured markdown;
+    // a local post's markdown lives in content and only surfaces here via
+    // itemContentFields' sourceNs.markdown (the same value /users/rss.xml emits
+    // as source:markdown).
+    contentMarkdown: sourceNs?.markdown ?? null,
+    url: entry.url,
+    publishedAt: entry.publishedAt,
+    author: { displayName: entry.author.displayName, url: authorUrl },
+    inReplyTo: entry.inReplyTo,
+  }
+}
+
+export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): void {
+  const { source, bus, feeds } = deps
+  const pollMs = deps.pollMs ?? 1000
+  const heartbeatMs = deps.heartbeatMs ?? 15000
+  const maxPerIp = deps.maxConnectionsPerIp ?? 5
+  // ponytail: single-process in-memory counter, resets on every deploy/restart.
+  // Both live prod paths (compose.prod.yaml, Cloudron package) run one Node
+  // process per instance today, so this is an accepted, named ceiling — would
+  // need a shared store (e.g. Redis) if an instance ever ran multiple replicas
+  // behind a load balancer.
+  const ipCounts = new Map<string, number>()
+
+  app.get('/firehose/stream', (c) => {
+    const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    const current = ipCounts.get(ip) ?? 0
+    if (current >= maxPerIp) return c.json({ error: 'too many connections from this address' }, 429)
+    ipCounts.set(ip, current + 1)
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      const n = (ipCounts.get(ip) ?? 1) - 1
+      if (n <= 0) ipCounts.delete(ip)
+      else ipCounts.set(ip, n)
+    }
+
+    return streamSSE(c, async (stream) => {
+      stream.onAbort(release)
+      try {
+        let hintHigh = 0
+        const off = bus.onSequenceHint((s) => { hintHigh = Math.max(hintHigh, s) })
+        stream.onAbort(off)
+
+        const cursor = c.req.header('Last-Event-ID') ?? c.req.query('last') ?? null
+        let after: number
+        let generation: number
+        if (cursor && cursor.length > 0) {
+          const start = source.start(cursor)
+          if (start.kind === 'reset') {
+            await stream.writeSSE({ event: 'reset', data: FIREHOSE_RESET })
+            return
+          }
+          after = start.afterSequence
+          generation = start.generation
+        } else {
+          // No cursor at all is the NORMAL case here (a fresh curl/EventSource
+          // client has nothing to send yet) — unlike /stream, which always has an
+          // SSR-derived cursor and treats "missing" as a real anomaly worth
+          // resetting on, the firehose has no such guarantee. Start tailing from
+          // now instead of reset-and-closing a client that never had a cursor to
+          // send in the first place.
+          const start = source.current()
+          after = start.afterSequence
+          generation = start.generation
+        }
+
+        const pump = async (): Promise<boolean> => {
+          for (;;) {
+            const b = source.batch({ afterSequence: after, generation, viewer: FIREHOSE_ANON, limit: FIREHOSE_BATCH })
+            for (const f of b.frames) {
+              if (f.control === 'reset') {
+                await stream.writeSSE({ event: 'reset', data: FIREHOSE_RESET, ...(f.id ? { id: f.id } : {}) })
+                return true
+              }
+              if (f.event.kind === 'upsert') {
+                if (f.event.item.origin !== 'local') continue
+                await stream.writeSSE({ event: 'upsert', id: f.id, data: JSON.stringify(firehoseEntry(f.event.item, feeds)) })
+              } else if (f.event.kind === 'remove') {
+                // No origin check here, unlike upserts above: a remove frame carries
+                // no content/origin, only an opaque id, so passing it through
+                // unfiltered is safe — a remove for an id whose upsert was filtered
+                // out (a remote item) is a harmless no-op for any consumer that
+                // never saw that id.
+                await stream.writeSSE({ event: 'remove', id: f.id, data: JSON.stringify({ model: 'firehose-v1', kind: 'remove', id: f.event.logicalItemId }) })
+              }
+            }
+            if (b.done) return true
+            if (b.lastSequence <= after) break
+            after = b.lastSequence
+          }
+          return false
+        }
+
+        if (await pump()) return
+
+        let lastHb = Date.now()
+        while (!stream.aborted) {
+          await stream.sleep(pollMs)
+          if (stream.aborted) break
+          const nowMs = Date.now()
+          const heartbeatDue = nowMs - lastHb >= heartbeatMs
+          if (heartbeatDue) { await stream.write(': hb\n\n'); lastHb = nowMs }
+          if (heartbeatDue || hintHigh > after) {
+            if (await pump()) return
+          }
+        }
+      } finally {
+        release()
+      }
+    })
+  })
 }

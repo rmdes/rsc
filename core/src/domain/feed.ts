@@ -108,7 +108,7 @@ export function replyWireElements(ref: string) {
 // Dual contract per item: local posts emit rendered HTML + their markdown
 // source; remote posts re-emit as stored (pass-through), incl. any captured
 // source:markdown. Merges with replyWireElements' sourceNs (inReplyTo).
-function itemContentFields(p: Post) {
+export function itemContentFields(p: Post) {
   const reply = p.inReplyTo ? replyWireElements(p.inReplyTo) : undefined
   const markdown = p.source === 'local' ? p.content : p.contentMarkdown ?? undefined
   const sourceNs = { ...(reply?.sourceNs ?? {}), ...(markdown ? { markdown } : {}) }
