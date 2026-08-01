@@ -1,6 +1,9 @@
 # Configurable Tab Copy — Design
 
-**Status:** Draft (brainstormed 2026-08-01)
+**Status:** Reviewed 2026-08-01 — clean-context review (0 Critical) folded in;
+`/instance/config` kept as a deliberate tradeoff (I1); minors M2–M6 folded.
+See `docs/superpowers/reviews/2026-08-01-configurable-tab-copy-review.md`.
+Ready for planning.
 
 **Goal:** Let each instance's admin rename the four timeline tab **labels**
 and edit their **subtitles** from `/admin/settings`, with no rebuild. Unset
@@ -23,7 +26,10 @@ page-head subtitle. Both currently come from static maps in
   Only the *display* copy is configurable.
 - **Defaults live in exactly one place:** `web/src/lib/tabs.ts`
   (`TAB_LABELS`, `TAB_SUBTITLES`). Core stores only *overrides*; the web
-  merges `override ?? default`. Core never hardcodes a default string.
+  merges `override ?? default`. Core never hardcodes a default *string* —
+  but core DOES hardcode the four tab **keys** (`local/federated/personal/
+  public`): it's a separate npm workspace and cannot import web's `TABS`.
+  The keys are the cross-workspace contract; the strings are not.
 - **Copy is rendered as escaped text, never `{@html}`.** Admin-entered
   strings appear via normal Svelte interpolation (auto-escaped). This is the
   XSS boundary; no sanitizer is involved and none may be added here.
@@ -89,12 +95,24 @@ populate input values; empty when unset.
 ### `PATCH /admin/settings` — accept + validate overrides
 
 Extend the existing body with optional `tabLabels` / `tabSubtitles` partials.
-For each provided entry:
+**Partial semantics (M2):** unlike the existing numeric settings (which require
+all fields), these are true partials — a key that is *omitted* is left
+unchanged; a key present with an *empty string* clears that override (reset to
+default). This must be stated because it diverges from the sibling numeric
+validation directly above it in the handler.
 
-- Trim whitespace.
+For each *provided* entry:
+
+- Trim whitespace, then **reject any string containing a newline or ASCII
+  control character** (`\x00–\x1F`, `\x7F`) with `400` (M4 — no XSS since the
+  render escapes, but a newline breaks the nav/`<h2>` layout).
 - **Label:** empty ⇒ clear override; otherwise 1–24 chars. Reject > 24.
 - **Subtitle:** empty ⇒ clear override; otherwise ≤ 120 chars. Reject > 120.
-- Unknown tab keys ⇒ `400`. Hand-rolled validator returning
+- Length is measured in **UTF-16 code units** (`String.length`), matching the
+  existing validators (M5 — documented ceiling, not a bug; a few astral emoji
+  count double, which is acceptable for a display cap).
+- Unknown tab keys ⇒ `400`. Core enumerates the four valid keys locally (see
+  the keys-are-the-contract invariant). Hand-rolled validator returning
   `c.json({ error }, 400)` (house style — see the `hono` skill), consistent
   with the existing numeric-setting validation right above it.
 
@@ -152,7 +170,10 @@ via `patchAdminSettings`.
 - **web** (`web/src/lib`): `mergeTabCopy` returns defaults when overrides are
   null/empty, and the override otherwise; keys always fully populated.
 - **web** (`layout.load.test.ts`): the layout fetches `/instance/config` (not
-  `/health`) and still surfaces `mailEnabled`; update the existing assertion.
+  `/health`) and still surfaces `mailEnabled`. Note (M6): all four existing
+  tests use exact `toEqual` on the returned data and assert the `/health`
+  fetch — every one needs updating (endpoint URL + `data` now also carries
+  `tabLabels`/`tabSubtitles`), not a single assertion.
 - **web**: `resolveTab` / `TABS` unchanged (existing tab tests stay green —
   proves keys didn't drift).
 
