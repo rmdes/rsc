@@ -333,6 +333,17 @@ test('timelineSortAt uses the pub time when it is <= arrival, else the durable a
   expect(future.timeline_sort_at).toBe(NOW) // future pub -> arrival
 })
 
+test('a REAL dated remote item (parsed via the acquisition pipeline, not a hand-built canonical_material) sorts by its published time, not arrival', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  const PUBLISHED = '2020-01-01T00:00:00.000Z' // well before NOW
+  const item = `<item><guid isPermaLink="false">g1</guid><title>t</title><description>d</description><pubDate>${new Date(PUBLISHED).toUTCString()}</pubDate></item>`
+  await acquire(db, raw, 's1', 'https://feed.test/f', RSS(item), NOW)
+  drain(store, NOW)
+  const row = raw.prepare(`SELECT timeline_sort_at FROM logical_items_v2`).get() as { timeline_sort_at: string }
+  expect(row.timeline_sort_at).toBe(PUBLISHED) // not NOW (arrival)
+})
+
 // ---- immutable terminal runs (spec §2.1) ------------------------------------
 
 test('a reconciled job is not reprocessed on a subsequent drain', async () => {

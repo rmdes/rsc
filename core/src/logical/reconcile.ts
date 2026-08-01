@@ -297,14 +297,14 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
 
     if (byPermalink && byOpaque && byPermalink !== byOpaque) {
       // cross-key disagreement: isolated new item, claims NEITHER disputed key (§2.5)
-      targetId = createRemoteItem(tx, v, material, normalized, arrival, publisherId, now)
+      targetId = createRemoteItem(tx, v, normalized, arrival, publisherId, now)
       recordConflict(tx, targetId, v.version_id, 'cross_key_disagreement', { permalink: permalinkKey, opaque: opaqueGuid, byPermalink, byOpaque }, now)
       claimIdentity(tx, 'delivery', v.delivery_id, targetId)
       outcome = 'conflicted'
     } else {
       // A valid permalink governs: never fall through to publisher-opaque (§2.5).
       const resolved = permalinkKey ? byPermalink : byOpaque
-      targetId = resolved ?? createRemoteItem(tx, v, material, normalized, arrival, publisherId, now)
+      targetId = resolved ?? createRemoteItem(tx, v, normalized, arrival, publisherId, now)
       claimIdentity(tx, 'delivery', v.delivery_id, targetId)
       // claim every UNCONTESTED valid identity key atomically (§2.5)
       if (permalinkKey) {
@@ -372,10 +372,15 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   return { kind: outcome, logicalItemId: targetId }
 }
 
-function createRemoteItem(tx: WriteTx, v: VersionRow, material: Material, normalized: { inReplyTo: string | null }, arrival: string, publisherId: string, now: string): string {
+function createRemoteItem(tx: WriteTx, v: VersionRow, normalized: { inReplyTo: string | null }, arrival: string, publisherId: string, now: string): string {
   const id = randomUUID()
   // immutable timelineSortAt (spec §3.3): pub time only when <= durable arrival.
-  const pub = normalizeUtc(material.published)
+  // Read from raw_evidence_json, NOT canonical_material — the fingerprint fix
+  // (00bc235) dropped `published` from canonical_material (volatile arrival
+  // substitution churned the fingerprint); raw_evidence_json still carries the
+  // wire's real published date (acquisition.ts: `published: it.rawDate`).
+  const rawPublished = (JSON.parse(v.raw_evidence_json) as { published?: string | null }).published ?? null
+  const pub = normalizeUtc(rawPublished)
   const timelineSortAt = pub && pub <= arrival ? pub : arrival
   tx.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'none', NULL, NULL, NULL, ?)`)
     .run(id, timelineSortAt, now)
