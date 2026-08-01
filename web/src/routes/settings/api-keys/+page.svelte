@@ -43,7 +43,7 @@
 				<li>
 					<div class="key-row">
 						<span class="key-name">{key.name ?? '(unnamed)'}</span>
-						<span class="field-hint">{key.prefix ?? 'rsc_'}… · created {formatDate(key.createdAt)} · {permissionText(key.permissions)}</span>
+						<span class="field-hint">{key.start ?? 'rsc_'}… · created {formatDate(key.createdAt)} · {permissionText(key.permissions)}</span>
 					</div>
 					<form method="POST" action="?/revoke" class="unfollow-form" use:enhance>
 						<input type="hidden" name="id" value={key.id} />
@@ -62,7 +62,7 @@
 	<form method="POST" action="?/create" class="auth-form" use:enhance>
 		<div class="field">
 			<label for="api-key-name">Name</label>
-			<input id="api-key-name" name="name" placeholder="e.g. my reading script" required />
+			<input id="api-key-name" name="name" placeholder="e.g. my reading script" maxlength="32" required />
 			<p class="field-hint" id="api-key-name-hint">Helps you tell keys apart later — not shown to anyone else.</p>
 		</div>
 		<fieldset class="permissions-field">

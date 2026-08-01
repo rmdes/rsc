@@ -239,7 +239,14 @@ export async function patchAdminSettings(
 export interface ApiKeySummary {
 	id: string
 	name: string | null
+	// The CONFIG-WIDE prefix constant (identical on every key in this config,
+	// e.g. "rsc_") — kept for completeness of the real wire shape, but never
+	// the field the UI shows to tell keys apart; that's `start` below.
 	prefix: string | null
+	// The per-key distinguishing fragment ("the starting characters of the
+	// API key... for the users to easily identify" — better-auth's own field
+	// description). This is what the settings page renders per row.
+	start: string | null
 	createdAt: string
 	permissions: Record<string, string[]> | null
 }
@@ -264,13 +271,18 @@ export interface CreatedApiKey {
 // from the plugin's docs). Setting permissions only works via an in-process
 // auth.api.createApiKey call, so core exposes this cookie-authed wrapper
 // instead (core/src/api/logical-routes.ts, mountPersonalApiRoutes).
+// Status is attached to the thrown error (not just folded into the message)
+// so the caller can tell a clean 4xx core rejection (bad name, guest
+// session) apart from a genuine server error — same distinction
+// register/+page.server.ts makes by reading res.status directly, needed
+// here too since this helper is the one that owns the fetch.
 export async function createApiKey(f: typeof fetch, input: { name: string; permissions: Record<string, string[]> }): Promise<CreatedApiKey> {
 	const res = await f(`${base()}/me/api-keys`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ name: input.name, permissions: input.permissions })
 	})
-	if (!res.ok) throw new Error(await errorMessage(res, `createApiKey ${res.status}`))
+	if (!res.ok) throw Object.assign(new Error(await errorMessage(res, `createApiKey ${res.status}`)), { status: res.status })
 	return (await res.json()) as CreatedApiKey
 }
 

@@ -527,8 +527,13 @@ function isValidKeyPermissions(v: unknown): v is Record<string, string[]> {
   const entries = Object.entries(v as Record<string, unknown>)
   if (entries.length === 0) return false
   return entries.every(([resource, actions]) => {
+    // Object.hasOwn, not bare indexing: a crafted resource key like
+    // "toString" or "__proto__" would otherwise resolve to an inherited
+    // Object.prototype member instead of undefined, and the subsequent
+    // `allowed.includes` throws a TypeError that surfaces as a raw 500.
+    if (!Object.hasOwn(ALLOWED_KEY_PERMISSIONS, resource)) return false
     const allowed = ALLOWED_KEY_PERMISSIONS[resource]
-    return allowed !== undefined && Array.isArray(actions) && actions.length > 0 && actions.every((a) => typeof a === 'string' && allowed.includes(a))
+    return Array.isArray(actions) && actions.length > 0 && actions.every((a) => typeof a === 'string' && allowed.includes(a))
   })
 }
 
@@ -587,8 +592,18 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
   app.post('/me/api-keys', jsonWrite, async (c) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'authentication required' }, 401)
+    // Same cast + field sessionAuth uses for the same purpose (api/auth.ts).
+    // Self-serve keys are scoped to registered users (spec) — an anonymous
+    // guest's session cookie passes hasSession on the web side, so this is
+    // the real boundary.
+    if ((session.user as { isAnonymous?: boolean | null }).isAnonymous === true) return c.json({ error: 'registration required' }, 403)
     const body = await readJsonBody(c)
-    if (!body || !isString(body.name, 1, 200)) return c.json({ error: 'name invalid' }, 400)
+    // 32, not an arbitrary round number: the apiKey plugin's real
+    // maximumNameLength default (confirmed in the installed source,
+    // @better-auth/api-key/dist/index.mjs — core/src/auth.ts's apiKey()
+    // config never overrides it). A longer name used to reach the plugin's
+    // own check and throw past this route as a raw 500.
+    if (!body || !isString(body.name, 1, 32)) return c.json({ error: 'name invalid' }, 400)
     if (!isValidKeyPermissions(body.permissions)) return c.json({ error: 'permissions invalid' }, 400)
     try {
       const created = await apiKeyCreateApi.createApiKey({

@@ -7,7 +7,7 @@ import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { mountPersonalApiRoutes } from '../src/api/logical-routes.ts'
 import { ensureCoreUser } from '../src/api/auth.ts'
-import { makeAuth, registeredSession } from './auth-helper.ts'
+import { makeAuth, registeredSession, anonSession } from './auth-helper.ts'
 
 // Same erasure api-key-plugin.test.ts / api-key-auth-middleware.test.ts hit:
 // createAuth's `plugins: BetterAuthPlugin[]` widens every plugin so
@@ -103,6 +103,24 @@ test('POST /me/api-keys requires a cookie session', async () => {
   expect(res.status).toBe(401)
 })
 
+test('POST /me/api-keys rejects an anonymous/guest session (spec scopes self-serve keys to registered users)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const auth = makeAuth(repo)
+  const authApp = new Hono()
+  authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+  const cookie = await anonSession(authApp)
+  const app = new Hono()
+  mountPersonalApiRoutes(app, { store, auth, users: repo })
+  const res = await app.request('/me/api-keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'x', permissions: { timeline: ['read'] } })
+  })
+  expect(res.status).toBe(403)
+})
+
 test('POST /me/api-keys creates a scoped key that works against an apiKeyAuth route', async () => {
   const { app, cookie } = await freshApp('creator@x.test')
   const res = await app.request('/me/api-keys', {
@@ -139,6 +157,36 @@ test('POST /me/api-keys rejects a missing name', async () => {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify({ permissions: { timeline: ['read'] } })
+  })
+  expect(res.status).toBe(400)
+})
+
+// The apiKey plugin's real maximumNameLength default is 32 (installed source,
+// @better-auth/api-key/dist/index.mjs — core/src/auth.ts's apiKey() config
+// never overrides it). Before this route's own bound matched, a longer name
+// reached the plugin's own check and threw a raw 500 past this route.
+test("POST /me/api-keys cleanly rejects a name past the plugin's 32-char limit", async () => {
+  const { app, cookie } = await freshApp('longname@x.test')
+  const res = await app.request('/me/api-keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'a'.repeat(40), permissions: { timeline: ['read'] } })
+  })
+  expect(res.status).toBe(400)
+})
+
+// isValidKeyPermissions used to index ALLOWED_KEY_PERMISSIONS with a bare
+// `[resource]` lookup — a resource name that collides with an inherited
+// Object.prototype member (e.g. "toString") resolved to that member instead
+// of undefined, and the subsequent `.includes` call threw a TypeError that
+// surfaced as a raw 500. No key is minted either way; this only asserts the
+// response is a clean 400.
+test('POST /me/api-keys cleanly rejects a permissions object with an Object.prototype-colliding key', async () => {
+  const { app, cookie } = await freshApp('crafted@x.test')
+  const res = await app.request('/me/api-keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'x', permissions: { toString: ['read'] } })
   })
   expect(res.status).toBe(400)
 })
