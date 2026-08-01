@@ -9,7 +9,8 @@
 **Tech Stack:** core = Hono + Kysely + better-sqlite3, Node 22 native type-stripping (no build; run tsc separately).
 
 **Spec:** `docs/superpowers/specs/2026-08-01-ingest-aware-retention-design.md` (Rev 2)
-**Review folded:** `docs/superpowers/reviews/2026-08-01-ingest-aware-retention-review.md`
+**Spec review folded:** `docs/superpowers/reviews/2026-08-01-ingest-aware-retention-review.md`
+**Plan review folded (rev 2):** `docs/superpowers/reviews/2026-08-01-ingest-aware-retention-plan-review.md` — MF1 (5 commitAcquisition call sites, not 3 → `maxAgeDays?` optional, only site 767 changes), I-A (`EMPTY_COUNTERS` also needs `retentionFiltered`), I-B (Task 3 defaults to no-code branch), Minor (Task 1's `material` becomes an unused param).
 
 ## Global Constraints
 
@@ -49,7 +50,7 @@ const pub = normalizeUtc(rawPublished)
 const timelineSortAt = pub && pub <= arrival ? pub : arrival
 ```
 
-`v` (the `VersionRow`) is already a parameter of `createRemoteItem`; `raw_evidence_json` is on it. `normalizeUtc('')` → `null` (empty rawDate ⇒ dateless ⇒ arrival), preserving today's dateless behavior. Leave `material` for its other uses (title/content).
+`v` (the `VersionRow`) is already a parameter of `createRemoteItem`; `raw_evidence_json` is on it. `normalizeUtc('')` → `null` (empty rawDate ⇒ dateless ⇒ arrival), preserving today's dateless behavior. Note: this may make the `material` PARAM of `createRemoteItem` unused (review Minor — it was only read here for `.published`); `noUnusedParameters` is off so it's harmless — drop the param if trivially clean, otherwise leave it. Do NOT claim it's still used for title/content (it isn't in this function).
 
 - [ ] **Step 4: Run — expect PASS**, then `tsc` 0. Also run the full `logical-reconcile` + `logical` suites to catch any test that asserted the arrival-sort behavior; fix any that encoded the regression.
 
@@ -60,8 +61,9 @@ const timelineSortAt = pub && pub <= arrival ? pub : arrival
 ### Task 2: Age ingest gate in `commitAcquisition` (+ caps plumbing + counter)
 
 **Files:**
-- Modify: `core/src/logical/types.ts` (add `retentionFiltered` to `AdminAcquisitionCounters`; add `maxAgeDays` to `CommitAcquisitionInput`; add `getSetting?` to `AcquisitionDeps`)
-- Modify: `core/src/logical/acquisition.ts` (`ZERO_COUNTERS` ~460; `commitFromBody`/commit callers ~742-767 read the live cap and pass it; the observation loop ~627-635 gate; import `normalizeUtc`)
+- Modify: `core/src/logical/types.ts` (add `retentionFiltered` to `AdminAcquisitionCounters`; add **optional** `maxAgeDays?` to `CommitAcquisitionInput`; add `getSetting?` to `AcquisitionDeps`)
+- Modify: `core/src/logical/acquisition.ts` (`ZERO_COUNTERS` ~460; `commitFromBody` ~742-767 reads the live cap and passes it to the ONE real commit site; the observation loop ~627-635 gate; import `normalizeUtc`)
+- Modify: `core/src/logical/verification.ts` (`EMPTY_COUNTERS` ~239 — add `retentionFiltered: 0`; review I-A: it's a second untyped counters literal `tsc` won't catch)
 - Modify: `core/src/server.ts:37` (`createAcquisition({ db })` → pass `getSetting`)
 - Test: `core/test/logical-acquisition.test.ts` (or the nearest existing acquisition/commit test — check first)
 
@@ -79,21 +81,23 @@ Drive these through the real acquire/commit path (a fake `fetchFn` returning the
 - [ ] **Step 2: Run — expect FAIL.**
 
 - [ ] **Step 3: Implement.**
-  - `types.ts`: `AdminAcquisitionCounters` gains `retentionFiltered: number`; `CommitAcquisitionInput` gains `maxAgeDays: number`; `AcquisitionDeps` gains `getSetting?: (key: string) => Promise<string | undefined>`.
+  - `types.ts`: `AdminAcquisitionCounters` gains `retentionFiltered: number`; `CommitAcquisitionInput` gains **optional** `maxAgeDays?: number` (review MF1 — there are FIVE `commitAcquisition` call sites: 767 + terminal 828/831/835/841; making the field required tsc-breaks the four terminal ones. Optional + `?? 0` means ONLY the real commit site (767) changes, and the four observation-less terminal sites are untouched); `AcquisitionDeps` gains `getSetting?: (key: string) => Promise<string | undefined>`.
   - `acquisition.ts`: `ZERO_COUNTERS` (~460) gains `retentionFiltered: 0`. Import `normalizeUtc` from `./projector.ts`.
-  - Read the live cap before each commit and pass it in. In `commitFromBody` (~742), before `db.write(... commitAcquisition ...)` at ~767:
+  - `verification.ts`: `EMPTY_COUNTERS` (~239) gains `retentionFiltered: 0` (review I-A — untyped literal, keeps the stored `counters_json` complete).
+  - Read the live cap and pass it ONLY at the real commit. In `commitFromBody` (~742), before `db.write(... commitAcquisition ...)` at ~767:
     ```ts
     const maxAgeDays = Number((await deps.getSetting?.('max_remote_item_age_days')) ?? '0')
     ```
-    and add `maxAgeDays` to the `commitAcquisition(tx, { ... })` input object (here and at the two terminal-only call sites ~828/831 pass `maxAgeDays: 0` — they carry no observations, so any value is inert; use 0 for clarity).
+    and add `maxAgeDays` to that ONE `commitAcquisition(tx, { ... })` input (site 767). Do NOT touch the four terminal call sites — they carry no observations, and the optional field defaults away.
   - `server.ts:37`: `const acquisition = createAcquisition({ db, getSetting: (key) => repo.getSetting(key) })`.
   - The gate, in `commitAcquisition`'s observation loop, right AFTER `const existing = findDelivery.get(...)` and BEFORE `const deliveryId = ...` (~632):
     ```ts
-    if (!existing && input.maxAgeDays > 0) {
+    const maxAge = input.maxAgeDays ?? 0
+    if (!existing && maxAge > 0) {
       const rawPub = (JSON.parse(obs.rawEvidenceJson) as { published?: string | null }).published ?? null
       const pub = normalizeUtc(rawPub)
       const contentDate = pub && pub <= committedAt ? pub : committedAt
-      const cutoff = new Date(Date.parse(committedAt) - input.maxAgeDays * 86400000).toISOString()
+      const cutoff = new Date(Date.parse(committedAt) - maxAge * 86400000).toISOString()
       if (contentDate < cutoff) { counters.retentionFiltered++; continue } // out-of-window: never create the delivery
     }
     ```
@@ -114,10 +118,12 @@ Drive these through the real acquire/commit path (a fake `fetchFn` returning the
 **Interfaces:**
 - Consumes: the same content-date + `maxAgeDays` window check as Task 2 (extract a shared helper `isWithinAgeWindow(rawEvidenceJson, committedAt, maxAgeDays)` in `acquisition.ts` and export it, so both paths use one implementation).
 
+**Default to the no-code branch (review I-B).** Task 2 already prevents the common case upstream: a gated item is never reconciled, so origin-verification is never scheduled for it. Adding async `getSetting` wiring into the verification runner is real complexity for a path that likely can't loop. So favor documenting-and-closing unless a loop is actually demonstrable.
+
 - [ ] **Step 1: Determine whether this path can ingest an out-of-window item.**
-Read `verification.ts` around 345-360: does this insert create a NEW delivery for a feed item (subject to retention), or only re-record a verified version of an ALREADY-known delivery? Document the finding in the task report.
-  - **If it only touches already-known deliveries / verified-origin re-records:** the new-delivery gate does not apply — no code change; add a short test/comment asserting it doesn't create out-of-window *new* deliveries, and close the task.
-  - **If it can create a new delivery for an out-of-window item:** proceed to Step 2.
+Read `verification.ts` around 345-360: does this insert create a NEW delivery for a feed item (subject to retention), or only re-record a verified version of an ALREADY-known delivery / a delivery that already passed Task 2's gate? Document the finding in the task report.
+  - **If it only touches already-known deliveries / verified-origin re-records (expected):** the new-delivery gate does not apply — no code change; add a one-line comment (and a small assertion test if cheap) noting it doesn't create out-of-window *new* deliveries, and close the task. This is the expected outcome.
+  - **If — and only if — it can demonstrably create a new delivery for an out-of-window item that loops:** proceed to Step 2.
 
 - [ ] **Step 2 (only if needed): Failing test** — the verification path skips an out-of-window new item (no new delivery), mirroring Task 2's gate.
 
