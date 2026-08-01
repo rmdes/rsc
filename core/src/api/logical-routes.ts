@@ -518,8 +518,42 @@ export interface PersonalApiDeps {
   users: UserDirectory
 }
 
+// Whitelisted to phase 2's two enforceable permissions only (Global
+// Constraints) — a raw request can't mint a key scoped to anything
+// apiKeyAuth doesn't actually check yet.
+const ALLOWED_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = { timeline: ['read'], posts: ['read'] }
+function isValidKeyPermissions(v: unknown): v is Record<string, string[]> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const entries = Object.entries(v as Record<string, unknown>)
+  if (entries.length === 0) return false
+  return entries.every(([resource, actions]) => {
+    const allowed = ALLOWED_KEY_PERMISSIONS[resource]
+    return allowed !== undefined && Array.isArray(actions) && actions.length > 0 && actions.every((a) => typeof a === 'string' && allowed.includes(a))
+  })
+}
+
+// Same auth.api erasure this file already works around for apiKeyAuth's
+// verifyApiKey cast (api/auth.ts) — createApiKey needs its own narrow slice.
+// REAL FINDING (found by hitting the live REST endpoint, not from any plan):
+// better-auth's real create-api-key handler
+// (node_modules/@better-auth/api-key/dist/index.mjs) throws
+// SERVER_ONLY_PROPERTY whenever `permissions` is set AND `ctx.request ||
+// ctx.headers` is truthy — true for EVERY call that reaches the plugin's own
+// /api-key/create REST endpoint, including a same-origin server-to-server
+// fetch from the web app. permissions can only be set through this
+// in-process auth.api.createApiKey call (no headers/request on the input),
+// matching the shape Task 1's own smoke test already used. This is why key
+// creation needs its own core route instead of the web layer calling
+// /api/auth/api-key/create directly like list/delete do.
+interface ApiKeyCreation {
+  createApiKey(input: {
+    body: { configId?: string; userId?: string; name?: string; permissions?: Record<string, string[]> }
+  }): Promise<{ id: string; key: string; name: string | null; prefix: string | null }>
+}
+
 export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
   const { store, auth, users } = deps
+  const apiKeyCreateApi = auth.api as unknown as ApiKeyCreation
 
   function accountOf(c: Context): PublicLocalAccount {
     const u = c.get('coreUser')
@@ -544,6 +578,26 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     const viewer: ProjectionViewer = { localAccountId: account.id, activeSourceIds: [] }
     const result = store.snapshot((tx) => tx.projectTimeline({ lens: { kind: 'local_author', account }, before, limit, viewer }))
     return c.json(result)
+  })
+
+  // Cookie-authed (a user manages their OWN keys from the browser, before
+  // any key exists to authenticate WITH) — not apiKeyAuth. See ApiKeyCreation
+  // above for why this can't just be a web-side fetch to better-auth's own
+  // /api-key/create REST endpoint.
+  app.post('/me/api-keys', jsonWrite, async (c) => {
+    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    if (!session) return c.json({ error: 'authentication required' }, 401)
+    const body = await readJsonBody(c)
+    if (!body || !isString(body.name, 1, 200)) return c.json({ error: 'name invalid' }, 400)
+    if (!isValidKeyPermissions(body.permissions)) return c.json({ error: 'permissions invalid' }, 400)
+    try {
+      const created = await apiKeyCreateApi.createApiKey({
+        body: { configId: 'user', userId: session.user.id, name: body.name, permissions: body.permissions }
+      })
+      return c.json({ id: created.id, key: created.key, name: created.name, prefix: created.prefix }, 201)
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'could not create key' }, 400)
+    }
   })
 }
 

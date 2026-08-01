@@ -40,4 +40,5 @@
 	</form>
 
 	<p class="field-hint"><a href="/accounts">Manage accounts on this browser →</a></p>
+	<p class="field-hint"><a href="/settings/api-keys">API keys →</a></p>
 </div>

@@ -16,7 +16,10 @@ import {
 	subscribeToSource,
 	unsubscribeSource,
 	getOwnerFollowing,
-	importOpmlV2
+	importOpmlV2,
+	listApiKeys,
+	createApiKey,
+	revokeApiKey
 } from './api.ts'
 
 const entry = {
@@ -216,4 +219,37 @@ test('importOpmlV2 sends the command id as a header (the body is XML) and return
 	expect(url).toBe('http://localhost:8787/me/follows/opml')
 	expect(new Headers(init.headers).get('x-rsc-command-id')).toBe('c7')
 	expect(String(init.body)).toBe('<opml/>')
+})
+
+test('listApiKeys GETs /api/auth/api-key/list with configId=user and returns the apiKeys array', async () => {
+	const keys = [{ id: 'k1', name: 'script', prefix: 'rsc_ab', createdAt: '2026-01-01T00:00:00Z', permissions: { timeline: ['read'] } }]
+	const f = vi.fn(async () => new Response(JSON.stringify({ apiKeys: keys, total: 1, limit: null, offset: null }), { status: 200 }))
+	await expect(listApiKeys(f as unknown as typeof fetch)).resolves.toEqual(keys)
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/api/auth/api-key/list?configId=user')
+})
+
+// core's OWN /me/api-keys route, not better-auth's /api/auth/api-key/create
+// REST endpoint — that endpoint 400s on a `permissions` field for any real
+// HTTP request (SERVER_ONLY_PROPERTY), verified against the running server.
+test('createApiKey POSTs to core /me/api-keys with name + permissions and returns the plaintext key', async () => {
+	const created = { id: 'k1', key: 'rsc_secret', name: 'script', prefix: 'rsc_ab' }
+	const f = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify(created), { status: 201 }))
+	const out = await createApiKey(f as unknown as typeof fetch, { name: 'script', permissions: { timeline: ['read'] } })
+	expect(out).toEqual(created)
+	const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(url).toBe('http://localhost:8787/me/api-keys')
+	expect(JSON.parse(String(init.body))).toEqual({ name: 'script', permissions: { timeline: ['read'] } })
+})
+
+test('revokeApiKey POSTs configId=user + keyId (not id — the plugin body field is keyId)', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ success: true }), { status: 200 }))
+	await revokeApiKey(f as unknown as typeof fetch, 'k1')
+	const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(url).toBe('http://localhost:8787/api/auth/api-key/delete')
+	expect(JSON.parse(String(init.body))).toEqual({ configId: 'user', keyId: 'k1' })
+})
+
+test('createApiKey surfaces the core error message', async () => {
+	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'name is required' }), { status: 400 }))
+	await expect(createApiKey(f as unknown as typeof fetch, { name: '', permissions: {} })).rejects.toThrow('name is required')
 })
