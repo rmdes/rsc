@@ -130,6 +130,35 @@ end for the record).
 - **Unknown handle → empty profile, no 404** — `u/[handle]` renders a blank
   timeline for a nonexistent user rather than a not-found page (core-down is
   handled separately via `coreDown`, so this is just a missing "user not found").
+- **Phase-3 (authed write API) final review, Minor findings (2026-08-04)** — none
+  blocked merge; noted for a later pass:
+  - Spec (`2026-08-01-external-api-and-firehose-design.md`) still says
+    `/api/v1/posts`/`follows`/`me`; shipped paths are `/me/posts`,
+    `/me/api-follows`, `/me/api-subscriptions`, `/me/api-profile` (renamed
+    to dodge real method+path collisions with the cookie-authed siblings,
+    verified live). Spec never revved to match — same gap phase 2 shipped
+    with, worth fixing before phase 4 plans against the wrong URLs. No
+    curl cheat-sheet entry in RUNNING.md for the write routes either.
+  - Api-key rate-limit exhaustion (300 req/hr, `core/src/auth.ts:57`)
+    surfaces as a bare `401 invalid or insufficient api key`, not `429` —
+    `verifyApiKey` swallows the plugin's `TOO_MANY_REQUESTS` into
+    `{valid:false}`. A client legitimately hitting the ceiling can't tell
+    "revoked" from "rate-limited." Pre-existing since phase 2, now more
+    reachable with write traffic.
+  - No idempotency token on `POST /me/posts` or `POST /me/api-follows`
+    (unlike `/me/api-subscriptions`'s `commandId`) — inherited from their
+    cookie-authed siblings, so not new, but a retrying API client can
+    double-post. `DELETE /me/posts/:id` (new this phase) is at least a
+    manual remedy for the post case.
+  - `DELETE /me/api-follows/:target` inherits `removeFollow`'s
+    cascade-delete-on-zero-followers side effect for remote targets — a
+    faithful mirror of the cookie route, but a scripted client can churn
+    follow/unfollow at a rate the UI never would.
+  - Test coverage has only one direction of permission isolation for
+    `GET /me/posts` (a write-only key is tested against read/write route
+    pairs elsewhere, but no test pins a `posts:write`-only key being
+    refused by the `posts:read`-gated `GET /me/posts`). Low risk given
+    `authorize()`'s subset semantics; one-line test if picked up.
 **Documented / protocol residuals — probably leave as-is**
 - **`cloudScheme` 443-heuristic** (`push.ts:33`) — HTTPS on a non-default port
   (`:8443`) misclassified as HTTP; rssCloud `<cloud>` has no scheme field, so
