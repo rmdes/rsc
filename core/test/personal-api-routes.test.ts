@@ -5,6 +5,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
 import { mountPersonalApiRoutes } from '../src/api/logical-routes.ts'
 import { ensureCoreUser } from '../src/api/auth.ts'
 import { makeAuth, registeredSession, anonSession } from './auth-helper.ts'
@@ -39,7 +40,7 @@ async function setup() {
   const key = (await apiKeyApi.createApiKey({ body: { configId: 'user', userId: authUserId, permissions: { timeline: ['read'], posts: ['read'] } } })).key!
 
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
   return { app, key, service, repo, authUserId, me }
 }
 
@@ -100,7 +101,7 @@ async function freshApp(email: string) {
   authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
   const cookie = await registeredSession(authApp, email, repo)
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
   return { app, cookie, auth, service, repo }
 }
 
@@ -124,7 +125,7 @@ test('POST /me/api-keys rejects an anonymous/guest session (spec scopes self-ser
   authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
   const cookie = await anonSession(authApp)
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
   const res = await app.request('/me/api-keys', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
@@ -216,7 +217,7 @@ test('a key with only timeline:read cannot reach /me/posts (posts:read required)
   const apiKeyApi = auth.api as unknown as ApiKeyCreation
   const key = (await apiKeyApi.createApiKey({ body: { configId: 'user', userId: session!.user.id, permissions: { timeline: ['read'] } } })).key!
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
   const res = await app.request('/me/posts', { headers: { 'x-api-key': key } })
   expect(res.status).toBe(401)
 })
@@ -270,7 +271,7 @@ test("PATCH /me/posts/:id edits only the key owner's own post", async () => {
   const keyA = await mintKey(auth, sessionA!.user.id, { posts: ['write'] })
   const keyB = await mintKey(auth, sessionB!.user.id, { posts: ['write'] })
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
 
   const ownerA = await ensureCoreUser(repo, sessionA!.user.id)
   const post = await service.createLocalPostAs(ownerA.handle, ownerA.displayName, 'original content')
@@ -308,7 +309,7 @@ test("DELETE /me/posts/:id deletes only the key owner's own post, never another 
   const keyA = await mintKey(auth, sessionA!.user.id, { posts: ['write'] })
   const keyB = await mintKey(auth, sessionB!.user.id, { posts: ['write'] })
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
 
   const ownerA = await ensureCoreUser(repo, sessionA!.user.id)
   const post = await service.createLocalPostAs(ownerA.handle, ownerA.displayName, 'do not delete me yet')
@@ -425,6 +426,131 @@ test('a posts:read key cannot reach follows:write-gated POST /me/api-follows (pe
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': key },
     body: JSON.stringify({ handle: 'anyone' }),
+  })
+  expect(res.status).toBe(401)
+})
+
+// --- POST/DELETE /me/api-subscriptions (follows:write, phase 3 task 2b) --
+// Key-authed twins of app.ts's cookie-authed `POST /me/subscriptions` /
+// `DELETE /me/subscriptions/:sourceId`, same body/response shape and
+// idempotency semantics, transcribed onto the `api-subscriptions` path
+// (app.ts already claims the bare `/me/subscriptions` method+path pair for
+// its own cookie-authed routes). checkCallbackUrl runs real DNS for
+// hostnames and the sandbox has no network, so every success-path URL below
+// is a TEST-NET-3 literal (RFC 5737) — same convention as
+// subscriptions-api.test.ts / source-capability-api.test.ts.
+const SUB_URL_A = 'https://203.0.113.60/f.xml'
+const SUB_URL_B = 'https://203.0.113.61/f.xml'
+
+test('POST /me/api-subscriptions subscribes to a remote source by URL (follows:write)', async () => {
+  const { app, cookie, auth } = await freshApp('subscriber@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/api-subscriptions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ url: SUB_URL_A, commandId: 'sub-1' }),
+  })
+  expect(res.status).toBe(201)
+  const body = await res.json()
+  expect(body.subscription.url).toBe(SUB_URL_A)
+  expect(body.subscription.sourceId).toBeTruthy()
+})
+
+test('POST /me/api-subscriptions rejects an invalid URL (400)', async () => {
+  const { app, cookie, auth } = await freshApp('subscriber-badurl@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/api-subscriptions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ url: 'not a url', commandId: 'bad-1' }),
+  })
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'url invalid' })
+})
+
+test('POST /me/api-subscriptions: a replayed commandId returns the original result, a fresh commandId against the same URL is the not-created 200, and a reused commandId against a different URL conflicts', async () => {
+  const { app, cookie, auth } = await freshApp('subscriber-idem@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const subscribe = (url: string, commandId: string) =>
+    app.request('/me/api-subscriptions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key },
+      body: JSON.stringify({ url, commandId }),
+    })
+
+  const first = await subscribe(SUB_URL_A, 'idem-1')
+  expect(first.status).toBe(201)
+  const firstBody = await first.json()
+
+  const replay = await subscribe(SUB_URL_A, 'idem-1')
+  expect(replay.status).toBe(201)
+  expect(await replay.json()).toEqual(firstBody)
+
+  const notCreated = await subscribe(SUB_URL_A, 'idem-2')
+  expect(notCreated.status).toBe(200)
+  expect((await notCreated.json()).subscription.sourceId).toBe(firstBody.subscription.sourceId)
+
+  const conflict = await subscribe(SUB_URL_B, 'idem-1')
+  expect(conflict.status).toBe(409)
+  expect(await conflict.json()).toEqual({ error: 'idempotency conflict' })
+})
+
+test('DELETE /me/api-subscriptions/:sourceId unsubscribes (follows:write)', async () => {
+  const { app, cookie, auth } = await freshApp('unsubscriber@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const subscribeRes = await app.request('/me/api-subscriptions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ url: SUB_URL_A, commandId: 'sub-for-unsub' }),
+  })
+  const sourceId = (await subscribeRes.json()).subscription.sourceId as string
+
+  const res = await app.request(`/me/api-subscriptions/${sourceId}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ commandId: 'unsub-1' }),
+  })
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ ok: true })
+})
+
+test('DELETE /me/api-subscriptions/:sourceId rejects an invalid commandId (400)', async () => {
+  const { app, cookie, auth } = await freshApp('unsubscriber-badcmd@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/api-subscriptions/does-not-matter', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ commandId: '' }),
+  })
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'commandId invalid' })
+})
+
+test('a posts:read key cannot reach follows:write-gated POST /me/api-subscriptions (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('subscriber-wrongkey@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['read'] })
+  const res = await app.request('/me/api-subscriptions', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ url: SUB_URL_A, commandId: 'wrongkey-1' }),
+  })
+  expect(res.status).toBe(401)
+})
+
+test('a timeline:read key cannot reach follows:write-gated DELETE /me/api-subscriptions/:sourceId (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('unsubscriber-wrongkey@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { timeline: ['read'] })
+  const res = await app.request('/me/api-subscriptions/does-not-matter', {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ commandId: 'x' }),
   })
   expect(res.status).toBe(401)
 })

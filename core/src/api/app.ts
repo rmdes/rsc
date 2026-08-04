@@ -46,8 +46,12 @@ function isAuditCategory(v: unknown): v is AuditCategory {
 
 // normalizeSourceUrl signals a malformed/credentialed/oversized URL by throwing
 // (Task 3's contract, not a result kind) — every other error still bubbles to
-// app.onError.
-function isBadSourceUrl(err: unknown): boolean {
+// app.onError. EXPORTED: logical-routes.ts's key-authed subscribe route (phase
+// 3 task 2b) reuses this exact classifier rather than duplicating a real
+// behavioral check that could drift (this file's own established
+// duplicate-trivial/share-real-logic split — see jsonWrite above for the
+// analogous share).
+export function isBadSourceUrl(err: unknown): boolean {
   return err instanceof Error && err.message === 'source URL invalid'
 }
 
@@ -193,7 +197,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   mountLogicalReadRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service, feeds })
 
   // --- key-authed personal API (phase 2) ---
-  mountPersonalApiRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service })
+  mountPersonalApiRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service, sourceService: sources.service })
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no

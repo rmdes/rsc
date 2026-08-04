@@ -1,6 +1,6 @@
 import type { Hono, Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { jsonWrite } from './app.ts'
+import { jsonWrite, isBadSourceUrl } from './app.ts'
 import type { EventBus } from '../domain/bus.ts'
 import type { LogicalStreamSource } from '../logical/runtime.ts'
 import { fingerprintRequest } from '../domain/source-repository.ts'
@@ -14,6 +14,7 @@ import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
 import { apiKeyAuth } from './auth.ts'
 import type { Service } from '../domain/service.ts'
+import type { SourceService } from '../domain/source-service.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, emittedGuid, logicalToFeedEntry, itemContentFields } from '../domain/feed.ts'
 
@@ -517,6 +518,7 @@ export interface PersonalApiDeps {
   auth: Auth
   users: UserDirectory
   service: Service
+  sourceService: SourceService
 }
 
 // Whitelisted to phase 2's two enforceable permissions only (Global
@@ -557,8 +559,15 @@ interface ApiKeyCreation {
   }): Promise<{ id: string; key: string; name: string | null; prefix: string | null }>
 }
 
+// Owner-projected outcomes shared by the two subscribe/unsubscribe routes
+// below — byte-identical to app.ts's own NEUTRAL_UNAVAILABLE/IDEMPOTENCY_CONFLICT
+// constants (design §4: blocked/never-existed/tombstoned are ONE indistinguishable
+// answer; the idempotency-conflict body is distinct from it).
+const SUB_NEUTRAL_UNAVAILABLE = { error: 'source unavailable' }
+const SUB_IDEMPOTENCY_CONFLICT = { error: 'idempotency conflict' }
+
 export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
-  const { store, auth, users, service } = deps
+  const { store, auth, users, service, sourceService } = deps
   const apiKeyCreateApi = auth.api as unknown as ApiKeyCreation
 
   function accountOf(c: Context): PublicLocalAccount {
@@ -661,6 +670,63 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     const target = await service.getUserByHandle((c.req.param('target') ?? '').toLowerCase())
     if (!target) return c.json({ error: 'unknown user' }, 404)
     await service.removeFollow(c.get('coreUser').id, target)
+    return c.json({ ok: true }, 200)
+  })
+
+  // --- key-authed subscribe/unsubscribe (follows:write, phase 3 task 2b) --
+  // Key-authed twins of app.ts's cookie-authed `POST /me/subscriptions` /
+  // `DELETE /me/subscriptions/:sourceId` — same validation, same
+  // sourceService calls, same response-shape switch and idempotency
+  // semantics, transcribed from those exact handlers. Bundled under the
+  // SAME follows:write permission as api-follows above (spec deliberately
+  // groups local-follow and remote-subscription writes under one
+  // resource). Named `api-subscriptions`, not the bare `/me/subscriptions`
+  // path: app.ts already claims that exact method+path pair for its
+  // cookie-authed route, so reusing it here would make this registration
+  // unreachable — same `api-` disambiguation as api-follows/api-keys above.
+  app.post('/me/api-subscriptions', apiKeyAuth(auth, users, { follows: ['write'] }), jsonWrite, async (c) => {
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { url, commandId } = body
+    if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
+    if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+    let result
+    try {
+      result = await sourceService.subscribeByUrl(c.get('coreUser'), url, commandId)
+    } catch (err) {
+      if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
+      throw err
+    }
+    switch (result.kind) {
+      case 'source': {
+        const subscription = result.subscription
+        // Pending answers the neutral payload ONLY — never the owner
+        // projection, which would leak that the source is under review.
+        if (subscription.subscriptionState !== 'active') {
+          return c.json({ subscription: 'pending', message: 'This source is awaiting review.' }, result.created ? 202 : 200)
+        }
+        return c.json({ subscription }, result.created ? 201 : 200)
+      }
+      case 'local':
+        return c.json({ follow: result.follow }, result.created ? 201 : 200)
+      case 'cap':
+        return c.json({ error: 'subscription limit reached' }, 429)
+      case 'conflict':
+        return c.json(SUB_IDEMPOTENCY_CONFLICT, 409)
+      default:
+        return c.json(SUB_NEUTRAL_UNAVAILABLE, 409)
+    }
+  })
+
+  app.delete('/me/api-subscriptions/:sourceId', apiKeyAuth(auth, users, { follows: ['write'] }), jsonWrite, async (c) => {
+    const body = await readJsonBody(c)
+    if (!body || !isString(body.commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+    const result = await sourceService.unsubscribe(c.get('coreUser').id, c.req.param('sourceId') ?? '', body.commandId)
+    if (result.kind === 'unknown') return c.json({ error: 'unknown subscription' }, 404)
+    if (result.kind === 'conflict') return c.json(SUB_IDEMPOTENCY_CONFLICT, 409)
+    // sourceRemoved is deliberately NOT surfaced: whether the source row
+    // survived is a function of governance/federation/retention, which an
+    // ordinary DTO never reveals.
     return c.json({ ok: true }, 200)
   })
 
