@@ -637,6 +637,33 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     return c.json({ ok: true }, 200)
   })
 
+  // --- key-authed follow/unfollow (follows:write, phase 3 task 2a) --------
+  // Key-authed twins of app.ts's cookie-authed `POST /me/follows` / `DELETE
+  // /me/follows/:target` — same body/param shape, same service calls
+  // (service.addFollow/removeFollow silently no-op on a self-follow or an
+  // instance target; this route doesn't second-guess that, matching its
+  // sibling). Named `api-follows`, not the bare `/me/follows` path Task 1's
+  // `/me/posts` pattern would suggest: app.ts already claims that EXACT
+  // method+path pair for the cookie-authed route, so reusing it here would
+  // make this registration unreachable (Hono matches method+path on one
+  // instance) — the `api-` infix disambiguates, same naming spirit as
+  // `POST /me/api-keys` above (a different underlying collision, same fix).
+  app.post('/me/api-follows', apiKeyAuth(auth, users, { follows: ['write'] }), jsonWrite, async (c) => {
+    const body = await readJsonBody(c)
+    if (!body || !isString(body.handle, 1, 64)) return c.json({ error: 'handle invalid' }, 400)
+    const target = await service.getUserByHandle(body.handle.toLowerCase())
+    if (!target) return c.json({ error: 'unknown user' }, 404)
+    await service.addFollow(c.get('coreUser'), target)
+    return c.json({ ok: true }, 200)
+  })
+
+  app.delete('/me/api-follows/:target', apiKeyAuth(auth, users, { follows: ['write'] }), async (c) => {
+    const target = await service.getUserByHandle((c.req.param('target') ?? '').toLowerCase())
+    if (!target) return c.json({ error: 'unknown user' }, 404)
+    await service.removeFollow(c.get('coreUser').id, target)
+    return c.json({ ok: true }, 200)
+  })
+
   // Cookie-authed (a user manages their OWN keys from the browser, before
   // any key exists to authenticate WITH) — not apiKeyAuth. See ApiKeyCreation
   // above for why this can't just be a web-side fetch to better-auth's own

@@ -348,3 +348,83 @@ test('DELETE /me/posts/:id refuses a remote post (never deletable by any user)',
   const res = await app.request('/me/posts/remote-1', { method: 'DELETE', headers: { 'x-api-key': key } })
   expect(res.status).toBe(403)
 })
+
+// --- POST/DELETE /me/api-follows (follows:write, phase 3 task 2a) --------
+// Key-authed twins of app.ts's cookie-authed `POST /me/follows` / `DELETE
+// /me/follows/:target`, same body/param + response shape, transcribed onto
+// the `api-follows` path (app.ts already claims the bare `/me/follows`
+// method+path pair for its own cookie-authed routes).
+
+test('POST /me/api-follows follows a target by handle (follows:write)', async () => {
+  const { app, cookie, auth, service, repo } = await freshApp('follower@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const target = await service.createLocalUser({ handle: 'followee', displayName: 'Followee' })
+
+  const res = await app.request('/me/api-follows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ handle: 'followee' }),
+  })
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ ok: true })
+
+  const following = await service.listFollowing(me.id)
+  expect(following.map((u) => u.id)).toContain(target.id)
+})
+
+test('POST /me/api-follows 404s for an unknown handle', async () => {
+  const { app, cookie, auth } = await freshApp('follower-unknown@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/api-follows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ handle: 'does-not-exist' }),
+  })
+  expect(res.status).toBe(404)
+})
+
+test('DELETE /me/api-follows/:target unfollows a target by handle (follows:write)', async () => {
+  const { app, cookie, auth, service, repo } = await freshApp('unfollower@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const target = await service.createLocalUser({ handle: 'unfollowee', displayName: 'Unfollowee' })
+  await service.addFollow(me, target)
+  expect((await service.listFollowing(me.id)).map((u) => u.id)).toContain(target.id)
+
+  const res = await app.request('/me/api-follows/unfollowee', { method: 'DELETE', headers: { 'x-api-key': key } })
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ ok: true })
+  expect((await service.listFollowing(me.id)).map((u) => u.id)).not.toContain(target.id)
+})
+
+test('DELETE /me/api-follows/:target 404s for an unknown handle', async () => {
+  const { app, cookie, auth } = await freshApp('unfollower-unknown@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/api-follows/does-not-exist', { method: 'DELETE', headers: { 'x-api-key': key } })
+  expect(res.status).toBe(404)
+})
+
+test('a follows:write key cannot reach posts:read-gated /me/posts (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('follows-only@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/posts', { headers: { 'x-api-key': key } })
+  expect(res.status).toBe(401)
+})
+
+test('a posts:read key cannot reach follows:write-gated POST /me/api-follows (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('posts-only@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['read'] })
+  const res = await app.request('/me/api-follows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ handle: 'anyone' }),
+  })
+  expect(res.status).toBe(401)
+})
