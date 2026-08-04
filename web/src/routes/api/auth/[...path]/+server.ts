@@ -11,15 +11,25 @@ import { base, relaySetCookies } from '$lib/server/session'
 // the browser. Redirects are RELAYED (redirect: 'manual'), not followed: a
 // verify/magic link returns a 302 the browser must navigate to.
 const proxy: RequestHandler = async ({ request, params, url, cookies, getClientAddress }) => {
-	// Dev-only openAPI reference (spec 2026-07-19-auth-openapi): better-auth's
-	// openAPI() plugin serves /api/auth/reference + /api/auth/open-api/* under
-	// the auth base path, which this proxy would otherwise publish. Hard-404 them
-	// in EVERY environment — the second, independent guard beside the core flag
-	// defaulting off. 404 (not 403) so we don't even confirm the route exists.
-	if (params.path === 'reference' || params.path.startsWith('open-api')) {
+	// Resolve first, match on the RESOLVED path. `params.path` arrives
+	// percent-decoded, so `..%2f` is a real `../` that a string match misses and
+	// fetch normalizes away — checking the segment instead of the path we send
+	// served the reference page and turned this into a general-purpose core
+	// proxy (live-confirmed, fixed 2026-08-04). Absolute string, NOT
+	// `new URL(params.path, base)`: relative resolution lets `//evil.host`
+	// repoint the request off-box.
+	const target = new URL(`${base()}/api/auth/${params.path}${url.search}`)
+	// Confined to /api/auth/* (the rest of core stays internal), and the
+	// dev-only openAPI reference (spec 2026-07-19-auth-openapi) blocked in EVERY
+	// environment — the second, independent guard beside the core flag defaulting
+	// off. 404 not 403, so we don't confirm the routes exist.
+	if (
+		!target.pathname.startsWith('/api/auth/') ||
+		target.pathname === '/api/auth/reference' ||
+		target.pathname.startsWith('/api/auth/open-api')
+	) {
 		return new Response(null, { status: 404 })
 	}
-	const target = `${base()}/api/auth/${params.path}${url.search}`
 	const headers = new Headers()
 	const cookie = cookies.getAll().map((c) => `${c.name}=${c.value}`).join('; ')
 	if (cookie) headers.set('cookie', cookie)
@@ -29,7 +39,7 @@ const proxy: RequestHandler = async ({ request, params, url, cookies, getClientA
 	if (ct) headers.set('content-type', ct)
 
 	const hasBody = request.method !== 'GET' && request.method !== 'HEAD'
-	const upstream = await fetch(target, {
+	const upstream = await fetch(target.href, {
 		method: request.method,
 		headers,
 		body: hasBody ? await request.text() : undefined,

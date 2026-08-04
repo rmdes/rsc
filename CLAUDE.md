@@ -29,6 +29,14 @@ Load-bearing invariants — don't break these without understanding why:
   verify/magic-link clicks are native GETs with no `Origin`; better-auth 403s
   those, so `web/src/routes/api/auth/[...path]/+server.ts` injects `Origin`
   and relays cookies. Keep it.
+- **Both catch-all proxies match the RESOLVED upstream path, never the raw
+  `params.path`.** SvelteKit hands rest params percent-decoded, so `..%2f` is a
+  real `../` that a string match misses and `fetch` then normalizes away —
+  checking the segment instead of the path actually sent turned the auth proxy
+  into a general-purpose core proxy (fixed 2026-08-04). Build the URL from an
+  **absolute** string (never `new URL(params.path, base)` — that permits
+  `//evil.host`), match on `target.pathname`, and keep the auth proxy confined
+  to `/api/auth/`.
 - **Feeds/federation are the ONLY core paths exposed publicly** (via Caddy in
   prod); the rest of core stays internal. See `Caddyfile`.
 

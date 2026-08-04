@@ -106,6 +106,23 @@ end for the record).
 - **SP2 web API tests** — `listAdminFeeds` + `removeRemoteFeed` now covered
   (`web/src/lib/api.test.ts`, mirroring the `createPost`/`addRemoteUser` style).
 
+**✅ Done — proxy path-traversal guards (2026-08-04)**
+- **`..%2f` defeated both `/api/auth/reference` guards** (found 2026-08-01,
+  authed-read-api final review; fixed 2026-08-04). Both proxies string-matched
+  SvelteKit's already-decoded `params.path` while `fetch` normalized the `../`
+  away afterwards, so the path checked was not the path sent. Scope turned out
+  **wider than logged**: beyond the 137KB Scalar reference page, `/api/auth/
+  ..%2f..%2fadmin%2foverview` reached core's *internal* handlers (401 from
+  core's own authz, vs 404 for a nonexistent route) — i.e. the auth proxy was a
+  general-purpose core proxy, breaching "the rest of core stays internal".
+  Core-side authz was the only thing still holding. Fix (both files): resolve
+  the URL first and match on `target.pathname`, plus **confine** the auth proxy
+  to `/api/auth/`. Built from an absolute string, *not* `new URL(path, base)` —
+  relative resolution would have traded the traversal for an SSRF via
+  `//evil.host`; a test pins that the upstream origin is always core. 4 tests
+  added; 9 live attack variants (incl. `%2e%2e`, `%5c`, double-encoded) now 404
+  while `/api/auth/get-session` and `/api/v1/me/timeline` still work.
+
 **Small & real (still open)**
 - **`purgeExpiredSubscriptions` skips `push_subscriptions`** — confirmed it only
   `deleteFrom('subscriptions')` (inbound); outbound expired rows aren't swept —
@@ -113,27 +130,6 @@ end for the record).
 - **Unknown handle → empty profile, no 404** — `u/[handle]` renders a blank
   timeline for a nonexistent user rather than a not-found page (core-down is
   handled separately via `coreDown`, so this is just a missing "user not found").
-- **`..%2f` defeats both `/api/auth/reference` guards (found 2026-08-01, authed-read-api final review)** —
-  `web/src/routes/api/auth/[...path]/+server.ts`'s hard-404 on `params.path
-  === 'reference'`/`.startsWith('open-api')` (and the new `/api/v1/[...path]`
-  proxy's identical `startsWith('api/')` guard) are both plain string matches
-  against SvelteKit's already-decoded `params.path` — `curl --path-as-is
-  '.../api/auth/..%2fauth/reference'` decodes past the string check, and
-  Node's `fetch` then normalizes the `/../` away when resolving the upstream
-  URL, landing on the real reference page (137KB Scalar UI) live-confirmed
-  via both proxies. Pre-existing on `main` (the auth proxy predates this
-  finding; the v1 proxy just inherited the same string-match pattern into
-  new code) — not a regression, but both guards CLAUDE.md calls load-bearing
-  are defeated the same way. Inert in prod (`RSC_AUTH_OPENAPI` off, so core
-  never serves the route at all), which is why this wasn't merge-blocking,
-  but it's the ONLY thing standing between "flag off" and "dev-only surface
-  public" if that assumption ever changes. Fix (same shape, both files):
-  resolve the URL first, match on the resolved path, not the raw segment —
-  `const t = new URL(params.path + url.search, base() + '/'); if
-  (t.pathname.startsWith('/api/')) return new Response(null, {status:404})`.
-  Status: backlog, cheap (~2 lines × 2 files), not urgent while the flag
-  stays off.
-
 **Documented / protocol residuals — probably leave as-is**
 - **`cloudScheme` 443-heuristic** (`push.ts:33`) — HTTPS on a non-default port
   (`:8443`) misclassified as HTTP; rssCloud `<cloud>` has no scheme field, so

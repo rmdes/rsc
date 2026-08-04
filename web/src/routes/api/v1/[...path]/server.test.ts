@@ -56,3 +56,35 @@ test('GET 404s an api/ path without ever calling fetch (the dev-only openAPI ref
 	expect(res.status).toBe(404)
 	expect(fetchMock).not.toHaveBeenCalled()
 })
+
+// The resolved-path guard is only safe because the URL is built from an
+// ABSOLUTE string. Resolving `params.path` as a RELATIVE reference instead
+// (new URL(params.path, base)) would let `//evil.host` or `https://evil.host`
+// repoint the upstream request off-box — an SSRF traded for a traversal fix.
+// Whatever the path says, the request must stay on core.
+test('a path that looks like another origin still forwards to core, never off-box', async () => {
+	const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	for (const path of ['//evil.example/x', 'https://evil.example/x']) {
+		await GET({ params: { path }, url: new URL('http://x/api/v1/'), request: new Request('http://x/api/v1/') } as never)
+	}
+	for (const call of (fetchMock as any).mock.calls) {
+		expect(new URL(String(call[0])).origin).toBe('http://localhost:8787')
+	}
+	expect((fetchMock as any).mock.calls).toHaveLength(2)
+})
+
+// ...and the same guard must survive a traversal: `params.path` arrives
+// percent-DECODED, so `..%2f` is a real `../` that `startsWith('api/')` reads
+// past, while fetch normalizes it away and lands on /api/auth/* anyway. Match
+// the resolved path, not the raw segment.
+test('GET 404s an api/ path reached by traversal, without ever calling fetch', async () => {
+	const fetchMock = vi.fn(async () => new Response('should not be called', { status: 200 }))
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	const res = await GET({ params: { path: '../api/auth/reference' }, url: new URL('http://x/api/v1/'), request: new Request('http://x/api/v1/') } as never)
+
+	expect(res.status).toBe(404)
+	expect(fetchMock).not.toHaveBeenCalled()
+})

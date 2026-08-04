@@ -15,8 +15,12 @@ const proxy: RequestHandler = async ({ request, params, url }) => {
 	// one path segment away from the auth proxy's own hard-404 guard
 	// (web/src/routes/api/auth/[...path]/+server.ts), which CLAUDE.md calls
 	// load-bearing. 404 (not 403), matching that guard's own reasoning.
-	if (params.path.startsWith('api/')) return new Response(null, { status: 404 })
-	const target = `${base()}/${params.path}${url.search}`
+	// Matched on the RESOLVED path: `..%2fapi%2fauth%2freference` sails past a
+	// raw startsWith('api/') and fetch normalizes the `../` away afterwards,
+	// landing on the route this guard exists to block. Same shape as the auth
+	// proxy's guard — see the note there.
+	const target = new URL(`${base()}/${params.path}${url.search}`)
+	if (target.pathname.startsWith('/api/')) return new Response(null, { status: 404 })
 	const headers: Record<string, string> = {}
 	const apiKey = request.headers.get('x-api-key')
 	if (apiKey) headers['x-api-key'] = apiKey
@@ -26,7 +30,7 @@ const proxy: RequestHandler = async ({ request, params, url }) => {
 	const hasBody = request.method !== 'GET' && request.method !== 'HEAD'
 	let upstream: Response
 	try {
-		upstream = await fetch(target, {
+		upstream = await fetch(target.href, {
 			method: request.method,
 			headers,
 			body: hasBody ? await request.text() : undefined
