@@ -164,6 +164,38 @@ test('POST /me/api-keys rejects a permission outside the phase-2 whitelist', asy
   expect(res.status).toBe(400)
 })
 
+// Phase 3 widens ALLOWED_KEY_PERMISSIONS to admit the write permissions
+// Tasks 1-3's routes gate on (posts:write, follows:write, profile:write) —
+// before this, only auth.api.createApiKey called in-process (mintKey, used
+// throughout this file) could mint a key with those permissions; no
+// self-serve /me/api-keys caller could.
+test.each([
+  ['posts', 'write'],
+  ['follows', 'write'],
+  ['profile', 'write']
+])('POST /me/api-keys allows minting a self-serve %s:%s key (phase 3 whitelist)', async (resource, action) => {
+  const { app, cookie } = await freshApp(`selfserve-${resource}@x.test`)
+  const res = await app.request('/me/api-keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'x', permissions: { [resource]: [action] } })
+  })
+  expect(res.status).toBe(201)
+})
+
+// The phase-4 admin tier stays closed even after this widening — a resource
+// outside ALLOWED_KEY_PERMISSIONS entirely (not just an unlisted action on a
+// known resource) still 400s.
+test('POST /me/api-keys still rejects an admin resource outside the whitelist (phase-4 boundary stays closed)', async () => {
+  const { app, cookie } = await freshApp('admintest@x.test')
+  const res = await app.request('/me/api-keys', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ name: 'x', permissions: { 'admin.moderation': ['write'] } })
+  })
+  expect(res.status).toBe(400)
+})
+
 test('POST /me/api-keys rejects a missing name', async () => {
   const { app, cookie } = await freshApp('noname@x.test')
   const res = await app.request('/me/api-keys', {

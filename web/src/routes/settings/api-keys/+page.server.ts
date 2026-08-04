@@ -48,11 +48,11 @@ export const actions = {
 		const form = await request.formData()
 		const name = String(form.get('name') ?? '').trim()
 		if (!name) return fail(400, { error: 'name is required' })
-		// Each resource in PERMISSION_OPTIONS appears at most once today, so
-		// no accumulation is needed — [opt.action] is the whole array.
 		const permissions: Record<string, string[]> = {}
 		for (const opt of PERMISSION_OPTIONS) {
-			if (form.get(opt.formKey)) permissions[opt.resource] = [opt.action]
+			if (form.get(opt.formKey)) {
+				permissions[opt.resource] = [...(permissions[opt.resource] ?? []), opt.action]
+			}
 		}
 		if (Object.keys(permissions).length === 0) return fail(400, { error: 'select at least one permission' })
 		const f = authedFetch(fetch, url.origin, cookieHeader(cookies))

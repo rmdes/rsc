@@ -73,6 +73,25 @@ test('create action posts the selected permissions and returns the plaintext key
 	expect(out).toEqual({ createdKey: 'rsc_secret_plaintext', createdName: 'script' })
 })
 
+// Phase 3 gives `posts` a second checkbox (write, alongside the existing
+// read) — the create action's permission-building loop used to overwrite
+// same-resource entries instead of accumulating them (harmless while every
+// resource had at most one checkbox). Checking both must produce both.
+test('create action accumulates multiple checked actions for the same resource (posts:read + posts:write)', async () => {
+	const created = { id: 'k1', key: 'rsc_secret_plaintext', name: 'script', prefix: 'rsc_ab' }
+	let capturedBody: { permissions: Record<string, string[]> } | undefined
+	const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+		capturedBody = JSON.parse(String(init?.body))
+		return new Response(JSON.stringify(created), { status: 201 })
+	})
+	const form = new URLSearchParams({ name: 'script', 'posts:read': 'on', 'posts:write': 'on' })
+	const event = ctx({ fetch, request: new Request('http://x/settings/api-keys?/create', { method: 'POST', body: form }) })
+	const out = await actions.create(event as never)
+	expect(out).toEqual({ createdKey: 'rsc_secret_plaintext', createdName: 'script' })
+	expect(capturedBody?.permissions.posts).toEqual(expect.arrayContaining(['read', 'write']))
+	expect(capturedBody?.permissions.posts).toHaveLength(2)
+})
+
 // Core validates the name length itself now (matching the apiKey plugin's
 // real 32-char limit), so a too-long name comes back as a clean 400 with
 // {error: 'name invalid'} — not the plugin's raw 500 that motivated this

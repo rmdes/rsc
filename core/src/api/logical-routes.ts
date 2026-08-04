@@ -522,10 +522,17 @@ export interface PersonalApiDeps {
   sourceService: SourceService
 }
 
-// Whitelisted to phase 2's two enforceable permissions only (Global
-// Constraints) — a raw request can't mint a key scoped to anything
-// apiKeyAuth doesn't actually check yet.
-const ALLOWED_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = { timeline: ['read'], posts: ['read'] }
+// Whitelisted to exactly what apiKeyAuth actually gates somewhere in this
+// file (Global Constraints) — a raw request can't mint a key scoped to a
+// permission no route checks yet. Phase 2 added timeline:read/posts:read;
+// phase 3 adds posts:write, follows:write, profile:write (Tasks 1-3's
+// routes). admin.* (phase 4) stays deliberately absent.
+const ALLOWED_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
+  timeline: ['read'],
+  posts: ['read', 'write'],
+  follows: ['write'],
+  profile: ['write']
+}
 function isValidKeyPermissions(v: unknown): v is Record<string, string[]> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
   const entries = Object.entries(v as Record<string, unknown>)
