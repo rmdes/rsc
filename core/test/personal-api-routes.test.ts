@@ -499,15 +499,18 @@ test('POST /me/api-subscriptions: a replayed commandId returns the original resu
 })
 
 test('DELETE /me/api-subscriptions/:sourceId unsubscribes (follows:write)', async () => {
-  const { app, cookie, auth } = await freshApp('unsubscriber@x.test')
+  const { app, cookie, auth, repo } = await freshApp('unsubscriber@x.test')
   const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
   const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const sourceService = createSourceService(repo, null)
   const subscribeRes = await app.request('/me/api-subscriptions', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': key },
     body: JSON.stringify({ url: SUB_URL_A, commandId: 'sub-for-unsub' }),
   })
   const sourceId = (await subscribeRes.json()).subscription.sourceId as string
+  expect((await sourceService.ownerFollowing(me.id)).sourceSubscriptions.map((s) => s.sourceId)).toContain(sourceId)
 
   const res = await app.request(`/me/api-subscriptions/${sourceId}`, {
     method: 'DELETE',
@@ -516,6 +519,7 @@ test('DELETE /me/api-subscriptions/:sourceId unsubscribes (follows:write)', asyn
   })
   expect(res.status).toBe(200)
   expect(await res.json()).toEqual({ ok: true })
+  expect((await sourceService.ownerFollowing(me.id)).sourceSubscriptions.map((s) => s.sourceId)).not.toContain(sourceId)
 })
 
 test('DELETE /me/api-subscriptions/:sourceId rejects an invalid commandId (400)', async () => {
