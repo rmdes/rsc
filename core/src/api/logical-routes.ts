@@ -1,6 +1,7 @@
 import type { Hono, Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { jsonWrite, isBadSourceUrl } from './app.ts'
+import { HandleTakenError } from '../domain/types.ts'
 import type { EventBus } from '../domain/bus.ts'
 import type { LogicalStreamSource } from '../logical/runtime.ts'
 import { fingerprintRequest } from '../domain/source-repository.ts'
@@ -728,6 +729,32 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     // survived is a function of governance/federation/retention, which an
     // ordinary DTO never reveals.
     return c.json({ ok: true }, 200)
+  })
+
+  // --- key-authed profile update (profile:write, phase 3 task 3) ---------
+  // Key-authed twin of app.ts's cookie-authed `PATCH /me` — same validation
+  // and same HandleTakenError -> 409 mapping, transcribed from that exact
+  // handler. Named `api-profile`, not the bare `/me` path: app.ts already
+  // claims that exact method+path pair for its cookie-authed route, so
+  // reusing it here would make this registration unreachable — same `api-`
+  // disambiguation as api-follows/api-subscriptions above.
+  app.patch('/me/api-profile', apiKeyAuth(auth, users, { profile: ['write'] }), jsonWrite, async (c) => {
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { handle, displayName } = body
+    if (handle !== undefined && !isString(handle, 1, 64)) return c.json({ error: 'handle invalid' }, 400)
+    if (displayName !== undefined && !isString(displayName, 1, 200)) return c.json({ error: 'displayName invalid' }, 400)
+    if (handle === undefined && displayName === undefined) return c.json({ error: 'nothing to update' }, 400)
+    try {
+      const user = await service.updateUserProfile(c.get('coreUser').id, {
+        ...(handle !== undefined ? { handle: handle.toLowerCase() } : {}),
+        ...(displayName !== undefined ? { displayName } : {}),
+      })
+      return c.json({ user })
+    } catch (err) {
+      if (err instanceof HandleTakenError) return c.json({ error: 'handle already taken' }, 409)
+      throw err
+    }
   })
 
   // Cookie-authed (a user manages their OWN keys from the browser, before

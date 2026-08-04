@@ -558,3 +558,120 @@ test('a timeline:read key cannot reach follows:write-gated DELETE /me/api-subscr
   })
   expect(res.status).toBe(401)
 })
+
+// --- PATCH /me/api-profile (profile:write, phase 3 task 3) ---------------
+// Key-authed twin of app.ts's cookie-authed `PATCH /me`, same validation and
+// HandleTakenError -> 409 mapping, transcribed onto the `api-profile` path
+// (app.ts already claims the bare `PATCH /me` method+path pair for its own
+// cookie-authed route, same collision class as api-follows/api-subscriptions
+// above).
+
+test('PATCH /me/api-profile updates the handle only (profile:write)', async () => {
+  const { app, cookie, auth, repo } = await freshApp('profile-handle@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { profile: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const res = await app.request('/me/api-profile', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ handle: 'newhandle' }),
+  })
+  expect(res.status).toBe(200)
+  const body = await res.json()
+  expect(body.user.handle).toBe('newhandle')
+  expect(body.user.displayName).toBe(me.displayName) // untouched
+
+  // Actually persisted, not just echoed.
+  const persisted = await repo.getUserByAuthUserId(session!.user.id)
+  expect(persisted?.handle).toBe('newhandle')
+})
+
+test('PATCH /me/api-profile updates the displayName only (profile:write)', async () => {
+  const { app, cookie, auth, repo } = await freshApp('profile-name@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { profile: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const res = await app.request('/me/api-profile', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ displayName: 'New Display Name' }),
+  })
+  expect(res.status).toBe(200)
+  const body = await res.json()
+  expect(body.user.displayName).toBe('New Display Name')
+  expect(body.user.handle).toBe(me.handle) // untouched
+
+  const persisted = await repo.getUserByAuthUserId(session!.user.id)
+  expect(persisted?.displayName).toBe('New Display Name')
+})
+
+test('PATCH /me/api-profile updates handle and displayName together (profile:write)', async () => {
+  const { app, cookie, auth, repo } = await freshApp('profile-both@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { profile: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const res = await app.request('/me/api-profile', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ handle: 'bothhandle', displayName: 'Both Name' }),
+  })
+  expect(res.status).toBe(200)
+  const body = await res.json()
+  expect(body.user.handle).toBe('bothhandle')
+  expect(body.user.displayName).toBe('Both Name')
+
+  const persisted = await repo.getUserByAuthUserId(session!.user.id)
+  expect(persisted?.handle).toBe('bothhandle')
+  expect(persisted?.displayName).toBe('Both Name')
+})
+
+test('PATCH /me/api-profile 409s on a handle already taken by another user (HandleTakenError)', async () => {
+  const { app, cookie, auth, service } = await freshApp('profile-conflict@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { profile: ['write'] })
+  await service.createLocalUser({ handle: 'taken', displayName: 'Taken' })
+  const res = await app.request('/me/api-profile', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ handle: 'taken' }),
+  })
+  expect(res.status).toBe(409)
+  expect(await res.json()).toEqual({ error: 'handle already taken' })
+})
+
+test('PATCH /me/api-profile 400s on an empty body (nothing to update)', async () => {
+  const { app, cookie, auth } = await freshApp('profile-empty@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { profile: ['write'] })
+  const res = await app.request('/me/api-profile', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({}),
+  })
+  expect(res.status).toBe(400)
+  expect(await res.json()).toEqual({ error: 'nothing to update' })
+})
+
+test('a profile:write key cannot reach posts:write-gated POST /me/posts (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('profile-only@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { profile: ['write'] })
+  const res = await app.request('/me/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ content: 'should not be created' }),
+  })
+  expect(res.status).toBe(401)
+})
+
+test('a follows:write key cannot reach profile:write-gated PATCH /me/api-profile (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('profile-wrongkey@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { follows: ['write'] })
+  const res = await app.request('/me/api-profile', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ displayName: 'nope' }),
+  })
+  expect(res.status).toBe(401)
+})
