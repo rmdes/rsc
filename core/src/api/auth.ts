@@ -103,12 +103,19 @@ export function apiKeyAuth(auth: Auth, users: UserDirectory, permissions: Record
 // Final review Finding 5: fails CLOSED. `apiKeyAuth` never sets
 // sessionIsAnonymous (only sessionAuth does), so composing registeredOnly()
 // after apiKeyAuth left it undefined — the old `if (c.get(...))` check
-// treated that as falsy and silently PASSED. Not reachable by any phase-2
-// route today, but phase 3's write routes will need exactly this
-// composition. Requiring `!== false` (not just truthy `=== true`) means an
-// unset value is rejected, not waved through, with no type error to catch
-// the old version. sessionAuth always sets this explicitly (true or false),
-// so this changes nothing for any existing sessionAuth + registeredOnly() route.
+// treated that as falsy and silently PASSED. Requiring `!== false` (not just
+// truthy `=== true`) means an unset value is rejected, not waved through,
+// with no type error to catch the old version. sessionAuth always sets this
+// explicitly (true or false), so this changes nothing for any existing
+// sessionAuth + registeredOnly() route.
+//
+// Turns out apiKeyAuth + registeredOnly() is NOT a composition phase 3 ends
+// up using: only registered users can hold an api key at all (POST
+// /me/api-keys and better-auth's own key-create both reject anonymous
+// sessions — see reject-anon-api-key-create below), so every apiKeyAuth
+// route is already registered-only by construction. Do not add
+// registeredOnly() after apiKeyAuth expecting it to do anything — it would
+// unconditionally 403 every request, since sessionIsAnonymous stays unset.
 export function registeredOnly(): MiddlewareHandler {
   return async (c, next) => {
     if (c.get('sessionIsAnonymous') !== false) return c.json({ error: 'registration required' }, 403)

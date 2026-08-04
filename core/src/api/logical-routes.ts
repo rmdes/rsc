@@ -692,6 +692,11 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
   // path: app.ts already claims that exact method+path pair for its
   // cookie-authed route, so reusing it here would make this registration
   // unreachable — same `api-` disambiguation as api-follows/api-keys above.
+  // The cookie-authed sibling also carries registeredOnly(); deliberately
+  // NOT mirrored here — apiKeyAuth routes are already registered-only by
+  // construction (see auth.ts's registeredOnly() comment), and stacking
+  // registeredOnly() after apiKeyAuth would unconditionally 403 every
+  // request since apiKeyAuth never sets sessionIsAnonymous.
   app.post('/me/api-subscriptions', apiKeyAuth(auth, users, { follows: ['write'] }), jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
