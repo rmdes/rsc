@@ -1,9 +1,14 @@
 # Logical Pipeline Simplification — Program Roadmap
 
-**Status:** Roadmap rev 2 (brainstormed 2026-08-01; clean-context roadmap review
-folded — 2 Criticals corrected: the converter is NOT dead code, and C does not
-depend on A; see `docs/superpowers/reviews/2026-08-01-simplification-roadmap-review.md`).
-This is a **program**, not a
+**Status:** Roadmap rev 3 (2026-08-04). **Phase C (remove origin verification)
+DROPPED — verification is EARNED.** The Phase C footprint review found it is the
+discovery-and-mint engine for the instance-governed-members federation feature
+(`membership.ts`; `verification.ts:268/302` mints `origin_verification` member
+sources); removing it would delete a real governed-federation feature. The
+audit's finding #1 was wrong and is corrected; verification stays. Program
+refocuses on the genuinely-unearned cuts: **B, D, F** (+ optional A′). (Rev 2
+had folded the roadmap review's 2 Criticals — converter not dead, C≠dependent-on-A;
+both now moot since C is dropped.) This is a **program**, not a
 single spec: it sequences five independent simplification phases, each of which
 gets its OWN brainstorm→spec→plan→SDD and its own independent deploy. This doc
 governs sequencing, the feature-preservation contract, and how the known
@@ -32,9 +37,10 @@ the retention age gate, sanitizer, no-JS first-class.
 **Dropped (the debt — confirmed acceptable by the maintainer):**
 - **B:** remote *feed-item* edit history (`/post/[id]/history` for remote items +
   the remote "edited" marker). Remote items show the publisher's latest.
-- **C:** the `verified_origin` signal (anti-byline-spoofing tiebreak on aggregate
-  firehoses + a source-reap-protection heuristic). Attribution keeps its lower
-  evidence levels.
+- ~~C:~~ **(dropped — verification stays)** `verified_origin` and the whole
+  origin-verification subsystem are KEPT: it is the engine of instance-governed-
+  members. Nothing here is dropped by removing verification, because verification
+  is not being removed.
 - **D:** possibly cross-source author *merge* (same author via multiple feeds →
   one byline). The precise byline behavior that must survive is **Phase D's own
   brainstorm**; the roadmap commits only that a working byline stays.
@@ -58,14 +64,14 @@ the retention age gate, sanitizer, no-JS first-class.
 > into Phase C) removes the dependency — Critical 1 dissolves without touching
 > the converter. So Phase C is independent and can lead.
 
-Revised: **C and B are the independent lead phases.** The old "Phase A" is
-demoted to an optional, later, re-scoped startup simplification (A′).
+Rev 3: **B is the lead phase** (C dropped). The old "Phase A" is demoted to an
+optional, re-scoped startup simplification (A′).
 
 | Phase | Cut (audit ref) | Depends on | Risk |
 |---|---|---|---|
-| **C** | Remove origin verification (audit #1; parked §5) — prep: relocate `EMPTY_COUNTERS` out of `verification.ts` | — (independent) | Medium |
+| ~~**C**~~ | ~~Remove origin verification~~ — **DROPPED, verification is earned** (instance-governed-members engine) | — | — |
 | **B** | Remove remote version-history (audit #2; parked §1–4) | — (independent) | Medium (live version-collapse migration) |
-| **D** | Simplify the publisher attribution graph (audit #3) | after **C** (verified_origin rung already gone) | Medium-high (byline design) |
+| **D** | Simplify the publisher attribution graph (audit #3), **keeping the `verified_origin` rung** (verification stays) | — (independent; no longer waits on C) | Medium-high (byline design) |
 | **F** | Consolidate thin tables (audit #5) | — | Low (cleanup) |
 | **A′** | *(optional, later)* Simplify the fresh-install activation path — collapse the zero-row conversion, drop ONLY the `converted_at`/`conversion_findings_json` columns; keep the `logical_activation_v2` table + `fresh-install.test.ts` green | — | Medium (startup-path refactor, NOT dead-code removal) |
 
@@ -124,20 +130,20 @@ web, enum members). Independent — no dependency on any other phase.
 
 - **Each phase is independent:** its own brainstorm→spec→(clean-context spec review)→writing-plans→(clean-context plan review)→subagent-driven-development→whole-branch review→independent deploy. No phase blocks on a later one.
 - **Shared checkout / parallel sessions.** Parallel sessions actively work in `core/src/logical/*`. Each phase must coordinate before SDD (it removes tables/columns/enum members other in-flight work may assume). Stage explicit paths; never `git add -A`.
-- **Forward-only migrations, backup-before-flip** (RUNNING.md posture) for B, C, D (F if it drops tables). A is dead-code removal (no data migration).
+- **Forward-only migrations, backup-before-flip** (RUNNING.md posture) for B, D (F if it drops tables). A′ is a startup-path refactor (no data migration).
 - **Completion gate per phase:** core Vitest, `tsc`, web Vitest, `svelte-check`, web build — all green before deploy.
-- **Sequencing gate:** C and B are independent leads (either order / parallel with coordination). D after C. F any time. A′ optional, last, gates nothing. (Corrected: C no longer depends on A — see the roadmap-review correction above; the only prep is relocating `EMPTY_COUNTERS`, owned by C.)
+- **Sequencing gate:** B is the independent lead; D and F are independent too (D keeps the `verified_origin` rung). A′ optional, last, gates nothing.
 
 ## Non-goals
 
+- **Removing origin verification** — it's the instance-governed-members engine (earned). Phase C dropped.
 - Phase E (reconciliation inline) — deferred, see above.
 - Any change to the timeline/threading/feeds/moderation/local-history behavior beyond the explicit drops in the feature-preservation contract.
-- Rewriting the sanitizer twins, auth, or the web UI beyond removing the dropped affordances (remote history page, "edited" marker, verified badge).
+- Rewriting the sanitizer twins, auth, or the web UI beyond removing the dropped affordances (remote history page, "edited" marker).
 
 ## Next
 
-Roadmap (rev 2, roadmap-review folded) → begin **Phase C** (remove origin
-verification — the biggest single cut, now independent) OR **Phase B** (remove
-version-history) as its own brainstorm→spec cycle; they can run in parallel
-sessions with coordination. This document is the index the per-phase specs point
-back to.
+Roadmap (rev 3) → begin **Phase B** (remove remote version-history — now the
+lead cut) as its own brainstorm→spec cycle; **D** and **F** are independent and
+can run in parallel sessions with coordination. This document is the index the
+per-phase specs point back to.

@@ -18,7 +18,9 @@ nothing consumes.
 
 ## Findings (biggest cut first)
 
-1. `delete:` **Origin-verification subsystem** — `verification.ts` (417) + the
+1. ⛔ **CORRECTED 2026-08-04 — THIS FINDING WAS WRONG; verification is EARNED, do NOT cut it.** Deeper footprint analysis (Phase C spec review) found origin verification is the discovery-and-mint engine for the **instance-governed-members** federation feature: a verification containment match MINTS a per-publisher `origin_verification` source that nests under its aggregate instance and inherits governance (`membership.ts`; `verification.ts:268/302`). The two heuristics below are real but are NOT its whole output — the mint/membership engine is. Removing it deletes a governed-federation feature. Finding withdrawn; Phase C dropped. The rest of this finding (below) stands only as the mistaken original.
+
+   *(original, mistaken finding follows)* `delete:` **Origin-verification subsystem** — `verification.ts` (417) + the
    `verification_checks_v2` table + the `'verification'` reconciliation-job kind
    + `scheduleVerification`/`resolveVerificationBatch` + the async
    `verificationRunner` drain in `runtime.ts` + the `verified_origin` author-rung

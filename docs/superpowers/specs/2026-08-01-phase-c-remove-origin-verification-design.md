@@ -1,9 +1,25 @@
 # Phase C — Remove Origin Verification (design)
 
-**Status:** Draft (brainstormed 2026-08-01). Phase C of the simplification
-program — `docs/superpowers/specs/2026-08-01-logical-pipeline-simplification-roadmap.md`
-(rev 2). Independent lead phase. Authorizes no code (→ clean-context review →
-plan).
+**Status:** ⛔ WITHDRAWN 2026-08-04. The footprint review (done inline after the
+review subagent hit a usage limit) found that origin verification is **not
+unearned** — it is the discovery-and-mint engine for the **instance-governed-
+members** federation feature: on a verification containment match,
+`resolveVerificationBatch`→`persistVerifiedDelivery`→`findOrCreateOriginSource`
+(`verification.ts:268/302`) MINTS a per-publisher `provenance='origin_verification'`
+source that nests under its asserting aggregate instance and inherits its
+governance (`membership.ts`, the admin "member" nesting UI). The mint is coupled
+to the async check — you cannot keep the feature without the subsystem. Removing
+it would DELETE a real governed-federation feature, violating the program's
+"preserve federation / essentially same service" contract. **The audit's
+finding #1 was wrong** (it saw only the reap guard + author tiebreak, missing the
+mint/membership engine). Phase C is dropped; verification is kept. The
+simplification program refocuses on the genuinely-unearned cuts (B/D/F). This doc
+is retained as a record of why verification stays. See the corrected audit +
+roadmap rev 3.
+
+---
+
+*(original draft below, superseded)*
 
 **Goal:** Delete the origin-verification subsystem and the `verified_origin`
 evidence level entirely, preserving all user-facing features. Attribution keeps
