@@ -39,8 +39,17 @@ async function setup() {
   const key = (await apiKeyApi.createApiKey({ body: { configId: 'user', userId: authUserId, permissions: { timeline: ['read'], posts: ['read'] } } })).key!
 
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
   return { app, key, service, repo, authUserId, me }
+}
+
+// Cast + call shared by every test that mints a key with custom
+// permissions (posts:write here; the read-permission tests below use the
+// existing `ApiKeyCreation` cast directly, matching the file's established
+// style) — a thin wrapper around that same cast, not a new abstraction.
+async function mintKey(auth: ReturnType<typeof makeAuth>, userId: string, permissions: Record<string, string[]>): Promise<string> {
+  const apiKeyApi = auth.api as unknown as ApiKeyCreation
+  return (await apiKeyApi.createApiKey({ body: { configId: 'user', userId, permissions } })).key!
 }
 
 test('GET /me/timeline requires an api key', async () => {
@@ -84,13 +93,15 @@ async function freshApp(email: string) {
   const repo = await createSqliteRepository(':memory:')
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
+  const bus = createEventBus()
   const auth = makeAuth(repo)
+  const service = createService(repo, bus, null, store)
   const authApp = new Hono()
   authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
   const cookie = await registeredSession(authApp, email, repo)
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo })
-  return { app, cookie }
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+  return { app, cookie, auth, service, repo }
 }
 
 test('POST /me/api-keys requires a cookie session', async () => {
@@ -108,11 +119,12 @@ test('POST /me/api-keys rejects an anonymous/guest session (spec scopes self-ser
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
   const auth = makeAuth(repo)
+  const service = createService(repo, createEventBus(), null, store)
   const authApp = new Hono()
   authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
   const cookie = await anonSession(authApp)
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
   const res = await app.request('/me/api-keys', {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
@@ -196,6 +208,7 @@ test('a key with only timeline:read cannot reach /me/posts (posts:read required)
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
   const auth = makeAuth(repo)
+  const service = createService(repo, createEventBus(), null, store)
   const authApp = new Hono()
   authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
   const cookie = await registeredSession(authApp, 'timelineonly@x.test', repo)
@@ -203,7 +216,135 @@ test('a key with only timeline:read cannot reach /me/posts (posts:read required)
   const apiKeyApi = auth.api as unknown as ApiKeyCreation
   const key = (await apiKeyApi.createApiKey({ body: { configId: 'user', userId: session!.user.id, permissions: { timeline: ['read'] } } })).key!
   const app = new Hono()
-  mountPersonalApiRoutes(app, { store, auth, users: repo })
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
   const res = await app.request('/me/posts', { headers: { 'x-api-key': key } })
   expect(res.status).toBe(401)
+})
+
+// --- POST/PATCH/DELETE /me/posts (posts:write, phase 3 task 1) -----------
+// POST/PATCH are key-authed twins of app.ts's cookie-authed `POST /posts` /
+// `PATCH /posts/:id`. DELETE is a genuinely new self-serve capability —
+// until now only an admin could hard-delete any post (`DELETE
+// /admin/posts/:id`); this scopes the exact same service.deletePost to the
+// caller's OWN post via the same ownership check PATCH already uses.
+
+test('POST /me/posts creates a post as the key owner (posts:write)', async () => {
+  const { app, cookie, auth } = await freshApp('poster@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['write'] })
+  const res = await app.request('/me/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ content: 'hello from the api' })
+  })
+  expect(res.status).toBe(201)
+  const body = await res.json()
+  expect(body.post.content).toBe('hello from the api')
+})
+
+test('POST /me/posts requires posts:write, not posts:read', async () => {
+  const { app, cookie, auth } = await freshApp('readonly-poster@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['read'] })
+  const res = await app.request('/me/posts', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ content: 'should not be created' })
+  })
+  expect(res.status).toBe(401)
+})
+
+test("PATCH /me/posts/:id edits only the key owner's own post", async () => {
+  // Two owners sharing one app/db (freshApp only mints one user per call).
+  const repo = await createSqliteRepository(':memory:')
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, createEventBus(), null, store)
+  const auth = makeAuth(repo)
+  const authApp = new Hono()
+  authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+  const cookieA = await registeredSession(authApp, 'edit-ownerA@x.test', repo)
+  const cookieB = await registeredSession(authApp, 'edit-ownerB@x.test', repo)
+  const sessionA = await auth.api.getSession({ headers: new Headers({ cookie: cookieA }) })
+  const sessionB = await auth.api.getSession({ headers: new Headers({ cookie: cookieB }) })
+  const keyA = await mintKey(auth, sessionA!.user.id, { posts: ['write'] })
+  const keyB = await mintKey(auth, sessionB!.user.id, { posts: ['write'] })
+  const app = new Hono()
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+
+  const ownerA = await ensureCoreUser(repo, sessionA!.user.id)
+  const post = await service.createLocalPostAs(ownerA.handle, ownerA.displayName, 'original content')
+
+  const forbidden = await app.request(`/me/posts/${post.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': keyB },
+    body: JSON.stringify({ content: 'hijacked' })
+  })
+  expect(forbidden.status).toBe(403)
+  expect((await service.getPost(post.id))?.content).toBe('original content') // untouched
+
+  const ok = await app.request(`/me/posts/${post.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': keyA },
+    body: JSON.stringify({ content: 'edited content' })
+  })
+  expect(ok.status).toBe(200)
+  const body = await ok.json()
+  expect(body.post.content).toBe('edited content')
+})
+
+test("DELETE /me/posts/:id deletes only the key owner's own post, never another user's", async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const service = createService(repo, createEventBus(), null, store)
+  const auth = makeAuth(repo)
+  const authApp = new Hono()
+  authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+  const cookieA = await registeredSession(authApp, 'del-ownerA@x.test', repo)
+  const cookieB = await registeredSession(authApp, 'del-ownerB@x.test', repo)
+  const sessionA = await auth.api.getSession({ headers: new Headers({ cookie: cookieA }) })
+  const sessionB = await auth.api.getSession({ headers: new Headers({ cookie: cookieB }) })
+  const keyA = await mintKey(auth, sessionA!.user.id, { posts: ['write'] })
+  const keyB = await mintKey(auth, sessionB!.user.id, { posts: ['write'] })
+  const app = new Hono()
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service })
+
+  const ownerA = await ensureCoreUser(repo, sessionA!.user.id)
+  const post = await service.createLocalPostAs(ownerA.handle, ownerA.displayName, 'do not delete me yet')
+
+  const forbidden = await app.request(`/me/posts/${post.id}`, { method: 'DELETE', headers: { 'x-api-key': keyB } })
+  expect(forbidden.status).toBe(403)
+  expect(await service.getPost(post.id)).toBeDefined() // still there
+
+  const ok = await app.request(`/me/posts/${post.id}`, { method: 'DELETE', headers: { 'x-api-key': keyA } })
+  expect(ok.status).toBe(200)
+  expect(await service.getPost(post.id)).toBeUndefined() // gone
+})
+
+test('DELETE /me/posts/:id 404s for an unknown post id', async () => {
+  const { app, cookie, auth } = await freshApp('delete-unknown@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['write'] })
+  const res = await app.request('/me/posts/does-not-exist', { method: 'DELETE', headers: { 'x-api-key': key } })
+  expect(res.status).toBe(404)
+})
+
+test('DELETE /me/posts/:id refuses a remote post (never deletable by any user)', async () => {
+  const { app, cookie, auth, repo } = await freshApp('delete-remote@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  // A remote-authored `posts` row (the legacy shape v2 no longer writes but
+  // converted databases still hold — see moderation.test.ts's seedRemotePost
+  // for the same pattern) — the only thing the ownership check's
+  // `source !== 'local'` branch can be exercised against. authorId is the
+  // caller's own core user id: a remote post is refused by source alone,
+  // never reachable by ANY caller, not just a mismatched owner.
+  repo.raw.prepare(
+    `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at)
+     VALUES ('remote-1', ?, 'remote', 'g-remote-1', NULL, 'x', 'https://e/remote-1', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
+  ).run(me.id)
+  const res = await app.request('/me/posts/remote-1', { method: 'DELETE', headers: { 'x-api-key': key } })
+  expect(res.status).toBe(403)
 })

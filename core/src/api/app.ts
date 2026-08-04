@@ -193,7 +193,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   mountLogicalReadRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service, feeds })
 
   // --- key-authed personal API (phase 2) ---
-  mountPersonalApiRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users })
+  mountPersonalApiRoutes(app, { store: deps.logical.store, auth: deps.auth, users: deps.users, service })
 
   // F-2: without a configured mailer, refuse the routes that would create an
   // unverifiable account (or send mail we cannot send) — up front, so no

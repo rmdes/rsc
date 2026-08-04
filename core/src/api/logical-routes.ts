@@ -516,6 +516,7 @@ export interface PersonalApiDeps {
   store: LogicalStore
   auth: Auth
   users: UserDirectory
+  service: Service
 }
 
 // Whitelisted to phase 2's two enforceable permissions only (Global
@@ -557,7 +558,7 @@ interface ApiKeyCreation {
 }
 
 export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
-  const { store, auth, users } = deps
+  const { store, auth, users, service } = deps
   const apiKeyCreateApi = auth.api as unknown as ApiKeyCreation
 
   function accountOf(c: Context): PublicLocalAccount {
@@ -583,6 +584,57 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     const viewer: ProjectionViewer = { localAccountId: account.id, activeSourceIds: [] }
     const result = store.snapshot((tx) => tx.projectTimeline({ lens: { kind: 'local_author', account }, before, limit, viewer }))
     return c.json(result)
+  })
+
+  // --- key-authed post create/edit/delete (posts:write, phase 3) ---------
+  // POST/PATCH are key-authed twins of app.ts's cookie-authed `POST /posts`
+  // and `PATCH /posts/:id` — same validation, same service calls, same
+  // error shapes, transcribed from those exact handlers. DELETE is a
+  // genuinely new self-serve capability: until now only an admin could
+  // hard-delete a post (app.ts's `DELETE /admin/posts/:id`); this scopes
+  // that same service.deletePost to the caller's OWN post, gated by the
+  // same ownership check PATCH already uses (post.source !== 'local' ||
+  // post.authorId !== me.id -> 403), checked BEFORE calling deletePost so a
+  // remote post is refused the same way for every caller, not just its
+  // (nonexistent) local owner.
+  app.post('/me/posts', apiKeyAuth(auth, users, { posts: ['write'] }), jsonWrite, async (c) => {
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { content, inReplyTo } = body
+    if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
+    if (inReplyTo !== undefined && !isString(inReplyTo, 1, 64)) return c.json({ error: 'inReplyTo invalid' }, 400)
+    let replyTarget
+    if (typeof inReplyTo === 'string') {
+      replyTarget = await service.resolveReplyTarget(inReplyTo)
+      if (!replyTarget) return c.json({ error: 'unknown post' }, 404)
+    }
+    const me = c.get('coreUser')
+    const post = await service.createLocalPostAs(me.handle, me.displayName, content, replyTarget)
+    return c.json({ post }, 201)
+  })
+
+  app.patch('/me/posts/:id', apiKeyAuth(auth, users, { posts: ['write'] }), jsonWrite, async (c) => {
+    const me = c.get('coreUser')
+    const post = await service.getPost(c.req.param('id'))
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not editable' }, 403)
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { content } = body
+    if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
+    if (content === post.content) return c.json({ post }, 200) // no-op: no phantom revision
+    const entry = await service.editLocalPost(post, content, me)
+    return c.json({ post: entry }, 200)
+  })
+
+  app.delete('/me/posts/:id', apiKeyAuth(auth, users, { posts: ['write'] }), jsonWrite, async (c) => {
+    const me = c.get('coreUser')
+    const post = await service.getPost(c.req.param('id'))
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not editable' }, 403)
+    const result = await service.deletePost(post.id)
+    if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
+    return c.json({ ok: true }, 200)
   })
 
   // Cookie-authed (a user manages their OWN keys from the browser, before
