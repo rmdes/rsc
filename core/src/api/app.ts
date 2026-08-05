@@ -40,7 +40,13 @@ function isAttributionMode(v: unknown): v is AttributionMode {
 // fails typecheck here too.
 const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
 
-function isAuditCategory(v: unknown): v is AuditCategory {
+// EXPORTED: logical-routes.ts's key-authed POST /admin-api/sources/:id/:action
+// (phase 4 Task 4) imports this under an alias to validate `category` with
+// this EXACT six-value list, matching its cookie-authed sibling below byte
+// for byte. logical-routes.ts also has its own same-named, wider (8-value)
+// isAuditCategory for the V3 moderation routes — the two must never be
+// conflated, hence the alias at the import site rather than a bare re-export.
+export function isAuditCategory(v: unknown): v is AuditCategory {
   return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
 }
 

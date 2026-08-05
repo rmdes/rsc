@@ -161,6 +161,43 @@ describe('admin.sources write routes', () => {
     expect(res.status).toBe(404)
   })
 
+  // Regression: the route's `category` validator must resolve to app.ts's
+  // narrower six-value isAuditCategory (same list the cookie-authed sibling
+  // POST /admin/sources/:id/:action uses), NOT this file's own wider
+  // eight-value isAuditCategory (used by the V3 moderation routes). A same-
+  // named-different-symbol shadow previously let 'false_positive'/'remediated'
+  // through here while the cookie-authed sibling 400s them.
+  test('rejects a V3-moderation-only category (false_positive) that the cookie-authed sibling also rejects', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.sources': ['write'] } },
+    })
+    const res = await app.request('/admin-api/sources/some-id/quarantine', {
+      method: 'POST', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: 'c1', category: 'false_positive' }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'category invalid' })
+  })
+
+  test('a category from the narrower six-value list still passes validation (fix did not over-tighten)', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.sources': ['write'] } },
+    })
+    const res = await app.request('/admin-api/sources/unknown-id/quarantine', {
+      method: 'POST', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: 'c1', category: 'spam' }),
+    })
+    // Category validation passes, so this falls through to the (unknown)
+    // source lookup — 404, not the 400 'category invalid' from above.
+    expect(res.status).toBe(404)
+  })
+
   test('a posts:write-only key (wrong resource) is rejected', async () => {
     const { app, auth, db } = await setup()
     const apiKeyApi = auth.api as unknown as ApiKeyPluginApi

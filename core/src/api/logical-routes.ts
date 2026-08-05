@@ -1,6 +1,6 @@
 import type { Hono, Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { jsonWrite, isBadSourceUrl, pageArgs, readTabOverrides, establishFederation, IDEMPOTENCY_CONFLICT as SOURCES_IDEMPOTENCY_CONFLICT } from './app.ts'
+import { jsonWrite, isBadSourceUrl, pageArgs, readTabOverrides, establishFederation, isAuditCategory as isSourceGovernanceCategory, IDEMPOTENCY_CONFLICT as SOURCES_IDEMPOTENCY_CONFLICT } from './app.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import type { EventBus } from '../domain/bus.ts'
 import type { LogicalStreamSource } from '../logical/runtime.ts'
@@ -958,9 +958,13 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
     if (!body) return c.json({ error: 'body invalid' }, 400)
     const { category, note, commandId, attributionMode } = body
     if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+    // This route's category validation MUST match its cookie-authed sibling
+    // (app.ts POST /admin/sources/:id/:action) exactly, hence the aliased
+    // import rather than this file's own (wider, V3-moderation) isAuditCategory
+    // — see the fix note on that import.
     if (category === undefined || category === null) {
       if (!CATEGORY_OPTIONAL_ACTIONS.has(action)) return c.json({ error: 'category invalid' }, 400)
-    } else if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+    } else if (!isSourceGovernanceCategory(category)) return c.json({ error: 'category invalid' }, 400)
     if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
     // Required for set_attribution_mode, optional-but-valid everywhere else.
     if ((attributionMode !== undefined || action === 'set_attribution_mode') && !isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
@@ -970,7 +974,7 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
     // being re-judged against state its own first run already changed.
     const id = c.req.param('id') ?? ''
     const result = await sourceService.transition({
-      sourceId: id, action, category: isAuditCategory(category) ? category : null,
+      sourceId: id, action, category: isSourceGovernanceCategory(category) ? category : null,
       note: typeof note === 'string' ? note : null,
       ...(isAttributionMode(attributionMode) ? { attributionMode } : {}),
       commandId, actorId: c.get('coreUser').id, actorKind: 'administrator',
