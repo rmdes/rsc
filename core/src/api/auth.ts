@@ -81,7 +81,11 @@ export function sessionAuth(auth: Auth, users: UserDirectory, adminEmails: Reado
 interface ApiKeyVerification {
   verifyApiKey(input: {
     body: { configId?: string; key: string; permissions?: Record<string, string[]> }
-  }): Promise<{ valid: boolean; key: { referenceId: string } | null }>
+  }): Promise<{
+    valid: boolean
+    key: { referenceId: string } | null
+    error: { code?: string; details?: { tryAgainIn?: number } } | null
+  }>
 }
 
 // Explicit verifyApiKey call, never better-auth's enableSessionForAPIKeys
@@ -95,7 +99,12 @@ export function apiKeyAuth(auth: Auth, users: UserDirectory, permissions: Record
     const key = c.req.header('x-api-key')
     if (!key) return c.json({ error: 'api key required' }, 401)
     const result = await apiKeyApi.verifyApiKey({ body: { configId: 'user', key, permissions } })
-    if (!result.valid || !result.key) return c.json({ error: 'invalid or insufficient api key' }, 401)
+    if (!result.valid || !result.key) {
+      if (result.error?.code === 'RATE_LIMITED') {
+        return c.json({ error: 'rate limit exceeded', code: 'RATE_LIMITED', tryAgainIn: result.error.details?.tryAgainIn }, 429)
+      }
+      return c.json({ error: 'invalid or insufficient api key' }, 401)
+    }
     c.set('coreUser', await ensureCoreUser(users, result.key.referenceId))
     return next() // see sessionAuth: same propagation contract applies here
   }
@@ -119,7 +128,12 @@ export function apiKeyAuthAdmin(
     const key = c.req.header('x-api-key')
     if (!key) return c.json({ error: 'api key required' }, 401)
     const result = await apiKeyApi.verifyApiKey({ body: { configId: 'admin', key, permissions } })
-    if (!result.valid || !result.key) return c.json({ error: 'invalid or insufficient api key' }, 401)
+    if (!result.valid || !result.key) {
+      if (result.error?.code === 'RATE_LIMITED') {
+        return c.json({ error: 'rate limit exceeded', code: 'RATE_LIMITED', tryAgainIn: result.error.details?.tryAgainIn }, 429)
+      }
+      return c.json({ error: 'invalid or insufficient api key' }, 401)
+    }
     const fields = await users.getAuthUserAdminFields(result.key.referenceId)
     if (!fields || !deriveIsAdmin(fields, adminEmails)) return c.json({ error: 'admin only' }, 403)
     c.set('coreUser', await ensureCoreUser(users, result.key.referenceId))
