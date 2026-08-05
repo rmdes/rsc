@@ -749,12 +749,13 @@ test('legacy_unknown never initializes the explicit-update watermark', async () 
   expect(one(raw, `SELECT MAX(effective_updated_at) AS w FROM presentation_entries_v2 WHERE provenance = 'explicit'`)).toEqual({ w: null })
 })
 
-test('a post-cutover explicit update starts the watermark FRESH above the legacy chain', async () => {
+test('a post-cutover explicit update overwrites the delivery current entry in place — phase B: one entry per delivery going forward', async () => {
   const raw = await fresh()
   seedRemote(raw)
   seedPost(raw, { content: '<p>legacy</p>', edited_at: '2026-02-04T00:00:00.000Z' })
   seedRevision(raw, 'p1', { content: '<p>older</p>', seen_at: '2026-02-04T00:00:00.000Z' })
   convert(raw)
+  expect(count(raw, 'presentation_entries_v2')).toBe(2) // legacy chain, pre-collapse (Task 4's job)
 
   const db = createDatabaseContext(raw)
   const feed = `<?xml version="1.0"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>A</title>`
@@ -772,8 +773,15 @@ test('a post-cutover explicit update starts the watermark FRESH above the legacy
   // ONE delivery still — the converted key was found, not forked
   expect(count(raw, 'deliveries_v2')).toBe(1)
   expect(count(raw, 'logical_items_v2')).toBe(1)
-  const top = one(raw, `SELECT sequence, effective_updated_at, provenance FROM presentation_entries_v2 ORDER BY sequence DESC LIMIT 1`)!
-  expect(top).toMatchObject({ sequence: 2, provenance: 'explicit', effective_updated_at: '2026-02-05T00:00:00.000Z' })
+  // Phase B (Task 1): the post-cutover write OVERWRITES one existing legacy
+  // version + its presentation entry in place — it never appends a new
+  // sequence above the chain, and creates no new observation_versions_v2 or
+  // presentation_entries_v2 row. (Collapsing the pre-existing legacy chain
+  // itself down to one row is Task 4's migration, not this write path.)
+  expect(count(raw, 'observation_versions_v2')).toBe(2) // unchanged — overwrite, not append
+  expect(count(raw, 'presentation_entries_v2')).toBe(2) // ditto
+  const updated = one(raw, `SELECT sequence, effective_updated_at, provenance FROM presentation_entries_v2 WHERE provenance = 'explicit' AND effective_updated_at = '2026-02-05T00:00:00.000Z'`)
+  expect(updated).toBeTruthy() // the fresh explicit update landed on a single entry, overwritten in place
 })
 
 // ── the delivery key V1's THREE-branch guid actually implies ─────────────
