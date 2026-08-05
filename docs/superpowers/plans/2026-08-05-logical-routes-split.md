@@ -8,6 +8,8 @@
 
 **Tech Stack:** Node 22 native type-stripping (no build step), Hono, better-sqlite3/Kysely, Vitest. Spec: `docs/superpowers/specs/2026-08-05-logical-routes-split-design.md` (rev 3).
 
+**Plan status:** Rev 2 (2026-08-05; clean-context plan review folded — no Criticals). Fixed: admin banner block is L819–1034 (was mis-stated as L876, stranding four admin-local helpers → wrong `tsc`-promotion); Task 7 export-surface check now positively enumerates (`tsc` doesn't flag surplus exports); `import type` required under `verbatimModuleSyntax` for cross-module types (`ApiKeyCreation`); `read.ts` doesn't consume `MODEL`; restored the `auth.ts` import-depth example.
+
 ## Global Constraints
 
 - **Pure move. No behavior/signature/route/response changes. No "while I'm here" fixes** — a bug spotted mid-move is noted in the task report, never fixed here.
@@ -16,7 +18,7 @@
 - **Behavior net = the full core suite.** Every task ends green on `npm test -w core` (currently 1115 passing) — for a pure move, a route regression can surface in any suite, so run all of it, not a subset.
 - **Preserve the public export surface.** Each route module `export`s **only** what `logical-routes.ts` exported before (its `mount*` fn + its deps interface). Helpers that were module-private stay **unexported**. `shared.ts` is **internal** — the barrel does NOT `export *` from it.
 - **Barrel form:** `logical-routes.ts` ends as only `export * from './logical-routes/<mod>.ts'` lines for the **5 route modules** (not shared). Path stays `core/src/api/logical-routes.ts`.
-- **Import-path depth:** modules sit one level deeper (`api/logical-routes/*.ts`), so relative imports gain one `../` (`'./app.ts'`→`'../app.ts'`, `'../domain/…'`→`'../../domain/…'`); siblings use `'./shared.ts'`. A wrong path is an immediate `tsc` failure.
+- **Import-path depth:** modules sit one level deeper (`api/logical-routes/*.ts`), so relative imports gain one `../`: api-local `'./app.ts'`→`'../app.ts'` and `'./auth.ts'`→`'../auth.ts'` (the api-local `auth.ts` — `UserDirectory`/`apiKeyAuth`/`apiKeyAuthAdmin`), domain-level `'../domain/…'`→`'../../domain/…'`, `'../auth.ts'`→`'../../auth.ts'` (the top-level `auth.ts` — `Auth`); siblings use `'./shared.ts'`. Note both a `../auth.ts` and a `../../auth.ts` exist after the shift — they are different files. A wrong path is an immediate `tsc` failure.
 - **Shared checkout:** stage explicit paths, **never `git add -A`**. End every commit message with `developed with the help of AI tools`.
 - **Tests run in the project's in-container test environment** (isolated Docker stack on this worktree); commands below are the workspace-relative invocations.
 
@@ -38,7 +40,7 @@ core/src/api/
 - write: preamble L30–135 (minus what Task 1 moves to shared) + `mountLogicalRoutes` L136–298
 - read: L306–368 preamble + `mountLogicalReadRoutes` L369–505
 - personal: L518–575 preamble + `mountPersonalApiRoutes` L578–815
-- admin: L876–1034 (`mountAdminApiRoutes`)
+- admin: **L819–1034** (banner-to-banner) — `AdminApiDeps` (L820) + admin-only helpers `isAttributionMode` (L839), `ADMIN_API_ALLOWED_ACTIONS` (L848), `ALLOWED_ADMIN_KEY_PERMISSIONS` (L855), `isValidAdminKeyPermissions` (L860) + `mountAdminApiRoutes` (L876–1034)
 - public: `mountLogicalHandleRoute` L1049–1059 + `mountLogicalStreamRoute` L1079–1148 + `mountPublicFirehoseRoute` L1198–end
 
 **Consumers that must end at zero diff:** `core/src/api/app.ts` (imports `mountLogicalRoutes`, `mountLogicalReadRoutes`, `mountPersonalApiRoutes`, `mountAdminApiRoutes`, `type LogicalRouteDeps`), `core/src/server.ts` (imports `mountLogicalStreamRoute`, `mountLogicalHandleRoute`, `mountPublicFirehoseRoute`).
@@ -51,7 +53,7 @@ Each extraction task has the same shape. Parameters per task: **module name**, *
 
 1. Create `core/src/api/logical-routes/<mod>.ts`.
 2. **Cut verbatim** from `logical-routes.ts` into `<mod>.ts`: the group's `mount*` fn(s), its deps `interface`, and its local constants/helpers (everything between its banners that Task 1 did NOT move to `shared.ts`). Do not retype — move the exact code.
-3. Fix imports in `<mod>.ts`: add one `../` to every relative path; add `import { … } from './shared.ts'` for shared symbols it uses. `export` only the `mount*` fn(s) + deps interface; leave helpers unexported.
+3. Fix imports in `<mod>.ts`: add one `../` to every relative path; add `import { … } from './shared.ts'` for shared symbols it uses. **`verbatimModuleSyntax: true` is set** (tsconfig.base.json), so import type-only symbols with `import type` — e.g. the cross-module interface `ApiKeyCreation` must be `import type { ApiKeyCreation } from './shared.ts'`. A `TS1484` ("… is a type and must be imported using a type-only import") means "add `type`", **not** "promote to shared." `export` only the `mount*` fn(s) + deps interface; leave helpers unexported.
 4. In `logical-routes.ts`, delete the cut code and add `export * from './logical-routes/<mod>.ts'`.
 5. **`tsc` gate:** run `npm run typecheck -w core`. For every "Cannot find name / has no exported member" on a symbol that now lives in a different module, **promote that symbol to `shared.ts`** (move its definition there, `export` it, import it where used). Repeat until `tsc` is `0`. This is how `shared.ts`'s exact membership is decided — not by a hand list.
 6. **Test gate:** `npm test -w core` → all green. Then **commit** (explicit paths: `git add core/src/api/logical-routes.ts core/src/api/logical-routes/<mod>.ts core/src/api/logical-routes/shared.ts`).
@@ -111,7 +113,7 @@ developed with the help of AI tools"
 
 **Files:** Create `core/src/api/logical-routes/read.ts`; modify `logical-routes.ts` / `shared.ts`.
 
-**Interfaces:** Produces `export function mountLogicalReadRoutes(app, deps: LogicalReadDeps): void` + `export interface LogicalReadDeps`. Consumes from `./shared.ts`: `MODEL`, `clampLimit`, `decodeBeforeCursor` (moved in Task 1), plus any the gate promotes.
+**Interfaces:** Produces `export function mountLogicalReadRoutes(app, deps: LogicalReadDeps): void` + `export interface LogicalReadDeps`. Consumes from `./shared.ts`: `clampLimit`, `decodeBeforeCursor` (moved in Task 1), plus any the gate promotes. (The read routes hardcode the literal `'logical-v2'`, so `read.ts` does not import `MODEL`.)
 
 **Group specifics:** move `mountLogicalReadRoutes` (L369–505) + `LogicalReadDeps` (L306) + read-local: `FEED_LIMIT`, `XML`, `LensSpec`, `LENS_KEYS`, `FORBIDDEN_KEYS`, `parseLensSpec`. (`clampLimit`/`decodeBeforeCursor` already in `shared.ts`.)
 
@@ -151,7 +153,7 @@ developed with the help of AI tools"
 
 **Interfaces:** Produces `export function mountAdminApiRoutes(app, deps: AdminApiDeps): void` + `export interface AdminApiDeps`. Consumes from `./shared.ts`: `isString`, `readJsonBody`, `ApiKeyCreation`. Note: admin's category validation uses the **app.ts** `isSourceGovernanceCategory` import (`'../app.ts'`), not a local `isAuditCategory`.
 
-**Group specifics:** move `mountAdminApiRoutes` (L876–1034) + `AdminApiDeps`.
+**Group specifics:** move the whole admin banner block **L819–1034**: `AdminApiDeps` (L820); the admin-only helpers `isAttributionMode` (L839 — a deliberate local mirror of app.ts's module-private one; do **NOT** dedupe, that's a behavior change out of scope), `ADMIN_API_ALLOWED_ACTIONS` (L848), `ALLOWED_ADMIN_KEY_PERMISSIONS` (L855), `isValidAdminKeyPermissions` (L860); and `mountAdminApiRoutes` (L876–1034). All four helpers are single-consumer (admin-only) — they belong in `admin.ts`, **not** `shared.ts` (if left behind, the `tsc` gate would wrongly promote them to shared — move them here).
 
 - [ ] **Step 1:** Extraction Procedure steps 1–3 for `admin.ts`.
 - [ ] **Step 2 (`tsc` gate):** `npm run typecheck -w core` → `0`; promote as needed.
@@ -194,8 +196,10 @@ developed with the help of AI tools"
   Run: `git diff <merge-base> -- core/src/api/app.ts core/src/server.ts`
   Expected: **empty** (no consumer touched the whole branch).
 
-- [ ] **Step 3: Public export surface unchanged.**
-  The barrel still re-exports exactly the original 13 symbols (7 `mount*` fns + 6 deps interfaces) and nothing new (no leaked private helper). Spot-check: `app.ts`'s `import type { LogicalRouteDeps }` and `server.ts`'s three `mount*` imports still resolve.
+- [ ] **Step 3: Public export surface unchanged (positive enumeration).**
+  TypeScript does **not** error on a *surplus* export, so verifying consumers' imports resolve is not enough — enumerate what the modules actually export and diff against the known 13.
+  Run: `grep -n '^export ' core/src/api/logical-routes/{write,read,personal,admin,public}.ts`
+  Expected: exactly the 7 `mount*` fns + 6 deps interfaces (`LogicalRouteDeps`, `LogicalReadDeps`, `PersonalApiDeps`, `AdminApiDeps`, + the two/three public deps) — **nothing else** (no `export` on a helper that was module-private before). `shared.ts`'s exports don't count (the barrel does not `export *` from it). Also confirm `app.ts`'s `import type { LogicalRouteDeps }` and `server.ts`'s three `mount*` imports still resolve.
 
 - [ ] **Step 4: Full gate.**
   Run: `npm run typecheck -w core` (→ `0`) and `npm test -w core` (→ all green). No commit needed unless Step 1/3 required cleanup.
