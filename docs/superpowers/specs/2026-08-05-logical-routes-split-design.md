@@ -1,6 +1,9 @@
 # logical-routes.ts Module Split — Design
 
-**Status:** Rev 1 (2026-08-05). A behavior-preserving structural refactor: split
+**Status:** Rev 2 (2026-08-05; clean-context ponytail review folded — `shared.ts`
+trimmed to 5 symbols after a comment-vs-code false-match correction on
+`isAuditCategory`; barrel specified as `export *` wildcard re-exports). A
+behavior-preserving structural refactor: split
 the 1317-line `core/src/api/logical-routes.ts` into a barrel + one module per
 route group. No behavior, signature, or route change. First of a possible series
 of large-file splits (the codebase's largest files are its actively-developed
@@ -43,17 +46,24 @@ Consumers import from `'./logical-routes.ts'` (app.ts: `mountLogicalRoutes`,
 `type LogicalRouteDeps`) and `'./api/logical-routes.ts'` (server.ts:
 `mountLogicalStreamRoute`, `mountLogicalHandleRoute`, `mountPublicFirehoseRoute`).
 
-**`logical-routes.ts` stays at its exact path as a thin re-export barrel that
-re-exports every symbol the file currently exports (all current `export`s — the
-7 mount fns + every deps interface).** Result: `app.ts` and `server.ts` diffs are
-**empty**. This is the whole point — the hottest consumer (`app.ts`) is never
-touched.
+**`logical-routes.ts` stays at its exact path as a thin re-export barrel**, one
+`export * from './logical-routes/<mod>.ts'` line per submodule (wildcard, so it
+self-syncs with whatever each submodule exports — no named list to drift). Result:
+`app.ts` and `server.ts` diffs are **empty**.
+
+The barrel is kept as the route layer's permanent public entry point, not a
+transitional shim. Rationale (ponytail review folded): the point is not to dodge
+editing two imports once — it's that `app.ts` (89 commits/30d, the single hottest
+file in the repo) and `server.ts` stay at **zero diff** through this split *and*
+through any future internal reshuffle of the route modules. Collapsing the barrel
+later would re-introduce churn against exactly that file, for no gain. A ~7-line
+wildcard barrel is the cheaper permanent trade.
 
 ## Target structure
 
 ```
 core/src/api/
-  logical-routes.ts              barrel — re-exports all current public exports
+  logical-routes.ts              barrel — `export *` per submodule (path unchanged)
   logical-routes/
     shared.ts                    MODEL, NEUTRAL_404, IDEMPOTENCY_CONFLICT, isString
     write.ts                     mountLogicalRoutes        (moderation/write)
@@ -78,30 +88,36 @@ below is the traced starting point, not a substitute for that check.
 Symbol usage was traced across the mount-fn line ranges (write 136 · read 369 ·
 personal 578 · admin 876 · handle 1049 · stream 1079 · firehose 1198),
 **following helper chains** (the naive first pass under-counted — `readModBody`
-wraps `isAuditCategory`/`isString`/`readJsonBody`):
+wraps `isAuditCategory`/`isString`/`readJsonBody`). One trap corrected by the
+review: the module-local `isAuditCategory` (defined ~L61) is used **only** at L83
+inside `readModBody` (write); the L979 "isAuditCategory" match is a *comment*, and
+admin's actual code (L983/993) calls the **app.ts** import
+`isSourceGovernanceCategory` — a different function. So local
+`isAuditCategory`/`AUDIT_CATEGORIES` are **write-only**, not shared.
 
-**`shared.ts`** — the cross-group symbols:
+**`shared.ts`** — the cross-group symbols (5):
 - `MODEL` (write + handle; embedded in the shared error objects)
 - `NEUTRAL_404` (write + handle)
 - `IDEMPOTENCY_CONFLICT` (write + personal + admin)
 - `isString` (write + personal + admin)
 - `readJsonBody` (write + personal + admin)
-- `isAuditCategory` + `AUDIT_CATEGORIES` (write via `readModBody`, + admin at 979)
 
 **Group-local (move with their mount fn):**
 - `write.ts`: `REFRESH_COMMAND`, `INVALID_CURSOR`, `ITEM_UNAVAILABLE`,
   `LOCAL_ORIGIN`, `NOT_APPLICABLE`, `NOT_BLOCKED`, `DEFAULT_LIMIT`, `ModBody`,
-  `readModBody`, `moderationResponse`, `parseTuplePage`, `parsePage`
-  (imports `isString`/`readJsonBody`/`isAuditCategory`/`MODEL`/`NEUTRAL_404`/
-  `IDEMPOTENCY_CONFLICT` from `./shared.ts`).
+  `readModBody`, `moderationResponse`, `parseTuplePage`, `parsePage`,
+  `isAuditCategory`, `AUDIT_CATEGORIES`
+  (imports `isString`/`readJsonBody`/`MODEL`/`NEUTRAL_404`/`IDEMPOTENCY_CONFLICT`
+  from `./shared.ts`).
 - `read.ts`: `LogicalReadDeps`, `FEED_LIMIT`, `XML`, `LensSpec`, `LENS_KEYS`,
   `FORBIDDEN_KEYS`, `parseLensSpec`, `clampLimit`, `decodeBeforeCursor`.
 - `personal.ts`: `PersonalApiDeps`, `ALLOWED_KEY_PERMISSIONS`,
   `isValidKeyPermissions`, `ApiKeyCreation`, `SUB_NEUTRAL_UNAVAILABLE`,
   `SUB_IDEMPOTENCY_CONFLICT` (imports `isString`/`readJsonBody`/
   `IDEMPOTENCY_CONFLICT` from `./shared.ts`).
-- `admin.ts`: `AdminApiDeps` (imports `isString`/`readJsonBody`/`isAuditCategory`/
-  `IDEMPOTENCY_CONFLICT` from `./shared.ts`).
+- `admin.ts`: `AdminApiDeps` (imports `isString`/`readJsonBody`/
+  `IDEMPOTENCY_CONFLICT` from `./shared.ts`; category validation uses the app.ts
+  `isSourceGovernanceCategory` import, same as today — not the local one).
 - `public.ts`: the handle/stream/firehose deps interfaces + their locals (imports
   `MODEL`/`NEUTRAL_404` from `./shared.ts`).
 
