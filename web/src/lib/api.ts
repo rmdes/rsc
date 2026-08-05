@@ -258,6 +258,16 @@ export async function listApiKeys(f: typeof fetch): Promise<ApiKeySummary[]> {
 	return body.apiKeys
 }
 
+// Same shape as listApiKeys, filtered to the admin-tier config (phase 4
+// Task 6) — better-auth's list endpoint takes configId as a query param, no
+// separate route needed.
+export async function listAdminApiKeys(f: typeof fetch): Promise<ApiKeySummary[]> {
+	const res = await f(`${base()}/api/auth/api-key/list?configId=admin`)
+	if (!res.ok) throw new Error(await errorMessage(res, `listAdminApiKeys ${res.status}`))
+	const body = (await res.json()) as { apiKeys: ApiKeySummary[] }
+	return body.apiKeys
+}
+
 export interface CreatedApiKey {
 	id: string
 	key: string // plaintext — the plugin returns this exactly once, on creation
@@ -286,16 +296,39 @@ export async function createApiKey(f: typeof fetch, input: { name: string; permi
 	return (await res.json()) as CreatedApiKey
 }
 
+// Core's OWN POST /admin/api-keys (phase 4 Task 2, cookie-authed, gated by
+// app.ts's requireAdmin() on /admin/*), same shape as createApiKey above —
+// admin-tier keys are minted server-side with configId:'admin' baked in, the
+// caller never sends configId.
+export async function createAdminApiKey(f: typeof fetch, input: { name: string; permissions: Record<string, string[]> }): Promise<CreatedApiKey> {
+	const res = await f(`${base()}/admin/api-keys`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ name: input.name, permissions: input.permissions })
+	})
+	if (!res.ok) throw Object.assign(new Error(await errorMessage(res, `createAdminApiKey ${res.status}`)), { status: res.status })
+	return (await res.json()) as CreatedApiKey
+}
+
 // Body field is `keyId`, not `id` (the plugin's deleteApiKeyBodySchema).
 // Status is attached to the thrown error, same as createApiKey above — the
 // revoke action (settings/api-keys/+page.server.ts) needs it to tell a clean
 // 4xx core rejection (e.g. an already-revoked/nonexistent key id, a real 404)
 // apart from a genuine server error (final review Finding 4).
-export async function revokeApiKey(f: typeof fetch, keyId: string): Promise<void> {
+//
+// configId defaults to 'user' (the only caller until phase 4) but MUST be
+// passed explicitly as 'admin' for an admin-tier key: the plugin's own
+// /api-key/delete handler resolves configId from this body field and 404s
+// (KEY_NOT_FOUND) if it doesn't match the key's actual config — confirmed
+// against the installed @better-auth/api-key source
+// (dist/index.mjs, deleteApiKey: `configIdMatches(apiKey.configId,
+// lookupOpts.configId)`). A hardcoded 'user' here would 404 every attempt to
+// revoke an admin key, so this is a real parameter, not a decorative one.
+export async function revokeApiKey(f: typeof fetch, keyId: string, configId: 'user' | 'admin' = 'user'): Promise<void> {
 	const res = await f(`${base()}/api/auth/api-key/delete`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ configId: 'user', keyId })
+		body: JSON.stringify({ configId, keyId })
 	})
 	if (!res.ok) throw Object.assign(new Error(await errorMessage(res, `revokeApiKey ${res.status}`)), { status: res.status })
 }
