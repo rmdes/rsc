@@ -164,7 +164,7 @@ in the web UI, so HTML is sanitised server-side regardless of entry point.
 
 ```
 POST   /api/v1/me/api-follows                  # follows:write
-DELETE /api/v1/me/api-follows/:handle          # follows:write
+DELETE /api/v1/me/api-follows/:target          # follows:write
 POST   /api/v1/me/api-subscriptions            # follows:write
 DELETE /api/v1/me/api-subscriptions/:sourceId  # follows:write
 ```
@@ -187,10 +187,18 @@ curl -X POST https://rsc.example.org/api/v1/me/api-subscriptions \
   -d '{"url":"https://example.com/feed.xml","commandId":"'$(uuidgen)'"}'
 ```
 
-**Note on cascade delete:** Unfollowing a remote account or feed you're the
-last follower of triggers its removal from the instance (mirrors existing
-cookie-authenticated UI behavior). A scripted client churning follow/unfollow
-at high frequency may remove sources faster than a human would interactively.
+**Note on cascade delete:** these two cases behave differently.
+
+Unfollowing a remote *account* you're the last follower of unconditionally
+removes it from the instance (mirrors existing cookie-authenticated UI
+behavior) — a scripted client churning follow/unfollow at high frequency may
+remove accounts faster than a human would interactively.
+
+Unsubscribing from a *feed*, by contrast, only removes the underlying source
+if it's fully orphaned: no other subscribers, governance `allowed`, not
+federated, not `admin_retained`, no `source_audit_v2` history, and not backing
+`verified_origin` evidence for any logical item. Any one of those holds it in
+place. See "Unsubscribe takes a `commandId`" below.
 
 Responses:
 
