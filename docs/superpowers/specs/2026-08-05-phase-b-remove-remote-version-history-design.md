@@ -1,6 +1,8 @@
 # Phase B — Remove Remote Version-History (design)
 
-**Status:** Draft (brainstormed 2026-08-05). Lead phase of the simplification
+**Status:** Rev 2 (2026-08-05; clean-context spec review folded — consumer trace
+confirmed COMPLETE; 1 Critical + 3 Important write-path mechanics fixed, see
+`docs/superpowers/reviews/2026-08-05-phase-b-spec-review.md`). Lead phase of the simplification
 program — `docs/superpowers/specs/2026-08-01-logical-pipeline-simplification-roadmap.md`
 (rev 3). Independent. Authorizes no code (→ clean-context spec review → plan).
 
@@ -37,26 +39,42 @@ Phase B is now pure simplification, not a bugfix.
 ## Decisions locked
 
 1. **Remote items keep one current observation per delivery.** On a real content
-   change, **overwrite that row's material + fingerprint in place**, enqueue one
-   reconciliation job, emit the ordinary "updated" journal effect. No new row.
+   change, **overwrite that row's material + fingerprint IN PLACE (same `id`)** —
+   then (review C1: `presentation_entries_v2.observation_version_id` schema.ts:98
+   and `reconciliation_jobs_v2.observation_version_id` schema.ts:176 are both
+   **UNIQUE**, so a fresh INSERT collides) **reset the existing observation job to
+   `pending`** (re-reconcile) and **UPSERT the single presentation entry**, never
+   insert new ones. Emit the ordinary "updated" journal effect. No new version row.
+   **Do NOT overwrite the version's first-arrival tuple** (`arrival_at`/`run_id`)
+   — review I2: cross-delivery/claim selection and threading sort on
+   `compareFirstArrival` (projector.ts:42), so first-arrival must stay stable; the
+   *updated* display time lives in `presentation_entries_v2.effective_updated_at`
+   (already), not the version's arrival.
 2. **`presentation_entries_v2` collapses to one per delivery** (it IS the revision
    sequence the history chain reads).
 3. **Keep the change-detection fingerprint** (already fixed to ignore volatile
    fields).
 4. **Remove the remote revision-history route + page + "edited" marker.** Local
    `post_revisions` history stays.
-5. **Verification is untouched** (it's the instance-governed-members engine, kept
-   — Phase C dropped). Its one-version-per-delivery insert must keep working.
+5. **Verification stays** (instance-governed-members engine — Phase C dropped),
+   but its `persistVerifiedDelivery` (`verification.ts:28,349-383`) is itself a
+   SECOND version-inserter — on changed origin material it appends a version
+   (review I4). To honor the one-per-delivery invariant everywhere, apply the same
+   overwrite-in-place + reset-job + upsert-presentation there too (do not append).
 
 ## Removal / change footprint
 
 **Core:**
 - `acquisition.ts` — the observation-commit loop (~593-658): on a changed
-  fingerprint, UPDATE the delivery's single `observation_versions_v2` row
-  (material, fingerprint, arrival, run) in place + enqueue one job + emit
-  "updated"; do NOT insert a second row. Delete the version-cap machinery
-  (`MAX_VERSIONS_PER_DELIVERY`, `findVictims`, the eviction call). Keep the
-  fingerprint compare (unchanged → bump `last_seen`).
+  fingerprint, UPDATE the delivery's single `observation_versions_v2` row's
+  **material + fingerprint** in place (same `id`; NOT `arrival_at`/`run_id` — I2),
+  **reset the existing `kind='observation'` job to `pending`** (never insert — C1),
+  and let reconcile UPSERT the single presentation entry; emit "updated". Delete
+  the version-cap machinery (`MAX_VERSIONS_PER_DELIVERY`, `findVictims`, the
+  eviction call). Keep the fingerprint compare (unchanged → bump `last_seen`).
+- `verification.ts` (~324-383) — `persistVerifiedDelivery`: same overwrite-in-
+  place + reset-job + upsert-presentation on changed origin material (I4), so a
+  verified delivery also holds exactly one version.
 - `reconcile.ts` / presentation writing — ensure a delivery keeps ONE
   `presentation_entries_v2` row (overwrite/upsert the current, not append a
   sequence). Confirm `selectedDeliveryFor` / current-version selection still
@@ -89,8 +107,17 @@ The sharp edge. One migration, children-first (FK dependency order — do NOT
    existing `deleteObservationVersions` cascade helper (`tombstones.ts`) as the
    ordering authority. Collapse `presentation_entries_v2` to the single survivor
    per delivery.
-3. Verify one version + one presentation entry per delivery afterward; the
-   current display + author selection are unchanged (survivor = current).
+3. **Preserve the byline (review I3):** the survivor is the current-DISPLAY
+   version, but the byline is selected by EARLIEST arrival (`selectAuthor`/
+   `itemAssertedName` → `compareFirstArrival`; the live cap deliberately kept the
+   FIRST version to hold it). So before deleting the non-survivors, **re-point the
+   earliest `publisher_claims_v2`/`publisher_names_v2` (claim + name) onto the
+   survivor version** so the displayed byline does not shift. (`observation_version_id`
+   on claims/names is RESTRICT but NOT unique — schema.ts:110/48 — so re-pointing
+   is a plain UPDATE.) The alternative — accept a one-time byline realignment — is
+   NOT taken (violates "essentially same service").
+4. Verify one version + one presentation entry per delivery afterward; current
+   display AND byline unchanged.
 - `post_revisions`, `posts`, local path, threading, moderation, deliveries,
   verification rows: untouched. Backup-before-flip; forward-only.
 
@@ -104,10 +131,16 @@ no-JS.
 
 ## Testing / acceptance
 
-- **One row invariant:** after a real content change on a remote item, the
-  delivery has exactly ONE `observation_versions_v2` row (overwritten) and ONE
-  `presentation_entries_v2` row; the timeline shows the latest. Re-poll unchanged
-  → bump only.
+- **One row invariant + no UNIQUE collision (C1):** after a real content change
+  on a remote item, the delivery has exactly ONE `observation_versions_v2` row
+  (overwritten, same id), ONE `presentation_entries_v2` row, ONE re-`pending`ed
+  observation job — no `UNIQUE` throw; the timeline shows the latest. Same for a
+  verification-refreshed delivery (I4). Re-poll unchanged → bump only.
+- **Selection stickiness (I2):** overwriting content does NOT reorder the item vs
+  its cross-source/cross-claim peers (first-arrival tuple preserved).
+- **Byline preserved (I3):** after the collapse migration, a remote item whose
+  earliest claim differed from its current-display version keeps its ORIGINAL
+  byline (earliest claim/name re-pointed to the survivor).
 - **No remote history:** `/posts/:id/revisions` returns current-only / not-found
   for remote; local `post_revisions` history byte-unchanged.
 - **No remote "edited":** a remote content change updates display without an
