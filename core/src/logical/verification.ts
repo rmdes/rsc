@@ -4,7 +4,7 @@ import { isPrivateIp } from '../domain/push-guard.ts'
 import type { LookupFn } from '../domain/push-guard.ts'
 import {
   BOUNDS, fetchBounded, readCappedBody, raceDeadline, DeadlineError, parseCandidates,
-  overwriteObservationVersion, resetObservationJob,
+  overwriteObservationVersion, resetObservationJob, findCurrentDeliveryVersion,
   type FetchCtx, type FetchResult,
 } from './acquisition.ts'
 import type { ResolveVerificationInput, VerificationFeedItem, NewObservationVersion, PermanentRedirectProof, ProjectionViewer } from './types.ts'
@@ -349,8 +349,13 @@ function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: str
   // By-DELIVERY lookup (I-A review), never by fingerprint: `presentation_entries_v2`
   // and `reconciliation_jobs_v2` are both UNIQUE on `observation_version_id` (C1),
   // so a second version row for an already-verified delivery collides downstream —
-  // the fix is to never create one, not to catch the collision.
-  const existingVersion = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ?`).get(deliveryId) as { id: string } | undefined
+  // the fix is to never create one, not to catch the collision. And never an
+  // unordered `WHERE delivery_id = ?` scan either (review fix): a cap-era or
+  // not-yet-collapsed delivery can have several sibling version rows, and
+  // resolving anything but the CURRENT-DISPLAY one silently overwrites a version
+  // nobody reads (findCurrentDeliveryVersion — shared with acquisition.ts's
+  // identical resolution, see its comment).
+  const existingVersion = findCurrentDeliveryVersion(tx, deliveryId)
   const versionId = existingVersion?.id ?? ev.id
 
   // A synthetic terminal acquisition run backs every persist — first verification

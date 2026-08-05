@@ -7,7 +7,7 @@ import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation, drainReconciliationAsync, MAX_OPERATIONAL_ATTEMPTS } from '../src/logical/reconcile.ts'
 import {
-  scheduleVerification, createVerificationRunner,
+  scheduleVerification, createVerificationRunner, EMPTY_COUNTERS,
   VERIFICATION_MAX_NEW_PER_RESPONSE, VERIFICATION_MAX_PENDING_PER_PUBLISHER,
   VERIFICATION_MAX_PENDING_PER_SOURCE, VERIFICATION_RESPONSE_REUSE_MS,
 } from '../src/logical/verification.ts'
@@ -709,4 +709,71 @@ test('re-verifying EDITED origin material on an existing delivery overwrites the
     { logical_item_id: 'li-2', evidence_level: 'verified_origin' },
   ])
   expect(count(raw, 'publisher_claims_v2')).toBe(2) // the drain updates in place, never appends
+})
+
+// Review fix: a cap-era (or otherwise not-yet-collapsed) delivery can carry MORE
+// than one observation_versions_v2 row for the same delivery_id — the version cap
+// only stopped growing further, it never collapsed existing chains (that's Task
+// 4's migration). persistVerifiedDelivery's lookup must resolve the CURRENT-
+// DISPLAY version (the one backing the top-sequence presentation entry), never an
+// arbitrary sibling via an unordered `WHERE delivery_id = ?` scan — hand-seed
+// exactly that pre-existing multi-sibling shape (repeated persistVerifiedDelivery
+// calls always converge on ONE version, so it can't build this state itself).
+test('persistVerifiedDelivery on a delivery with a pre-existing sibling version resolves the CURRENT-DISPLAY one, not an arbitrary sibling', async () => {
+  const { raw, store } = await fresh()
+  seedSource(raw, 's_agg', 'https://agg.test/f')
+
+  const runId = 'r0'
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES ('s_origin', ?, 'single_publisher', 'enabled', 'allowed', 'origin_verification', NULL, 0, ?)`,
+  ).run(ORIGIN, NOW)
+  raw.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES (?, 's_origin', 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL)`,
+  ).run(runId, NOW, NOW, NOW, EMPTY_COUNTERS)
+  raw.prepare(
+    `INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count)
+     VALUES ('d1', 's_origin', 'opaque', 'g1', ?, ?, ?, 2)`,
+  ).run(NOW, NOW, runId)
+  // the sibling: an OLDER version with NO presentation entry (fingerprint sorts
+  // FIRST, so an unordered `WHERE delivery_id = ?` scan hits it before current).
+  raw.prepare(
+    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+     VALUES ('v-sibling', 'd1', 1, 'aaa-sibling-fingerprint', ?, ?, ?, 0, ?, ?, 1, '{}', '{}')`,
+  ).run(Buffer.from('sibling-material'), NOW, runId, NOW, runId)
+  // the CURRENT-DISPLAY version: has the delivery's one presentation entry.
+  raw.prepare(
+    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+     VALUES ('v-current', 'd1', 1, 'zzz-current-fingerprint', ?, ?, ?, 0, ?, ?, 1, '{}', '{}')`,
+  ).run(Buffer.from('current-material-stale'), NOW, runId, NOW, runId)
+  raw.prepare(
+    `INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint)
+     VALUES ('d1', 0, 'v-current', NULL, NULL, 'placeholder-fingerprint')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
+     VALUES ('j-current', 'observation', ?, 'v-current', NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
+  ).run(runId, NOW, NOW)
+
+  const jobId = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_a' })
+  store.resolveVerificationBatch({ claim: { kind: 'verification', jobId, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', content: 'fresh-content' })]), now: NOW })
+
+  // no new sibling, no stray second presentation entry
+  expect(count(raw, 'observation_versions_v2')).toBe(2)
+  expect(count(raw, 'presentation_entries_v2', "WHERE delivery_id = 'd1'")).toBe(1)
+  const entry = raw.prepare(`SELECT observation_version_id, effective_updated_at, provenance FROM presentation_entries_v2 WHERE delivery_id = 'd1'`).get() as { observation_version_id: string; effective_updated_at: string | null; provenance: string | null }
+  expect(entry).toMatchObject({ observation_version_id: 'v-current', effective_updated_at: NOW, provenance: 'arrival' })
+
+  // the CURRENT-DISPLAY version was overwritten (fresh content now visible)
+  const cur = raw.prepare(`SELECT fingerprint, canonical_material FROM observation_versions_v2 WHERE id = 'v-current'`).get() as { fingerprint: string; canonical_material: Buffer }
+  expect(cur.fingerprint).not.toBe('zzz-current-fingerprint')
+  expect(Buffer.from(cur.canonical_material).toString('utf8')).not.toBe('current-material-stale')
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE observation_version_id = 'v-current'`).get() as { status: string }).status).toBe('pending') // re-pended (I4)
+
+  // the sibling is completely untouched — no overwrite, no presentation entry
+  const sib = raw.prepare(`SELECT fingerprint, canonical_material FROM observation_versions_v2 WHERE id = 'v-sibling'`).get() as { fingerprint: string; canonical_material: Buffer }
+  expect(sib.fingerprint).toBe('aaa-sibling-fingerprint')
+  expect(Buffer.from(sib.canonical_material).toString('utf8')).toBe('sibling-material')
+  expect(count(raw, 'presentation_entries_v2', "WHERE observation_version_id = 'v-sibling'")).toBe(0)
 })
