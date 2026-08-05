@@ -1,13 +1,15 @@
 # External API access + public firehose — Design
 
-**Status:** rev 2 (2026-08-01) — folds ponytail-review + ponytail-audit
+**Status:** rev 3 (2026-08-05) — rev 2 folded ponytail-review + ponytail-audit
 findings: collapsed the per-route-family web proxies (phases 2-4) into one
 catch-all, closed a real enforcement gap in admin-key issuance (a
 `before`-hook, not a bespoke route, is the actual security boundary — and
 this also simplifies the design by removing a route that turned out
 unnecessary), named phase 4's concrete consumer, and added the
-CLAUDE.md-required dependency justification for `@better-auth/api-key`. See
-Revision history.
+CLAUDE.md-required dependency justification for `@better-auth/api-key`. rev 3
+records a real deviation found during phase 4 implementation: admin key
+issuance needed its own route after all — see rev 3's Implementation
+deviation under Admin tier. See Revision history.
 
 **Goal:** Give RSC an external, keyed API surface — read a user's own data,
 write on a user's behalf, drive admin/governance actions — plus a public,
@@ -265,7 +267,25 @@ point:
 - **Admin key issuance** goes through the standard `authClient.apiKey.create`
   call (same as any user key), gated entirely by the plugin-level `before`
   hook described above — see rev 2's Enforcement correction under Key tiers.
-  No separate issuance route.
+  No separate issuance route. **Implementation deviation (rev 3):** this
+  turned out not to work. better-auth's REST `/api-key/create` endpoint
+  unconditionally strips/rejects any `permissions` field on a real HTTP call
+  (`SERVER_ONLY_PROPERTY`, confirmed by reading the installed
+  `@better-auth/api-key` source, and live during the final phase-4 review) —
+  so a browser-originated `authClient.apiKey.create` can only ever mint an
+  inert, permission-less key, admin or not. The shipped implementation adds a
+  small server-only `POST /admin/api-keys` route instead: it runs behind the
+  existing cookie-authed `/admin/*` gate (`sessionAuth` + `requireAdmin()`,
+  mounted before this route — see app.ts), then calls the plugin's
+  `createApiKey` **in-process** (no HTTP hop, so `SERVER_ONLY_PROPERTY` never
+  triggers) with `configId: 'admin'` and the caller-supplied permissions,
+  validated against a fixed `admin.*` whitelist. The plugin-level `before`
+  hook described above stays in place unchanged — it is still the
+  authoritative guard against a raw `/api-key/create` HTTP call requesting
+  `configId: 'admin'` directly; this route is an *additional* path that
+  exists only because the standard client-side call can't carry permissions
+  at all. Don't restore the "no separate issuance route" design without
+  re-solving the `SERVER_ONLY_PROPERTY` problem first.
 - **Named consumer (rev 2):** RSC runs on multiple independent instances
   (four live Cloudron deployments as of this writing). An admin applying the
   same governance action (pause/block a misbehaving source, a moderation
@@ -283,11 +303,14 @@ A new "API keys" panel in web Settings:
   checkbox-per-permission + optional expiry), revoke. Uses `authClient.
   apiKey.create/list/delete` directly — cookie-authed, existing `/api/auth/*`
   proxy, zero new web-to-core plumbing for this part.
-- **Admin tier:** a separate admin-only panel (e.g. under `/admin/`) for
-  minting `configId: 'admin'` keys — calls the same `authClient.apiKey.create`
-  as the user panel, with the `admin.*` permission checkboxes only rendered
-  when `data.me?.isAdmin` (the plugin-level `before` hook is the real
-  enforcement; the UI simply doesn't offer the option to non-admins).
+- **Admin tier:** a separate admin-only panel (`/admin/api-keys`) for
+  minting `configId: 'admin'` keys, with `admin.*` permission checkboxes.
+  **Implementation deviation (rev 3):** does NOT call `authClient.
+  apiKey.create` like the user panel — see the Implementation deviation note
+  under Admin tier above for why that path can't carry permissions. Calls the
+  server-only `POST /admin/api-keys` route instead, itself gated by the
+  existing cookie-authed `/admin/*` middleware (not the plugin-level `before`
+  hook, which stays as the guard against a direct API call).
 - The key value is shown exactly once, at creation — standard practice,
   matches the plugin's own model (`get`/`list` never return `key`, only
   `getApiKey`'s omitted-`key` shape).
@@ -370,3 +393,16 @@ rather than trusted purely on a permission string ever having been granted.
   for `@better-auth/api-key` (ponytail-review: the spec named the mechanism
   without showing that work, even though the reviewer expected it to
   survive the comparison).
+- rev 3 (2026-08-05): records an implementation-time deviation found during
+  phase 4's final whole-branch review. The rev 2 design ("no separate
+  issuance route", Admin tier section) turned out to be unbuildable as
+  written: better-auth's REST `/api-key/create` endpoint unconditionally
+  rejects any `permissions` field on a real HTTP call
+  (`SERVER_ONLY_PROPERTY`), so the standard `authClient.apiKey.create` path
+  can only ever mint a permission-less admin key. Shipped a small
+  server-only `POST /admin/api-keys` route instead, gated by the existing
+  cookie-authed `/admin/*` middleware, calling the plugin's `createApiKey`
+  in-process (no HTTP hop, so the server-only check never triggers). The
+  plugin-level `before` hook from rev 2 is unaffected and still the
+  authoritative guard on any direct HTTP attempt at `configId: 'admin'`. See
+  the Implementation deviation note under Admin tier.

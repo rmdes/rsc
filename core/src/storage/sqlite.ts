@@ -473,6 +473,21 @@ export class SqliteRepository implements Repository, SourceRepository {
     }
   }
 
+  // Same raw-query pattern against the better-auth `user` table as listUsers
+  // above (and the same emailVerified integer->boolean cast) but keyed
+  // directly by auth_user_id for a single-row lookup — used by
+  // apiKeyAuthAdmin to re-derive an api key owner's CURRENT admin status on
+  // every request, not just at key-mint time. Domain `User` has no
+  // email/emailVerified fields (those live only in better-auth's own `user`
+  // table), so this can't reuse getUserByAuthUserId.
+  async getAuthUserAdminFields(authUserId: string): Promise<{ email: string | null; emailVerified: boolean | null } | undefined> {
+    const row = this.raw.prepare(`SELECT email, emailVerified FROM user WHERE id = ?`).get(authUserId) as
+      | { email: string | null; emailVerified: number | null }
+      | undefined
+    if (!row) return undefined
+    return { email: row.email, emailVerified: row.emailVerified === null ? null : row.emailVerified === 1 }
+  }
+
   // --- v2 source-control plane administrative reads (served by the
   // /admin/sources routes) — nothing here touches legacy tables; these methods
   // only ever read the five v2 tables.

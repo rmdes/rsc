@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, bearerAuth } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes } from './logical-routes.ts'
+import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes, mountAdminApiRoutes } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { buildFollowingOpml } from '../domain/opml.ts'
@@ -40,7 +40,13 @@ function isAttributionMode(v: unknown): v is AttributionMode {
 // fails typecheck here too.
 const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'other']
 
-function isAuditCategory(v: unknown): v is AuditCategory {
+// EXPORTED: logical-routes.ts's key-authed POST /admin-api/sources/:id/:action
+// (phase 4 Task 4) imports this under an alias to validate `category` with
+// this EXACT six-value list, matching its cookie-authed sibling below byte
+// for byte. logical-routes.ts also has its own same-named, wider (8-value)
+// isAuditCategory for the V3 moderation routes — the two must never be
+// conflated, hence the alias at the import site rather than a bare re-export.
+export function isAuditCategory(v: unknown): v is AuditCategory {
   return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
 }
 
@@ -55,11 +61,54 @@ export function isBadSourceUrl(err: unknown): boolean {
   return err instanceof Error && err.message === 'source URL invalid'
 }
 
+// Blocked, not-subscribable and never-existed are ONE answer: a caller must
+// not be able to tell them apart (design §4). Module-scope (moved here
+// alongside establishFederation's hoist) and exported: the admin-tier
+// key-authed `POST /admin-api/sources/:id/:action` (logical-routes.ts,
+// phase 4 Task 4) reuses these exact objects rather than redeclaring the
+// literals, so its 409 bodies stay byte-identical to this cookie-authed
+// route's.
+export const NEUTRAL_UNAVAILABLE = { error: 'source unavailable' }
+export const IDEMPOTENCY_CONFLICT = { error: 'idempotency conflict' }
+
+// ONE federation handler for every caller (V4 §6: "no second code path") —
+// same validator, same establishFederation call, same dispositions. Hoisted
+// to module scope (phase 4 Task 4) so the admin-tier key-authed route can
+// reuse it too; the `sourceService` it used to close over as `v2` is now an
+// explicit 4th parameter instead.
+export async function establishFederation(
+  c: Context, actorId: string, actorKind: 'administrator' | 'operator_token', sourceService: SourceService,
+): Promise<Response> {
+  const body = await readJsonBody(c)
+  if (!body) return c.json({ error: 'body invalid' }, 400)
+  const { url, attributionMode, category, note, commandId } = body
+  if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
+  if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
+  if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+  if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+  // The command id travels in the JSON body ONLY — never a header.
+  if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+  let result
+  try {
+    result = await sourceService.establishFederation({
+      url, attributionMode, category, note: typeof note === 'string' ? note : null,
+      commandId, actorId, actorKind,
+    })
+  } catch (err) {
+    if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
+    throw err
+  }
+  if (result.kind === 'established') return c.json({ source: result.source, federation: result.federation }, 201)
+  if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
+  if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
+  return c.json(NEUTRAL_UNAVAILABLE, 409)
+}
+
 const DEFAULT_PAGE_LIMIT = 50
 
 // Shared query parsing for every v2 admin listing; the repository clamps the
 // limit to 1..100 itself, so this only has to reject junk.
-function pageArgs(c: Context): { cursor: Cursor | undefined; limit: number } | Response {
+export function pageArgs(c: Context): { cursor: Cursor | undefined; limit: number } | Response {
   let cursor: Cursor | undefined
   const cursorRaw = c.req.query('cursor')
   if (cursorRaw !== undefined) {
@@ -113,6 +162,25 @@ export const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOve
 export const JOURNAL_CURSOR_VERSION = 1
 export const STREAM_PROTOCOL_VERSION = 1
 
+// Tab KEYS are hardcoded — core is a separate workspace and cannot import web's
+// TABS; the keys are the contract, the default STRINGS live only in web.
+// Module scope (not inside createApp): readTabOverrides below is the only thing
+// that closes over it, and both are shared with the admin-tier read twin
+// (logical-routes.ts's mountAdminApiRoutes).
+const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+
+export async function readTabOverrides(getSetting: (k: string) => Promise<string | undefined>) {
+  const labels: Record<string, string | null> = {}
+  const subtitles: Record<string, string | null> = {}
+  for (const k of TAB_KEYS) {
+    const l = await getSetting(`tab_label_${k}`)
+    const s = await getSetting(`tab_subtitle_${k}`)
+    labels[k] = l && l !== '' ? l : null
+    subtitles[k] = s && s !== '' ? s : null
+  }
+  return { tabLabels: labels, tabSubtitles: subtitles }
+}
+
 // ponytail: deps.bus kept dead in the type to avoid touching every createApp
 // call site; remove when a call site changes anyway.
 export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; pollSeconds?: number; sources: { service: SourceService; repo: SourceRepository }; logical: LogicalRouteDeps }): Hono {
@@ -136,9 +204,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   // Public instance display-config (internal web→core; NOT exposed via Caddy's
   // @core matcher). Sits outside the /admin/* gate so guests' layout can read it.
-  // Tab KEYS are hardcoded — core is a separate workspace and cannot import web's
-  // TABS; the keys are the contract, the default STRINGS live only in web.
-  const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+  // TAB_KEYS itself is module-scope (above), shared with readTabOverrides.
   type TabKey = (typeof TAB_KEYS)[number]
   const isTabKey = (k: string): k is TabKey => (TAB_KEYS as readonly string[]).includes(k)
   const CONTROL_CHARS = /[\x00-\x1F\x7F]/ // reject newlines + control chars (break nav/h2 layout)
@@ -161,18 +227,6 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       pairs.push([`${prefix}${k}`, v])
     }
     return { ok: pairs }
-  }
-
-  async function readTabOverrides(getSetting: (k: string) => Promise<string | undefined>) {
-    const labels: Record<string, string | null> = {}
-    const subtitles: Record<string, string | null> = {}
-    for (const k of TAB_KEYS) {
-      const l = await getSetting(`tab_label_${k}`)
-      const s = await getSetting(`tab_subtitle_${k}`)
-      labels[k] = l && l !== '' ? l : null
-      subtitles[k] = s && s !== '' ? s : null
-    }
-    return { tabLabels: labels, tabSubtitles: subtitles }
   }
 
   app.get('/instance/config', async (c) => {
@@ -255,6 +309,17 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // precede the /admin/* handlers to run before them.
   app.use('/admin/*', authed, requireAdmin())
 
+  // Registered AFTER the /admin/* gate above, not merged into the
+  // mountPersonalApiRoutes call earlier in this function — Hono's
+  // middleware is registration-order dependent (verified live during
+  // planning), so a route registered before this gate would never be
+  // gated by it, admin-tier or not.
+  mountAdminApiRoutes(app, {
+    auth: deps.auth, users: deps.users, adminEmails,
+    service, sourceRepo: sources.repo, sourceService: sources.service, logicalStore: deps.logical.store,
+    feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds,
+  })
+
   // --- logical acquisition admin routes ---
   // Registered here — after the /admin/* gate (so they inherit authed +
   // requireAdmin) and BEFORE the /admin/sources/:id/:action transition handler
@@ -264,12 +329,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   // --- source-control plane routes ---
   // Registered after the /admin/* gate, so the admin routes inherit it.
+  // NEUTRAL_UNAVAILABLE/IDEMPOTENCY_CONFLICT are module scope now (above,
+  // beside establishFederation's hoist) — reused here rather than
+  // redeclared.
   const v2 = sources.service
   const v2repo = sources.repo
-  // Blocked, not-subscribable and never-existed are ONE answer: a caller must
-  // not be able to tell them apart (design §4).
-  const NEUTRAL_UNAVAILABLE = { error: 'source unavailable' }
-  const IDEMPOTENCY_CONFLICT = { error: 'idempotency conflict' }
 
   app.post('/me/subscriptions', authed, registeredOnly(), jsonWrite, async (c) => {
     const body = await readJsonBody(c)
@@ -429,36 +493,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json(await v2repo.sourceMemberCounts(c.req.param('id') ?? ''))
   })
 
-  // ONE federation handler for both callers (V4 §6: "no second code path") —
-  // same validator, same establishFederation call, same dispositions. Only the
-  // actor differs, so the ops route cannot drift from the admin route.
-  async function establishFederation(c: Context, actorId: string, actorKind: 'administrator' | 'operator_token'): Promise<Response> {
-    const body = await readJsonBody(c)
-    if (!body) return c.json({ error: 'body invalid' }, 400)
-    const { url, attributionMode, category, note, commandId } = body
-    if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
-    if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
-    if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
-    if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
-    // The command id travels in the JSON body ONLY — never a header.
-    if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
-    let result
-    try {
-      result = await v2.establishFederation({
-        url, attributionMode, category, note: typeof note === 'string' ? note : null,
-        commandId, actorId, actorKind,
-      })
-    } catch (err) {
-      if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
-      throw err
-    }
-    if (result.kind === 'established') return c.json({ source: result.source, federation: result.federation }, 201)
-    if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
-    if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
-    return c.json(NEUTRAL_UNAVAILABLE, 409)
-  }
-
-  app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator'))
+  // establishFederation itself is module scope now (hoisted above,
+  // beside isBadSourceUrl) — both routes below just pass v2 explicitly as
+  // its 4th parameter instead of it closing over a local binding.
+  app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator', v2))
 
   // The ops-token compatibility route (V4 spec §6). Bearer-only: an admin
   // session carries no bearer header and gets 401 here, and on every
@@ -471,7 +509,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // NON-SECRET fingerprint of the token; the raw token is never stored or
   // returned.
   const opsActorId = `ops:${createHash('sha256').update(token).digest('hex').slice(0, 16)}`
-  app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token'))
+  app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token', v2))
 
   app.post('/admin/sources/:id/:action', jsonWrite, async (c) => {
     // Route segments are hyphenated; only this one differs from its domain

@@ -59,8 +59,43 @@
 	<button>Save</button>
 </form>
 
+<!-- Same "labelled section under a 2px rule" convention settings/+page.svelte
+     uses for its own "More" section (API keys, manage accounts) — /admin/
+     api-keys has no natural row context to link from (unlike admin/sources
+     or admin/items, which hang off admin/feeds' row expansion), so it gets
+     the same standalone-destination treatment here. -->
+<nav class="settings-more" aria-label="More admin settings">
+	<h3 class="label">More</h3>
+	<ul>
+		<li>
+			<a href="/admin/api-keys">API keys</a>
+			<p class="field-hint">Mint admin-tier keys for scripts managing this instance via <code>/admin-api/*</code>.</p>
+		</li>
+	</ul>
+</nav>
+
 <style>
 	form {
 		max-width: 24rem;
+	}
+
+	.settings-more {
+		margin-top: var(--space-xl);
+		border-top: 2px solid var(--color-divider);
+		padding-top: var(--space-md);
+	}
+	.settings-more h3 {
+		margin: 0 0 var(--space-3);
+	}
+	.settings-more ul {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		display: grid;
+		gap: var(--space-md);
+	}
+	.settings-more li > a {
+		display: inline-block;
+		padding: var(--space-xs) 0;
 	}
 </style>
