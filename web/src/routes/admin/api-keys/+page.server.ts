@@ -7,14 +7,20 @@ import { PERMISSION_OPTIONS } from './permissions.ts'
 // SvelteKit runs form actions BEFORE any layout load() (including this
 // route's own admin/+layout.server.ts isAdmin check) — so, contrary to an
 // earlier version of this comment, the layout gate alone does NOT protect
-// these actions. Two real gates cover them instead: core's own
-// `app.use('/admin/*', authed, requireAdmin())` (core/src/api/app.ts, the
-// load-bearing one — runs on every request regardless of SvelteKit
-// lifecycle stage) and web/src/hooks.server.ts's `handle`, which closes
-// the SvelteKit-layer gap for non-GET requests specifically because this
-// layout check doesn't. Matches the same honest split settings/api-keys/
-// +page.server.ts documents for its own guard() (SvelteKit-layer = UX/
-// defense-in-depth, core = the real security boundary).
+// these actions. `create` and `revoke` are protected by different
+// mechanisms, not one shared gate:
+// - create POSTs to /admin/api-keys, so it's covered by core's
+//   `app.use('/admin/*', authed, requireAdmin())` (core/src/api/app.ts) PLUS
+//   web/src/hooks.server.ts's `handle`, which closes the SvelteKit-layer gap
+//   above for non-GET requests.
+// - revoke POSTs to /api/auth/api-key/delete — a different Hono mount the
+//   /admin/* wildcard never touches. Its real protection is better-auth's
+//   own per-key ownership check (@better-auth/api-key: apiKey.referenceId
+//   !== session.user.id → 404) — admin status is irrelevant there; any
+//   registered user can only ever revoke their own keys.
+// Matches the same honest split settings/api-keys/+page.server.ts documents
+// for its own guard() (SvelteKit-layer = UX/defense-in-depth, core = the
+// real security boundary).
 
 // Same split as settings/api-keys/+page.server.ts's toActionFail — a clean
 // core rejection keeps its own status; a 401 means the browser's whole

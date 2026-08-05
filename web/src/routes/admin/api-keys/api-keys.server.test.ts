@@ -1,12 +1,13 @@
 import { test, expect, vi } from 'vitest'
 import { load, actions } from './+page.server.ts'
 
-// No guard()/hasSession here (unlike settings/api-keys) — this route lives
-// under /admin/, so web/src/routes/admin/+layout.server.ts's own
-// `if (!me?.isAdmin) throw error(404, 'Not found')` already keeps a
-// non-admin from ever reaching this page's load/actions. Matches the other
-// admin sub-routes (admin/users, admin/settings): plain load, no extra
-// guard.
+// No guard()/hasSession here (unlike settings/api-keys) — SvelteKit's
+// layout load() doesn't run before form actions, so the layout's isAdmin
+// check alone doesn't cover this file's actions. See the comment atop
+// +page.server.ts for the real gates: core's `/admin/*` wildcard +
+// web/src/hooks.server.ts for `create`, better-auth's own per-key
+// ownership check for `revoke`. Matches the other admin sub-routes
+// (admin/users, admin/settings): plain load, no extra guard in this file.
 function ctx(over: Record<string, unknown> = {}) {
 	return {
 		fetch: vi.fn(),
