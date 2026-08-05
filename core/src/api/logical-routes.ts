@@ -1,10 +1,11 @@
 import type { Hono, Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { jsonWrite, isBadSourceUrl } from './app.ts'
+import { jsonWrite, isBadSourceUrl, pageArgs, readTabOverrides } from './app.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import type { EventBus } from '../domain/bus.ts'
 import type { LogicalStreamSource } from '../logical/runtime.ts'
 import { fingerprintRequest } from '../domain/source-repository.ts'
+import type { SourceRepository } from '../domain/source-repository.ts'
 import { decodeCursor } from '../domain/cursor.ts'
 import type { LogicalStore } from '../logical/store.ts'
 import type { ReadTx } from '../logical/database.ts'
@@ -13,7 +14,7 @@ import type { CommandEnvelope, AuditCategory } from '../domain/types.ts'
 import type { RunCursor, JobCursor, AdminRunProjection, AdminRefreshResult, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult, PublicLocalAccount } from '../logical/types.ts'
 import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { apiKeyAuth } from './auth.ts'
+import { apiKeyAuth, apiKeyAuthAdmin } from './auth.ts'
 import type { Service } from '../domain/service.ts'
 import type { SourceService } from '../domain/source-service.ts'
 import type { FeedContext } from '../domain/feed.ts'
@@ -818,6 +819,16 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
 
 export interface AdminApiDeps {
   auth: Auth
+  users: UserDirectory
+  adminEmails: ReadonlySet<string>
+  service: Service
+  sourceRepo: SourceRepository
+  logicalStore: { schedulerStats(input: { now: string; pollSeconds: number }): unknown }
+  feeds: FeedContext
+  websubMode: string
+  pushInEnabled: boolean
+  mailEnabled: boolean
+  pollSeconds: number
 }
 
 // Mirrors ALLOWED_KEY_PERMISSIONS's shape and purpose exactly, scoped to the
@@ -863,6 +874,47 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
       return c.json({ error: err instanceof Error ? err.message : 'could not create key' }, 400)
     }
   })
+
+  // --- admin.read routes (phase 4 Task 3b) --------------------------------
+  // Key-authed twins of app.ts's cookie-authed GET /admin/sources, /admin/users,
+  // /admin/overview, /admin/settings — same validation, same response shapes,
+  // transcribed from those exact handlers. Only the auth middleware differs
+  // (apiKeyAuthAdmin's per-request admin re-verification vs sessionAuth +
+  // requireAdmin's session check).
+  const { users, adminEmails, service, sourceRepo, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
+  const readAdmin = apiKeyAuthAdmin(auth, users, adminEmails, { 'admin.read': ['read'] })
+
+  app.get('/admin-api/sources', readAdmin, async (c) => {
+    const args = pageArgs(c)
+    if (args instanceof Response) return args
+    const filter = c.req.query('filter')
+    if (filter !== undefined && filter !== 'governance' && filter !== 'orphan') return c.json({ error: 'filter invalid' }, 400)
+    const q = c.req.query('q')
+    if (q !== undefined && q.length > 256) return c.json({ error: 'q invalid' }, 400)
+    return c.json(await sourceRepo.listSourceSummaries(args.cursor, args.limit, filter as 'governance' | 'orphan' | undefined, q))
+  })
+
+  app.get('/admin-api/users', readAdmin, (c) => {
+    const args = pageArgs(c)
+    if (args instanceof Response) return args
+    return c.json(service.listUsers(args.cursor, args.limit))
+  })
+
+  app.get('/admin-api/overview', readAdmin, (c) => c.json({
+    counts: service.instanceStats(true),
+    federation: { websub: websubMode, rssCloud: feeds.rssCloud, pushIn: pushInEnabled, publicUrl: feeds.publicUrl },
+    mailEnabled,
+    adminEmails: [...adminEmails],
+    scheduler: logicalStore.schedulerStats({ now: new Date().toISOString(), pollSeconds }),
+  }))
+
+  app.get('/admin-api/settings', readAdmin, async (c) =>
+    c.json({
+      maxSubsPerUser: Number(await service.getSetting('max_subs_per_user') ?? '500'),
+      maxRemoteItemsPerSource: Number(await service.getSetting('max_remote_items_per_source') ?? '0'),
+      maxRemoteItemAgeDays: Number(await service.getSetting('max_remote_item_age_days') ?? '0'),
+      ...(await readTabOverrides((k) => service.getSetting(k))),
+    }))
 }
 
 // =============================================================================

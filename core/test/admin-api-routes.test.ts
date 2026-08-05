@@ -7,6 +7,15 @@ import { createService } from '../src/domain/service.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
 
+// Same erasure every other api-key test hits: createAuth's `plugins:
+// BetterAuthPlugin[]` widens every plugin so betterAuth()'s .api inference
+// can't see apiKey()'s createApiKey (see api-key-auth-admin.test.ts).
+interface ApiKeyPluginApi {
+  createApiKey(input: {
+    body: { configId?: string; userId?: string; name?: string; permissions?: Record<string, string[]> }
+  }): Promise<{ key: string; id: string }>
+}
+
 async function setup(adminEmails: ReadonlySet<string> = new Set(['admin@x.test'])) {
   const repo = await createSqliteRepository(':memory:')
   const db = repo.raw
@@ -75,5 +84,50 @@ describe('POST /admin/api-keys', () => {
       body: JSON.stringify({ name: 'k', permissions: { 'admin.superpowers': ['write'] } }),
     })
     expect(res.status).toBe(400)
+  })
+})
+
+describe('admin.read routes', () => {
+  test('GET /admin-api/sources, /users, /overview, /settings all work with one admin.read key', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+    })
+    for (const path of ['/admin-api/sources', '/admin-api/users', '/admin-api/overview', '/admin-api/settings']) {
+      const res = await app.request(path, { headers: { 'x-api-key': created.key } })
+      expect(res.status).toBe(200)
+    }
+  })
+
+  test('a key survives its owner staying admin, but 403s once removed from adminEmails', async () => {
+    const repo = await createSqliteRepository(':memory:')
+    const db = repo.raw
+    const adminEmails = new Set(['revocable@x.test'])
+    const auth = createAuth({
+      sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
+      webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null, authOpenApi: false,
+      adminEmails,
+    })
+    const bus = createEventBus()
+    const logicalStoreStub = { schedulerStats: () => ({ dueNow: 0, lastPollAt: null }) } as never
+    const service = createService(repo, bus, null, logicalStoreStub)
+    const sourceService = createSourceService(repo, null)
+    const app = createApp({
+      service, bus, token: 'ops-token', auth, users: repo, adminEmails,
+      sources: { service: sourceService, repo },
+      logical: { store: logicalStoreStub } as never,
+    })
+    const { userId } = await registerSession(auth, db, 'revocable@x.test')
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+    })
+    const before = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
+    expect(before.status).toBe(200)
+    adminEmails.delete('revocable@x.test')
+    const after = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
+    expect(after.status).toBe(403)
   })
 })

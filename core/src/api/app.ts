@@ -59,7 +59,7 @@ const DEFAULT_PAGE_LIMIT = 50
 
 // Shared query parsing for every v2 admin listing; the repository clamps the
 // limit to 1..100 itself, so this only has to reject junk.
-function pageArgs(c: Context): { cursor: Cursor | undefined; limit: number } | Response {
+export function pageArgs(c: Context): { cursor: Cursor | undefined; limit: number } | Response {
   let cursor: Cursor | undefined
   const cursorRaw = c.req.query('cursor')
   if (cursorRaw !== undefined) {
@@ -113,6 +113,25 @@ export const jsonWrite = bodyLimit({ maxSize: MAX_JSON_BYTES, onError: rejectOve
 export const JOURNAL_CURSOR_VERSION = 1
 export const STREAM_PROTOCOL_VERSION = 1
 
+// Tab KEYS are hardcoded — core is a separate workspace and cannot import web's
+// TABS; the keys are the contract, the default STRINGS live only in web.
+// Module scope (not inside createApp): readTabOverrides below is the only thing
+// that closes over it, and both are shared with the admin-tier read twin
+// (logical-routes.ts's mountAdminApiRoutes).
+const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+
+export async function readTabOverrides(getSetting: (k: string) => Promise<string | undefined>) {
+  const labels: Record<string, string | null> = {}
+  const subtitles: Record<string, string | null> = {}
+  for (const k of TAB_KEYS) {
+    const l = await getSetting(`tab_label_${k}`)
+    const s = await getSetting(`tab_subtitle_${k}`)
+    labels[k] = l && l !== '' ? l : null
+    subtitles[k] = s && s !== '' ? s : null
+  }
+  return { tabLabels: labels, tabSubtitles: subtitles }
+}
+
 // ponytail: deps.bus kept dead in the type to avoid touching every createApp
 // call site; remove when a call site changes anyway.
 export function createApp(deps: { service: Service; bus: EventBus; token: string; auth: Auth; users: UserDirectory; feeds?: FeedContext; pushApi?: PushApi; pushInApi?: PushInApi; mailEnabled?: boolean; adminEmails?: ReadonlySet<string>; websub?: string; pushIn?: boolean; pollSeconds?: number; sources: { service: SourceService; repo: SourceRepository }; logical: LogicalRouteDeps }): Hono {
@@ -136,9 +155,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   // Public instance display-config (internal web→core; NOT exposed via Caddy's
   // @core matcher). Sits outside the /admin/* gate so guests' layout can read it.
-  // Tab KEYS are hardcoded — core is a separate workspace and cannot import web's
-  // TABS; the keys are the contract, the default STRINGS live only in web.
-  const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+  // TAB_KEYS itself is module-scope (above), shared with readTabOverrides.
   type TabKey = (typeof TAB_KEYS)[number]
   const isTabKey = (k: string): k is TabKey => (TAB_KEYS as readonly string[]).includes(k)
   const CONTROL_CHARS = /[\x00-\x1F\x7F]/ // reject newlines + control chars (break nav/h2 layout)
@@ -161,18 +178,6 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       pairs.push([`${prefix}${k}`, v])
     }
     return { ok: pairs }
-  }
-
-  async function readTabOverrides(getSetting: (k: string) => Promise<string | undefined>) {
-    const labels: Record<string, string | null> = {}
-    const subtitles: Record<string, string | null> = {}
-    for (const k of TAB_KEYS) {
-      const l = await getSetting(`tab_label_${k}`)
-      const s = await getSetting(`tab_subtitle_${k}`)
-      labels[k] = l && l !== '' ? l : null
-      subtitles[k] = s && s !== '' ? s : null
-    }
-    return { tabLabels: labels, tabSubtitles: subtitles }
   }
 
   app.get('/instance/config', async (c) => {
@@ -260,7 +265,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // middleware is registration-order dependent (verified live during
   // planning), so a route registered before this gate would never be
   // gated by it, admin-tier or not.
-  mountAdminApiRoutes(app, { auth: deps.auth })
+  mountAdminApiRoutes(app, {
+    auth: deps.auth, users: deps.users, adminEmails,
+    service, sourceRepo: sources.repo, logicalStore: deps.logical.store,
+    feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds,
+  })
 
   // --- logical acquisition admin routes ---
   // Registered here — after the /admin/* gate (so they inherit authed +
