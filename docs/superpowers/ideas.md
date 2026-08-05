@@ -136,12 +136,12 @@ end for the record).
   a docs note):
   - ✅ **Spec URL drift** — `2026-08-01-external-api-and-firehose-design.md`
     said `/api/v1/posts`/`follows`/`me`; shipped paths are `/me/posts`,
-    `/me/api-follows`, `/me/api-subscriptions`, `/me/api-profile`. Being
-    revved to match on the cleanup branch. (`docs/superpowers/documentation/
+    `/me/api-follows`, `/me/api-subscriptions`, `/me/api-profile`. Revved
+    to match on the cleanup branch. (`docs/superpowers/documentation/
     API.md`, added 2026-08-05, already documents the real paths correctly —
     only the design spec itself was stale.)
-  - ✅ **Api-key rate-limit exhaustion surfaces as 401, not 429** — being
-    fixed on the cleanup branch. Root cause pinned exactly: better-auth's
+  - ✅ **Api-key rate-limit exhaustion surfaces as 401, not 429** — fixed
+    on the cleanup branch. Root cause pinned exactly: better-auth's
     `verifyApiKey` does NOT swallow the plugin's `TOO_MANY_REQUESTS` — it
     preserves the real error (`code: 'RATE_LIMITED'`, `details.tryAgainIn`)
     in `result.error` (`@better-auth/api-key/dist/index.mjs`, `consumeRateLimit`
@@ -170,7 +170,7 @@ end for the record).
     `API.md`'s follows section rather than a behavior change.
   - ✅ **Untested permission-isolation direction** — `GET /me/posts` never
     had a test pinning that a `posts:write`-only key (no `read`) is
-    refused. Being added on the cleanup branch.
+    refused. Added on the cleanup branch.
 **Documented / protocol residuals — probably leave as-is**
 - **`cloudScheme` 443-heuristic** (`push.ts:33`) — HTTPS on a non-default port
   (`:8443`) misclassified as HTTP; rssCloud `<cloud>` has no scheme field, so

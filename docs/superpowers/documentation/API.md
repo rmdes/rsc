@@ -73,7 +73,7 @@ Every error is JSON: `{"error": "..."}` with a meaningful status.
 | `403` | Authenticated, but not yours to touch (someone else's post, a remote post) |
 | `404` | No such post, user, or subscription |
 | `409` | Idempotency conflict, or the target isn't a local post |
-| `429` | Subscription cap reached, the public firehose's per-IP connection cap, or an api-key rate limit — see `code` in the body for the rate-limit case (`RATE_LIMITED`); the other two are durable (don't retry) while a rate limit carries `tryAgainIn` and should be retried after that many ms |
+| `429` | Subscription cap reached, the public firehose at instance-wide capacity, the public firehose's per-IP connection cap, or an api-key rate limit — see `code` in the body for the rate-limit case (`RATE_LIMITED`); the other three are durable (don't retry) while a rate limit carries `tryAgainIn` and should be retried after that many ms |
 
 `401` deliberately does not distinguish "no key" from "wrong permission" —
 don't parse the message to tell them apart.
@@ -187,18 +187,24 @@ curl -X POST https://rsc.example.org/api/v1/me/api-subscriptions \
   -d '{"url":"https://example.com/feed.xml","commandId":"'$(uuidgen)'"}'
 ```
 
-**Note on cascade delete:** these two cases behave differently.
+**Note on cascade delete:** these two cases behave differently, and the split
+is by *endpoint*, not by target type — a webfeed target removed via
+`/me/api-follows` gets the unconditional path below, even though feeds are
+also what `/me/api-subscriptions` handles with the guarded path.
 
-Unfollowing a remote *account* you're the last follower of unconditionally
-removes it from the instance (mirrors existing cookie-authenticated UI
-behavior) — a scripted client churning follow/unfollow at high frequency may
-remove accounts faster than a human would interactively.
+`DELETE /me/api-follows/:target` goes through `removeFollow`, which
+unconditionally removes a remote target you're the last follower of —
+`person` or `webfeed` alike — from the instance (mirrors existing
+cookie-authenticated UI behavior) — a scripted client churning follow/unfollow
+at high frequency may remove accounts/feeds faster than a human would
+interactively.
 
-Unsubscribing from a *feed*, by contrast, only removes the underlying source
-if it's fully orphaned: no other subscribers, governance `allowed`, not
-federated, not `admin_retained`, no `source_audit_v2` history, and not backing
-`verified_origin` evidence for any logical item. Any one of those holds it in
-place. See "Unsubscribe takes a `commandId`" below.
+`DELETE /me/api-subscriptions/:sourceId`, by contrast, goes through
+`sourceService.unsubscribe` → `reapSourceIfOrphaned`, which only removes the
+underlying source if it's fully orphaned: no other subscribers, governance
+`allowed`, not federated, not `admin_retained`, no `source_audit_v2` history,
+and not backing `verified_origin` evidence for any logical item. Any one of
+those holds it in place. See "Unsubscribe takes a `commandId`" below.
 
 Responses:
 
