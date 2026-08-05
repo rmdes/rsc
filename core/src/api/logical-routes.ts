@@ -1214,6 +1214,25 @@ function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string,
   }
 }
 
+// Exported (rather than inlined in the closure below) so it's directly
+// unit-testable: deletes any window entry that has already expired. Without
+// this, connectionAttempts (unlike ipCounts/totalConnections, which
+// release() cleans up) has no eviction path at all — a window entry is only
+// ever overwritten in place once expired, never deleted — so a client
+// sending a fresh spoofed X-Forwarded-For per request would grow the map by
+// one permanent entry forever. Run once per incoming request; steady-state
+// size is bounded by "distinct IPs seen within the last window", not
+// "every distinct IP ever seen".
+export function sweepExpiredConnectionAttempts(
+  attempts: Map<string, { count: number; windowStart: number }>,
+  now: number,
+  windowMs: number,
+): void {
+  for (const [ip, entry] of attempts) {
+    if (now - entry.windowStart >= windowMs) attempts.delete(ip)
+  }
+}
+
 export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): void {
   const { source, bus, feeds } = deps
   const pollMs = deps.pollMs ?? 1000
@@ -1254,6 +1273,7 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   app.get('/firehose/stream', (c) => {
     const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
     const now = Date.now()
+    sweepExpiredConnectionAttempts(connectionAttempts, now, connectionWindowMs)
     const attempt = connectionAttempts.get(ip)
     if (attempt && now - attempt.windowStart < connectionWindowMs) {
       if (attempt.count >= maxConnectionsPerWindow) return c.json({ error: 'too many connection attempts, slow down' }, 429)

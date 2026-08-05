@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { test, expect, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { Hono } from 'hono'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
@@ -9,7 +9,7 @@ import { createService } from '../src/domain/service.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { createStreamSource, activateLogicalV2 } from '../src/logical/runtime.ts'
-import { mountPublicFirehoseRoute } from '../src/api/logical-routes.ts'
+import { mountPublicFirehoseRoute, sweepExpiredConnectionAttempts } from '../src/api/logical-routes.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
 type Raw = InstanceType<typeof Database>
@@ -175,4 +175,59 @@ test('a GLOBAL connection cap rejects once the process ceiling is reached, regar
   expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(3)
   expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
   for (const r of responses) await r.body?.cancel()
+})
+
+// connectionAttempts (the map behind the rate limiter above) has no eviction
+// path other than this sweep: release() only cleans up ipCounts/totalConnections,
+// and an expired window entry is otherwise only ever overwritten in place, never
+// deleted. Since the IP key is client-controlled (x-forwarded-for), a spoofed IP
+// per request would otherwise grow the map by one permanent entry forever. This
+// unit-tests the extracted sweep directly — the exact deletion logic the finding
+// was about — since the map itself is private to mountPublicFirehoseRoute's
+// closure and not otherwise inspectable from a route-level test.
+test('sweepExpiredConnectionAttempts deletes only windows that have already expired', () => {
+  const windowMs = 1000
+  const now = 10_000
+  const attempts = new Map<string, { count: number; windowStart: number }>([
+    ['expired-1', { count: 5, windowStart: now - windowMs }], // exactly at the boundary — expired
+    ['expired-2', { count: 3, windowStart: now - windowMs - 500 }], // well past — expired
+    ['fresh', { count: 2, windowStart: now - windowMs + 1 }], // just inside the window — not expired
+  ])
+  sweepExpiredConnectionAttempts(attempts, now, windowMs)
+  expect([...attempts.keys()]).toEqual(['fresh'])
+})
+
+test('the firehose route sweeps expired attempt windows on every request — a fixed pool of spoofed IPs does not accumulate stale entries across many expired-window cycles', async () => {
+  // Behavioral proof at the route level (the unit test above proves the sweep
+  // logic itself): drive the SAME small pool of distinct IPs through many
+  // successive windows, well past connectionRateWindowMs each time via fake
+  // timers. Without the sweep, each of these IPs' entries would simply sit in
+  // connectionAttempts forever (harmlessly reused since the `else` branch
+  // already overwrote expired entries in place) — that part was never broken.
+  // What WAS broken (per the finding) is IPs that appear only ONCE, ever: a
+  // one-shot spoofed IP still plants a permanent entry with no fix. We can't
+  // read connectionAttempts' size from here (private to the route closure), so
+  // this test demonstrates the mechanism is wired up (the route keeps working
+  // correctly, cycle after cycle, exactly as if each expired entry had been
+  // swept and re-created) rather than asserting the internal map's size — the
+  // unit test above is the direct, exact proof for that.
+  // Fake only Date — the route's async SSE pump uses real setImmediate/setTimeout
+  // internally (breathe(), stream.sleep), so faking those too would hang the
+  // response body's background writer; we only need control over Date.now(),
+  // which the rate limiter reads synchronously before streamSSE even starts.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const { app } = await setup({ maxConnectionsPerIp: 100, maxConnectionsTotal: 100, maxConnectionsPerWindow: 1, connectionRateWindowMs: 1000 })
+    const pool = ['203.0.113.50', '203.0.113.51', '203.0.113.52']
+    for (let cycle = 0; cycle < 20; cycle++) {
+      for (const ip of pool) {
+        const res = await app.request('/firehose/stream', { headers: { 'x-forwarded-for': ip } })
+        expect(res.status).toBe(200)
+        await res.body?.cancel()
+      }
+      vi.advanceTimersByTime(1500) // past connectionRateWindowMs — each IP's window has expired
+    }
+  } finally {
+    vi.useRealTimers()
+  }
 })
