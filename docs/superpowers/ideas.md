@@ -130,35 +130,47 @@ end for the record).
 - **Unknown handle → empty profile, no 404** — `u/[handle]` renders a blank
   timeline for a nonexistent user rather than a not-found page (core-down is
   handled separately via `coreDown`, so this is just a missing "user not found").
-- **Phase-3 (authed write API) final review, Minor findings (2026-08-04)** — none
-  blocked merge; noted for a later pass:
-  - Spec (`2026-08-01-external-api-and-firehose-design.md`) still says
-    `/api/v1/posts`/`follows`/`me`; shipped paths are `/me/posts`,
-    `/me/api-follows`, `/me/api-subscriptions`, `/me/api-profile` (renamed
-    to dodge real method+path collisions with the cookie-authed siblings,
-    verified live). Spec never revved to match — same gap phase 2 shipped
-    with, worth fixing before phase 4 plans against the wrong URLs. No
-    curl cheat-sheet entry in RUNNING.md for the write routes either.
-  - Api-key rate-limit exhaustion (300 req/hr, `core/src/auth.ts:57`)
-    surfaces as a bare `401 invalid or insufficient api key`, not `429` —
-    `verifyApiKey` swallows the plugin's `TOO_MANY_REQUESTS` into
-    `{valid:false}`. A client legitimately hitting the ceiling can't tell
-    "revoked" from "rate-limited." Pre-existing since phase 2, now more
-    reachable with write traffic.
-  - No idempotency token on `POST /me/posts` or `POST /me/api-follows`
-    (unlike `/me/api-subscriptions`'s `commandId`) — inherited from their
-    cookie-authed siblings, so not new, but a retrying API client can
-    double-post. `DELETE /me/posts/:id` (new this phase) is at least a
-    manual remedy for the post case.
-  - `DELETE /me/api-follows/:target` inherits `removeFollow`'s
-    cascade-delete-on-zero-followers side effect for remote targets — a
-    faithful mirror of the cookie route, but a scripted client can churn
-    follow/unfollow at a rate the UI never would.
-  - Test coverage has only one direction of permission isolation for
-    `GET /me/posts` (a write-only key is tested against read/write route
-    pairs elsewhere, but no test pins a `posts:write`-only key being
-    refused by the `posts:read`-gated `GET /me/posts`). Low risk given
-    `authorize()`'s subset semantics; one-line test if picked up.
+- **Phase-3 (authed write API) final review, Minor findings (2026-08-04)** —
+  none blocked merge. Status as of 2026-08-05 (dedicated cleanup branch off
+  `main` picking up items 1/2/5 below; item 3 deferred, item 4 downgraded to
+  a docs note):
+  - ✅ **Spec URL drift** — `2026-08-01-external-api-and-firehose-design.md`
+    said `/api/v1/posts`/`follows`/`me`; shipped paths are `/me/posts`,
+    `/me/api-follows`, `/me/api-subscriptions`, `/me/api-profile`. Being
+    revved to match on the cleanup branch. (`docs/superpowers/documentation/
+    API.md`, added 2026-08-05, already documents the real paths correctly —
+    only the design spec itself was stale.)
+  - ✅ **Api-key rate-limit exhaustion surfaces as 401, not 429** — being
+    fixed on the cleanup branch. Root cause pinned exactly: better-auth's
+    `verifyApiKey` does NOT swallow the plugin's `TOO_MANY_REQUESTS` — it
+    preserves the real error (`code: 'RATE_LIMITED'`, `details.tryAgainIn`)
+    in `result.error` (`@better-auth/api-key/dist/index.mjs`, `consumeRateLimit`
+    throws `APIError('TOO_MANY_REQUESTS', {code:'RATE_LIMITED', details:
+    {tryAgainIn}})`, caught and forwarded by `verifyApiKey`'s own handler).
+    RSC's own `apiKeyAuth`/`apiKeyAuthAdmin` (`core/src/api/auth.ts`) is what
+    discards `result.error` and always returns a flat 401 — the fix is
+    local to those two functions, not a library limitation.
+  - **DEFERRED, scope corrected (2026-08-05)** — no idempotency token on
+    `POST /me/posts`/`POST /me/api-follows`. Originally read as a small
+    route-local addition; turns out `/me/api-subscriptions`'s `commandId`
+    idempotency is backed by a full ledger-transaction mechanism at the
+    **domain-service layer** (`SourceRepository`'s `BEGIN IMMEDIATE`
+    pattern), not something route-local — extending it to posts/follows
+    means touching `service.createLocalPostAs`/`addFollow`, which the
+    cookie-authed siblings also call, so cookie-authed callers would need
+    the same treatment to avoid a real behavioral split. Pre-existing gap
+    (predates the API track — the cookie-authed browser UI has the same
+    double-submit exposure), not something the API track introduced.
+    Deferred as its own future design pass, not picked up on the cleanup
+    branch.
+  - **Downgraded to a docs note (2026-08-05)** — `DELETE /me/api-follows/
+    :target` inheriting `removeFollow`'s cascade-delete-on-zero-followers
+    side effect for remote targets is a faithful, deliberate mirror of the
+    cookie route's existing behavior, not a defect; getting a doc note in
+    `API.md`'s follows section rather than a behavior change.
+  - ✅ **Untested permission-isolation direction** — `GET /me/posts` never
+    had a test pinning that a `posts:write`-only key (no `read`) is
+    refused. Being added on the cleanup branch.
 **Documented / protocol residuals — probably leave as-is**
 - **`cloudScheme` 443-heuristic** (`push.ts:33`) — HTTPS on a non-default port
   (`:8443`) misclassified as HTTP; rssCloud `<cloud>` has no scheme field, so
