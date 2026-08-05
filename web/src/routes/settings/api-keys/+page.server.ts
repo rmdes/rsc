@@ -67,7 +67,7 @@ export const actions = {
 			// session) is handled by the shared helper; anything else is a
 			// genuine server error. createApiKey (lib/api.ts) attaches the real
 			// status to the thrown error.
-			return toActionFail(err, [400, 403], 'could not create key')
+			return toActionFail(err, [400, 403, 429], 'could not create key')
 		}
 	},
 
