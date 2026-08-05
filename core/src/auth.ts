@@ -7,6 +7,7 @@ import type Database from 'better-sqlite3'
 import type { User } from './domain/types.ts'
 import type { Mailer } from './mail.ts'
 import { deriveIsAdmin } from './api/auth.ts'
+import { MAX_API_KEYS_PER_USER } from './api/logical-routes.ts'
 
 export interface AuthDeps {
   sqlite: Database.Database // THE shared handle from repo.raw — never a second connection
@@ -103,6 +104,22 @@ export function createAuth(deps: AuthDeps) {
     // `isClientRequest` test, so this hook is a no-op for this app's own
     // in-process call from POST /me/api-keys (no headers on that call) —
     // that route already enforces registered-only itself, one layer up.
+    //
+    // Whole-branch final review Finding 1: this same REST endpoint also
+    // bypassed Task 2's per-user cap (logical-routes.ts's POST /me/api-keys
+    // and POST /admin/api-keys check ONLY their own in-process issuance
+    // path). Verified live: 25 consecutive REST /api-key/create calls for one
+    // user all succeeded against a cap of 20. This is the one existing gate
+    // every real HTTP create request already passes through, so the cap
+    // check lives here rather than as a sixth patch — reads the `apikey`
+    // table directly via the shared sqlite handle (no UserDirectory
+    // plumbing needed; deps.sqlite is already in scope). configId defaults
+    // to 'user' when the request omits it, matching the cap's per-tier
+    // counting in logical-routes.ts; the real create handler independently
+    // 400s a request with neither a real 'default' config nor an explicit
+    // configId (installed source, resolveConfiguration in
+    // @better-auth/api-key/dist/index.mjs), so this default only matters for
+    // what gets counted, not for whether the request is otherwise valid.
     {
       id: 'reject-anon-api-key-create',
       hooks: {
@@ -114,6 +131,13 @@ export function createAuth(deps: AuthDeps) {
               const session = await getSessionFromCtx(ctx)
               if ((session?.user as { isAnonymous?: boolean | null } | undefined)?.isAnonymous === true) {
                 throw new APIError('FORBIDDEN', { message: 'registration required' })
+              }
+              const userId = session?.user.id
+              if (!userId) return // no session at all — the real handler 401s this itself
+              const configId = (ctx.body as { configId?: string } | undefined)?.configId ?? 'user'
+              const row = deps.sqlite.prepare(`SELECT COUNT(*) AS n FROM apikey WHERE referenceId = ? AND configId = ?`).get(userId, configId) as { n: number }
+              if (row.n >= MAX_API_KEYS_PER_USER) {
+                throw new APIError('FORBIDDEN', { message: 'api key limit reached' })
               }
             }),
           },

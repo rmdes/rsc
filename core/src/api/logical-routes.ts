@@ -539,7 +539,11 @@ const ALLOWED_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
 // 300/hr limit is stored and evaluated per KEY ROW, not per user), not to
 // constrain a real integration author who legitimately wants a handful of
 // scoped keys. Counted separately per configId ('user' vs 'admin' tier).
-const MAX_API_KEYS_PER_USER = 20
+// Exported so auth.ts's reject-anon-api-key-create hook (the gate on
+// better-auth's own REST /api-key/create, final-review Finding: this app's
+// two in-process cap checks below don't cover that endpoint) can enforce the
+// same ceiling without a duplicated literal.
+export const MAX_API_KEYS_PER_USER = 20
 
 function isValidKeyPermissions(v: unknown): v is Record<string, string[]> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
@@ -1218,11 +1222,19 @@ function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string,
 // unit-testable: deletes any window entry that has already expired. Without
 // this, connectionAttempts (unlike ipCounts/totalConnections, which
 // release() cleans up) has no eviction path at all — a window entry is only
-// ever overwritten in place once expired, never deleted — so a client
-// sending a fresh spoofed X-Forwarded-For per request would grow the map by
-// one permanent entry forever. Run once per incoming request; steady-state
-// size is bounded by "distinct IPs seen within the last window", not
-// "every distinct IP ever seen".
+// ever overwritten in place once expired, never deleted — so an IP seen
+// exactly once would grow the map by one permanent entry forever. The map
+// key is NOT client-spoofable in either live prod topology (both Caddy and
+// the Cloudron nginx config route only /api/v1/firehose/stream to the web
+// app, and web's proxy — web/src/routes/api/v1/firehose/stream/+server.ts —
+// builds x-forwarded-for server-side from SvelteKit's getClientAddress(),
+// discarding any client-supplied header), so this bounds a real but
+// non-adversarial ceiling: distinct real client IPs seen within the last
+// window, not an attacker-inflatable one. Throttled to run at most once per
+// window (see lastSweep in the route closure below), not once per request —
+// final-review Finding 2: an unthrottled per-request sweep turned an O(1)
+// rejection into an O(n) scan on exactly the flood path this endpoint
+// defends.
 export function sweepExpiredConnectionAttempts(
   attempts: Map<string, { count: number; windowStart: number }>,
   now: number,
@@ -1260,6 +1272,10 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const connectionWindowMs = deps.connectionRateWindowMs ?? 60_000
   const maxConnectionsPerWindow = deps.maxConnectionsPerWindow ?? 20
   const connectionAttempts = new Map<string, { count: number; windowStart: number }>()
+  // Throttles sweepExpiredConnectionAttempts to at most once per window
+  // instead of once per request (final-review Finding 2) — same eviction
+  // guarantee (nothing outlives one window past its expiry), amortized cost.
+  let lastSweep = 0
 
   // One awaited MACROTASK yield between pump batches. A cursor is unauthenticated
   // and `sequence = 0` is serveable against a journal that is never pruned, so any
@@ -1273,7 +1289,10 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   app.get('/firehose/stream', (c) => {
     const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
     const now = Date.now()
-    sweepExpiredConnectionAttempts(connectionAttempts, now, connectionWindowMs)
+    if (now - lastSweep >= connectionWindowMs) {
+      lastSweep = now
+      sweepExpiredConnectionAttempts(connectionAttempts, now, connectionWindowMs)
+    }
     const attempt = connectionAttempts.get(ip)
     if (attempt && now - attempt.windowStart < connectionWindowMs) {
       if (attempt.count >= maxConnectionsPerWindow) return c.json({ error: 'too many connection attempts, slow down' }, 429)

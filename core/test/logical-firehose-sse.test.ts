@@ -180,11 +180,14 @@ test('a GLOBAL connection cap rejects once the process ceiling is reached, regar
 // connectionAttempts (the map behind the rate limiter above) has no eviction
 // path other than this sweep: release() only cleans up ipCounts/totalConnections,
 // and an expired window entry is otherwise only ever overwritten in place, never
-// deleted. Since the IP key is client-controlled (x-forwarded-for), a spoofed IP
-// per request would otherwise grow the map by one permanent entry forever. This
-// unit-tests the extracted sweep directly — the exact deletion logic the finding
-// was about — since the map itself is private to mountPublicFirehoseRoute's
-// closure and not otherwise inspectable from a route-level test.
+// deleted. An IP seen exactly once would otherwise grow the map by one permanent
+// entry forever — a real but bounded ceiling (distinct real client IPs seen
+// within the last window; the key is NOT client-spoofable in prod, see the
+// sweepExpiredConnectionAttempts doc comment), not an attacker-inflatable one.
+// This unit-tests the extracted sweep directly — the exact deletion logic the
+// finding was about — since the map itself is private to
+// mountPublicFirehoseRoute's closure and not otherwise inspectable from a
+// route-level test.
 test('sweepExpiredConnectionAttempts deletes only windows that have already expired', () => {
   const windowMs = 1000
   const now = 10_000
@@ -197,16 +200,20 @@ test('sweepExpiredConnectionAttempts deletes only windows that have already expi
   expect([...attempts.keys()]).toEqual(['fresh'])
 })
 
-test('the firehose route sweeps expired attempt windows on every request — a fixed pool of spoofed IPs does not accumulate stale entries across many expired-window cycles', async () => {
+test('the firehose route sweeps expired attempt windows (throttled to at most once per window) — a fixed pool of IPs does not accumulate stale entries across many expired-window cycles', async () => {
   // Behavioral proof at the route level (the unit test above proves the sweep
   // logic itself): drive the SAME small pool of distinct IPs through many
   // successive windows, well past connectionRateWindowMs each time via fake
   // timers. Without the sweep, each of these IPs' entries would simply sit in
   // connectionAttempts forever (harmlessly reused since the `else` branch
   // already overwrote expired entries in place) — that part was never broken.
-  // What WAS broken (per the finding) is IPs that appear only ONCE, ever: a
-  // one-shot spoofed IP still plants a permanent entry with no fix. We can't
-  // read connectionAttempts' size from here (private to the route closure), so
+  // What WAS broken (per the finding) is IPs that appear only ONCE, ever: such
+  // an IP still plants a permanent entry with no fix. The sweep is now
+  // throttled to at most once per window (final-review Finding 2) rather than
+  // once per request — irrelevant to this test's assertions, since each cycle
+  // here only issues requests after the window has already elapsed, so the
+  // throttle never suppresses the sweep this test relies on. We can't read
+  // connectionAttempts' size from here (private to the route closure), so
   // this test demonstrates the mechanism is wired up (the route keeps working
   // correctly, cycle after cycle, exactly as if each expired entry had been
   // swept and re-created) rather than asserting the internal map's size — the
