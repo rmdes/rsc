@@ -46,6 +46,8 @@ nothing consumes.
    one-row-per-delivery.** Low tangle (change-detection keeps working on the
    single row).
 
+3. ⛔ **CORRECTED 2026-08-05 — THIS FINDING WAS WRONG the same way #1 was; the publisher graph is 3/4 load-bearing, do NOT cut it.** The Phase D brainstorm's producer/consumer trace found verification (kept) mints `verified_origin` claims into `publisher_claims_v2` (verification.ts:414-416) and alias bindings into `publisher_feed_aliases_v2` (verification.ts:435-443), both FK→`remote_publishers_v2`; and `selectAuthor`'s evidence ranking is how a verified claim wins the byline (the instance-governed-members payoff). Only `publisher_names_v2` was verification-free, and the byline bar was set to preserve today's behavior (cross-source name-fill), so it stays too. Net removable: nothing. **Phase D dropped.** The original (mistaken) finding stands below only as the record.
+
 3. `yagni:` **Publisher attribution graph** — `publisher_claims_v2`,
    `publisher_names_v2`, `remote_publishers_v2`, `publisher_feed_aliases_v2`
    (4 tables) + the projector's `selectAuthor`/`eligibleAuthorClaims`/evidence-
