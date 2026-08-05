@@ -287,6 +287,14 @@ test('POST /me/posts requires posts:write, not posts:read', async () => {
   expect(res.status).toBe(401)
 })
 
+test('a posts:write-only key cannot reach the posts:read-gated GET /me/posts (permission isolation)', async () => {
+  const { app, cookie, auth } = await freshApp('write-only@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['write'] })
+  const res = await app.request('/me/posts', { headers: { 'x-api-key': key } })
+  expect(res.status).toBe(401)
+})
+
 test("PATCH /me/posts/:id edits only the key owner's own post", async () => {
   // Two owners sharing one app/db (freshApp only mints one user per call).
   const repo = await createSqliteRepository(':memory:')
