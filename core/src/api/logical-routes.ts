@@ -1184,6 +1184,8 @@ export interface PublicFirehoseDeps {
   heartbeatMs?: number
   maxConnectionsPerIp?: number
   maxConnectionsTotal?: number
+  connectionRateWindowMs?: number
+  maxConnectionsPerWindow?: number
 }
 
 const FIREHOSE_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
@@ -1229,6 +1231,17 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const ipCounts = new Map<string, number>()
   let totalConnections = 0
 
+  // Separate from ipCounts/totalConnections above (which bound CONCURRENT
+  // connections): those alone don't stop an attacker who opens and closes
+  // connections rapidly, each one still triggering a full journal-replay
+  // pump before releasing. This bounds connection ATTEMPTS per IP over a
+  // fixed window. ponytail: same single-process in-memory counter
+  // convention as the two above — same accepted ceiling, same reset-on-
+  // restart tradeoff.
+  const connectionWindowMs = deps.connectionRateWindowMs ?? 60_000
+  const maxConnectionsPerWindow = deps.maxConnectionsPerWindow ?? 20
+  const connectionAttempts = new Map<string, { count: number; windowStart: number }>()
+
   // One awaited MACROTASK yield between pump batches. A cursor is unauthenticated
   // and `sequence = 0` is serveable against a journal that is never pruned, so any
   // anonymous caller can demand a full-history replay: without this the `for(;;)`
@@ -1240,6 +1253,14 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
 
   app.get('/firehose/stream', (c) => {
     const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    const now = Date.now()
+    const attempt = connectionAttempts.get(ip)
+    if (attempt && now - attempt.windowStart < connectionWindowMs) {
+      if (attempt.count >= maxConnectionsPerWindow) return c.json({ error: 'too many connection attempts, slow down' }, 429)
+      attempt.count++
+    } else {
+      connectionAttempts.set(ip, { count: 1, windowStart: now })
+    }
     if (totalConnections >= maxGlobal) return c.json({ error: 'firehose at capacity' }, 429)
     const current = ipCounts.get(ip) ?? 0
     if (current >= maxPerIp) return c.json({ error: 'too many connections from this address' }, 429)

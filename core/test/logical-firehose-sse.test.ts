@@ -33,7 +33,7 @@ async function acquireRemote(db: ReturnType<typeof createDatabaseContext>, sourc
   await eng.acquireSource(sourceId, { kind: 'scheduled' }, undefined)
 }
 
-async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number } = {}) {
+async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number; connectionRateWindowMs?: number; maxConnectionsPerWindow?: number } = {}) {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw as Raw
   const db = createDatabaseContext(raw)
@@ -141,6 +141,22 @@ test('a per-IP connection cap rejects the (N+1)th concurrent connection with 429
   expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
   expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(5)
   for (const r of responses) await r.body?.cancel()
+})
+
+test('a per-IP connection-rate limit rejects rapid reconnects even though each connection releases quickly', async () => {
+  // Concurrency caps left generous — only the rate limiter should be able to
+  // fire here, matching the attack shape: connect, drain, disconnect, repeat,
+  // never holding more than one connection open at a time.
+  const { app } = await setup({ maxConnectionsPerIp: 100, maxConnectionsTotal: 100, maxConnectionsPerWindow: 3 })
+  const opts = { headers: { 'x-forwarded-for': '203.0.113.5' } }
+  const statuses: number[] = []
+  for (let i = 0; i < 5; i++) {
+    const res = await app.request('/firehose/stream', opts)
+    statuses.push(res.status)
+    await res.body?.cancel()
+  }
+  expect(statuses.slice(0, 3)).toEqual([200, 200, 200])
+  expect(statuses.slice(3)).toEqual([429, 429])
 })
 
 // The per-IP cap above bounds ONE address, and addresses are free — an
