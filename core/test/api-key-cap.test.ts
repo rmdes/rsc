@@ -29,7 +29,7 @@ async function setupPersonal() {
   const cookie = await registeredSession(authApp, 'capped@x.test', repo)
   const app = new Hono()
   mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
-  return { app, cookie }
+  return { app, cookie, repo }
 }
 
 // Same wiring app.ts uses for real: sessionAuth + requireAdmin gate '/admin/*'
@@ -54,11 +54,11 @@ async function setupAdmin() {
     logicalStore: store, feeds: { publicUrl: null, hubUrl: null, rssCloud: false },
     websubMode: 'off', pushInEnabled: false, mailEnabled: true, pollSeconds: 60,
   })
-  return { app, cookie }
+  return { app, cookie, repo }
 }
 
 test('POST /me/api-keys refuses past the per-user cap (user tier)', async () => {
-  const { app, cookie } = await setupPersonal()
+  const { app, cookie, repo } = await setupPersonal()
   for (let i = 0; i < MAX; i++) {
     const res = await app.request('/me/api-keys', {
       method: 'POST', headers: { 'content-type': 'application/json', cookie },
@@ -72,10 +72,14 @@ test('POST /me/api-keys refuses past the per-user cap (user tier)', async () => 
   })
   expect(overCap.status).toBe(429)
   expect(await overCap.json()).toEqual({ error: 'api key limit reached' })
+  // Prove the 429 actually stopped the write, not just the response body:
+  // the 21st key must never have reached the apikey table.
+  const authRow = repo.raw.prepare('SELECT id FROM user WHERE email = ?').get('capped@x.test') as { id: string }
+  expect(await repo.countApiKeys(authRow.id, 'user')).toBe(MAX)
 })
 
 test('POST /admin/api-keys refuses past the per-user cap (admin tier, counted separately from user tier)', async () => {
-  const { app, cookie } = await setupAdmin()
+  const { app, cookie, repo } = await setupAdmin()
   for (let i = 0; i < MAX; i++) {
     const res = await app.request('/admin/api-keys', {
       method: 'POST', headers: { 'content-type': 'application/json', cookie },
@@ -89,4 +93,8 @@ test('POST /admin/api-keys refuses past the per-user cap (admin tier, counted se
   })
   expect(overCap.status).toBe(429)
   expect(await overCap.json()).toEqual({ error: 'api key limit reached' })
+  // Prove the 429 actually stopped the write, not just the response body:
+  // the 21st key must never have reached the apikey table.
+  const authRow = repo.raw.prepare('SELECT id FROM user WHERE email = ?').get('admin@x.test') as { id: string }
+  expect(await repo.countApiKeys(authRow.id, 'admin')).toBe(MAX)
 })
