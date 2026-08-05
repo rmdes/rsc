@@ -212,3 +212,44 @@ describe('admin.sources write routes', () => {
     expect(res.status).toBe(401)
   })
 })
+
+describe('admin.moderation write routes', () => {
+  test('DELETE /admin-api/users/:handle 404s an unknown handle', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.moderation': ['write'] } },
+    })
+    const res = await app.request('/admin-api/users/nobody', {
+      method: 'DELETE', headers: { 'x-api-key': created.key },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  test('DELETE /admin-api/posts/:id 404s an unknown post', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.moderation': ['write'] } },
+    })
+    const res = await app.request('/admin-api/posts/nope', {
+      method: 'DELETE', headers: { 'x-api-key': created.key },
+    })
+    expect(res.status).toBe(404)
+  })
+
+  test('an admin.sources-only key cannot hit moderation routes', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.sources': ['write'] } },
+    })
+    const res = await app.request('/admin-api/posts/nope', {
+      method: 'DELETE', headers: { 'x-api-key': created.key },
+    })
+    expect(res.status).toBe(401)
+  })
+})

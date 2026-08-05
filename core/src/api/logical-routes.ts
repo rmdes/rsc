@@ -995,6 +995,25 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
 
   app.post('/admin-api/sources', writeAdminSources, jsonWrite, (c) =>
     establishFederation(c, c.get('coreUser').id, 'administrator', sourceService))
+
+  // --- admin.moderation write routes (phase 4 Task 5) ---------------------
+  // Key-authed twins of app.ts's cookie-authed DELETE /admin/users/:handle
+  // and DELETE /admin/posts/:id — same service calls, same response-shape
+  // branches, transcribed from those exact handlers. Only the auth
+  // middleware differs (apiKeyAuthAdmin vs sessionAuth + requireAdmin).
+  const writeAdminModeration = apiKeyAuthAdmin(auth, users, adminEmails, { 'admin.moderation': ['write'] })
+
+  app.delete('/admin-api/users/:handle', writeAdminModeration, async (c) => {
+    const result = await service.deleteLocalAccount(c.req.param('handle') ?? '')
+    if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown user' : 'not a local account' }, result.error === 'unknown' ? 404 : 409)
+    return c.json({ ok: true }, 200)
+  })
+
+  app.delete('/admin-api/posts/:id', writeAdminModeration, async (c) => {
+    const result = await service.deletePost(c.req.param('id') ?? '')
+    if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
+    return c.json({ ok: true }, 200)
+  })
 }
 
 // =============================================================================
