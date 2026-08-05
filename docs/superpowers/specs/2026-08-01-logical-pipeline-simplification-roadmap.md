@@ -1,8 +1,19 @@
 # Logical Pipeline Simplification — Program Roadmap
 
-**Status:** Roadmap rev 4 (2026-08-05). **Phase B DONE (merged). Phase C AND
-Phase D both DROPPED — for the same reason: they'd remove machinery the KEPT
-verification feature depends on.** Phase C footprint review found verification
+**Status:** Roadmap rev 5 (2026-08-05) — **PROGRAM CLOSED.** After every phase
+was traced end-to-end, **Phase B (remote version-history) was the only real cut,
+and it is shipped.** C, D, F, and A′ each dissolved on inspection: they'd remove
+machinery the KEPT verification feature depends on (C, D), consolidate tables
+that don't actually overlap or are live subsystems (F), or reclaim a single
+write-only diagnostic column at the cost of a 4-instance prod migration (A′).
+The audit's "~7.2k LOC / 36 tables of over-engineering" was, under rigorous
+per-subsystem tracing, almost entirely *earned* weight — audit findings #1, #3,
+#5 all overstated the same way, corrected in place. **Lesson, now proven five
+times: trace a subsystem's full producer/consumer graph before calling it
+unearned.** Historical detail on each phase below.
+
+**(rev 4 context) Phase C AND Phase D both DROPPED — for the same reason: they'd
+remove machinery the KEPT verification feature depends on.** Phase C footprint review found verification
 is the discovery-and-mint engine for the instance-governed-members federation
 feature (`membership.ts`; `verification.ts:268/302` mints `origin_verification`
 member sources). **Phase D brainstorm (2026-08-05) then found the publisher
@@ -15,7 +26,7 @@ verified claim wins the byline* (the feature's visible payoff). Only
 byline-preservation bar was set to **keep today's behavior exactly** (the
 cross-source name-fill must survive), so it stays too. Nothing removable.
 Audit findings #1 and #3 were both wrong the same way, and are corrected in
-place. Program's only remaining cut: **F** (+ optional A′). (Rev 2
+place. (Then F and A′ were traced too and also dropped — see rev 5 header above.) (Rev 2
 had folded the roadmap review's 2 Criticals — converter not dead, C≠dependent-on-A;
 both now moot since C is dropped.) This is a **program**, not a
 single spec: it sequences five independent simplification phases, each of which
@@ -81,8 +92,8 @@ optional, re-scoped startup simplification (A′).
 | ~~**C**~~ | ~~Remove origin verification~~ — **DROPPED, verification is earned** (instance-governed-members engine) | — | — |
 | **B** | Remove remote version-history (audit #2; parked §1–4) | — (independent) | Medium (live version-collapse migration) |
 | ~~**D**~~ | ~~Simplify the publisher attribution graph (audit #3)~~ — **DROPPED (2026-08-05 brainstorm)**: 3/4 publisher tables + `selectAuthor` ranking are load-bearing for kept verification; the only free table (`publisher_names_v2`) stays because the byline bar was set to preserve today's behavior. Nothing removable. | — | — |
-| **F** | Consolidate thin tables (audit #5) | — | Low (cleanup) |
-| **A′** | *(optional, later)* Simplify the fresh-install activation path — collapse the zero-row conversion, drop ONLY the `converted_at`/`conversion_findings_json` columns; keep the `logical_activation_v2` table + `fresh-install.test.ts` green | — | Medium (startup-path refactor, NOT dead-code removal) |
+| ~~**F**~~ | ~~Consolidate thin tables (audit #5)~~ — **DROPPED (2026-08-05 trace)**: the "three tombstone flavors" don't overlap (a 1:N parent/child + an unrelated live handle-reservation table); `policy_fanout_v2` is the live federation fan-out state machine, not migration bookkeeping; `source_validators_v2` is a keeper. Only a net-negative denormalization was available. | — | — |
+| ~~**A′**~~ | ~~Drop `converted_at`/`conversion_findings_json`~~ — **CLOSED (2026-08-05 trace)**: `converted_at` is the load-bearing conversion integrity/idempotency marker (runtime.ts:303/310); only `conversion_findings_json` is dead (one write-only column on a 1-row table), and a forward-only 4-instance migration to reclaim it costs more than the debt. Left in place. | — | — |
 
 C and B are independent and may run in either order / in parallel sessions with
 coordination. D is cleanest after C. F any time. A′ is optional and no longer
@@ -153,7 +164,8 @@ web, enum members). Independent — no dependency on any other phase.
 
 ## Next
 
-Roadmap (rev 4): **B done, C + D dropped.** The only remaining cut is
-**Phase F** (consolidate thin tables — audit #5), its own brainstorm→spec→
-plan→SDD cycle. A′ optional, last, gates nothing. This document is the index
-the per-phase specs point back to.
+Roadmap (rev 5): **PROGRAM CLOSED.** Phase B shipped; C, D, F, A′ all traced and
+dropped as earned weight. No further phases. This document is the historical
+index — the one durable takeaway is the process lesson: **trace a subsystem's
+full producer/consumer graph before an audit calls it unearned** (five phases,
+one real cut).

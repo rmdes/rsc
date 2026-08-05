@@ -68,6 +68,8 @@ nothing consumes.
    keep async only if cross-source ordering genuinely needs it. ⚠️ High tangle
    (the spine's concurrency model) — biggest LOC but riskiest; spec-only.
 
+5. ⛔ **CORRECTED 2026-08-05 — THIS FINDING WAS OVERSTATED, same as #1 and #3; nothing here is cleanly removable.** The Phase F trace found: the "three tombstone flavors" don't overlap — `blocked_source_tombstones_v2` + `tombstone_aliases_v2` are a 1:N parent/child (a block tombstone and its alias-URL list; "folding" loses the indexed alias `isBlocked` lookup), and `handle_reservations_v2` is not a tombstone at all but a live handle→publisher namespace reservation read by an API route (logical-routes.ts:1054). `policy_fanout_v2` is not migration bookkeeping but the live federation fan-out state machine (`fanout.ts`, 8 refs). `source_validators_v2` is a keeper (the finding agreed). **Phase F dropped — net removable: nothing.** Original (overstated) finding below.
+
 5. `yagni:` **Thin single-purpose tables** worth individually questioning:
    `redirect_observations_v2` (store every redirect hop — needed?),
    `source_validators_v2` (conditional-fetch ETags — keep, it's cheap and real),
