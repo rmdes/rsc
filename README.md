@@ -197,6 +197,10 @@ Standards-forward, few dependencies, no framework lock-in:
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — design documents for
   every major piece (spine, feeds, following, threading, rich content, the
   markdown composer, the firehose, auth, email, and Docker).
+- [`docs/superpowers/documentation/API.md`](docs/superpowers/documentation/API.md) —
+  the HTTP API: the keyless public firehose, and key-authed read/write access
+  to your own timeline, posts, follows and profile. Keys are self-serve at
+  `/settings/api-keys`.
 - [`docs/superpowers/documentation/RUNNING.md`](docs/superpowers/documentation/RUNNING.md) —
   running RSC without Docker (npm workspaces directly), the full env
   var reference, and identity/session/email details.
