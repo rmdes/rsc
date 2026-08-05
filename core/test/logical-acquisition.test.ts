@@ -135,27 +135,34 @@ test('the observation version records the complete durable first-arrival tuple',
   expect(rows.every((r) => r.arrival_at === NOW)).toBe(true)
 })
 
-test('a delivery retains at most 5 observation versions; older ones are evicted with their FK children', async () => {
+// ---- one version per delivery (phase B): overwrite in place, never append ----
+
+test('a delivery keeps exactly ONE observation version across repeated content changes — overwritten in place, same id, first arrival frozen', async () => {
   const { raw, db } = await fresh()
   seedSource(raw, 's1', 'https://feed.test/f')
-  let body = ''
+  let body = 'body-0'
   const fetchFn = fakeFetch({ 'https://feed.test/f': () => ok(RSS(guidItem('g1', false, body))) })
-  // 7 distinct bodies under one stable delivery key → 7 versions without a cap.
-  // Belt-and-suspenders against a feed that churns a fingerprinted field every
-  // poll (e.g. an arrival-substituted date); bounds storage AND jobs.
-  for (let i = 0; i < 7; i++) {
+
+  await createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => NOW }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+  const first = raw.prepare(`SELECT id, arrival_at, run_id FROM observation_versions_v2`).get() as { id: string; arrival_at: string; run_id: string }
+
+  // 6 more genuine content changes on the SAME delivery — no cap, no UNIQUE
+  // throw, and never a second version row (spec C1).
+  for (let i = 1; i <= 6; i++) {
     body = `body-${i}`
-    const eng = createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => `2026-07-23T00:0${i}:00.000Z` })
-    await eng.acquireSource('s1', { kind: 'scheduled' }, undefined)
+    const now = `2026-07-23T00:0${i}:00.000Z`
+    await createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => now }).acquireSource('s1', { kind: 'scheduled' }, undefined)
   }
-  // newest 5 + the never-evicted FIRST version (byline/ordering stability — see
-  // findVictims): 6, not 5. Without that carve-out the earliest publisher claim
-  // would vanish and the byline could move on an item nobody edited.
-  expect(count(raw, 'observation_versions_v2')).toBe(6)
-  // jobs cascaded with the evicted versions — an uncascaded RESTRICT would have thrown
-  expect(count(raw, 'reconciliation_jobs_v2')).toBe(6)
-  const newest = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 ORDER BY arrival_at DESC LIMIT 1`).get() as { canonical_material: Buffer }
-  expect(Buffer.from(newest.canonical_material).toString()).toContain('body-6') // newest kept
+
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+  expect(count(raw, 'reconciliation_jobs_v2')).toBe(1) // reset in place, never inserted
+  const row = raw.prepare(`SELECT id, arrival_at, run_id, canonical_material FROM observation_versions_v2`).get() as { id: string; arrival_at: string; run_id: string; canonical_material: Buffer }
+  expect(row.id).toBe(first.id) // same row throughout — overwritten, not replaced
+  expect(row.arrival_at).toBe(first.arrival_at) // I2: first-arrival stays frozen
+  expect(row.run_id).toBe(first.run_id)
+  expect(Buffer.from(row.canonical_material).toString()).toContain('body-6') // newest content wins
+  const job = raw.prepare(`SELECT status FROM reconciliation_jobs_v2`).get() as { status: string }
+  expect(job.status).toBe('pending') // re-pended so the drain reconciles the latest change
 })
 
 test('an unchanged refetch creates no new version or job and only bumps seen metadata', async () => {
@@ -248,13 +255,14 @@ test('maxAgeDays=0 leaves the gate inert: the old item ingests normally', async 
   expect(count(raw, 'observation_versions_v2')).toBe(1)
 })
 
-test('an existing delivery is never gated: a genuine edit to an already-ingested old item is still recorded as a new version', async () => {
+test('an existing delivery is never gated: a genuine edit to an already-ingested old item is still recorded (overwritten in place)', async () => {
   const { raw, db } = await fresh()
   seedSource(raw, 's1', 'https://feed.test/f')
   // first poll: no cap active — the old item ingests and creates the delivery.
   await createAcquisition({ db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(RSS(datedItem('old1', OLD_DATE, 'v1'))) }), lookupFn: publicLookup, now: () => NOW }).acquireSource('s1', { kind: 'scheduled' }, undefined)
   expect(count(raw, 'deliveries_v2')).toBe(1)
   expect(count(raw, 'observation_versions_v2')).toBe(1)
+  const first = raw.prepare(`SELECT id FROM observation_versions_v2`).get() as { id: string }
 
   // second poll: cap now active, same old date, but the content changed — the
   // delivery already exists, so the age gate must not apply to it.
@@ -262,7 +270,10 @@ test('an existing delivery is never gated: a genuine edit to an already-ingested
   await createAcquisition({ db, fetchFn: fakeFetch({ 'https://feed.test/f': () => ok(RSS(datedItem('old1', OLD_DATE, 'v2'))) }), lookupFn: publicLookup, now: () => LATER, getSetting }).acquireSource('s1', { kind: 'scheduled' }, undefined)
 
   expect(count(raw, 'deliveries_v2')).toBe(1) // same delivery, not re-created
-  expect(count(raw, 'observation_versions_v2')).toBe(2) // the edit is recorded
+  expect(count(raw, 'observation_versions_v2')).toBe(1) // the edit overwrites the same row, not a new one
+  const row = raw.prepare(`SELECT id, canonical_material FROM observation_versions_v2`).get() as { id: string; canonical_material: Buffer }
+  expect(row.id).toBe(first.id)
+  expect(Buffer.from(row.canonical_material).toString()).toContain('v2')
 })
 
 // ---- two-transaction protocol (spec §1.4) -----------------------------------
@@ -362,24 +373,21 @@ test('healOrphanedRuns never touches an already-terminal run', async () => {
   expect(row).toEqual({ status: 'terminal', outcome: 'parsed' })
 })
 
-// The cap must never delete what a reader can see. `presentation_entries_v2`
-// IS the edit history the /post/:id/history page renders, and REMOTE_VISIBLE
-// (projector.ts) gates ordinary visibility on the delivery having BOTH a
-// presentation entry AND a version with a reconciled job — exactly the two row
-// kinds the eviction deletes. Evicting a presentation-backed version therefore
-// truncates visible history, can drop the item out of every timeline, and can
-// move the byline (author/name selection resolves ties by EARLIEST arrival, and
-// the earliest claim rides the first version). Churned versions carry none of
-// that, so protecting presentation-backed ones costs the cap nothing.
-test('eviction spares versions that back presentation history — history, visibility and byline all survive the cap', async () => {
+// One version + one presentation entry per delivery (phase B). A real content
+// change re-pends the SAME observation job every poll, so reconcileClaim runs
+// repeatedly over the SAME observation_version_id — the exact shape that grew
+// the July 2026 observation-version runaway (763k rows). This is the CRITICAL
+// review guard (C-B): re-reconciling an overwritten-in-place version must be
+// idempotent for publisher_claims_v2/publisher_names_v2 too, or the runaway
+// simply reappears on these two tables once the version cap is gone.
+test('polling a changing item repeatedly keeps ONE observation version, ONE presentation entry, and ONE publisher claim/name — no churn runaway', async () => {
   const { raw, db } = await fresh()
   const store = createLogicalStore(db)
   seedSource(raw, 's1', 'https://feed.test/f')
   let body = ''
   const fetchFn = fakeFetch({ 'https://feed.test/f': () => ok(RSS(guidItem('g1', false, body))) })
-  // 7 real content changes on ONE delivery, each reconciled — so each lands an
-  // accepted presentation entry, unlike the churn case the cap targets.
-  for (let i = 0; i < 7; i++) {
+
+  for (let i = 0; i < 5; i++) {
     body = `body-${i}`
     const now = `2026-07-23T00:0${i}:00.000Z`
     const eng = createAcquisition({ db, fetchFn, lookupFn: publicLookup, now: () => now })
@@ -387,19 +395,19 @@ test('eviction spares versions that back presentation history — history, visib
     drainReconciliation({ store, now: () => now })
   }
 
-  // The ORIGINAL revision survives — never evicted, however far the cap bites.
-  // (Middle history is deliberately dropped; that is the cap doing its job.)
-  const oldest = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 ORDER BY arrival_at ASC LIMIT 1`).get() as { canonical_material: Buffer }
-  expect(Buffer.from(oldest.canonical_material).toString()).toContain('body-0')
-  // …alongside the newest N: first + last, with the gap in between.
-  expect(count(raw, 'observation_versions_v2')).toBe(6)
+  expect(count(raw, 'observation_versions_v2')).toBe(1)
+  expect(count(raw, 'presentation_entries_v2')).toBe(1)
+  // CRITICAL (review C-B): must stay 1 each across all 5 change-polls.
+  expect(count(raw, 'publisher_claims_v2')).toBe(1)
+  expect(count(raw, 'publisher_names_v2')).toBe(1)
 
-  // No presentation entry is ever orphaned of its version.
-  expect(count(raw, 'presentation_entries_v2 pe LEFT JOIN observation_versions_v2 v ON v.id = pe.observation_version_id', 'WHERE v.id IS NULL')).toBe(0)
+  // The presentation entry's display time tracks the LATEST change, not the
+  // frozen first-arrival instant (I2: arrival_at/run_id stay frozen, but the
+  // display time lives in effective_updated_at).
+  const pe = raw.prepare(`SELECT effective_updated_at FROM presentation_entries_v2`).get() as { effective_updated_at: string | null }
+  expect(pe.effective_updated_at).toBe('2026-07-23T00:04:00.000Z')
 
-  // Visibility (REMOTE_VISIBLE) and the byline both hold: the earliest claim
-  // rides the first version, which is exactly what the eviction now spares.
   const env = db.read((tx) => projectTimeline(tx, { lens: { kind: 'public' }, before: null, limit: 10, viewer: { localAccountId: null, activeSourceIds: [] } }))
-  expect(env.timeline).toHaveLength(1)
+  expect(env.timeline).toHaveLength(1) // one logical item throughout — no duplicate/fork
   expect(env.timeline[0].selectedAuthor.displayName).toBe('T')
 })

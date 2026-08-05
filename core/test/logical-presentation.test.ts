@@ -169,7 +169,8 @@ test('unchanged presentation material creates no entry', () => {
 
 test('changed material with a valid explicit ts above the watermark is accepted with explicit provenance', () => {
   const r = nextPresentationEntry(wm(0, '2026-01-01T00:00:00Z', 'f0'), { materialFingerprint: 'f1', explicitUpdate: '2026-01-05T00:00:00Z', arrivalAt: '2026-01-06T00:00:00Z' })
-  expect(r.entry).toEqual({ sequence: 1, effectiveUpdatedAt: '2026-01-05T00:00:00Z', provenance: 'explicit' })
+  // phase B: one entry per delivery — always sequence 0 (overwritten, not appended).
+  expect(r.entry).toEqual({ sequence: 0, effectiveUpdatedAt: '2026-01-05T00:00:00Z', provenance: 'explicit' })
   expect(r.watermark).toBe('2026-01-05T00:00:00Z')
 })
 
@@ -182,7 +183,8 @@ test('changed material with an older-or-equal explicit ts is rollback evidence, 
 
 test('changed material with absent/future ts is accepted at arrival with arrival provenance, leaving the watermark', () => {
   const r = nextPresentationEntry(wm(1, '2026-01-05T00:00:00Z', 'f1'), { materialFingerprint: 'f2', explicitUpdate: null, arrivalAt: '2026-01-08T00:00:00Z' })
-  expect(r.entry).toEqual({ sequence: 2, effectiveUpdatedAt: '2026-01-08T00:00:00Z', provenance: 'arrival' })
+  // phase B: one entry per delivery — always sequence 0 (overwritten, not appended).
+  expect(r.entry).toEqual({ sequence: 0, effectiveUpdatedAt: '2026-01-08T00:00:00Z', provenance: 'arrival' })
   expect(r.watermark).toBe('2026-01-05T00:00:00Z') // explicit watermark unchanged
 })
 

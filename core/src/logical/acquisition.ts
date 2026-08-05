@@ -6,7 +6,7 @@ import type { LookupFn } from '../domain/push-guard.ts'
 import { parseFeedWithMeta, mergeDiscovery } from '../domain/ingest.ts'
 import { discoverFeed } from '../domain/discovery.ts'
 import { choosePushTarget } from './push.ts'
-import { isTombstoned, deleteObservationVersions } from './tombstones.ts'
+import { isTombstoned } from './tombstones.ts'
 import { normalizePermalink } from './roots.ts'
 import { normalizeUtc } from './projector.ts'
 import type {
@@ -590,40 +590,21 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
   const findDelivery = tx.prepare(`SELECT id FROM deliveries_v2 WHERE source_id = ? AND key_kind = ? AND key = ?`)
   const bumpDelivery = tx.prepare(`UPDATE deliveries_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
   const insertDelivery = tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
-  const findVersion = tx.prepare(`SELECT id, canonical_material FROM observation_versions_v2 WHERE delivery_id = ? AND fingerprint_version = ? AND fingerprint = ?`)
+  // One version per delivery (phase B): the delivery's single current version,
+  // looked up by delivery_id alone — never by fingerprint, so a real content
+  // change (a different fingerprint) is found here too, not missed into a
+  // phantom "new" insert.
+  const findDeliveryVersion = tx.prepare(`SELECT id, fingerprint, canonical_material FROM observation_versions_v2 WHERE delivery_id = ?`)
   const bumpVersion = tx.prepare(`UPDATE observation_versions_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
+  // A real change overwrites the delivery's ONE version row in place — same id,
+  // arrival_at/run_id untouched (spec I2: selection sorts on first arrival;
+  // the display time lives in presentation_entries_v2.effective_updated_at).
+  const overwriteVersion = tx.prepare(`UPDATE observation_versions_v2 SET fingerprint = ?, canonical_material = ?, raw_evidence_json = ?, normalized_json = ?, last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
+  // Reset (never insert — C1: observation_version_id is UNIQUE) the delivery's
+  // one observation job back to pending so the drain re-reconciles the change.
+  const resetJob = tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending', next_attempt_at = ? WHERE observation_version_id = ? AND kind = 'observation'`)
   const insertVersion = tx.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
   const insertJob = tx.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`)
-  // Belt-and-suspenders retention cap: no single delivery may keep unbounded
-  // observation versions. The enclosure-URL fingerprint fix stops the known
-  // podcast-tracker churn, but a feed that churns any other fingerprinted field
-  // every poll (e.g. an arrival-substituted `published` date) would still grow
-  // one version per poll. This bounds that structurally — keep the newest N,
-  // evict the rest. `LIMIT -1 OFFSET N` = every row past the newest N.
-  //
-  // The FIRST version is never a victim. Author and publisher-name selection
-  // resolve ties by EARLIEST arrival (compareFirstArrival), and the earliest
-  // claim/name rides the first version — evicting it silently moves the byline
-  // on an item nobody edited. Keeping it also keeps the original revision at the
-  // bottom of the history page, so a truncated history reads as "first … latest"
-  // with a gap, not as an arbitrary window.
-  //
-  // What this canNOT preserve: on a feed that genuinely churns a fingerprinted
-  // field every poll, each version is a real presentation revision, so bounding
-  // storage necessarily drops MIDDLE history — presentation_entries_v2 is what
-  // /post/:id/history renders. That trade is the whole point of a cap and is
-  // accepted here; it is NOT free, and protecting every presentation-backed
-  // version instead would make the cap a no-op (presentationFingerprint includes
-  // the enclosure URL, so churned versions carry entries too).
-  // Ordinary visibility is safe either way: REMOTE_VISIBLE needs one presentation
-  // entry AND one reconciled job on the delivery, and the survivors keep theirs.
-  const MAX_VERSIONS_PER_DELIVERY = 5
-  const findVictims = tx.prepare(
-    `SELECT id FROM observation_versions_v2 v
-     WHERE v.delivery_id = ?
-       AND v.id != (SELECT id FROM observation_versions_v2 WHERE delivery_id = v.delivery_id ORDER BY arrival_at ASC, id ASC LIMIT 1)
-     ORDER BY v.arrival_at DESC, v.id DESC LIMIT -1 OFFSET ?`,
-  )
 
   for (const obs of input.observations) {
     const norm = JSON.parse(obs.normalizedJson) as { keyKind: KeyKind; key: string }
@@ -651,27 +632,32 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
     if (existing) bumpDelivery.run(committedAt, runId, deliveryId)
     else insertDelivery.run(deliveryId, sourceId, norm.keyKind, norm.key, committedAt, committedAt, runId)
 
-    const priorVersion = findVersion.get(deliveryId, BOUNDS.fingerprintVersion, obs.fingerprint) as { id: string; canonical_material: Buffer } | undefined
+    const priorVersion = findDeliveryVersion.get(deliveryId) as { id: string; fingerprint: string; canonical_material: Buffer } | undefined
     if (priorVersion) {
-      // fingerprint match: compare canonical material (spec §2.2).
-      if (Buffer.compare(Buffer.from(priorVersion.canonical_material), Buffer.from(obs.canonicalMaterial)) === 0) {
-        bumpVersion.run(committedAt, runId, priorVersion.id) // unchanged
-        counters.unchanged++
+      if (priorVersion.fingerprint === obs.fingerprint) {
+        // fingerprint match: compare canonical material (spec §2.2).
+        if (Buffer.compare(Buffer.from(priorVersion.canonical_material), Buffer.from(obs.canonicalMaterial)) === 0) {
+          bumpVersion.run(committedAt, runId, priorVersion.id) // unchanged
+          counters.unchanged++
+        } else {
+          // fingerprint collision: bounded evidence, skipped, no version/job change.
+          parseFindings.push({ kind: 'fingerprint_collision', evidenceJson: JSON.stringify({ deliveryId, wireOrdinal: obs.wireOrdinal, fingerprint: obs.fingerprint }) })
+          counters.skipped++
+        }
       } else {
-        // fingerprint collision: bounded evidence, skipped, no new version/job.
-        parseFindings.push({ kind: 'fingerprint_collision', evidenceJson: JSON.stringify({ deliveryId, wireOrdinal: obs.wireOrdinal, fingerprint: obs.fingerprint }) })
-        counters.skipped++
+        // real content change (spec §2.2): overwrite the delivery's ONE version
+        // in place and re-pend its observation job so the drain reconciles it.
+        overwriteVersion.run(obs.fingerprint, Buffer.from(obs.canonicalMaterial), obs.rawEvidenceJson, obs.normalizedJson, committedAt, runId, priorVersion.id)
+        resetJob.run(committedAt, priorVersion.id)
+        counters.observed++
       }
       continue
     }
-    // new observation version + one observation job.
+    // new delivery: first observation version + one observation job (the one
+    // legitimate insert — every subsequent change overwrites this same row).
     insertVersion.run(obs.id, deliveryId, BOUNDS.fingerprintVersion, obs.fingerprint, Buffer.from(obs.canonicalMaterial), committedAt, runId, obs.wireOrdinal, committedAt, runId, obs.rawEvidenceJson, obs.normalizedJson)
     insertJob.run(randomUUID(), runId, obs.id, committedAt, committedAt)
     counters.observed++
-    // Evict versions beyond the cap (oldest first) via the shared cascade helper —
-    // the single source of truth for observation-version deletes (tombstones.ts).
-    const victims = (findVictims.all(deliveryId, MAX_VERSIONS_PER_DELIVERY) as { id: string }[]).map((r) => r.id)
-    if (victims.length) deleteObservationVersions(tx, victims)
   }
 
   insertFindings(tx, runId, parseFindings, committedAt)

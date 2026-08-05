@@ -209,7 +209,9 @@ export type PresentationDecision = {
   watermark: string | null
 }
 
-// Decide the next presentation entry for one delivery's accepted chain (spec §4.4).
+// Decide the delivery's single current presentation entry (spec §4.4, phase B:
+// one entry per delivery — always sequence 0, overwritten in place rather than
+// appended).
 export function nextPresentationEntry(state: WatermarkState, input: PresentationInput): PresentationDecision {
   // baseline: sequence zero.
   if (state.sequence < 0) {
@@ -223,13 +225,13 @@ export function nextPresentationEntry(state: WatermarkState, input: Presentation
   // changed material with a valid explicit ts strictly above the watermark: accept.
   if (input.explicitUpdate) {
     if (state.explicitWatermark === null || input.explicitUpdate > state.explicitWatermark) {
-      return { entry: { sequence: state.sequence + 1, effectiveUpdatedAt: input.explicitUpdate, provenance: 'explicit' }, watermark: input.explicitUpdate }
+      return { entry: { sequence: 0, effectiveUpdatedAt: input.explicitUpdate, provenance: 'explicit' }, watermark: input.explicitUpdate }
     }
     // older-or-equal explicit ts is rollback evidence, not accepted.
     return { conflict: 'rollback', watermark: state.explicitWatermark }
   }
   // changed material with absent/malformed/future ts: accept at arrival, leaving the watermark.
-  return { entry: { sequence: state.sequence + 1, effectiveUpdatedAt: input.arrivalAt, provenance: 'arrival' }, watermark: state.explicitWatermark }
+  return { entry: { sequence: 0, effectiveUpdatedAt: input.arrivalAt, provenance: 'arrival' }, watermark: state.explicitWatermark }
 }
 
 // ---- shared UTC normalization (spec §3.3) -----------------------------------

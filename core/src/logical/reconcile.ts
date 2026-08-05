@@ -157,7 +157,12 @@ export function recordReconciliationFailure(tx: WriteTx, input: RecordJobFailure
 
 interface VersionRow {
   version_id: string; delivery_id: string; source_id: string; key_kind: string; key: string
-  committed_at: string; wire_ordinal: number; run_id: string
+  // The display/edit timestamp fed into applyPresentation (spec I2): the
+  // version's OWN arrival_at/run_id stay frozen at first arrival for selection
+  // ordering (compareFirstArrival elsewhere), but last_seen_at moves forward on
+  // every overwrite-in-place — the correct "when was this content last seen"
+  // instant for a churn-overwritten version's presentation entry.
+  last_seen_at: string; wire_ordinal: number; run_id: string
   canonical_material: Buffer; raw_evidence_json: string; normalized_json: string
 }
 interface Material { title: string | null; content: string | null; link: string | null; published: string | null; updated: string | null; inReplyTo: string | null; enclosures: unknown[] }
@@ -239,11 +244,10 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   if (claim.kind !== 'observation') throw new ReconcileDataError('reconcileClaim: expected an observation claim')
   const v = tx.prepare(
     `SELECT v.id AS version_id, v.delivery_id, d.source_id, d.key_kind, d.key,
-            r.acquisition_committed_at AS committed_at, v.wire_ordinal, v.run_id,
+            v.last_seen_at, v.wire_ordinal, v.run_id,
             v.canonical_material, v.raw_evidence_json, v.normalized_json
      FROM observation_versions_v2 v
      JOIN deliveries_v2 d ON d.id = v.delivery_id
-     JOIN acquisition_runs_v2 r ON r.id = v.run_id
      WHERE v.id = ?`,
   ).get(claim.observationVersionId) as VersionRow | undefined
   if (!v) throw new ReconcileDataError(`reconcile: observation version ${claim.observationVersionId} not found`)
@@ -263,7 +267,7 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   // claim was over-limit (spec §1.5) — those are never presentable names.
   const raw = JSON.parse(v.raw_evidence_json) as { title: unknown; sourceName: unknown }
   const asName = (x: unknown): string | null => (typeof x === 'string' ? x : null)
-  const arrival = v.committed_at
+  const arrival = v.last_seen_at
   const publisherId = getOrCreatePublisher(tx, source.canonical_url, identityLevelFor(source.attribution_mode), now)
 
   // ---- convergence (spec §2.5) --------------------------------------------
@@ -329,10 +333,33 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
   // claim row with an unchanged name is not (the name/claim are always inserted).
   const prevName = tx.prepare(`SELECT normalized_name FROM publisher_names_v2 WHERE publisher_id = ? ORDER BY rowid DESC LIMIT 1`).get(publisherId) as { normalized_name: string | null } | undefined
   const nameChanged = !prevName || prevName.normalized_name !== normalizedName
-  tx.prepare(`INSERT INTO publisher_names_v2 (id, publisher_id, source_id, observation_version_id, evidence_level, normalized_name, first_seen_at, effective) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
-    .run(randomUUID(), publisherId, v.source_id, v.version_id, level, normalizedName, now)
-  tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(randomUUID(), targetId, publisherId, v.source_id, v.version_id, level, now)
+  // C-B churn guard (phase B): a version is now overwritten in place rather than
+  // replaced, so the SAME observation_version_id re-reconciles on every content
+  // edit. Without this, re-reconciling it would append a fresh name/claim row
+  // every time — the unbounded-row runaway this phase is fixing, reborn on
+  // these two tables. Natural-key existence check (no UNIQUE index exists on
+  // either table — schema.ts confirmed): re-reconciling the SAME (version,
+  // name)/(version, item, publisher) tuple updates evidence_level in place
+  // instead of inserting a duplicate; a genuinely NEW name/claim (e.g. a real
+  // byline change) still inserts.
+  const existingName = tx.prepare(
+    `SELECT id FROM publisher_names_v2 WHERE publisher_id = ? AND observation_version_id = ? AND normalized_name IS ?`,
+  ).get(publisherId, v.version_id, normalizedName) as { id: string } | undefined
+  if (existingName) {
+    tx.prepare(`UPDATE publisher_names_v2 SET evidence_level = ? WHERE id = ?`).run(level, existingName.id)
+  } else {
+    tx.prepare(`INSERT INTO publisher_names_v2 (id, publisher_id, source_id, observation_version_id, evidence_level, normalized_name, first_seen_at, effective) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
+      .run(randomUUID(), publisherId, v.source_id, v.version_id, level, normalizedName, now)
+  }
+  const existingClaim = tx.prepare(
+    `SELECT id FROM publisher_claims_v2 WHERE logical_item_id = ? AND publisher_id = ? AND observation_version_id = ?`,
+  ).get(targetId, publisherId, v.version_id) as { id: string } | undefined
+  if (existingClaim) {
+    tx.prepare(`UPDATE publisher_claims_v2 SET evidence_level = ? WHERE id = ?`).run(level, existingClaim.id)
+  } else {
+    tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(randomUUID(), targetId, publisherId, v.source_id, v.version_id, level, now)
+  }
 
   // ---- origin verification scheduling (spec §7.1) -------------------------
   // An aggregate claim naming a valid origin feed URL (RSS <source url>) schedules
@@ -413,8 +440,16 @@ export function applyPresentation(tx: WriteTx, v: { version_id: string; delivery
     { materialFingerprint: fingerprint, explicitUpdate, arrivalAt: arrival },
   )
   if (decision.entry) {
-    tx.prepare(`INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(v.delivery_id, decision.entry.sequence, v.version_id, decision.entry.effectiveUpdatedAt, decision.entry.provenance, fingerprint)
+    // One entry per delivery (phase B): upsert on observation_version_id, which
+    // stays constant across a churn overwrite (spec C1 — never a second row).
+    tx.prepare(
+      `INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(observation_version_id) DO UPDATE SET
+         effective_updated_at = excluded.effective_updated_at,
+         provenance = excluded.provenance,
+         material_fingerprint = excluded.material_fingerprint`,
+    ).run(v.delivery_id, decision.entry.sequence, v.version_id, decision.entry.effectiveUpdatedAt, decision.entry.provenance, fingerprint)
   }
   if (decision.conflict === 'rollback') recordConflict(tx, null, v.version_id, 'presentation_rollback', { explicit }, now)
   return decision.entry != null
