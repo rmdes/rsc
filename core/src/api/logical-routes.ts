@@ -19,6 +19,8 @@ import type { Service } from '../domain/service.ts'
 import type { SourceService } from '../domain/source-service.ts'
 import type { FeedContext } from '../domain/feed.ts'
 import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectSourceComments, emittedGuid, logicalToFeedEntry, itemContentFields } from '../domain/feed.ts'
+import { MODEL, NEUTRAL_404, isString, readJsonBody, clampLimit, decodeBeforeCursor, FEED_LIMIT } from './logical-routes/shared.ts'
+import type { ApiKeyCreation } from './logical-routes/shared.ts'
 
 // The v2 administrative acquisition surface (spec §6.2-6.3): manual refresh plus
 // run status/history/job reads. Mounted onto the shared app AFTER the
@@ -34,11 +36,9 @@ export interface LogicalRouteDeps {
   now?: () => string
 }
 
-const MODEL = 'logical-v2'
 // The refresh command's request fingerprint inputs are EXACTLY [command, sourceId,
 // actor] (spec §6.2, review rev 1 C3). The commandId travels only in the JSON body.
 const REFRESH_COMMAND = 'acquisition.refresh'
-const NEUTRAL_404 = { model: MODEL, error: 'source unavailable' }
 const IDEMPOTENCY_CONFLICT = { model: MODEL, error: 'idempotency conflict' }
 const INVALID_CURSOR = { model: MODEL, error: 'invalid cursor' }
 const DEFAULT_LIMIT = 50
@@ -60,17 +60,6 @@ const NOT_BLOCKED = { model: MODEL, error: 'source not blocked' }
 const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
 function isAuditCategory(v: unknown): v is AuditCategory {
   return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
-}
-
-function isString(v: unknown, min: number, max: number): v is string {
-  return typeof v === 'string' && v.length >= min && v.length <= max
-}
-async function readJsonBody(c: Context): Promise<Record<string, unknown> | null> {
-  try {
-    return await c.req.json()
-  } catch {
-    return null
-  }
 }
 
 // Every V3 mutation body is {commandId, category, note?}: commandId ONLY as the
@@ -311,7 +300,6 @@ export interface LogicalReadDeps {
   feeds: FeedContext
 }
 
-const FEED_LIMIT = 50
 const XML = { 'content-type': 'application/rss+xml; charset=utf-8' }
 
 // The six lens selectors (spec §3.5), parsed strictly from the query BEFORE any DB
@@ -346,24 +334,6 @@ function parseLensSpec(c: Context): LensSpec | 'invalid' {
   if (key === 'followed_by') return { kind: 'personal', handle: v }
   if (key === 'author') return { kind: 'local_author', handle: v }
   return { kind: 'publisher', publisherId: v }
-}
-
-function clampLimit(raw: string | undefined): number {
-  if (raw === undefined) return FEED_LIMIT
-  const n = Number(raw)
-  return Number.isInteger(n) ? Math.max(1, Math.min(100, n)) : FEED_LIMIT
-}
-
-// Shared ?before= decode for every TimelineCursorV2-paginated read (GET
-// /timeline and the two GET /me/* routes below): the tuple codec's raw
-// [timelineSortAt, logicalItemId] pair mapped onto the cursor shape, or the
-// single 'invalid' answer on any malformed input.
-function decodeBeforeCursor(c: Context): TimelineCursorV2 | null | 'invalid' {
-  const beforeRaw = c.req.query('before')
-  if (beforeRaw === undefined) return null
-  const dec = decodeCursor(beforeRaw)
-  if (!dec || dec.tuple.length !== 2) return 'invalid'
-  return { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
 }
 
 export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
@@ -547,25 +517,6 @@ function isValidKeyPermissions(v: unknown): v is Record<string, string[]> {
     const allowed = ALLOWED_KEY_PERMISSIONS[resource]
     return Array.isArray(actions) && actions.length > 0 && actions.every((a) => typeof a === 'string' && allowed.includes(a))
   })
-}
-
-// Same auth.api erasure this file already works around for apiKeyAuth's
-// verifyApiKey cast (api/auth.ts) — createApiKey needs its own narrow slice.
-// REAL FINDING (found by hitting the live REST endpoint, not from any plan):
-// better-auth's real create-api-key handler
-// (node_modules/@better-auth/api-key/dist/index.mjs) throws
-// SERVER_ONLY_PROPERTY whenever `permissions` is set AND `ctx.request ||
-// ctx.headers` is truthy — true for EVERY call that reaches the plugin's own
-// /api-key/create REST endpoint, including a same-origin server-to-server
-// fetch from the web app. permissions can only be set through this
-// in-process auth.api.createApiKey call (no headers/request on the input),
-// matching the shape Task 1's own smoke test already used. This is why key
-// creation needs its own core route instead of the web layer calling
-// /api/auth/api-key/create directly like list/delete do.
-interface ApiKeyCreation {
-  createApiKey(input: {
-    body: { configId?: string; userId?: string; name?: string; permissions?: Record<string, string[]> }
-  }): Promise<{ id: string; key: string; name: string | null; prefix: string | null }>
 }
 
 // Owner-projected outcomes shared by the two subscribe/unsubscribe routes
