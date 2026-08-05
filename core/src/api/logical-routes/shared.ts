@@ -29,10 +29,10 @@ export function clampLimit(raw: string | undefined): number {
   return Number.isInteger(n) ? Math.max(1, Math.min(100, n)) : FEED_LIMIT
 }
 
-// Shared ?before= decode for every TimelineCursorV2-paginated read (GET
-// /timeline and the two GET /me/* routes below): the tuple codec's raw
-// [timelineSortAt, logicalItemId] pair mapped onto the cursor shape, or the
-// single 'invalid' answer on any malformed input.
+// Shared ?before= decode for every TimelineCursorV2-paginated read (its
+// consumers in read.ts (GET /timeline) and personal.ts (the GET /me/* routes)):
+// the tuple codec's raw [timelineSortAt, logicalItemId] pair mapped onto the
+// cursor shape, or the single 'invalid' answer on any malformed input.
 export function decodeBeforeCursor(c: Context): TimelineCursorV2 | null | 'invalid' {
   const beforeRaw = c.req.query('before')
   if (beforeRaw === undefined) return null
