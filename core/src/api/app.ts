@@ -55,6 +55,49 @@ export function isBadSourceUrl(err: unknown): boolean {
   return err instanceof Error && err.message === 'source URL invalid'
 }
 
+// Blocked, not-subscribable and never-existed are ONE answer: a caller must
+// not be able to tell them apart (design §4). Module-scope (moved here
+// alongside establishFederation's hoist) and exported: the admin-tier
+// key-authed `POST /admin-api/sources/:id/:action` (logical-routes.ts,
+// phase 4 Task 4) reuses these exact objects rather than redeclaring the
+// literals, so its 409 bodies stay byte-identical to this cookie-authed
+// route's.
+export const NEUTRAL_UNAVAILABLE = { error: 'source unavailable' }
+export const IDEMPOTENCY_CONFLICT = { error: 'idempotency conflict' }
+
+// ONE federation handler for every caller (V4 §6: "no second code path") —
+// same validator, same establishFederation call, same dispositions. Hoisted
+// to module scope (phase 4 Task 4) so the admin-tier key-authed route can
+// reuse it too; the `sourceService` it used to close over as `v2` is now an
+// explicit 4th parameter instead.
+export async function establishFederation(
+  c: Context, actorId: string, actorKind: 'administrator' | 'operator_token', sourceService: SourceService,
+): Promise<Response> {
+  const body = await readJsonBody(c)
+  if (!body) return c.json({ error: 'body invalid' }, 400)
+  const { url, attributionMode, category, note, commandId } = body
+  if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
+  if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
+  if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+  if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+  // The command id travels in the JSON body ONLY — never a header.
+  if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+  let result
+  try {
+    result = await sourceService.establishFederation({
+      url, attributionMode, category, note: typeof note === 'string' ? note : null,
+      commandId, actorId, actorKind,
+    })
+  } catch (err) {
+    if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
+    throw err
+  }
+  if (result.kind === 'established') return c.json({ source: result.source, federation: result.federation }, 201)
+  if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
+  if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
+  return c.json(NEUTRAL_UNAVAILABLE, 409)
+}
+
 const DEFAULT_PAGE_LIMIT = 50
 
 // Shared query parsing for every v2 admin listing; the repository clamps the
@@ -267,7 +310,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // gated by it, admin-tier or not.
   mountAdminApiRoutes(app, {
     auth: deps.auth, users: deps.users, adminEmails,
-    service, sourceRepo: sources.repo, logicalStore: deps.logical.store,
+    service, sourceRepo: sources.repo, sourceService: sources.service, logicalStore: deps.logical.store,
     feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds,
   })
 
@@ -280,12 +323,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
 
   // --- source-control plane routes ---
   // Registered after the /admin/* gate, so the admin routes inherit it.
+  // NEUTRAL_UNAVAILABLE/IDEMPOTENCY_CONFLICT are module scope now (above,
+  // beside establishFederation's hoist) — reused here rather than
+  // redeclared.
   const v2 = sources.service
   const v2repo = sources.repo
-  // Blocked, not-subscribable and never-existed are ONE answer: a caller must
-  // not be able to tell them apart (design §4).
-  const NEUTRAL_UNAVAILABLE = { error: 'source unavailable' }
-  const IDEMPOTENCY_CONFLICT = { error: 'idempotency conflict' }
 
   app.post('/me/subscriptions', authed, registeredOnly(), jsonWrite, async (c) => {
     const body = await readJsonBody(c)
@@ -445,36 +487,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json(await v2repo.sourceMemberCounts(c.req.param('id') ?? ''))
   })
 
-  // ONE federation handler for both callers (V4 §6: "no second code path") —
-  // same validator, same establishFederation call, same dispositions. Only the
-  // actor differs, so the ops route cannot drift from the admin route.
-  async function establishFederation(c: Context, actorId: string, actorKind: 'administrator' | 'operator_token'): Promise<Response> {
-    const body = await readJsonBody(c)
-    if (!body) return c.json({ error: 'body invalid' }, 400)
-    const { url, attributionMode, category, note, commandId } = body
-    if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
-    if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
-    if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
-    if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
-    // The command id travels in the JSON body ONLY — never a header.
-    if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
-    let result
-    try {
-      result = await v2.establishFederation({
-        url, attributionMode, category, note: typeof note === 'string' ? note : null,
-        commandId, actorId, actorKind,
-      })
-    } catch (err) {
-      if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
-      throw err
-    }
-    if (result.kind === 'established') return c.json({ source: result.source, federation: result.federation }, 201)
-    if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
-    if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
-    return c.json(NEUTRAL_UNAVAILABLE, 409)
-  }
-
-  app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator'))
+  // establishFederation itself is module scope now (hoisted above,
+  // beside isBadSourceUrl) — both routes below just pass v2 explicitly as
+  // its 4th parameter instead of it closing over a local binding.
+  app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator', v2))
 
   // The ops-token compatibility route (V4 spec §6). Bearer-only: an admin
   // session carries no bearer header and gets 401 here, and on every
@@ -487,7 +503,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // NON-SECRET fingerprint of the token; the raw token is never stored or
   // returned.
   const opsActorId = `ops:${createHash('sha256').update(token).digest('hex').slice(0, 16)}`
-  app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token'))
+  app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token', v2))
 
   app.post('/admin/sources/:id/:action', jsonWrite, async (c) => {
     // Route segments are hyphenated; only this one differs from its domain

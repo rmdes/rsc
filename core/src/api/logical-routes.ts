@@ -1,16 +1,16 @@
 import type { Hono, Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { jsonWrite, isBadSourceUrl, pageArgs, readTabOverrides } from './app.ts'
+import { jsonWrite, isBadSourceUrl, pageArgs, readTabOverrides, establishFederation, IDEMPOTENCY_CONFLICT as SOURCES_IDEMPOTENCY_CONFLICT } from './app.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import type { EventBus } from '../domain/bus.ts'
 import type { LogicalStreamSource } from '../logical/runtime.ts'
-import { fingerprintRequest } from '../domain/source-repository.ts'
-import type { SourceRepository } from '../domain/source-repository.ts'
+import { fingerprintRequest, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import type { SourceRepository, SourceTransitionAction } from '../domain/source-repository.ts'
 import { decodeCursor } from '../domain/cursor.ts'
 import type { LogicalStore } from '../logical/store.ts'
 import type { ReadTx } from '../logical/database.ts'
 import type { AcquisitionEngine } from '../logical/acquisition.ts'
-import type { CommandEnvelope, AuditCategory } from '../domain/types.ts'
+import type { CommandEnvelope, AuditCategory, AttributionMode } from '../domain/types.ts'
 import type { RunCursor, JobCursor, AdminRunProjection, AdminRefreshResult, TimelineLens, TimelineCursorV2, ProjectionViewer, LogicalItemDto, ItemModerationResult, PublicLocalAccount } from '../logical/types.ts'
 import type { Auth } from '../auth.ts'
 import type { UserDirectory } from './auth.ts'
@@ -823,6 +823,7 @@ export interface AdminApiDeps {
   adminEmails: ReadonlySet<string>
   service: Service
   sourceRepo: SourceRepository
+  sourceService: SourceService
   logicalStore: { schedulerStats(input: { now: string; pollSeconds: number }): unknown }
   feeds: FeedContext
   websubMode: string
@@ -830,6 +831,21 @@ export interface AdminApiDeps {
   mailEnabled: boolean
   pollSeconds: number
 }
+
+// Mirrors app.ts's own isAttributionMode exactly (that one is module-private
+// there) — needed here for the admin-tier transition route's
+// set_attribution_mode validation, transcribed from the cookie-authed
+// sibling.
+function isAttributionMode(v: unknown): v is AttributionMode {
+  return v === 'single_publisher' || v === 'aggregate'
+}
+
+// The spec's six named governance verbs (Global Constraints) — a RESTRICTED
+// subset of SOURCE_TRANSITIONS' full ten-action matrix (pause, resume,
+// quarantine, allow, approve, reject, revoke, block, unblock,
+// set_attribution_mode). approve/reject/revoke/set_attribution_mode stay
+// cookie-authed-only.
+const ADMIN_API_ALLOWED_ACTIONS: ReadonlySet<string> = new Set(['pause', 'resume', 'quarantine', 'allow', 'block', 'unblock'])
 
 // Mirrors ALLOWED_KEY_PERMISSIONS's shape and purpose exactly, scoped to the
 // admin.* vocabulary — a raw request can't mint an admin key for a
@@ -881,7 +897,7 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
   // transcribed from those exact handlers. Only the auth middleware differs
   // (apiKeyAuthAdmin's per-request admin re-verification vs sessionAuth +
   // requireAdmin's session check).
-  const { users, adminEmails, service, sourceRepo, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
+  const { users, adminEmails, service, sourceRepo, sourceService, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
   const readAdmin = apiKeyAuthAdmin(auth, users, adminEmails, { 'admin.read': ['read'] })
 
   app.get('/admin-api/sources', readAdmin, async (c) => {
@@ -915,6 +931,66 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
       maxRemoteItemAgeDays: Number(await service.getSetting('max_remote_item_age_days') ?? '0'),
       ...(await readTabOverrides((k) => service.getSetting(k))),
     }))
+
+  // --- admin.sources write routes (phase 4 Task 4) ------------------------
+  // Key-authed twins of app.ts's cookie-authed POST /admin/sources/:id/:action
+  // and POST /admin/sources — same validation, same sourceService calls,
+  // same response-shape branches, transcribed from those exact handlers.
+  // ONE addition on the transition route: the ADMIN_API_ALLOWED_ACTIONS
+  // allowlist (module scope, above) restricts a key-authed caller to the
+  // spec's six named governance verbs — checked BEFORE the transition
+  // matrix lookup, so approve/reject/revoke/set_attribution_mode 400 here
+  // even though they're valid SOURCE_TRANSITIONS entries the cookie-authed
+  // sibling still accepts.
+  const writeAdminSources = apiKeyAuthAdmin(auth, users, adminEmails, { 'admin.sources': ['write'] })
+
+  app.post('/admin-api/sources/:id/:action', writeAdminSources, jsonWrite, async (c) => {
+    const segment = c.req.param('action') ?? ''
+    if (!ADMIN_API_ALLOWED_ACTIONS.has(segment)) return c.json({ error: 'action invalid' }, 400)
+    // Route segments are hyphenated; only this one differs from its domain
+    // action, every other segment is its action verbatim (same as the
+    // cookie-authed sibling — kept for fidelity even though none of the six
+    // allowed verbs here is currently hyphenated).
+    const action = (segment === 'attribution-mode' ? 'set_attribution_mode' : segment) as SourceTransitionAction
+    // hasOwn, not `in`: `constructor`/`__proto__` are inherited keys.
+    if (!Object.hasOwn(SOURCE_TRANSITIONS, action)) return c.json({ error: 'action invalid' }, 400)
+    const body = await readJsonBody(c)
+    if (!body) return c.json({ error: 'body invalid' }, 400)
+    const { category, note, commandId, attributionMode } = body
+    if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+    if (category === undefined || category === null) {
+      if (!CATEGORY_OPTIONAL_ACTIONS.has(action)) return c.json({ error: 'category invalid' }, 400)
+    } else if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+    if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+    // Required for set_attribution_mode, optional-but-valid everywhere else.
+    if ((attributionMode !== undefined || action === 'set_attribution_mode') && !isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
+
+    // The command runs FIRST, so the ledger answers before anything else: a
+    // replayed command id returns its stored result (spec §11) instead of
+    // being re-judged against state its own first run already changed.
+    const id = c.req.param('id') ?? ''
+    const result = await sourceService.transition({
+      sourceId: id, action, category: isAuditCategory(category) ? category : null,
+      note: typeof note === 'string' ? note : null,
+      ...(isAttributionMode(attributionMode) ? { attributionMode } : {}),
+      commandId, actorId: c.get('coreUser').id, actorKind: 'administrator',
+    })
+    if (result.kind === 'applied') return c.json({ source: result.source, audit: result.audit }, 200)
+    // An unknown source is ledgered like any other outcome, so this 404 consumes
+    // the commandId: reusing it against a VALID source then conflicts.
+    if (result.kind === 'unknown') return c.json({ error: 'unknown source' }, 404)
+    // The repository collapses an illegal transition and an idempotency
+    // conflict into one {kind:'conflict'}; the exported matrix is what tells
+    // them apart, so ask it here — only now that a replay is ruled out.
+    const detail = await sourceRepo.getSourceDetail(id)
+    if (!detail) return c.json({ error: 'unknown source' }, 404)
+    const axes = { operation: detail.source.operation, governance: detail.source.governance, federation: detail.federationStatus }
+    if (SOURCE_TRANSITIONS[action](axes) === null) return c.json({ error: 'invalid transition' }, 409)
+    return c.json(SOURCES_IDEMPOTENCY_CONFLICT, 409)
+  })
+
+  app.post('/admin-api/sources', writeAdminSources, jsonWrite, (c) =>
+    establishFederation(c, c.get('coreUser').id, 'administrator', sourceService))
 }
 
 // =============================================================================

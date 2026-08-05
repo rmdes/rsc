@@ -131,3 +131,47 @@ describe('admin.read routes', () => {
     expect(after.status).toBe(403)
   })
 })
+
+describe('admin.sources write routes', () => {
+  test('POST /admin-api/sources/:id/:action rejects an action outside the six named verbs', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.sources': ['write'] } },
+    })
+    const res = await app.request('/admin-api/sources/some-id/approve', {
+      method: 'POST', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: 'c1' }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  test('POST /admin-api/sources/:id/:action 404s an unknown source for a named verb', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.sources': ['write'] } },
+    })
+    const res = await app.request('/admin-api/sources/unknown-id/pause', {
+      method: 'POST', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: 'c1' }),
+    })
+    expect(res.status).toBe(404)
+  })
+
+  test('a posts:write-only key (wrong resource) is rejected', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+    })
+    const res = await app.request('/admin-api/sources/some-id/pause', {
+      method: 'POST', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ commandId: 'c1' }),
+    })
+    expect(res.status).toBe(401)
+  })
+})
