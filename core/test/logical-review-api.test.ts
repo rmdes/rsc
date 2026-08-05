@@ -65,12 +65,6 @@ function seedDelivery(raw: Raw, deliveryId: string, sourceId: string, itemId: st
   raw.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, 'permalink', ?, ?, ?, 'run-x', 1)`).run(deliveryId, sourceId, deliveryId, firstSeen, firstSeen)
   raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(deliveryId, itemId)
 }
-function seedVersion(raw: Raw, v: { id: string; deliveryId: string; arrivalAt?: string; wireOrdinal?: number; fingerprint?: string; rawEvidence?: string }): void {
-  raw.prepare(
-    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
-     VALUES (?, ?, 1, ?, ?, ?, 'run-x', ?, ?, 'run-x', 1, ?, '{}')`,
-  ).run(v.id, v.deliveryId, v.fingerprint ?? 'fp', Buffer.from('{}'), v.arrivalAt ?? NOW, v.wireOrdinal ?? 0, v.arrivalAt ?? NOW, v.rawEvidence ?? '{}')
-}
 function seedCheck(raw: Raw, itemId: string, sourceId: string, url: string, state = 'pending', resolvedAt: string | null = null, createdAt = NOW): void {
   raw.prepare(
     `INSERT INTO verification_checks_v2 (id, logical_item_id, source_id, publisher_feed_url, batch_key, state, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -189,7 +183,7 @@ test('commandId travels only in the JSON body; missing commandId or invalid cate
 // GET /admin/items/:id — AdminItemDetail
 // =============================================================================
 
-test('an ordinary item detail: state, selected, counts, one eligible delivery/version, empty verification', async () => {
+test('an ordinary item detail: state, selected, counts, one eligible delivery, empty verification', async () => {
   const { app, repo, raw, store, acquisition } = await makeApp({ 'https://feed.test/a': () => ok(RSS(guidItem('g1'))) })
   const cookie = await registeredSession(app, 'boss@x.test', repo)
   seedSource(raw, 's1', 'https://feed.test/a')
@@ -202,7 +196,6 @@ test('an ordinary item detail: state, selected, counts, one eligible delivery/ve
   expect(detail.counts.deliveries).toBe(1)
   expect(detail.deliveries).toHaveLength(1)
   expect(detail.deliveries[0]).toMatchObject({ sourceId: 's1', eligible: true })
-  expect(detail.deliveries[0].versions.length).toBeGreaterThanOrEqual(1)
   expect(detail.verification).toEqual([])
   repo.close()
 })
@@ -252,20 +245,21 @@ test('an ordinary item reports state ordinary (real pipeline)', async () => {
   repo.close()
 })
 
-test('raw evidence is bounded escaped text: truncated, returned verbatim (never rendered as HTML by Core)', async () => {
+// Phase B: the per-delivery observation-version list (and its rawEvidence field)
+// is gone, but the same bounded-escaped-text discipline still applies to a
+// conflict's evidence — covered here instead.
+test('conflict evidence is bounded escaped text: truncated, returned verbatim (never rendered as HTML by Core)', async () => {
   const { app, repo, raw } = await makeApp()
   const cookie = await registeredSession(app, 'boss@x.test', repo)
-  seedSource(raw, 's1', 'https://feed.test/a')
   seedRemoteItem(raw, 'li-1')
-  seedDelivery(raw, 'd1', 's1', 'li-1')
-  const longRaw = '<script>alert(1)</script>' + 'A'.repeat(8000)
-  seedVersion(raw, { id: 'v1', deliveryId: 'd1', rawEvidence: longRaw })
+  const longEvidence = '<script>alert(1)</script>' + 'A'.repeat(8000)
+  seedConflict(raw, 'li-1', 'presentation_rollback', longEvidence)
 
   const detail = await (await app.request('/admin/items/li-1', { headers: { cookie } })).json()
-  const rawEvidence = detail.deliveries[0].versions[0].rawEvidence
-  expect(typeof rawEvidence).toBe('string')
-  expect(rawEvidence.length).toBe(4096) // ADMIN_RAW_EVIDENCE_CAP
-  expect(rawEvidence).toBe(longRaw.slice(0, 4096)) // verbatim prefix — Core returns semantic text; Web escapes
+  const disputed = detail.conflicts[0].disputed
+  expect(typeof disputed).toBe('string')
+  expect(disputed.length).toBe(4096) // ADMIN_RAW_EVIDENCE_CAP
+  expect(disputed).toBe(longEvidence.slice(0, 4096)) // verbatim prefix — Core returns semantic text; Web escapes
   repo.close()
 })
 

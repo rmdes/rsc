@@ -1,14 +1,17 @@
 import { test, expect, vi } from 'vitest'
 import { load } from './+page.server.ts'
 
-// The history load reads LogicalHistoryEnvelope on a sanitizer-bearing REMOTE path.
+// The history load reads LogicalHistoryEnvelope. Phase B removed the remote
+// version-history read surface at the core route (projectHistory 404s for a
+// remote item), so in practice this envelope is local-only now — the loader
+// itself stays origin-agnostic and is exercised here on that shape.
 
 test('a malformed history envelope fails CLOSED to 404, never a cast to some other shape', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ logicalItemId: 'p1', origin: 'remote', entries: [] }), { status: 200 })) // no model discriminant
 	await expect(load({ fetch: f, params: { id: 'p1' } } as never)).rejects.toMatchObject({ status: 404 })
 })
 
-test('remote history content is rendered through the sanitize twin (script stripped)', async () => {
+test('history content is rendered through the sanitize twin (script stripped)', async () => {
 	const entry = (over: object) => ({ sequence: 0, title: null, content: null, markdown: null, permalink: null, enclosures: [], updatedAt: 'x', updatedAtProvenance: null, current: false, ...over })
 	const f = vi.fn(
 		async () =>
@@ -16,11 +19,15 @@ test('remote history content is rendered through the sanitize twin (script strip
 				JSON.stringify({
 					model: 'logical-v2',
 					logicalItemId: 'p1',
-					origin: 'remote',
+					origin: 'local',
 					currentSequence: 1,
 					journalCursor: 'jc',
+					// A local entry's `content` is the raw markdown source (no `markdown`
+					// override); a leading-line script tag is its own HTML block, so it's
+					// dropped wholesale by the remark→rehype pipeline rather than surviving
+					// into sanitize-html to be stripped there.
 					entries: [
-						entry({ sequence: 1, content: '<script>alert(1)</script>current ok', current: true }),
+						entry({ sequence: 1, content: 'current ok\n\n<script>alert(1)</script>', current: true }),
 						entry({ sequence: 0, content: '<img src=x onerror="p()">old', updatedAt: '1' })
 					]
 				}),
@@ -29,7 +36,7 @@ test('remote history content is rendered through the sanitize twin (script strip
 	)
 	const out = (await load({ fetch: f, params: { id: 'p1' } } as never)) as { currentHtml: string; versions: { html: string }[] }
 	expect(out.currentHtml).toContain('current ok')
-	expect(out.currentHtml).not.toContain('script') // remote path still sanitized
+	expect(out.currentHtml).not.toContain('script') // no second sanitize path — same server twin
 	expect(out.versions[0].html).not.toContain('onerror')
 })
 
@@ -75,7 +82,7 @@ test('each version and the current entry carry their own title and enclosures �
 				JSON.stringify({
 					model: 'logical-v2',
 					logicalItemId: 'p1',
-					origin: 'remote',
+					origin: 'local',
 					currentSequence: 1,
 					journalCursor: 'jc',
 					entries: [

@@ -107,8 +107,7 @@ export type AttributionLevel = 'verified_origin' | 'bound_single_publisher' | 'a
 export type AuditCategory = 'spam' | 'abuse' | 'illegal_content' | 'compromised_source' | 'operator_policy' | 'false_positive' | 'remediated' | 'other'
 export const AUDIT_CATEGORIES: AuditCategory[] = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
 
-export type AdminVersionRow = { observationVersionId: string; arrivalAt: string; wireOrdinal: number; fingerprint: string; rawEvidence: string }
-export type AdminDeliveryRow = { deliveryId: string; sourceId: string; eligible: boolean; keyKind: string; key: string; firstSeenAt: string; versions: AdminVersionRow[] }
+export type AdminDeliveryRow = { deliveryId: string; sourceId: string; eligible: boolean; keyKind: string; key: string; firstSeenAt: string }
 export type AdminClaimRow = { claimId: string; evidenceLevel: AttributionLevel; publisherId: string; firstSeenAt: string; observationVersionId: string; conflictIds: string[] }
 export type AdminConflictRow = { conflictId: string; kind: string; disputed: string; logicalItemId: string | null; observationVersionId: string | null; createdAt: string }
 export type AdminItemVerification = { publisherFeedUrl: string; state: 'pending' | 'verified' | 'unverified'; attempts: number; lastCheckedAt: string | null }
@@ -121,7 +120,7 @@ export type AdminItemDetail = {
 	selected: { deliveryId: string | null; publisherId: string | null; attributionLevel: AttributionLevel | null }
 	parentLogicalItemId: string | null
 	threadRootId: string | null
-	counts: { deliveries: number; versions: number; claims: number; conflicts: number; audit: number }
+	counts: { deliveries: number; claims: number; conflicts: number; audit: number }
 	deliveries: AdminDeliveryRow[]
 	claims: AdminClaimRow[]
 	conflicts: AdminConflictRow[]
@@ -233,7 +232,9 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 		replyCount: dto.conversationReplyCount,
 		sourceName: null,
 		sourceFeedUrl: a.kind === 'remote_publisher' ? a.canonicalFeedUrl : null,
-		editedAt: dto.updatedAt,
+		// Phase B: the remote version-history read surface is gone, so the "edited"
+		// affordance (which links to it) is local-only now.
+		editedAt: dto.origin === 'local' ? dto.updatedAt : null,
 		publisherId: a.kind === 'remote_publisher' && a.profileAvailable ? a.id : undefined,
 		// Carried through for the live lens (D2/D3): the federated/personal tabs
 		// filter on this, since a v2 upsert never sets the v1 fields they keyed off.

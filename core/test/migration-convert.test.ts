@@ -734,9 +734,9 @@ test('the wire updatedAtProvenance of a converted edited item reads legacy_unkno
   expect(projectItem(raw, 'p1', ANON)).toMatchObject({
     content: '<p>new</p>', updatedAt: '2026-02-04T00:00:00.000Z', updatedAtProvenance: 'legacy_unknown',
   })
-  const history = projectHistory(raw, 'p1', ANON)!
-  expect(history.entries.map((e) => e.content)).toEqual(['<p>old</p>', '<p>new</p>'])
-  expect(history.entries.map((e) => e.updatedAtProvenance)).toEqual(['legacy_unknown', 'legacy_unknown'])
+  // Phase B: remote items no longer expose a history read surface — p1 is remote
+  // (seedPost defaults source: 'remote'), so projectHistory is undefined for it.
+  expect(projectHistory(raw, 'p1', ANON)).toBeUndefined()
 })
 
 test('legacy_unknown never initializes the explicit-update watermark', async () => {

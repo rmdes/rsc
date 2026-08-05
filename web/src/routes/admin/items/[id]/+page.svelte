@@ -65,15 +65,6 @@
 						<span class="subnav">{delivery.keyKind}:{delivery.key}</span>
 						<span class="subnav">{delivery.firstSeenAt}</span>
 					</div>
-					{#each delivery.versions as v (v.observationVersionId)}
-						<div class="version">
-							<span class="subnav">#{v.wireOrdinal} · {v.arrivalAt} · <span class="mono">{v.fingerprint}</span></span>
-							<!-- Raw evidence is bounded escaped text: Svelte's default {expr}
-							     interpolation HTML-escapes it. It is never raw-HTML-injected and
-							     never routed through the render twin. -->
-							<pre class="evidence">{v.rawEvidence}</pre>
-						</div>
-					{/each}
 				</li>
 			{/each}
 		</ul>

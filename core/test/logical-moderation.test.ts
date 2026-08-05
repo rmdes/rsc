@@ -219,13 +219,21 @@ test('the hidden predicate is applied in SQL BEFORE LIMIT (a hidden newest item 
   expect(env1.timeline.map((d) => d.id)).toEqual([realId]) // full page, not shorted by the hidden newest row
 })
 
-test('single-item and history projections return undefined for a hidden item (neutral 404 at the route)', async () => {
+test('single-item projection returns undefined for a hidden item (neutral 404 at the route)', async () => {
   const { raw, db, store } = await fresh()
   const id = await visibleRemote(db, raw, store)
   expect(store.snapshot((tx) => tx.projectItem(id, ANON))).toBeDefined()
-  expect(store.snapshot((tx) => tx.projectHistory(id, ANON))).toBeDefined()
   hide(store, id, 'c1')
   expect(store.snapshot((tx) => tx.projectItem(id, ANON))).toBeUndefined()
+})
+
+// Phase B: remote items no longer expose a version-history read surface at all —
+// projectHistory is undefined for a remote item regardless of moderation state.
+test('history projection is undefined for a remote item, hidden or not (the remote read surface is gone)', async () => {
+  const { raw, db, store } = await fresh()
+  const id = await visibleRemote(db, raw, store)
+  expect(store.snapshot((tx) => tx.projectHistory(id, ANON))).toBeUndefined()
+  hide(store, id, 'c1')
   expect(store.snapshot((tx) => tx.projectHistory(id, ANON))).toBeUndefined()
 })
 

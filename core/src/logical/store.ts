@@ -20,7 +20,7 @@ import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from
 import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher, rankAttribution, itemOrdinaryVisible } from './projector.ts'
 import type { EvidenceLevel } from './projector.ts'
 import type { ProjectionViewer, TimelineQuery, LogicalTimelineEnvelope, LogicalHistoryEnvelope, LogicalThreadEnvelope, PublicLocalAccount, PublicPublisher } from './types.ts'
-import type { AdminItemDetail, AdminDeliveryRow, AdminVersionRow, AdminClaimRow, AdminConflictRow, AdminSourceItemRow, TombstoneView } from './types.ts'
+import type { AdminItemDetail, AdminDeliveryRow, AdminClaimRow, AdminConflictRow, AdminSourceItemRow, TombstoneView } from './types.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput } from './types.ts'
 import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
 import type { WriteTx } from './database.ts'
@@ -258,13 +258,12 @@ function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
   const one = (sql: string, ...args: unknown[]): number => (tx.prepare(sql).get(...args) as { n: number }).n
   const counts = {
     deliveries: one(`SELECT COUNT(*) AS n FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?`, id),
-    versions: one(`SELECT COUNT(*) AS n FROM observation_versions_v2 WHERE delivery_id IN (SELECT key FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ?)`, id),
     claims: one(`SELECT COUNT(*) AS n FROM publisher_claims_v2 WHERE logical_item_id = ?`, id),
     conflicts: one(`SELECT COUNT(*) AS n FROM logical_conflicts_v2 WHERE logical_item_id = ?`, id),
     audit: one(`SELECT COUNT(*) AS n FROM item_audit_v2 WHERE logical_item_id = ?`, id),
   }
 
-  // deliveries (cap, newest-first) + each delivery's bounded versions section
+  // deliveries (cap, newest-first)
   const deliveryRows = tx.prepare(
     `SELECT d.id, d.source_id, d.key_kind, d.key, d.first_seen_at
      FROM deliveries_v2 d
@@ -278,11 +277,7 @@ function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
       `SELECT 1 FROM observation_versions_v2 v JOIN reconciliation_jobs_v2 j ON j.observation_version_id = v.id AND j.kind = 'observation'
        WHERE v.delivery_id = ? AND j.status IN ('reconciled','conflicted') LIMIT 1`,
     ).get(d.id) !== undefined
-    const vRows = tx.prepare(
-      `SELECT id, arrival_at, wire_ordinal, fingerprint, raw_evidence_json FROM observation_versions_v2 WHERE delivery_id = ? ORDER BY arrival_at DESC, id DESC LIMIT ?`,
-    ).all(d.id, ADMIN_SECTION_CAP) as { id: string; arrival_at: string; wire_ordinal: number; fingerprint: string; raw_evidence_json: string }[]
-    const versions: AdminVersionRow[] = vRows.map((v) => ({ observationVersionId: v.id, arrivalAt: v.arrival_at, wireOrdinal: v.wire_ordinal, fingerprint: v.fingerprint, rawEvidence: boundText(v.raw_evidence_json, ADMIN_RAW_EVIDENCE_CAP) }))
-    return { deliveryId: d.id, sourceId: d.source_id, eligible: gov?.governance === 'allowed' && hasEligibleVersion, keyKind: d.key_kind, key: d.key, firstSeenAt: d.first_seen_at, versions }
+    return { deliveryId: d.id, sourceId: d.source_id, eligible: gov?.governance === 'allowed' && hasEligibleVersion, keyKind: d.key_kind, key: d.key, firstSeenAt: d.first_seen_at }
   })
 
   // claims (cap, newest-first) — conflictIds are the conflicts sharing the claim's version

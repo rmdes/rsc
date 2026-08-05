@@ -749,19 +749,8 @@ export function projectHistory(tx: ReadTx, id: string, viewer: ProjectionViewer)
       journalCursor: snapshotJournalCursor(tx),
     }
   }
-  const li = tx.prepare(`SELECT ${ITEM_COLUMNS} FROM logical_items_v2 WHERE id = ?`).get(id) as ItemRow | undefined
-  if (!li) return undefined
-  const display = selectedDeliveryFor(tx, li)
-  if (!display) return undefined
-  const pres = tx.prepare(`SELECT sequence, observation_version_id, effective_updated_at, provenance FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence ASC`).all(display.deliveryId) as { sequence: number; observation_version_id: string; effective_updated_at: string | null; provenance: 'explicit' | 'arrival' | null }[]
-  const top = pres.length ? pres[pres.length - 1].sequence : 0
-  return {
-    model: 'logical-v2', logicalItemId: id, origin: 'remote',
-    entries: pres.map((p) => {
-      const mat = materialOf(tx, p.observation_version_id)
-      return { sequence: p.sequence, title: mat?.material.title ?? null, content: mat?.material.content ?? null, markdown: null, permalink: safeUrl(mat?.normalized.permalink ?? mat?.material.link ?? null), enclosures: projectEnclosures(mat?.normalized.enclosures), updatedAt: p.effective_updated_at, updatedAtProvenance: p.provenance, current: p.sequence === top }
-    }),
-    currentSequence: top,
-    journalCursor: snapshotJournalCursor(tx),
-  }
+  // Remote items no longer expose a version-history read surface (Phase B: the
+  // remote observation-version chain this used to render is gone) — 404 at the
+  // route. LOCAL post_revisions history above is untouched.
+  return undefined
 }

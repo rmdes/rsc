@@ -28,9 +28,7 @@ function formEvent(action: string, fields: Record<string, string>, fetch: Return
 
 const urlsOf = (fetch: ReturnType<typeof vi.fn>) => fetch.mock.calls.map((c) => String(c[0]))
 
-// A detail envelope whose bounded sections are SHORTER than their true totals,
-// and whose raw evidence carries a <script> payload (must survive verbatim in the
-// loader — Web escapes at render, never sanitizes/strips at the data layer).
+// A detail envelope whose bounded sections are SHORTER than their true totals.
 const detail = (over: Record<string, unknown> = {}) => ({
 	model: 'logical-v2',
 	logicalItemId: 'li1',
@@ -40,7 +38,7 @@ const detail = (over: Record<string, unknown> = {}) => ({
 	selected: { deliveryId: 'd1', publisherId: 'p1', attributionLevel: 'bound_single_publisher' },
 	parentLogicalItemId: null,
 	threadRootId: null,
-	counts: { deliveries: 101, versions: 250, claims: 12, conflicts: 3, audit: 40 },
+	counts: { deliveries: 101, claims: 12, conflicts: 3, audit: 40 },
 	deliveries: [
 		{
 			deliveryId: 'd1',
@@ -48,8 +46,7 @@ const detail = (over: Record<string, unknown> = {}) => ({
 			eligible: true,
 			keyKind: 'guid',
 			key: 'g1',
-			firstSeenAt: '2026-07-19T00:00:00Z',
-			versions: [{ observationVersionId: 'v1', arrivalAt: '2026-07-19T00:00:00Z', wireOrdinal: 0, fingerprint: 'fp1', rawEvidence: '<script>alert(1)</script> raw & unsafe' }]
+			firstSeenAt: '2026-07-19T00:00:00Z'
 		}
 	],
 	claims: [{ claimId: 'c1', evidenceLevel: 'bound_single_publisher', publisherId: 'p1', firstSeenAt: '2026-07-19T00:00:00Z', observationVersionId: 'v1', conflictIds: [] }],
@@ -130,16 +127,6 @@ test('bounded sections keep their TRUE totals in counts while the inline rows ar
 	// count is core's, never recomputed from the capped array length.
 	expect(d.counts.deliveries).toBe(101)
 	expect(d.deliveries.length).toBe(1)
-})
-
-test('raw evidence survives the loader VERBATIM (Web escapes at render, never sanitizes/strips at the data layer)', async () => {
-	const fetch = vi.fn(async (url: string | URL) => {
-		if (String(url).includes('/audit')) return new Response(JSON.stringify(auditPage()), { status: 200 })
-		return new Response(JSON.stringify(detail()), { status: 200 })
-	})
-	const result = await loadItem(fetch)
-	const raw = (result.detail as { deliveries: { versions: { rawEvidence: string }[] }[] }).deliveries[0].versions[0].rawEvidence
-	expect(raw).toBe('<script>alert(1)</script> raw & unsafe') // unchanged: no strip, no escape, no re-encode
 })
 
 test('the verification section passes through, and an item never scheduled stays empty', async () => {

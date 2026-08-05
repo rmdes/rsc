@@ -318,13 +318,6 @@ export type ItemModerationResult =
 // escaped text (Core returns semantic text; Web alone renders — spec §1.5): no
 // secrets, no unbounded blobs, no rendered HTML from Core.
 
-export interface AdminVersionRow {
-  observationVersionId: string
-  arrivalAt: string
-  wireOrdinal: number
-  fingerprint: string
-  rawEvidence: string
-}
 export interface AdminDeliveryRow {
   deliveryId: string
   sourceId: string
@@ -332,7 +325,6 @@ export interface AdminDeliveryRow {
   keyKind: string
   key: string
   firstSeenAt: string
-  versions: AdminVersionRow[]
 }
 export interface AdminClaimRow {
   claimId: string
@@ -359,7 +351,7 @@ export interface AdminItemDetail {
   selected: { deliveryId: string | null; publisherId: string | null; attributionLevel: AttributionLevel | null }
   parentLogicalItemId: string | null
   threadRootId: string | null
-  counts: { deliveries: number; versions: number; claims: number; conflicts: number; audit: number }
+  counts: { deliveries: number; claims: number; conflicts: number; audit: number }
   deliveries: AdminDeliveryRow[]
   claims: AdminClaimRow[]
   conflicts: AdminConflictRow[]

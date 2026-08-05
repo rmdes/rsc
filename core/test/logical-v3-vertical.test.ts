@@ -210,21 +210,21 @@ test('moderation: an item hidden from an approved aggregate peer leaves every su
     federated: lensIds(store, { kind: 'federated' }).includes(parent),
     profile: lensIds(store, { kind: 'publisher', publisher: pub }).includes(parent),
     item: store.snapshot((tx) => tx.projectItem(parent, ANON)) !== undefined,
-    history: store.snapshot((tx) => tx.projectHistory(parent, ANON)) !== undefined,
   })
   const app = makeApp(deps)
   const feedStatus = async (): Promise<number> => (await app.request(`/post/${parent}/comments.xml`)).status
 
-  // baseline: present on every river, the publisher profile, the single-item and
-  // history reads, and the item's own feed.
-  expect(surfaces()).toEqual({ public: true, personal: true, federated: true, profile: true, item: true, history: true })
+  // baseline: present on every river, the publisher profile, the single-item
+  // read, and the item's own feed. (Phase B: remote history is no longer a
+  // read surface, so it's not part of this matrix.)
+  expect(surfaces()).toEqual({ public: true, personal: true, federated: true, profile: true, item: true })
   expect(await feedStatus()).toBe(200)
   expect(replayKinds(db, store, parent)).toContain('upsert')
 
   // --- hide -----------------------------------------------------------------
   expect(hide(store, parent, 'c1')).toMatchObject({ kind: 'applied', hiddenAt: NOW })
 
-  expect(surfaces()).toEqual({ public: false, personal: false, federated: false, profile: false, item: false, history: false })
+  expect(surfaces()).toEqual({ public: false, personal: false, federated: false, profile: false, item: false })
   expect(await feedStatus()).toBe(404)
   // live/replay state: every historical upsert re-projects to an effective remove.
   expect(replayKinds(db, store, parent).every((k) => k === 'remove')).toBe(true)
@@ -245,13 +245,13 @@ test('moderation: an item hidden from an approved aggregate peer leaves every su
   // restart: a fresh runtime over the same database (continuous-v2 restart)
   const rt = mkRuntime(deps); await rt.ready; await rt.stop()
   expect(store.snapshot((tx) => tx.getActivation()).state).toBe('active')
-  expect(surfaces()).toEqual({ public: false, personal: false, federated: false, profile: false, item: false, history: false })
+  expect(surfaces()).toEqual({ public: false, personal: false, federated: false, profile: false, item: false })
   // replay after the restart: still nothing but removes
   expect(replayKinds(db, store, parent).every((k) => k === 'remove')).toBe(true)
 
   // --- restore → eligible reselection ---------------------------------------
   expect(restore(store, parent, 'c2')).toEqual({ kind: 'applied', logicalItemId: parent, hiddenAt: null })
-  expect(surfaces()).toEqual({ public: true, personal: true, federated: true, profile: true, item: true, history: true })
+  expect(surfaces()).toEqual({ public: true, personal: true, federated: true, profile: true, item: true })
   expect(raw.prepare(`SELECT selected_delivery_id AS d FROM logical_items_v2 WHERE id = ?`).get(parent)).not.toEqual({ d: null })
   expect(await feedStatus()).toBe(200)
   deps.repo.close()

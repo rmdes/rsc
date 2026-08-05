@@ -132,6 +132,19 @@ describe('logicalToEntry maps the DTO onto the render shape (reuse the TimelineE
 		expect(e.replyContextAuthor).toBe('Bob')
 		expect(e.inReplyTo).toBe('https://x/1')
 	})
+	// Phase B: the remote version-history read surface (and the page it linked to)
+	// is gone, so a remote item's "edited" marker must never render — even when
+	// core reports an updatedAt (e.g. a legacy_unknown-provenance arrival time).
+	test('a remote item never carries editedAt, even when updatedAt is set — no "edited" affordance to a removed history page', () => {
+		const e = logicalToEntry(dto({ origin: 'remote', updatedAt: '2026-07-20T01:00:00.000Z', updatedAtProvenance: 'legacy_unknown' }))
+		expect(e.editedAt).toBeNull()
+	})
+	test('a local item still carries editedAt through unchanged (local keeps its edited/revisions affordance)', () => {
+		const e = logicalToEntry(
+			dto({ origin: 'local', selectedAuthor: { kind: 'local', id: 'u1', handle: 'alice', displayName: 'Alice' }, updatedAt: '2026-07-20T01:00:00.000Z', updatedAtProvenance: 'explicit' })
+		)
+		expect(e.editedAt).toBe('2026-07-20T01:00:00.000Z')
+	})
 })
 
 describe('getLogicalTimeline builds the v2 lens query and maps entries', () => {
