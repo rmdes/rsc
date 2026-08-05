@@ -23,10 +23,15 @@ const proxy: RequestHandler = async ({ request, params, url, cookies, getClientA
 	// dev-only openAPI reference (spec 2026-07-19-auth-openapi) blocked in EVERY
 	// environment — the second, independent guard beside the core flag defaulting
 	// off. 404 not 403, so we don't confirm the routes exist.
+	// M2 (security audit): repeated slashes (e.g. a leading slash in
+	// params.path) survive into target.pathname untouched, so the guard
+	// below normalizes its own view of the path before matching. What's
+	// actually fetched (target.href) is untouched.
+	const normalizedPath = target.pathname.replace(/\/{2,}/g, '/')
 	if (
-		!target.pathname.startsWith('/api/auth/') ||
-		target.pathname === '/api/auth/reference' ||
-		target.pathname.startsWith('/api/auth/open-api')
+		!normalizedPath.startsWith('/api/auth/') ||
+		normalizedPath === '/api/auth/reference' ||
+		normalizedPath.startsWith('/api/auth/open-api')
 	) {
 		return new Response(null, { status: 404 })
 	}
