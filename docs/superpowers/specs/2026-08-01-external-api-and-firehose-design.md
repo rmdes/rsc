@@ -243,11 +243,12 @@ the same service functions the existing cookie-authed routes already call
 call) — no duplicated business logic, only a second, key-authenticated entry
 point:
 
-- **`POST /api/v1/posts`**, **`PATCH /api/v1/posts/:id`**, delete equivalent
+- **`POST /api/v1/me/posts`**, **`PATCH /api/v1/me/posts/:id`**, **`DELETE /api/v1/me/posts/:id`**
   — `apiKeyAuth({posts: ['write']})`.
-- **`POST /api/v1/follows`**, unfollow/subscription-management equivalents —
-  `apiKeyAuth({follows: ['write']})`.
-- **`PATCH /api/v1/me`** — `apiKeyAuth({profile: ['write']})`. Handle changes
+- **`POST /api/v1/me/api-follows`**, **`DELETE /api/v1/me/api-follows/:handle`**,
+  **`POST /api/v1/me/api-subscriptions`**, **`DELETE /api/v1/me/api-subscriptions/:sourceId`**
+  — `apiKeyAuth({follows: ['write']})`.
+- **`PATCH /api/v1/me/api-profile`** — `apiKeyAuth({profile: ['write']})`. Handle changes
   through this path inherit whatever the [[Handle history]] backlog idea
   eventually does about old-handle survival — not solved here, just noted as
   a shared seam.
@@ -405,4 +406,13 @@ rather than trusted purely on a permission string ever having been granted.
   in-process (no HTTP hop, so the server-only check never triggers). The
   plugin-level `before` hook from rev 2 is unaffected and still the
   authoritative guard on any direct HTTP attempt at `configId: 'admin'`. See
-  the Implementation deviation note under Admin tier.
+  the Implementation deviation note under Admin tier. **Phase 3 URL correction
+  (same rev):** the Write endpoints section's illustrative paths were corrected
+  to match the real shipped paths discovered during phase-3 implementation —
+  `/api/v1/me/posts` (not bare `/api/v1/posts`), `/api/v1/me/api-follows` and
+  `/api/v1/me/api-subscriptions` (not bare `/api/v1/follows`), `/api/v1/me/api-profile`
+  (not bare `/api/v1/me`). The naming changes come from real method+path collisions
+  with existing cookie-authed siblings, verified live during phase-3 planning; see
+  the naming rationale in `docs/superpowers/plans/2026-08-02-authed-write-api.md`'s
+  Task descriptions for the concrete technical reason each one needed its alternate
+  name.

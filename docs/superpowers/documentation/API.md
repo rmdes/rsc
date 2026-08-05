@@ -73,7 +73,7 @@ Every error is JSON: `{"error": "..."}` with a meaningful status.
 | `403` | Authenticated, but not yours to touch (someone else's post, a remote post) |
 | `404` | No such post, user, or subscription |
 | `409` | Idempotency conflict, or the target isn't a local post |
-| `429` | Subscription cap reached |
+| `429` | Subscription cap reached, the public firehose's per-IP connection cap, or an api-key rate limit — see `code` in the body for the rate-limit case (`RATE_LIMITED`); the other two are durable (don't retry) while a rate limit carries `tryAgainIn` and should be retried after that many ms |
 
 `401` deliberately does not distinguish "no key" from "wrong permission" —
 don't parse the message to tell them apart.
@@ -186,6 +186,11 @@ curl -X POST https://rsc.example.org/api/v1/me/api-subscriptions \
   -H "x-api-key: $RSC_KEY" -H "content-type: application/json" \
   -d '{"url":"https://example.com/feed.xml","commandId":"'$(uuidgen)'"}'
 ```
+
+**Note on cascade delete:** Unfollowing a remote account or feed you're the
+last follower of triggers its removal from the instance (mirrors existing
+cookie-authenticated UI behavior). A scripted client churning follow/unfollow
+at high frequency may remove sources faster than a human would interactively.
 
 Responses:
 
