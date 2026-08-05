@@ -4,12 +4,17 @@ import { listAdminApiKeys, createAdminApiKey, revokeApiKey, type ApiKeySummary }
 import { authedFetch, cookieHeader } from '$lib/server/session'
 import { PERMISSION_OPTIONS } from './permissions.ts'
 
-// No guard() / hasSession() here (unlike settings/api-keys/+page.server.ts):
-// this route lives under /admin/, so web/src/routes/admin/+layout.server.ts's
-// `if (!me?.isAdmin) throw error(404, 'Not found')` already keeps a
-// non-admin (or anonymous/unauthenticated visitor) from ever reaching this
-// page's load or actions — matching the plain-load style the other admin
-// sub-routes (admin/users, admin/settings) already use.
+// SvelteKit runs form actions BEFORE any layout load() (including this
+// route's own admin/+layout.server.ts isAdmin check) — so, contrary to an
+// earlier version of this comment, the layout gate alone does NOT protect
+// these actions. Two real gates cover them instead: core's own
+// `app.use('/admin/*', authed, requireAdmin())` (core/src/api/app.ts, the
+// load-bearing one — runs on every request regardless of SvelteKit
+// lifecycle stage) and web/src/hooks.server.ts's `handle`, which closes
+// the SvelteKit-layer gap for non-GET requests specifically because this
+// layout check doesn't. Matches the same honest split settings/api-keys/
+// +page.server.ts documents for its own guard() (SvelteKit-layer = UX/
+// defense-in-depth, core = the real security boundary).
 
 // Same split as settings/api-keys/+page.server.ts's toActionFail — a clean
 // core rejection keeps its own status; a 401 means the browser's whole
