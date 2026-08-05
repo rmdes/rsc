@@ -590,11 +590,26 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
   const findDelivery = tx.prepare(`SELECT id FROM deliveries_v2 WHERE source_id = ? AND key_kind = ? AND key = ?`)
   const bumpDelivery = tx.prepare(`UPDATE deliveries_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
   const insertDelivery = tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
-  // One version per delivery (phase B): the delivery's single current version,
+  // One version per delivery (phase B): the delivery's CURRENT-DISPLAY version,
   // looked up by delivery_id alone — never by fingerprint, so a real content
   // change (a different fingerprint) is found here too, not missed into a
-  // phantom "new" insert.
-  const findDeliveryVersion = tx.prepare(`SELECT id, fingerprint, canonical_material FROM observation_versions_v2 WHERE delivery_id = ?`)
+  // phantom "new" insert. "Current" is defined identically to the reader
+  // (projector.ts's projectRemote: the version backing the top-sequence
+  // presentation entry) — NOT an unordered `WHERE delivery_id = ?` scan. A
+  // cap-era (or otherwise not-yet-collapsed, Task 4) delivery can still have
+  // several sibling version rows; picking an arbitrary one via SQLite's
+  // UNIQUE(delivery_id,fingerprint) auto-index order silently overwrites the
+  // WRONG row — the edit lands on a version nobody reads, and looks lost.
+  // Falls back to newest-by-arrival when a delivery has versions but no
+  // presentation entry yet (pre-reconcile).
+  const findDeliveryVersion = tx.prepare(
+    `SELECT ov.id, ov.fingerprint, ov.canonical_material FROM observation_versions_v2 ov
+     JOIN presentation_entries_v2 pe ON pe.observation_version_id = ov.id
+     WHERE ov.delivery_id = ? ORDER BY pe.sequence DESC LIMIT 1`,
+  )
+  const findDeliveryVersionFallback = tx.prepare(
+    `SELECT id, fingerprint, canonical_material FROM observation_versions_v2 WHERE delivery_id = ? ORDER BY arrival_at DESC, id DESC LIMIT 1`,
+  )
   const bumpVersion = tx.prepare(`UPDATE observation_versions_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
   // A real change overwrites the delivery's ONE version row in place — same id,
   // arrival_at/run_id untouched (spec I2: selection sorts on first arrival;
@@ -632,7 +647,7 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
     if (existing) bumpDelivery.run(committedAt, runId, deliveryId)
     else insertDelivery.run(deliveryId, sourceId, norm.keyKind, norm.key, committedAt, committedAt, runId)
 
-    const priorVersion = findDeliveryVersion.get(deliveryId) as { id: string; fingerprint: string; canonical_material: Buffer } | undefined
+    const priorVersion = (findDeliveryVersion.get(deliveryId) ?? findDeliveryVersionFallback.get(deliveryId)) as { id: string; fingerprint: string; canonical_material: Buffer } | undefined
     if (priorVersion) {
       if (priorVersion.fingerprint === obs.fingerprint) {
         // fingerprint match: compare canonical material (spec §2.2).

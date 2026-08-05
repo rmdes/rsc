@@ -5,7 +5,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition, parseCandidates, healOrphanedRuns } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
-import { projectTimeline } from '../src/logical/projector.ts'
+import { projectTimeline, projectItem } from '../src/logical/projector.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import type { CommandEnvelope } from '../src/domain/types.ts'
 
@@ -163,6 +163,60 @@ test('a delivery keeps exactly ONE observation version across repeated content c
   expect(Buffer.from(row.canonical_material).toString()).toContain('body-6') // newest content wins
   const job = raw.prepare(`SELECT status FROM reconciliation_jobs_v2`).get() as { status: string }
   expect(job.status).toBe('pending') // re-pended so the drain reconciles the latest change
+})
+
+// Review Critical: a cap-era (or otherwise not-yet-collapsed by Task 4)
+// delivery can have MULTIPLE observation_versions_v2 sibling rows. Picking one
+// via an unordered `WHERE delivery_id = ?` (SQLite's UNIQUE(delivery_id,
+// fingerprint) auto-index order — effectively fingerprint-hash order, not
+// display order) can silently overwrite the WRONG sibling: the edit is
+// recorded, but not on the version readers actually see — a silent edit loss.
+// The lookup must resolve the CURRENT-DISPLAY version the same way the reader
+// does (projector.ts's projectRemote: the top-`sequence` presentation entry).
+test('a content change on a delivery with a stale sibling version overwrites the CURRENT-DISPLAY version, never the sibling', async () => {
+  const { raw, db } = await fresh()
+  const store = createLogicalStore(db)
+  seedSource(raw, 's1', 'https://feed.test/f')
+  const fetchFn1 = fakeFetch({ 'https://feed.test/f': () => ok(RSS(guidItem('g1', false, 'v1'))) })
+  await createAcquisition({ db, fetchFn: fetchFn1, lookupFn: publicLookup, now: () => NOW }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(drainReconciliation({ store, now: () => NOW })).toBe(1)
+
+  const delivery = raw.prepare(`SELECT id FROM deliveries_v2`).get() as { id: string }
+  const current = raw.prepare(`SELECT id FROM observation_versions_v2`).get() as { id: string }
+  const run = raw.prepare(`SELECT id FROM acquisition_runs_v2`).get() as { id: string }
+
+  // Hand-seed an OLDER sibling version — simulating a pre-existing multi-version
+  // delivery (cap-era, or any not-yet-collapsed chain). It sits at presentation
+  // sequence 0; the real current-display version (from above) is bumped to
+  // sequence 1 — the higher sequence is what a reader sees.
+  const sibling = parseCandidates(RSS(guidItem('g1', false, 'stale-sibling'))).candidates[0]
+  raw.prepare(
+    `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
+     VALUES ('v-sibling', ?, 1, ?, ?, ?, ?, 0, ?, ?, 1, ?, ?)`,
+  ).run(delivery.id, sibling.fingerprint, Buffer.from(sibling.canonicalMaterial), NOW, run.id, NOW, run.id, sibling.rawEvidenceJson, sibling.normalizedJson)
+  raw.prepare(`UPDATE presentation_entries_v2 SET sequence = 1 WHERE observation_version_id = ?`).run(current.id)
+  raw.prepare(
+    `INSERT INTO presentation_entries_v2 (delivery_id, sequence, observation_version_id, effective_updated_at, provenance, material_fingerprint) VALUES (?, 0, 'v-sibling', ?, 'arrival', ?)`,
+  ).run(delivery.id, NOW, sibling.fingerprint)
+  expect(count(raw, 'observation_versions_v2')).toBe(2) // the starting multi-version shape
+  expect(count(raw, 'presentation_entries_v2')).toBe(2)
+
+  // A real content-change poll on the SAME delivery.
+  const fetchFn2 = fakeFetch({ 'https://feed.test/f': () => ok(RSS(guidItem('g1', false, 'v2-fresh'))) })
+  await createAcquisition({ db, fetchFn: fetchFn2, lookupFn: publicLookup, now: () => LATER }).acquireSource('s1', { kind: 'scheduled' }, undefined)
+  expect(drainReconciliation({ store, now: () => LATER })).toBe(1)
+
+  expect(count(raw, 'observation_versions_v2')).toBe(2) // still 2 — overwritten in place, not appended
+  const currentRow = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 WHERE id = ?`).get(current.id) as { canonical_material: Buffer }
+  expect(Buffer.from(currentRow.canonical_material).toString()).toContain('v2-fresh') // the edit landed HERE
+  const siblingRow = raw.prepare(`SELECT canonical_material FROM observation_versions_v2 WHERE id = 'v-sibling'`).get() as { canonical_material: Buffer }
+  expect(Buffer.from(siblingRow.canonical_material).toString()).toContain('stale-sibling') // untouched
+
+  // The reader confirms the fresh content is actually what's visible — not
+  // just that SOME version somewhere got edited.
+  const item = raw.prepare(`SELECT id FROM logical_items_v2`).get() as { id: string }
+  const dto = db.read((tx) => projectItem(tx, item.id, { localAccountId: null, activeSourceIds: [] }))
+  expect(dto?.content).toBe('v2-fresh')
 })
 
 test('an unchanged refetch creates no new version or job and only bumps seen metadata', async () => {
