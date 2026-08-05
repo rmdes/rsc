@@ -115,6 +115,38 @@ describe('POST /admin/api-keys', () => {
     })
     expect(res.status).toBe(400)
   })
+
+  // Found via Task 6's manual UI check, not written speculatively: a key
+  // minted through THIS route (as opposed to every other test in this file,
+  // which mints directly via apiKeyApi.createApiKey({body:{userId: the
+  // better-auth authUserId from registerSession, ...}})) must actually work
+  // when used — i.e. authenticate against an admin.read route, AND be
+  // listable/revocable through better-auth's own /api-key/list + /api-key/
+  // delete REST endpoints (which key off the session's authUserId). Both
+  // depend on the key's referenceId being the SAME id apiKeyAuthAdmin and
+  // better-auth's own session-based endpoints use — NOT the RSC-domain
+  // `users` table id (a separately generated UUID, see users.insertUser).
+  test('a key minted through this route actually works: authenticates an admin.read route AND is listable via /api/auth/api-key/list', async () => {
+    const { app, auth, db } = await setup()
+    const { cookie } = await registerSession(auth, db, 'admin@x.test')
+    const mint = await app.request('/admin/api-keys', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ name: 'ops', permissions: { 'admin.read': ['read'] } }),
+    })
+    expect(mint.status).toBe(201)
+    const { key } = await mint.json()
+
+    // The minted key must authenticate against the API it was minted for.
+    const readRes = await app.request('/admin-api/overview', { headers: { 'x-api-key': key } })
+    expect(readRes.status).toBe(200)
+
+    // The minted key must be visible to its own owner's session via
+    // better-auth's own list endpoint (same referenceId).
+    const listRes = await app.request('/api/auth/api-key/list?configId=admin', { headers: { cookie } })
+    const { apiKeys } = await listRes.json()
+    expect(apiKeys.some((k: { name: string | null }) => k.name === 'ops')).toBe(true)
+  })
 })
 
 describe('admin.read routes', () => {

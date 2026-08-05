@@ -881,9 +881,25 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
     const body = await readJsonBody(c)
     if (!body || !isString(body.name, 1, 32)) return c.json({ error: 'name invalid' }, 400)
     if (!isValidAdminKeyPermissions(body.permissions)) return c.json({ error: 'permissions invalid' }, 400)
+    // userId MUST be the better-auth authUserId (session.user.id), NOT
+    // c.get('coreUser').id (the RSC-domain `users` table's own separately
+    // generated UUID — see storage/sqlite.ts insertUser, `id: randomUUID()`).
+    // apiKeyAuthAdmin's verification (api/auth.ts) and better-auth's own
+    // /api-key/list + /api-key/delete REST endpoints all key a verified/
+    // looked-up key's `referenceId` against the authUserId, exactly like
+    // /me/api-keys above does with `userId: session.user.id`. Using
+    // coreUser.id here (an earlier version of this route did) mints a key
+    // that can never authenticate against any admin-api route (apiKeyAuthAdmin
+    // looks up `users.getAuthUserAdminFields(referenceId)`, which finds
+    // nothing for a `users`-table id) and is invisible to its own owner's
+    // session via the standard list/delete endpoints — found live via Task
+    // 6's manual UI check, root-caused, and covered by a regression test
+    // above ("a key minted through this route actually works").
+    const session = await auth.api.getSession({ headers: c.req.raw.headers })
+    if (!session) return c.json({ error: 'authentication required' }, 401)
     try {
       const created = await apiKeyCreateApi.createApiKey({
-        body: { configId: 'admin', userId: c.get('coreUser').id, name: body.name, permissions: body.permissions },
+        body: { configId: 'admin', userId: session.user.id, name: body.name, permissions: body.permissions },
       })
       return c.json({ id: created.id, key: created.key, name: created.name, prefix: created.prefix }, 201)
     } catch (err) {
