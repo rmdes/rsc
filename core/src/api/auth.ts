@@ -26,6 +26,7 @@ export function bearerAuth(token: string): MiddlewareHandler {
 export interface UserDirectory {
   getUserByAuthUserId(authUserId: string): Promise<User | undefined>
   createLocalUser(u: { handle: string; displayName: string; authUserId?: string }): Promise<User>
+  getAuthUserAdminFields(authUserId: string): Promise<{ email: string | null; emailVerified: boolean | null } | undefined>
 }
 
 // Lazy mint (spec P-1 + direct-registration coverage): the core identity is
@@ -95,6 +96,32 @@ export function apiKeyAuth(auth: Auth, users: UserDirectory, permissions: Record
     if (!key) return c.json({ error: 'api key required' }, 401)
     const result = await apiKeyApi.verifyApiKey({ body: { configId: 'user', key, permissions } })
     if (!result.valid || !result.key) return c.json({ error: 'invalid or insufficient api key' }, 401)
+    c.set('coreUser', await ensureCoreUser(users, result.key.referenceId))
+    return next() // see sessionAuth: same propagation contract applies here
+  }
+}
+
+// Same permission-check contract as apiKeyAuth, plus a PER-REQUEST re-check
+// that the key's owner is CURRENTLY an admin (spec: "a key minted while its
+// owner was an admin stops working the moment they're removed from
+// adminEmails, without needing to revoke the key itself"). Deliberately a
+// separate middleware, not a flag on apiKeyAuth: apiKeyAuth hardcodes
+// configId:'user' and never exposes the raw authUserId via context (only
+// coreUser, which has no email field), so it can't be composed with a
+// bolt-on admin check the way registeredOnly() composes after sessionAuth
+// — and the extra lookup has a real per-request cost that only admin-tier
+// routes should pay.
+export function apiKeyAuthAdmin(
+  auth: Auth, users: UserDirectory, adminEmails: ReadonlySet<string>, permissions: Record<string, string[]>,
+): MiddlewareHandler {
+  const apiKeyApi = auth.api as unknown as ApiKeyVerification
+  return async (c, next) => {
+    const key = c.req.header('x-api-key')
+    if (!key) return c.json({ error: 'api key required' }, 401)
+    const result = await apiKeyApi.verifyApiKey({ body: { configId: 'admin', key, permissions } })
+    if (!result.valid || !result.key) return c.json({ error: 'invalid or insufficient api key' }, 401)
+    const fields = await users.getAuthUserAdminFields(result.key.referenceId)
+    if (!fields || !deriveIsAdmin(fields, adminEmails)) return c.json({ error: 'admin only' }, 403)
     c.set('coreUser', await ensureCoreUser(users, result.key.referenceId))
     return next() // see sessionAuth: same propagation contract applies here
   }
