@@ -6,6 +6,9 @@ import { createApp } from '../src/api/app.ts'
 import { createService } from '../src/domain/service.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createAcquisition } from '../src/logical/acquisition.ts'
 
 // Same erasure every other api-key test hits: createAuth's `plugins:
 // BetterAuthPlugin[]` widens every plugin so betterAuth()'s .api inference
@@ -37,6 +40,33 @@ async function setup(adminEmails: ReadonlySet<string> = new Set(['admin@x.test']
     service, bus, token: 'ops-token', auth, users: repo, adminEmails,
     sources: { service: sourceService, repo },
     logical: { store: logicalStoreStub } as never,
+  })
+  return { app, auth, repo, db }
+}
+
+// The two moderation "actually deletes" tests below need a real local post
+// and a real deleteLocalAccount call, both of which route through
+// service->logical (see service.ts's createLocalPostAs/deleteLocalAccount) —
+// setup()'s logicalStoreStub only implements schedulerStats. Mirrors
+// moderation.test.ts's own makeApp, which stands up the real store for the
+// same reason.
+async function setupWithLogicalStore(adminEmails: ReadonlySet<string> = new Set(['admin@x.test'])) {
+  const repo = await createSqliteRepository(':memory:')
+  const db = repo.raw
+  const auth = createAuth({
+    sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
+    webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
+    authOpenApi: false, adminEmails,
+  })
+  const bus = createEventBus()
+  const dbContext = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(dbContext)
+  const service = createService(repo, bus, null, store)
+  const sourceService = createSourceService(repo, null)
+  const app = createApp({
+    service, bus, token: 'ops-token', auth, users: repo, adminEmails,
+    sources: { service: sourceService, repo },
+    logical: { store, acquisition: createAcquisition({ db: dbContext }) },
   })
   return { app, auth, repo, db }
 }
@@ -251,5 +281,53 @@ describe('admin.moderation write routes', () => {
       method: 'DELETE', headers: { 'x-api-key': created.key },
     })
     expect(res.status).toBe(401)
+  })
+
+  // Mirrors moderation.test.ts's cookie-authed 'deletes even an admin-email
+  // account' — proves the key-authed route actually deletes, not just
+  // returns 200, by re-checking the row via repo.getUserByHandle afterward.
+  test('DELETE /admin-api/users/:handle actually deletes a real local user (200 + row gone)', async () => {
+    const { app, auth, db, repo } = await setupWithLogicalStore()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId: adminUserId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId: adminUserId, name: 'k', permissions: { 'admin.moderation': ['write'] } },
+    })
+    // A separate, non-admin actor whose account gets deleted.
+    const { cookie: targetCookie } = await registerSession(auth, db, 'victim@x.test')
+    const me = await (await app.request('/me', { headers: { cookie: targetCookie } })).json() // lazy-mints the core user
+    const handle = me.user.handle
+
+    const res = await app.request(`/admin-api/users/${handle}`, {
+      method: 'DELETE', headers: { 'x-api-key': created.key },
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    expect(await repo.getUserByHandle(handle)).toBeUndefined()
+  })
+
+  // Mirrors moderation.test.ts's cookie-authed 'deletePost removes a local
+  // post' persisted-state check (repo.getPost → undefined).
+  test('DELETE /admin-api/posts/:id actually deletes a real local post (200 + row gone)', async () => {
+    const { app, auth, db, repo } = await setupWithLogicalStore()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId: adminUserId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId: adminUserId, name: 'k', permissions: { 'admin.moderation': ['write'] } },
+    })
+    const { cookie: authorCookie } = await registerSession(auth, db, 'author@x.test')
+    await app.request('/me', { headers: { cookie: authorCookie } }) // lazy-mints the core user
+    const createdPost = await (await app.request('/posts', {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: authorCookie },
+      body: JSON.stringify({ content: 'delete me' }),
+    })).json()
+    const postId = createdPost.post.id
+
+    const res = await app.request(`/admin-api/posts/${postId}`, {
+      method: 'DELETE', headers: { 'x-api-key': created.key },
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    expect(await repo.getPost(postId)).toBeUndefined()
   })
 })
