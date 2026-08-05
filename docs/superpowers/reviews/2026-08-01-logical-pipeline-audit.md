@@ -46,6 +46,8 @@ nothing consumes.
    one-row-per-delivery.** Low tangle (change-detection keeps working on the
    single row).
 
+3. ⛔ **CORRECTED 2026-08-05 — THIS FINDING WAS WRONG the same way #1 was; the publisher graph is 3/4 load-bearing, do NOT cut it.** The Phase D brainstorm's producer/consumer trace found verification (kept) mints `verified_origin` claims into `publisher_claims_v2` (verification.ts:414-416) and alias bindings into `publisher_feed_aliases_v2` (verification.ts:435-443), both FK→`remote_publishers_v2`; and `selectAuthor`'s evidence ranking is how a verified claim wins the byline (the instance-governed-members payoff). Only `publisher_names_v2` was verification-free, and the byline bar was set to preserve today's behavior (cross-source name-fill), so it stays too. Net removable: nothing. **Phase D dropped.** The original (mistaken) finding stands below only as the record.
+
 3. `yagni:` **Publisher attribution graph** — `publisher_claims_v2`,
    `publisher_names_v2`, `remote_publishers_v2`, `publisher_feed_aliases_v2`
    (4 tables) + the projector's `selectAuthor`/`eligibleAuthorClaims`/evidence-
@@ -65,6 +67,8 @@ nothing consumes.
    Replacement: reconcile inline in `commitAcquisition` for the common case;
    keep async only if cross-source ordering genuinely needs it. ⚠️ High tangle
    (the spine's concurrency model) — biggest LOC but riskiest; spec-only.
+
+5. ⛔ **CORRECTED 2026-08-05 — THIS FINDING WAS OVERSTATED, same as #1 and #3; nothing here is cleanly removable.** The Phase F trace found: the "three tombstone flavors" don't overlap — `blocked_source_tombstones_v2` + `tombstone_aliases_v2` are a 1:N parent/child (a block tombstone and its alias-URL list; "folding" loses the indexed alias `isBlocked` lookup), and `handle_reservations_v2` is not a tombstone at all but a live handle→publisher namespace reservation read by an API route (logical-routes.ts:1054). `policy_fanout_v2` is not migration bookkeeping but the live federation fan-out state machine (`fanout.ts`, 8 refs). `source_validators_v2` is a keeper (the finding agreed). **Phase F dropped — net removable: nothing.** Original (overstated) finding below.
 
 5. `yagni:` **Thin single-purpose tables** worth individually questioning:
    `redirect_observations_v2` (store every redirect hop — needed?),
