@@ -26,39 +26,62 @@ change).
 
 - **The rate-limit fix's mechanism was verified against the installed
   source during planning, not assumed**: `core/node_modules/@better-auth/
-  api-key/dist/index.mjs`'s `consumeRateLimit` (around line 1790) throws
-  `new APIError('TOO_MANY_REQUESTS', { message: decision.message, code:
+  api-key/dist/index.mjs`'s `consumeRateLimit` (line ~1790) throws `new
+  APIError('TOO_MANY_REQUESTS', { message: decision.message, code:
   'RATE_LIMITED', details: { tryAgainIn: decision.tryAgainIn } })` when the
-  window is exceeded. `verifyApiKey`'s own endpoint handler (around line
-  1958) catches any `APIError` from `validateApiKey` and returns `ctx.json({
+  window is exceeded. `verifyApiKey`'s own endpoint handler (line ~1988)
+  catches any `APIError` from `validateApiKey` and returns `ctx.json({
   valid: false, error: { ...error.body, message: error.body?.message, code:
   error.body?.code }, key: null })` — the specific code AND `details.
   tryAgainIn` survive into the JSON response. RSC's `apiKeyAuth`/
-  `apiKeyAuthAdmin` (`core/src/api/auth.ts`) currently do `if (!result.valid
-  || !result.key) return c.json({ error: 'invalid or insufficient api key'
-  }, 401)` — discarding `result.error` entirely regardless of why
-  verification failed. The fix is local to these two functions; nothing in
-  better-auth needs changing. Re-verify this against the installed source
-  before implementing, not from this paraphrase — versions can drift.
-- **`docs/superpowers/documentation/API.md` already documents the intended
-  429 behavior** (`### Rate limit` section: "Exceeding it returns an error
-  with a `tryAgainIn` value in milliseconds") — this was written aspirationally
+  `apiKeyAuthAdmin` (`core/src/api/auth.ts:98`, `:122`) currently do
+  `if (!result.valid || !result.key) return c.json({ error: 'invalid or
+  insufficient api key' }, 401)` — discarding `result.error` entirely
+  regardless of why verification failed. The fix is local to these two
+  functions; nothing in better-auth needs changing. Re-verify this against
+  the installed source before implementing, not from this paraphrase —
+  versions can drift.
+- **The 429 response shape is decided here, not at implementation time**
+  (rev 2 — a rev-1 draft deferred this across three separate sections; a
+  ponytail-review pass correctly called that out as under-grounding, since
+  the deciding fact — `result.error.code` — was already pinned two
+  paragraphs above): `{ error: 'rate limit exceeded', code: 'RATE_LIMITED',
+  tryAgainIn: result.error.details?.tryAgainIn }`, status `429`. The `code`
+  field is what lets a client tell this apart from the two OTHER existing
+  429 meanings (below) without parsing message text — matches this
+  project's own stated house convention (`API.md`'s existing `401` row:
+  "deliberately does not distinguish causes via message text").
+- **429 already has two meanings before this fix adds a third** (rev 2 —
+  a ponytail-audit pass found the un-widened case): `API.md`'s Errors table
+  currently lists only "Subscription cap reached"
+  (`core/src/api/logical-routes.ts:727`, `{error:'subscription limit
+  reached'}`, no retry-after info — a durable state, retrying does nothing
+  until the caller unsubscribes something) — but the firehose's per-IP
+  connection cap (`core/src/api/logical-routes.ts:1226`/`:1228`, already
+  shipped, phase 1) is ALSO a 429 and was never added to that table either.
+  Task 1 Step 3 documents all three: subscription cap (durable, don't
+  retry), firehose connection cap (durable per-IP, don't retry), rate limit
+  (transient, retry after `tryAgainIn`) — the retry semantics genuinely
+  differ per case, this is not manufactured precision.
+- **`docs/superpowers/documentation/API.md`'s `### Rate limit` section
+  already documents the intended 429 behavior** ("Exceeding it returns an
+  error with a `tryAgainIn` value in milliseconds") — written aspirationally
   by a parallel session before this fix landed. Task 2 makes the code match
-  the docs, not the other way around; don't touch that section of `API.md`
-  unless the real response shape ends up different from what's documented,
-  in which case fix the docs to match reality.
-  - **Wrinkle found during planning (2026-08-05)**: `API.md`'s existing
-    `429` row in the Errors table currently means "subscription cap
-    reached" (`| 429 | Subscription cap reached |`). Task 2 introduces a
-    SECOND, unrelated meaning for the same status code (rate-limit
-    exhaustion) — both are legitimate uses of 429, but a client can no
-    longer assume "429 always means the subscription cap." Task 2 must
-    make the two cases distinguishable in the response body (e.g. via the
-    `error` message text, or a `code` field) and Task 1 should update the
-    Errors table to note both meanings and how to tell them apart — read
-    `API.md`'s current Errors section fresh before writing this, since Task
-    1 and Task 2 both touch this doc and should be sequenced (Task 1 first)
-    or coordinated to avoid one undoing the other's edit.
+  that prose (now pinned exactly above); Task 1 only touches the separate
+  Errors table.
+- **The rate-limit test's per-key override mechanism is pinned here, not
+  deferred** (rev 2 — both review passes independently found this in the
+  same already-open file the rate-limit mechanism above came from, a few
+  lines away: `createApiKeyBodySchema`, `core/node_modules/@better-auth/
+  api-key/dist/index.mjs:590-592`, and the `createApiKey` handler,
+  line ~828-833). `rateLimitMax`/`rateLimitTimeWindow`/`rateLimitEnabled`
+  are accepted directly in `auth.api.createApiKey({body:{...}})` as
+  server-only per-key overrides — mint a test key with `rateLimitMax: 2,
+  rateLimitTimeWindow: 60_000` to exceed its window in 3 requests without
+  waiting a real hour. Task 2's `ApiKeyCreation`-style local cast interface
+  (mirror `core/test/personal-api-routes.test.ts:16-20`'s existing
+  `mintKey`/`ApiKeyCreation` pattern) needs widening to accept these two
+  fields in its `body` type.
 - **`core/src` runs on Node native type-stripping**: no TypeScript
   parameter properties, no build step.
 - **Hono house style**: hand-rolled validation, `c.json({error}, status)`,
@@ -111,18 +134,19 @@ scripted client churning follow/unfollow at high frequency can cause more
 churn than a human ever would through the browser. Don't change any code —
 this is a "know before you script" note, not a bug fix.
 
-- [ ] **Step 3: Add the 429-ambiguity note to the Errors table (coordinate with Task 2)**
+- [ ] **Step 3: Document all three 429 meanings in the Errors table**
 
-If Task 2 hasn't landed yet when you do this step, still update the Errors
-table now: change the `429` row from `Subscription cap reached` to note
-BOTH meanings (subscription cap reached, or api-key rate limit exceeded)
-and how a client tells them apart (Task 2 will define the exact
-distinguishing field/message — if Task 2 isn't done yet, write this step
-as a placeholder TODO comment in the doc source itself is NOT acceptable
-per this project's "no placeholders" plan convention; instead, either
-sequence Task 2 before this step, or write the real distinguishing text now
-by reading Task 2's brief for its exact response shape before finalizing
-this doc edit).
+Change the `429` row (currently just `Subscription cap reached`) to cover
+all three real cases — the shape is already pinned in Global Constraints,
+nothing to coordinate at execution time:
+
+```markdown
+| `429` | Subscription cap reached, the public firehose's per-IP connection cap, or an api-key rate limit — see `code` in the body for the rate-limit case (`RATE_LIMITED`); the other two are durable (don't retry) while a rate limit carries `tryAgainIn` and should be retried after that many ms |
+```
+
+Match the table's real current column formatting (read it fresh — this is
+illustrative of the content, not guaranteed to match the exact Markdown
+table syntax already in the file).
 
 - [ ] **Step 4: Commit**
 
@@ -158,75 +182,99 @@ EOF
   when `result.valid` is `false`, confirmed against installed source (see
   Global Constraints).
 - Produces: `apiKeyAuth` and `apiKeyAuthAdmin` both return `429` (not `401`)
-  specifically when `result.error?.code === 'RATE_LIMITED'`, with a response
-  body that includes `tryAgainIn` (from `result.error.details?.tryAgainIn`)
-  so a client can back off correctly — exact JSON shape decided at
-  implementation time (e.g. `{error: 'rate limit exceeded', tryAgainIn:
-  <ms>}`), but MUST be distinguishable from the existing subscription-cap
-  `429` (Task 1 Step 3 documents whichever shape is chosen here — if this
-  task lands after Task 1's doc edit, go back and make sure the doc
-  matches the real shape, don't leave it stale).
+  specifically when `result.error?.code === 'RATE_LIMITED'`, with body
+  `{error: 'rate limit exceeded', code: 'RATE_LIMITED', tryAgainIn:
+  result.error.details?.tryAgainIn}` — this exact shape is pinned in Global
+  Constraints and matched by Task 1 Step 3's Errors-table row; no ordering
+  dependency between the two tasks.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // core/test/api-key-rate-limit.test.ts
-import { describe, test, expect } from 'vitest'
+import { test, expect } from 'vitest'
 import { Hono } from 'hono'
-import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
-import { createAuth } from '../src/auth.ts'
-import { apiKeyAuth } from '../src/api/auth.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
+import { createEventBus } from '../src/domain/bus.ts'
+import { createService } from '../src/domain/service.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+import { mountPersonalApiRoutes } from '../src/api/logical-routes.ts'
+import { ensureCoreUser } from '../src/api/auth.ts'
+import { makeAuth, registeredSession } from './auth-helper.ts'
 
-async function setup() {
-  const db = new Database(':memory:')
-  const repo = await createSqliteRepository(':memory:')
-  // NOTE: two different repos above is likely wrong — createSqliteRepository
-  // takes a filename and opens its own handle; read the real signature and
-  // this file's own auth-helper.ts fresh before finalizing setup, this is
-  // illustrative only. The key requirement: an auth instance whose
-  // `configId:'user'` apiKey config has a LOW rateLimit.maxRequests (e.g. 2)
-  // so the test can exceed it in a handful of requests without waiting an
-  // hour — check whether createAuth's real options let you override this
-  // per-test, or whether you need to mint the key with an explicit
-  // low `rateLimitMax` via `auth.api.createApiKey`'s own per-key override
-  // (the plugin supports this — confirmed in ALLOWED_KEY_PERMISSIONS-adjacent
-  // code comments — read core/src/auth.ts's apiKey() config and the
-  // installed plugin's createApiKey options to find the real per-key
-  // override field name before writing this test for real).
+// Same erasure this file's siblings hit (personal-api-routes.test.ts,
+// api-key-plugin.test.ts) — createAuth's `plugins: BetterAuthPlugin[]`
+// widens every plugin so betterAuth()'s .api inference can't see
+// apiKey()'s createApiKey. rateLimitMax/rateLimitTimeWindow are real,
+// server-only per-key overrides (createApiKeyBodySchema,
+// @better-auth/api-key/dist/index.mjs:590-592) — not invented for this test.
+interface ApiKeyCreation {
+  createApiKey(input: {
+    body: {
+      configId?: string
+      userId?: string
+      permissions?: Record<string, string[]>
+      rateLimitMax?: number
+      rateLimitTimeWindow?: number
+    }
+  }): Promise<{ key: string; id: string }>
 }
 
-describe('api-key rate-limit exhaustion', () => {
-  test('surfaces as 429 with tryAgainIn, not a bare 401, once the window is exceeded', async () => {
-    // Mint a key with a low rateLimitMax (e.g. 2 requests), hit a
-    // timeline:read-gated probe route 3 times, assert the 3rd is 429 with
-    // a tryAgainIn field — NOT 401. Write the real test body after
-    // confirming the exact mechanism for overriding rateLimitMax per-key
-    // (see the setup() note above).
-  })
+async function setup() {
+  const repo = await createSqliteRepository(':memory:')
+  const db = createDatabaseContext(repo.raw)
+  const store = createLogicalStore(db)
+  const bus = createEventBus()
+  const auth = makeAuth(repo)
+  const service = createService(repo, bus, null, store)
 
-  test('a genuinely invalid key still returns 401, not 429 (regression guard)', async () => {
-    // Confirms this fix didn't accidentally widen 429 to cover invalid-key
-    // cases too — a bogus key string should still 401.
-  })
+  const authApp = new Hono()
+  authApp.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw))
+  const cookie = await registeredSession(authApp, 'ratelimited@x.test', repo)
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const authUserId = session!.user.id
+  await ensureCoreUser(repo, authUserId)
+
+  const app = new Hono()
+  mountPersonalApiRoutes(app, { store, auth, users: repo, service, sourceService: createSourceService(repo, null) })
+  return { app, auth, authUserId }
+}
+
+test('rate-limit exhaustion surfaces as 429 with tryAgainIn and code, not a bare 401', async () => {
+  const { app, auth, authUserId } = await setup()
+  const apiKeyApi = auth.api as unknown as ApiKeyCreation
+  // 2 requests per 60s window — GET /me/timeline (timeline:read) is a real,
+  // already-mounted probe route; no bespoke test route needed.
+  const key = (await apiKeyApi.createApiKey({
+    body: { configId: 'user', userId: authUserId, permissions: { timeline: ['read'] }, rateLimitMax: 2, rateLimitTimeWindow: 60_000 },
+  })).key!
+
+  const first = await app.request('/me/timeline', { headers: { 'x-api-key': key } })
+  expect(first.status).toBe(200)
+  const second = await app.request('/me/timeline', { headers: { 'x-api-key': key } })
+  expect(second.status).toBe(200)
+  const third = await app.request('/me/timeline', { headers: { 'x-api-key': key } })
+  expect(third.status).toBe(429)
+  const body = (await third.json()) as { error: string; code: string; tryAgainIn: number }
+  expect(body.code).toBe('RATE_LIMITED')
+  expect(body.tryAgainIn).toBeGreaterThan(0)
+})
+
+test('a genuinely invalid key still returns a plain 401, not 429 (regression guard)', async () => {
+  const { app } = await setup()
+  const res = await app.request('/me/timeline', { headers: { 'x-api-key': 'not-a-real-key' } })
+  expect(res.status).toBe(401)
+  const body = (await res.json()) as { code?: string }
+  expect(body.code).not.toBe('RATE_LIMITED')
 })
 ```
-
-This task's test skeleton is deliberately incomplete (unlike every other
-task in this project's recent plans, which give complete code) because the
-exact mechanism for making a test key exceed its rate limit quickly (rather
-than waiting a real hour) needs grounding against the installed
-`@better-auth/api-key` source at implementation time — don't guess the
-per-key override field name, read `core/node_modules/@better-auth/api-key/
-dist/index.mjs`'s `createApiKey` body (already read once during phase 2/3
-planning — the same file this project's own `POST /me/api-keys` route
-already reads for other fields) to confirm the exact override mechanism,
-then write the real test.
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `docker compose exec -T core npm test -w core -- api-key-rate-limit`
-Expected: FAIL — first test currently gets 401 not 429.
+Expected: FAIL — the third request currently gets 401, not 429.
 
 - [ ] **Step 3: Fix `apiKeyAuth` and `apiKeyAuthAdmin`**
 
@@ -239,23 +287,37 @@ session's work):
 if (!result.valid || !result.key) return c.json({ error: 'invalid or insufficient api key' }, 401)
 ```
 
-Change to distinguish the rate-limited case:
+Change to distinguish the rate-limited case, using the exact response
+shape pinned in Global Constraints:
 
 ```ts
 if (!result.valid || !result.key) {
   if (result.error?.code === 'RATE_LIMITED') {
-    return c.json({ error: 'rate limit exceeded', tryAgainIn: result.error.details?.tryAgainIn }, 429)
+    return c.json({ error: 'rate limit exceeded', code: 'RATE_LIMITED', tryAgainIn: result.error.details?.tryAgainIn }, 429)
   }
   return c.json({ error: 'invalid or insufficient api key' }, 401)
 }
 ```
 
-Confirm `ApiKeyVerification`'s type (already defined in this file, cast
-target for `auth.api as unknown as ApiKeyVerification`) actually types
-`result.error` with a `code`/`details` shape — if it's currently typed as
-`unknown` or omitted entirely, widen the interface to match what the
-installed source really returns (re-read it fresh, per Global Constraints),
-don't use an `as` cast to paper over a type mismatch.
+`ApiKeyVerification` (already defined in this file, cast target for
+`auth.api as unknown as ApiKeyVerification`) needs widening — it currently
+has no `error` field on its `verifyApiKey` return type. Add:
+
+```ts
+interface ApiKeyVerification {
+  verifyApiKey(input: {
+    body: { configId: string; key: string; permissions: Record<string, string[]> }
+  }): Promise<{
+    valid: boolean
+    key: { referenceId: string } | null
+    error: { code?: string; details?: { tryAgainIn?: number } } | null
+  }>
+}
+```
+
+(Illustrative of the fields this task needs — merge into whatever the
+interface's real current shape already has, don't replace fields this task
+doesn't touch.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -359,22 +421,34 @@ task. The two out-of-scope items (idempotency, follow-cascade) are
 explicitly NOT tasks here — one deferred with its scope correction already
 recorded in `ideas.md`, the other downgraded to a Task 1 doc note.
 
-**Placeholder scan:** Task 2's test skeleton is deliberately incomplete
-(the rate-limit-override mechanism needs grounding against installed
-source at implementation time) — this is flagged explicitly as a
-deviation from this project's normal "complete code in every step" rule,
-with a stated reason, not a silent gap. Every other step in this plan has
-complete code or an explicit, reasoned deferral.
+**Placeholder scan:** clean. Every step has complete code.
 
-**Sequencing note:** Task 1 (docs) and Task 2 (code) both touch `API.md`'s
-Errors table for the 429 row — Task 1 Step 3 explicitly calls out
-coordinating with Task 2's actual response shape rather than guessing it.
-If executed via SDD (fresh subagent per task), the controller dispatching
-these tasks should either sequence Task 2 before Task 1's Step 3, or
-re-check Task 1's doc edit against Task 2's real landed shape afterward —
-this is the one place in this otherwise-independent 3-task plan where
-task order matters.
+**Rev 2 (2026-08-05) — folding in a parallel ponytail-review + ponytail-audit
+pass, both run against the rev-1 plan before any code was written:**
+- Both passes independently flagged the same thing: rev 1 deferred two
+  decisions (the 429 response shape, and the rate-limit test's per-key
+  override mechanism) that were actually gettable during planning — the
+  deciding facts (`result.error.code`, and `createApiKeyBodySchema`'s
+  `rateLimitMax`) sat a few lines apart in the same already-open file the
+  rate-limit mechanism itself came from. Both are now pinned in Global
+  Constraints and Task 2's test is complete, real code — not deferred.
+- The audit independently re-verified (by reading the real service-layer
+  call graph, not trusting the plan's own claim) that the idempotency
+  deferral is correct: `POST /me/posts`/`POST /me/api-follows` really do
+  share `service.createLocalPostAs`/`addFollow` with the cookie-authed
+  siblings, and neither has any command-ledger wrapping today, unlike
+  `subscribeByUrl`'s real `BEGIN IMMEDIATE`+`command_ledger_v2` mechanism —
+  a route-local fix would be a second, weaker, inconsistent idempotency
+  mechanism next to the one canonical pattern already in use elsewhere.
+  Not picked back up.
+- The audit also found a third, pre-existing, currently-undocumented 429
+  case (the firehose's per-IP connection cap) that rev 1's Errors-table fix
+  would have missed — folded into Task 1 Step 3's now-complete table row.
+- Rev 1's tripled repetition of the same "coordinate Task 1 with Task 2"
+  caveat across Global Constraints/Task 1/Self-Review is gone — the
+  response shape being pinned once in Global Constraints means Task 1 and
+  Task 2 no longer have any real ordering dependency; either can run first.
 
 **Type consistency:** no new shared interfaces introduced across tasks;
-Task 2's `ApiKeyVerification` widening (if needed) is entirely local to
+Task 2's `ApiKeyVerification` widening is entirely local to
 `core/src/api/auth.ts` and doesn't ripple into other files.
