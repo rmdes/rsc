@@ -50,8 +50,8 @@ separable — a key that can post can also delete your posts. If you're
 building something that only publishes, that key can still destroy; treat it
 accordingly.
 
-Admin operations are **not** available via API keys. That tier is designed but
-not built.
+Admin operations are a separate key tier with its own prefix and issuance
+route — not self-serve here. See [Admin](#admin) below.
 
 ### Rate limit
 
@@ -216,6 +216,76 @@ already taken returns `409`.
 Changing your handle **changes your feed URLs and post permalinks.** Existing
 subscribers follow the old address until they re-resolve. Don't automate this
 on a schedule.
+
+---
+
+## Admin
+
+A separate key tier for scripted governance/moderation — the concrete driver
+is an admin running the same action across several independent instances
+without logging into each one's `/admin` UI. Not self-serve: keys are minted
+by an existing admin at **`/admin/api-keys`**, a web panel distinct from the
+self-serve `/settings/api-keys` page above. There is no route that lets a
+regular account request one.
+
+Admin keys look like `rsc_admin_…` — a distinct prefix from a personal key's
+`rsc_…`, so the two are visually distinguishable at a glance. Send one the
+same way, as `x-api-key`.
+
+**Every admin-tier request re-derives admin status from the current config,
+not from a flag stored on the key.** A key minted while its owner was an
+admin stops working the instant they're removed from `RSC_ADMIN_EMAIL` —
+without the key itself needing to be revoked.
+
+### Permissions
+
+| Permission | Grants |
+|---|---|
+| `admin.read:read` | List sources, users, instance overview, settings |
+| `admin.sources:write` | Governance actions on sources (below) |
+| `admin.moderation:write` | Hard-remove a user or a post |
+
+Governance actions are restricted to exactly six verbs: `pause`, `resume`,
+`quarantine`, `allow`, `block`, `unblock`, plus establishing a new federation.
+This is a subset of what the cookie-authed admin UI can do — `approve`,
+`reject`, `revoke`, and changing a source's attribution mode stay
+cookie-authed only, not reachable via API key.
+
+### Reading
+
+```
+GET /admin-api/sources     # admin.read:read
+GET /admin-api/users       # admin.read:read
+GET /admin-api/overview    # admin.read:read
+GET /admin-api/settings    # admin.read:read
+```
+
+Same shapes as the cookie-authed `/admin/*` pages these mirror.
+
+### Governance
+
+```
+POST /admin-api/sources/:id/:action   # admin.sources:write
+POST /admin-api/sources               # admin.sources:write
+```
+
+**Transition** — `:action` is one of the six verbs above; anything else
+returns `400`. Body takes `commandId` (required, idempotency key), and
+`category`/`note`/`attributionMode` as the action requires.
+
+**Establish federation** — body takes `url`, `attributionMode`, `category`,
+optional `note`, and `commandId`. Returns `201` with `{"source": ..., 
+"federation": ...}` on success.
+
+### Moderation
+
+```
+DELETE /admin-api/users/:handle   # admin.moderation:write
+DELETE /admin-api/posts/:id       # admin.moderation:write
+```
+
+Hard removal, same as the cookie-authed admin panel's Remove actions. Not
+recoverable.
 
 ---
 

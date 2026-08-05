@@ -42,7 +42,7 @@
 			<li>
 				<div class="key-row">
 					<span class="key-name">{key.name ?? '(unnamed)'}</span>
-					<span class="field-hint">{key.start ?? 'rsc_'}… · created {formatDate(key.createdAt)} · {permissionText(key.permissions)}</span>
+					<span class="field-hint">{key.start ?? 'rsc_admin_'}… · created {formatDate(key.createdAt)} · {permissionText(key.permissions)}</span>
 				</div>
 				<form method="POST" action="?/revoke" class="unfollow-form" use:enhance>
 					<input type="hidden" name="id" value={key.id} />
