@@ -107,17 +107,22 @@ The sharp edge. One migration, children-first (FK dependency order — do NOT
    existing `deleteObservationVersions` cascade helper (`tombstones.ts`) as the
    ordering authority. Collapse `presentation_entries_v2` to the single survivor
    per delivery.
-3. **Preserve the byline (review I3):** the survivor is the current-DISPLAY
-   version, but the byline is selected by EARLIEST arrival (`selectAuthor`/
-   `itemAssertedName` → `compareFirstArrival`; the live cap deliberately kept the
-   FIRST version to hold it). So before deleting the non-survivors, **re-point the
-   earliest `publisher_claims_v2`/`publisher_names_v2` (claim + name) onto the
-   survivor version** so the displayed byline does not shift. (`observation_version_id`
-   on claims/names is RESTRICT but NOT unique — schema.ts:110/48 — so re-pointing
-   is a plain UPDATE.) The alternative — accept a one-time byline realignment — is
-   NOT taken (violates "essentially same service").
-4. Verify one version + one presentation entry per delivery afterward; current
-   display AND byline unchanged.
+3. **Byline: accept realignment-to-current (review I3 → plan-review C-C reversed
+   this).** The plan review found the re-point idea was both wrong and fragile:
+   `selectAuthor` (projector.ts:95) is EVIDENCE-LEVEL-first, not earliest-arrival,
+   and it already prefers the RETAINED current author — so the survivor's own
+   claim/name is a fine byline and the "move the earliest claim" step is
+   unnecessary complexity that could corrupt name selection. Delete the
+   non-survivors' native claim/name rows with their versions; the byline realigns
+   to the current-display survivor's claim. Negligible real impact; NOT a feature
+   loss (byline still shows).
+4. **Idempotent claim/name writes (plan-review C-B, load-bearing):** with the
+   version cap deleted and jobs re-pended on every edit, `reconcileClaim`
+   (`reconcile.ts:332-335`) and verification's claim/name INSERTs must become
+   idempotent (one row per version, natural-key upsert) — else unbounded
+   claim/name growth reintroduces the July runaway class on new tables.
+5. Verify one version + one presentation entry per delivery afterward; the item
+   still resolves a byline; claim/name counts bounded.
 - `post_revisions`, `posts`, local path, threading, moderation, deliveries,
   verification rows: untouched. Backup-before-flip; forward-only.
 

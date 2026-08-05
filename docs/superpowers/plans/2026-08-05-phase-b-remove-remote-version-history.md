@@ -10,6 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-05-phase-b-remove-remote-version-history-design.md` (rev 2)
 **Spec review folded:** `docs/superpowers/reviews/2026-08-05-phase-b-spec-review.md` (C1/I2/I3/I4 + 5 minors)
+**Plan review folded (rev 2):** `docs/superpowers/reviews/2026-08-05-phase-b-plan-review.md` — C-A migration is an imperative heal (not SQL), C-B `reconcileClaim`/verification claim+name must be idempotent (else the runaway class returns), C-C drop the byline re-point (accept realignment-to-current), I-A verification by-delivery + claim guard, I-B null-survivor fallback.
 
 ## Global Constraints
 
@@ -27,11 +28,12 @@
 
 **Files:** Modify `core/src/logical/acquisition.ts` (commit loop ~593-658), `core/src/logical/reconcile.ts` (`applyPresentation` ~408-422 + `nextPresentationEntry`); Test `core/test/logical-acquisition.test.ts`.
 
-- [ ] **Step 1: Failing tests.** Drive the real acquire→commit→drain path twice over one item with CHANGED content between polls. Assert: the delivery has exactly ONE `observation_versions_v2` row (material+fingerprint = the newer content, same `id` as poll 1), ONE `presentation_entries_v2` row (effective_updated_at reflects the change), the observation job is back to `pending`/re-reconciled, `arrival_at` unchanged from poll 1, and NO `UNIQUE` throw. Unchanged re-poll → only `last_seen` bumps. Add an assertion that the version-cap machinery is gone (no second row ever appears across many polls of a churning field — though churn is already fixed, the structural guard).
+- [ ] **Step 1: Failing tests.** Drive the real acquire→commit→drain path twice over one item with CHANGED content between polls. Assert: the delivery has exactly ONE `observation_versions_v2` row (material+fingerprint = the newer content, same `id` as poll 1), ONE `presentation_entries_v2` row (effective_updated_at reflects the change), the observation job is back to `pending`/re-reconciled, `arrival_at` unchanged from poll 1, and NO `UNIQUE` throw. **CRITICAL (review C-B): also assert the item's `publisher_claims_v2` and `publisher_names_v2` stay at ONE each across many change-polls** — the version cap is being deleted, so an unbounded claim/name INSERT-per-reconcile is the reintroduced runaway class. Poll a changing item ~5× and assert claim/name counts stay 1. Unchanged re-poll → only `last_seen` bumps.
 - [ ] **Step 2: Run — expect FAIL** (today a changed fingerprint inserts a 2nd version).
 - [ ] **Step 3: Implement.**
   - `acquisition.ts` commit loop: replace the `findVersion`-by-fingerprint + insert-new + cap-evict branch. New logic per observation on an EXISTING delivery: look up the delivery's single version; if its fingerprint == the incoming fingerprint → bump `last_seen` (unchanged); else → `UPDATE observation_versions_v2 SET fingerprint = ?, canonical_material = ?, raw_evidence_json = ?, normalized_json = ?, last_seen_at = ?, last_seen_run_id = ? WHERE id = ?` (NOT `arrival_at`/`run_id` — I2), then `UPDATE reconciliation_jobs_v2 SET status='pending', next_attempt_at=? WHERE observation_version_id = ? AND kind='observation'` (reset, never insert — C1). For a NEW delivery, INSERT the first version + job as today (that's the one legitimate insert). DELETE the cap machinery: `MAX_VERSIONS_PER_DELIVERY`, `findVictims`, the `deleteObservationVersions` eviction call (~619-657).
   - `reconcile.ts` `applyPresentation`: make it UPSERT the single current entry rather than append a sequence. Simplify `nextPresentationEntry` to always target the one entry (sequence 0). Change the INSERT to `INSERT INTO presentation_entries_v2 (...) VALUES (...) ON CONFLICT(observation_version_id) DO UPDATE SET effective_updated_at=excluded.effective_updated_at, provenance=excluded.provenance, material_fingerprint=excluded.material_fingerprint` (one row per version = one per delivery). Keep the conflict/rollback handling that still applies.
+  - **`reconcile.ts` `reconcileClaim` (~328-335) — the C-B churn guard.** Today it UNCONDITIONALLY INSERTs a `publisher_names_v2` + `publisher_claims_v2` row on every reconcile. With re-pended jobs on every edit + the cap gone, that grows unboundedly. Make both idempotent for the one-version-per-delivery model: UPSERT / INSERT-OR-IGNORE keyed on the row's natural identity — a claim on `(logical_item_id, publisher_id, observation_version_id)`, a name on `(publisher_id, observation_version_id, normalized_name)` — so re-reconciling the SAME (overwritten) version does not append. Update the row's `evidence_level`/name in place when it legitimately changes. (Confirm the natural keys against `schema.ts`; add the UNIQUE index if one doesn't exist, or use an existence-guarded INSERT.)
 - [ ] **Step 4: Run — expect PASS**; core tsc 0; full core suite green (`--no-file-parallelism`).
 - [ ] **Step 5: Commit** (`core/src/logical/acquisition.ts core/src/logical/reconcile.ts core/test/logical-acquisition.test.ts`).
 
@@ -43,7 +45,7 @@
 
 - [ ] **Step 1: Failing test.** A verified delivery whose origin material later CHANGES → still ONE `observation_versions_v2` row (overwritten) + ONE presentation entry + re-`pending`ed job; no second version, no UNIQUE throw. A first verification of a delivery still creates its one version (unchanged).
 - [ ] **Step 2: Run — expect FAIL** (today `persistVerifiedDelivery` can append a 2nd version on changed origin material).
-- [ ] **Step 3: Implement.** In `persistVerifiedDelivery`, when the delivery already has a version, take the same overwrite-in-place + reset-job + upsert-presentation path (reuse the helper Task 1 introduces if extracted; otherwise mirror it). Preserve first-arrival tuple.
+- [ ] **Step 3: Implement.** In `persistVerifiedDelivery`: (a) change the version lookup from by-fingerprint to **by-delivery** (find the delivery's one version), and on changed material take the same overwrite-in-place + reset-job + upsert-presentation path (reuse the helper Task 1 introduces if extracted); preserve the first-arrival tuple. (b) **Same C-B guard (review I-A):** its `publisher_names_v2`/`publisher_claims_v2` INSERT (`verification.ts:389`) must be idempotent per the same natural keys, so a re-verified delivery doesn't accumulate claims/names. Add claim/name count assertions to the test.
 - [ ] **Step 4: Run — PASS; tsc 0; verification suite + full core green.**
 - [ ] **Step 5: Commit** (explicit paths).
 
@@ -63,16 +65,16 @@
 
 ### Task 4: Collapse migration (Criticals 2 & 5, byline I3)
 
-**Files:** Modify `core/src/storage/sqlite.ts` (append one `MIGRATIONS` entry ~line 1462); Test `core/test/migration-*.test.ts` (or a new `phase-b-collapse.test.ts`).
+**Files:** Modify `core/src/storage/sqlite.ts` — an **imperative heal function** (NOT a `MIGRATIONS` SQL entry — review C-A: `MIGRATIONS` is `string[][]` run via `sqlite.exec`, pure SQL, and CANNOT call the TS `deleteObservationVersions` helper). Follow the `healMembers` precedent (`sqlite.ts:1485`): add a `collapseVersionHistory(sqlite)` function that wraps its own transaction, gated by `if (version < <N>)` after the migration loop, so it runs once when the DB crosses the new version. Bump the `user_version` with a no-op/marker `MIGRATIONS` entry so the gate advances. Test `core/test/phase-b-collapse.test.ts`.
 
-- [ ] **Step 1: Failing test.** Seed a delivery with N (>1) observation versions + N presentation entries + claims/names where the EARLIEST claim differs from the current-display version. Run the migration. Assert: exactly ONE version + ONE presentation entry remain (the current-display survivor), the earliest claim/name now points to the survivor (byline unchanged), all FK children of the dropped versions are gone with NO `RESTRICT` violation, and a second run is a no-op (idempotent).
+- [ ] **Step 1: Failing test.** Seed a delivery with N (>1) observation versions + presentation entries + claims/names. Run `collapseVersionHistory`. Assert: exactly ONE version + ONE presentation entry remain (the current-display survivor); all FK children of the dropped versions are gone with NO `RESTRICT` violation; the item still resolves a byline (realigned to the survivor's claim — see C-C below); a delivery that has versions but NO presentation entry is handled (survivor falls back to the newest-by-`arrival_at` version, NOT null — review I-B); and a second run is a no-op (idempotent).
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** a forward-only migration that, per remote delivery with >1 version:
-  1. Pick the survivor = the version backing the current-display `presentation_entries_v2` (highest `sequence`).
-  2. `UPDATE publisher_claims_v2 / publisher_names_v2 SET observation_version_id = <survivor> WHERE observation_version_id = <the earliest non-survivor holding the byline>` — preserve the earliest byline (I3). (Confirm which claim/name is the byline via the same earliest-arrival rule; the plan-review should tighten this.)
+- [ ] **Step 3: Implement** `collapseVersionHistory`, per remote delivery with >1 version:
+  1. **Survivor** = the version backing the current-display `presentation_entries_v2` (highest `sequence`); **if the delivery has no presentation entry (I-B), fall back to the newest version by `arrival_at, id`** — never null (null → data-destroying delete).
+  2. **No byline re-point (review C-C).** `selectAuthor` is evidence-level-first (not earliest-arrival) AND already prefers the RETAINED current author, so the fragile "move the earliest claim" step was both wrong and unnecessary. Accept byline **realignment-to-current** (spec I3 option b): the survivor's own claim/name is the byline post-collapse; delete the non-survivors' native claim/name rows with the versions. Negligible real impact; deletes a fragile step.
   3. Delete the non-survivor versions + their FK children in dependency order via the `deleteObservationVersions` cascade (`tombstones.ts:205` — covers presentation_entries UNIQUE + the RESTRICT children, chunked, idempotent).
   4. Collapse the survivor's presentation entries to one (sequence 0) if multiple remain.
-  - Guard with SQL-param chunking (the retention incident lesson). Local `post_revisions`/`posts` untouched.
+  - Chunk any `IN (...)` (the retention param-limit lesson). Local `post_revisions`/`posts` untouched.
 - [ ] **Step 4: Run — PASS; tsc 0; full core suite green.** Verify against the local dev DB (converted, has real chains) read-only before/after counts.
 - [ ] **Step 5: Commit** (`core/src/storage/sqlite.ts` + test).
 
