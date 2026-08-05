@@ -1,8 +1,10 @@
 # logical-routes.ts Module Split — Design
 
-**Status:** Rev 2 (2026-08-05; clean-context ponytail review folded — `shared.ts`
-trimmed to 5 symbols after a comment-vs-code false-match correction on
-`isAuditCategory`; barrel specified as `export *` wildcard re-exports). A
+**Status:** Rev 3 (2026-08-05; second clean-context ponytail round folded). The
+hand-traced `shared.ts` partition was wrong in both review rounds (symbol-name
+collisions + comment matches), so rev 3 stops asserting an exact membership list
+and makes **`tsc` the authority** for `shared.ts` (extract → compile → promote
+unresolved). Rev 2 had set the barrel to `export *` wildcard re-exports (kept). A
 behavior-preserving structural refactor: split
 the 1317-line `core/src/api/logical-routes.ts` into a barrel + one module per
 route group. No behavior, signature, or route change. First of a possible series
@@ -13,7 +15,7 @@ file is *already* organized as 7 self-contained `mount*Routes` functions.
 ## Goal
 
 `logical-routes.ts` (1317 loc) → the barrel `logical-routes.ts` (thin re-export)
-plus `logical-routes/{shared,write,read,personal,admin,public}.ts`, each ≤ ~270
+plus `logical-routes/{shared,write,read,personal,admin,public}.ts`, each ≤ ~300
 loc and holdable in one context. **Zero behavioral change; zero churn on
 consumers.**
 
@@ -65,7 +67,7 @@ wildcard barrel is the cheaper permanent trade.
 core/src/api/
   logical-routes.ts              barrel — `export *` per submodule (path unchanged)
   logical-routes/
-    shared.ts                    MODEL, NEUTRAL_404, IDEMPOTENCY_CONFLICT, isString
+    shared.ts                    small neutral module of cross-group helpers (tsc-discovered)
     write.ts                     mountLogicalRoutes        (moderation/write)
     read.ts                      mountLogicalReadRoutes     (timeline/feeds)
     personal.ts                  mountPersonalApiRoutes
@@ -78,50 +80,28 @@ into `public.ts`), plus `shared.ts` and the barrel.
 
 ## Shared-vs-local partition (traced, not guessed)
 
-**Governing principle:** a symbol belongs in `shared.ts` iff **≥2 route modules
-reference it, directly or transitively** (a helper that a write route calls, which
-itself calls `isAuditCategory`, makes `isAuditCategory` shared). Everything else is
-group-local. This is mechanically enforced: after each extraction, `tsc` fails on
-any symbol a module needs but can't see → promote it to `shared.ts`. The list
-below is the traced starting point, not a substitute for that check.
+**Governing principle & mechanism.** A symbol belongs in `shared.ts` iff **≥2
+route modules reference it** (directly or transitively). Exact membership is
+**discovered by `tsc`, not by hand**: extract a module, run `tsc`; every symbol it
+can't resolve gets promoted to `shared.ts`; repeat until the set compiles clean.
+`tsc` is the authority — any prose list here is a hint, never the contract.
 
-Symbol usage was traced across the mount-fn line ranges (write 136 · read 369 ·
-personal 578 · admin 876 · handle 1049 · stream 1079 · firehose 1198),
-**following helper chains** (the naive first pass under-counted — `readModBody`
-wraps `isAuditCategory`/`isString`/`readJsonBody`). One trap corrected by the
-review: the module-local `isAuditCategory` (defined ~L61) is used **only** at L83
-inside `readModBody` (write); the L979 "isAuditCategory" match is a *comment*, and
-admin's actual code (L983/993) calls the **app.ts** import
-`isSourceGovernanceCategory` — a different function. So local
-`isAuditCategory`/`AUDIT_CATEGORIES` are **write-only**, not shared.
+Why the mechanism instead of a table: this partition was hand-traced across two
+review rounds and was **wrong both times**. `grep` collided distinct symbols
+(`IDEMPOTENCY_CONFLICT` vs `SUB_IDEMPOTENCY_CONFLICT` vs the app.ts
+`SOURCES_IDEMPOTENCY_CONFLICT` alias; local `isAuditCategory` vs the app.ts
+`isSourceGovernanceCategory` alias) and matched names inside comments. A
+behavior-preserving move does not need a provably-correct hand audit — it needs
+the compiler to close the set, which it does deterministically.
 
-**`shared.ts`** — the cross-group symbols (5):
-- `MODEL` (write + handle; embedded in the shared error objects)
-- `NEUTRAL_404` (write + handle)
-- `IDEMPOTENCY_CONFLICT` (write + personal + admin)
-- `isString` (write + personal + admin)
-- `readJsonBody` (write + personal + admin)
-
-**Group-local (move with their mount fn):**
-- `write.ts`: `REFRESH_COMMAND`, `INVALID_CURSOR`, `ITEM_UNAVAILABLE`,
-  `LOCAL_ORIGIN`, `NOT_APPLICABLE`, `NOT_BLOCKED`, `DEFAULT_LIMIT`, `ModBody`,
-  `readModBody`, `moderationResponse`, `parseTuplePage`, `parsePage`,
-  `isAuditCategory`, `AUDIT_CATEGORIES`
-  (imports `isString`/`readJsonBody`/`MODEL`/`NEUTRAL_404`/`IDEMPOTENCY_CONFLICT`
-  from `./shared.ts`).
-- `read.ts`: `LogicalReadDeps`, `FEED_LIMIT`, `XML`, `LensSpec`, `LENS_KEYS`,
-  `FORBIDDEN_KEYS`, `parseLensSpec`, `clampLimit`, `decodeBeforeCursor`.
-- `personal.ts`: `PersonalApiDeps`, `ALLOWED_KEY_PERMISSIONS`,
-  `isValidKeyPermissions`, `ApiKeyCreation`, `SUB_NEUTRAL_UNAVAILABLE`,
-  `SUB_IDEMPOTENCY_CONFLICT` (imports `isString`/`readJsonBody`/
-  `IDEMPOTENCY_CONFLICT` from `./shared.ts`).
-- `admin.ts`: `AdminApiDeps` (imports `isString`/`readJsonBody`/
-  `IDEMPOTENCY_CONFLICT` from `./shared.ts`; category validation uses the app.ts
-  `isSourceGovernanceCategory` import, same as today — not the local one).
-- `public.ts`: the handle/stream/firehose deps interfaces + their locals (imports
-  `MODEL`/`NEUTRAL_404` from `./shared.ts`).
-
-The deps interfaces each mount fn takes (`LogicalRouteDeps`, `LogicalReadDeps`,
+**Expected shape (illustrative, not exhaustive):** `shared.ts` ends up a small
+neutral module — on the order of ~7 tiny symbols. Cross-group members surfaced so
+far: `isString`, `readJsonBody`, `MODEL`, `NEUTRAL_404`, the cursor helpers
+`clampLimit`/`decodeBeforeCursor` (read + personal), and the `ApiKeyCreation` cast
+interface (personal + admin). Everything else is group-local: each route module
+carries **its own** deps interface, constants, and helpers, cut verbatim with its
+mount fn — and whatever `tsc` then reports as cross-referenced moves to
+`shared.ts`. The deps interfaces (`LogicalRouteDeps`, `LogicalReadDeps`,
 `PersonalApiDeps`, `AdminApiDeps`, and the public trio's) live with their mount
 fn's module and are re-exported by the barrel.
 
@@ -134,13 +114,13 @@ relative imports shift by one segment:
 
 Explicit `.ts` extensions + Node type-stripping mean a wrong path is an immediate
 `tsc`/runtime failure — caught by the per-module gate, not silently. Each module
-imports only what it uses (from `./shared.ts` for the shared four, from the
+imports only what it uses (from `./shared.ts` for the shared module, from the
 adjusted source paths for the rest).
 
 ## Safety protocol
 
 - **Pure move.** Cut a group verbatim into its module; adjust only import paths
-  and add `import` of the shared four where used. No other edits.
+  and add `import` of the shared module where used. No other edits.
 - **Per-module gate:** after each module extraction — `tsc` clean + run that
   group's route test suite green + commit. One commit per module → bisectable.
 - **Barrel last / incremental:** as each group moves out, the barrel re-exports
