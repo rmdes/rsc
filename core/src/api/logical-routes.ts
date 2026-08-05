@@ -813,6 +813,59 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
 }
 
 // =============================================================================
+// admin-tier API key issuance (phase 4 Task 2)
+// =============================================================================
+
+export interface AdminApiDeps {
+  auth: Auth
+}
+
+// Mirrors ALLOWED_KEY_PERMISSIONS's shape and purpose exactly, scoped to the
+// admin.* vocabulary — a raw request can't mint an admin key for a
+// permission no admin-tier route checks yet (Tasks 3-5 add the routes this
+// whitelist names; it is deliberately written to their FINAL shape now so
+// this task doesn't need revisiting per later task).
+const ALLOWED_ADMIN_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
+  'admin.read': ['read'],
+  'admin.sources': ['write'],
+  'admin.moderation': ['write'],
+}
+function isValidAdminKeyPermissions(v: unknown): v is Record<string, string[]> {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const entries = Object.entries(v as Record<string, unknown>)
+  if (entries.length === 0) return false
+  return entries.every(([resource, actions]) => {
+    if (!Object.hasOwn(ALLOWED_ADMIN_KEY_PERMISSIONS, resource)) return false
+    const allowed = ALLOWED_ADMIN_KEY_PERMISSIONS[resource]
+    return Array.isArray(actions) && actions.length > 0 && actions.every((a) => typeof a === 'string' && allowed.includes(a))
+  })
+}
+
+// Mounted from app.ts AFTER app.use('/admin/*', authed, requireAdmin()) —
+// see this plan's Global Constraints (Hono middleware is registration-order
+// dependent, verified live). Every route here already runs behind that
+// gate; c.get('coreUser') is already set by `authed` by the time any
+// handler below runs.
+export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
+  const { auth } = deps
+  const apiKeyCreateApi = auth.api as unknown as ApiKeyCreation
+
+  app.post('/admin/api-keys', jsonWrite, async (c) => {
+    const body = await readJsonBody(c)
+    if (!body || !isString(body.name, 1, 32)) return c.json({ error: 'name invalid' }, 400)
+    if (!isValidAdminKeyPermissions(body.permissions)) return c.json({ error: 'permissions invalid' }, 400)
+    try {
+      const created = await apiKeyCreateApi.createApiKey({
+        body: { configId: 'admin', userId: c.get('coreUser').id, name: body.name, permissions: body.permissions },
+      })
+      return c.json({ id: created.id, key: created.key, name: created.name, prefix: created.prefix }, 201)
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'could not create key' }, 400)
+    }
+  })
+}
+
+// =============================================================================
 // v2 reserved-handle lookup (V4 spec §3.5) — Task 8
 // =============================================================================
 // Mounted by server.ts beside the stream route (both need composition pieces

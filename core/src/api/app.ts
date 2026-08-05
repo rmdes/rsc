@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, bearerAuth } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes } from './logical-routes.ts'
+import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes, mountAdminApiRoutes } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { buildFollowingOpml } from '../domain/opml.ts'
@@ -254,6 +254,13 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
   // construction, so a new one can't ship ungated by forgetting the guard. Must
   // precede the /admin/* handlers to run before them.
   app.use('/admin/*', authed, requireAdmin())
+
+  // Registered AFTER the /admin/* gate above, not merged into the
+  // mountPersonalApiRoutes call earlier in this function — Hono's
+  // middleware is registration-order dependent (verified live during
+  // planning), so a route registered before this gate would never be
+  // gated by it, admin-tier or not.
+  mountAdminApiRoutes(app, { auth: deps.auth })
 
   // --- logical acquisition admin routes ---
   // Registered here — after the /admin/* gate (so they inherit authed +
