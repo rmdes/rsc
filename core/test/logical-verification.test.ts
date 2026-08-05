@@ -658,7 +658,7 @@ test('unchanged presentation material on a re-verified delivery writes NO new en
   store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', updated: '2026-07-23T00:00:00.000Z' })]), now: NOW })
 
   expect(count(raw, 'deliveries_v2')).toBe(1)
-  expect(count(raw, 'observation_versions_v2')).toBe(2) // new material ⇒ new version
+  expect(count(raw, 'observation_versions_v2')).toBe(1) // phase B: overwritten in place, never a second row
   expect(entries(raw)).toHaveLength(1) // unchanged presentation ⇒ no second entry
 })
 
@@ -676,19 +676,37 @@ test('a re-verified delivery with changed material and an at-or-below explicit t
   expect(rows[0]).toMatchObject({ sequence: 0, effective_updated_at: '2026-07-23T00:00:00.000Z', provenance: 'explicit' })
 })
 
-test('re-verifying EDITED origin material on an existing delivery appends a correctly-shaped entry at the next sequence', async () => {
+test('re-verifying EDITED origin material on an existing delivery overwrites the ONE version in place (I4) — no UNIQUE throw, one re-pended job, bounded claims', async () => {
   const { raw, store } = await fresh()
   seedSource(raw, 's_agg', 'https://agg.test/f')
   const j1 = seedCheck(raw, { itemId: 'li-1', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_a' })
   store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j1, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1' })]), now: NOW })
-  // C1a's "delivery exists, NEW fingerprint" branch: edited material, no <updated>.
+  const versionIdAfterFirst = (raw.prepare(`SELECT id FROM observation_versions_v2`).get() as { id: string }).id
+  // delivery exists, NEW fingerprint branch: edited material, no <updated>.
   const j2 = seedCheck(raw, { itemId: 'li-2', sourceId: 's_agg', batchKey: ORIGIN, guid: 'g1', aggPub: 'p_b' })
   store.resolveVerificationBatch({ claim: { kind: 'verification', jobId: j2, batchKey: ORIGIN }, outcome: fetched([evidenceFor({ guid: 'g1', content: 'edited' })]), now: NOW })
 
   expect(count(raw, 'deliveries_v2')).toBe(1)
-  expect(count(raw, 'observation_versions_v2')).toBe(2)
+  expect(count(raw, 'observation_versions_v2')).toBe(1) // overwritten in place, same id
+  expect((raw.prepare(`SELECT id FROM observation_versions_v2`).get() as { id: string }).id).toBe(versionIdAfterFirst)
   const rows = entries(raw)
-  expect(rows).toHaveLength(2)
-  expect(rows[0]).toMatchObject({ sequence: 0, effective_updated_at: null, provenance: null })
-  expect(rows[1]).toMatchObject({ sequence: 1, effective_updated_at: NOW, provenance: 'arrival' })
+  expect(rows).toHaveLength(1)
+  expect(rows[0]).toMatchObject({ sequence: 0, effective_updated_at: NOW, provenance: 'arrival' })
+  // the observation job is re-pended (I4), not appended
+  expect(count(raw, 'reconciliation_jobs_v2', "WHERE kind = 'observation'")).toBe(1)
+  expect((raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE kind = 'observation'`).get() as { status: string }).status).toBe('pending')
+  // bounded claims: one row per converging item (li-1, li-2), never accumulating
+  expect(count(raw, 'publisher_claims_v2')).toBe(2)
+
+  // Running the ordinary drain (which now picks up the re-pended job) must NOT
+  // downgrade li-1's already-verified claim — the reconcile.ts guard this task
+  // adds (an ordinary reconcileClaim pass only ever computes
+  // aggregate_assertion/bound_single_publisher, never verified_origin).
+  drainReconciliation({ store, now: () => NOW })
+  const claims = raw.prepare(`SELECT logical_item_id, evidence_level FROM publisher_claims_v2 ORDER BY logical_item_id`).all() as { logical_item_id: string; evidence_level: string }[]
+  expect(claims).toEqual([
+    { logical_item_id: 'li-1', evidence_level: 'verified_origin' },
+    { logical_item_id: 'li-2', evidence_level: 'verified_origin' },
+  ])
+  expect(count(raw, 'publisher_claims_v2')).toBe(2) // the drain updates in place, never appends
 })

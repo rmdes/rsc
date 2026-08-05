@@ -555,6 +555,27 @@ function insertFindings(tx: WriteTx, runId: string, findings: AcquisitionFinding
   for (const f of findings) stmt.run(randomUUID(), runId, f.kind, f.evidenceJson, now)
 }
 
+// One version per delivery (phase B, I4): overwrite the delivery's ONE version
+// row's material + fingerprint in place on a real change — same `id`; NEVER
+// `arrival_at`/`run_id` (spec I2: selection sorts on first arrival, so the
+// version's OWN first-arrival tuple must stay stable — the *display* update
+// time lives in `presentation_entries_v2.effective_updated_at`, not here).
+// Shared verbatim by `commitAcquisition`'s changed-fingerprint branch and
+// verification's `persistVerifiedDelivery` (Task 2) so the two write paths that
+// can both touch a delivery's one version row can never drift apart.
+export function overwriteObservationVersion(tx: WriteTx, v: { id: string; fingerprint: string; canonicalMaterial: Buffer; rawEvidenceJson: string; normalizedJson: string; now: string; runId: string }): void {
+  tx.prepare(
+    `UPDATE observation_versions_v2 SET fingerprint = ?, canonical_material = ?, raw_evidence_json = ?, normalized_json = ?, last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`,
+  ).run(v.fingerprint, v.canonicalMaterial, v.rawEvidenceJson, v.normalizedJson, v.now, v.runId, v.id)
+}
+
+// Re-pend the delivery's one observation job so the ordinary drain re-
+// reconciles the change (never a second INSERT — `observation_version_id` is
+// UNIQUE on `reconciliation_jobs_v2`, spec C1).
+export function resetObservationJob(tx: WriteTx, versionId: string, now: string): void {
+  tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending', next_attempt_at = ? WHERE observation_version_id = ? AND kind = 'observation'`).run(now, versionId)
+}
+
 // The acquisition-result transaction (spec §1.4, §2.1). Rechecks CURRENT source
 // policy; pause/block/tombstone commits NOTHING but the terminal run. Otherwise
 // atomically persists redirects, findings, delivery sightings, new observation
@@ -611,13 +632,6 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
     `SELECT id, fingerprint, canonical_material FROM observation_versions_v2 WHERE delivery_id = ? ORDER BY arrival_at DESC, id DESC LIMIT 1`,
   )
   const bumpVersion = tx.prepare(`UPDATE observation_versions_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
-  // A real change overwrites the delivery's ONE version row in place — same id,
-  // arrival_at/run_id untouched (spec I2: selection sorts on first arrival;
-  // the display time lives in presentation_entries_v2.effective_updated_at).
-  const overwriteVersion = tx.prepare(`UPDATE observation_versions_v2 SET fingerprint = ?, canonical_material = ?, raw_evidence_json = ?, normalized_json = ?, last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
-  // Reset (never insert — C1: observation_version_id is UNIQUE) the delivery's
-  // one observation job back to pending so the drain re-reconciles the change.
-  const resetJob = tx.prepare(`UPDATE reconciliation_jobs_v2 SET status = 'pending', next_attempt_at = ? WHERE observation_version_id = ? AND kind = 'observation'`)
   const insertVersion = tx.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
   const insertJob = tx.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`)
 
@@ -662,8 +676,8 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
       } else {
         // real content change (spec §2.2): overwrite the delivery's ONE version
         // in place and re-pend its observation job so the drain reconciles it.
-        overwriteVersion.run(obs.fingerprint, Buffer.from(obs.canonicalMaterial), obs.rawEvidenceJson, obs.normalizedJson, committedAt, runId, priorVersion.id)
-        resetJob.run(committedAt, priorVersion.id)
+        overwriteObservationVersion(tx, { id: priorVersion.id, fingerprint: obs.fingerprint, canonicalMaterial: Buffer.from(obs.canonicalMaterial), rawEvidenceJson: obs.rawEvidenceJson, normalizedJson: obs.normalizedJson, now: committedAt, runId })
+        resetObservationJob(tx, priorVersion.id, committedAt)
         counters.observed++
       }
       continue

@@ -4,6 +4,7 @@ import { isPrivateIp } from '../domain/push-guard.ts'
 import type { LookupFn } from '../domain/push-guard.ts'
 import {
   BOUNDS, fetchBounded, readCappedBody, raceDeadline, DeadlineError, parseCandidates,
+  overwriteObservationVersion, resetObservationJob,
   type FetchCtx, type FetchResult,
 } from './acquisition.ts'
 import type { ResolveVerificationInput, VerificationFeedItem, NewObservationVersion, PermanentRedirectProof, ProjectionViewer } from './types.ts'
@@ -327,40 +328,52 @@ function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: str
   const keyKind = match.opaqueId ? 'opaque' : 'permalink'
   const key = match.opaqueId ?? match.normalizedPermalink ?? ev.deliveryId
 
-  // Resolve-or-create the delivery + its version (mirrors acquisition's §2.2
-  // classification). TWO logical items can match the SAME parsed origin entry —
-  // matchContainment pools `opaque:%` across publisher scopes, which is what makes
-  // an origin match possible at all — and a later batch can re-verify an entry
-  // already persisted. Both must converge on the ONE row UNIQUE(source_id,
-  // key_kind, key) allows: a second INSERT rolls the whole batch back and strands
-  // its job at 'processing' (never re-claimable, and it blocks every future job for
-  // that batch key). An already-present version is reused as-is; only genuinely new
-  // origin material creates a run, a version, and a presentation entry.
+  // Resolve-or-create the delivery + its ONE version (mirrors acquisition's §2.2
+  // classification, phase B/I4: overwrite-in-place, never a second row).
+  // TWO logical items can match the SAME parsed origin entry — matchContainment
+  // pools `opaque:%` across publisher scopes, which is what makes an origin match
+  // possible at all — and a later batch can re-verify an entry already persisted.
+  // Both must converge on the ONE row UNIQUE(source_id, key_kind, key) allows.
   //
-  // This INSERT never needs the retention age-ingest gate (acquisition.ts's
-  // maxAgeDays check): it only runs on a matchContainment hit, which requires
-  // `match`'s permalink/opaqueId to already be a stored identity key of the
-  // (already-existing) `itemId` above — this path re-records verified evidence
-  // for an item that already passed the gate (or predates it); it never
-  // originates a logical item from arbitrary origin-feed content. A trimmed
-  // item's verification_checks_v2 row is deleted at trim time (threading.ts's
+  // This never needs the retention age-ingest gate (acquisition.ts's maxAgeDays
+  // check): it only runs on a matchContainment hit, which requires `match`'s
+  // permalink/opaqueId to already be a stored identity key of the (already-
+  // existing) `itemId` above — this path re-records verified evidence for an
+  // item that already passed the gate (or predates it); it never originates a
+  // logical item from arbitrary origin-feed content. A trimmed item's
+  // verification_checks_v2 row is deleted at trim time (threading.ts's
   // deleteLogicalNode/convertToStructuralTombstone), so there's no leftover
   // check for a later batch to resurrect it through here either.
   const existingDelivery = tx.prepare(`SELECT id FROM deliveries_v2 WHERE source_id = ? AND key_kind = ? AND key = ?`).get(sourceId, keyKind, key) as { id: string } | undefined
   const deliveryId = existingDelivery?.id ?? ev.deliveryId
-  const existingVersion = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ? AND fingerprint_version = ? AND fingerprint = ?`).get(deliveryId, ev.fingerprintVersion, ev.fingerprint) as { id: string } | undefined
+  // By-DELIVERY lookup (I-A review), never by fingerprint: `presentation_entries_v2`
+  // and `reconciliation_jobs_v2` are both UNIQUE on `observation_version_id` (C1),
+  // so a second version row for an already-verified delivery collides downstream —
+  // the fix is to never create one, not to catch the collision.
+  const existingVersion = tx.prepare(`SELECT id FROM observation_versions_v2 WHERE delivery_id = ?`).get(deliveryId) as { id: string } | undefined
   const versionId = existingVersion?.id ?? ev.id
 
-  if (!existingVersion) {
-    const runId = randomUUID()
-    tx.prepare(
-      `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
-       VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL)`,
-    ).run(runId, sourceId, now, now, now, EMPTY_COUNTERS)
+  // A synthetic terminal acquisition run backs every persist — first verification
+  // or a later re-verify alike — so last_seen_run_id always references a real row.
+  const runId = randomUUID()
+  tx.prepare(
+    `INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json)
+     VALUES (?, ?, 'scheduled', 'terminal', ?, ?, ?, 'parsed', ?, NULL, NULL, NULL)`,
+  ).run(runId, sourceId, now, now, now, EMPTY_COUNTERS)
 
-    if (existingDelivery) tx.prepare(`UPDATE deliveries_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`).run(now, runId, deliveryId)
-    else tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(deliveryId, sourceId, keyKind, key, now, now, runId)
+  if (existingDelivery) tx.prepare(`UPDATE deliveries_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`).run(now, runId, deliveryId)
+  else tx.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(deliveryId, sourceId, keyKind, key, now, now, runId)
 
+  if (existingVersion) {
+    // Re-verification of an already-persisted delivery: overwrite the ONE
+    // version row in place — same `id`; `arrival_at`/`run_id` (the version's OWN
+    // first-arrival tuple) stay untouched (spec I2) — and re-pend its
+    // observation job so the ordinary drain re-reconciles it. Literally the same
+    // two writes acquisition's own changed-material branch makes (I4).
+    overwriteObservationVersion(tx, { id: versionId, fingerprint: ev.fingerprint, canonicalMaterial: Buffer.from(ev.canonicalMaterial), rawEvidenceJson: ev.rawEvidenceJson, normalizedJson: ev.normalizedJson, now, runId })
+    resetObservationJob(tx, versionId, now)
+  } else {
+    // First verification of this delivery: the one legitimate insert.
     tx.prepare(
       `INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
@@ -371,22 +384,31 @@ function persistVerifiedDelivery(tx: WriteTx, a: { itemId: string; sourceId: str
       `INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at)
        VALUES (?, 'observation', ?, ?, NULL, 'reconciled', 0, ?, NULL, NULL, ?)`,
     ).run(randomUUID(), runId, versionId, now, now)
-
-    // The presentation entry goes through the SHARED accepted-chain writer, so a
-    // verified delivery's entry carries the same effective_updated_at/provenance,
-    // the same unchanged-material suppression and the same rollback watermark an
-    // acquisition-written entry does. The synthetic run above commits at `now`, so
-    // that is this delivery's arrival.
-    const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; updated: string | null; inReplyTo: string | null }
-    const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[] }
-    applyPresentation(tx, { version_id: versionId, delivery_id: deliveryId }, mat, norm, now, now)
   }
+
+  // The presentation entry goes through the SHARED accepted-chain writer on
+  // EVERY call — first verification and a re-verify alike — so a verified
+  // delivery's entry carries the same effective_updated_at/provenance, the same
+  // unchanged-material suppression and the same rollback watermark an
+  // acquisition-written entry does. `now` is this delivery's arrival either way
+  // (the synthetic run above commits at `now`).
+  const mat = JSON.parse(Buffer.from(ev.canonicalMaterial).toString('utf8')) as { title: string | null; content: string | null; link: string | null; updated: string | null; inReplyTo: string | null }
+  const norm = JSON.parse(ev.normalizedJson) as { permalink: string | null; enclosures: unknown[] }
+  applyPresentation(tx, { version_id: versionId, delivery_id: deliveryId }, mat, norm, now, now)
 
   // link the delivery to the logical item (the first matching item owns the key).
   tx.prepare(`INSERT OR IGNORE INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(deliveryId, itemId)
 
   // the verified_origin author claim — the new strongest rung (spec §4.3).
-  tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, 'verified_origin', ?)`).run(randomUUID(), itemId, publisherId, sourceId, versionId, now)
+  // Idempotent on (item, publisher, version) — review I-A/C-B guard: with the
+  // job now re-pended on every re-verify, this same triple can be reached again
+  // (via this function directly, or via reconcileClaim once the drain picks the
+  // re-pended job back up); update in place instead of accumulating a duplicate
+  // row. Two DIFFERENT items converging on the same delivery still each get
+  // their own row (keyed by logical_item_id).
+  const existingClaim = tx.prepare(`SELECT id FROM publisher_claims_v2 WHERE logical_item_id = ? AND publisher_id = ? AND observation_version_id = ?`).get(itemId, publisherId, versionId) as { id: string } | undefined
+  if (existingClaim) tx.prepare(`UPDATE publisher_claims_v2 SET evidence_level = 'verified_origin' WHERE id = ?`).run(existingClaim.id)
+  else tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, 'verified_origin', ?)`).run(randomUUID(), itemId, publisherId, sourceId, versionId, now)
 
   // ONE system-actor item-audit entry (Task 1's appendItemAudit, synthesized commandId).
   appendItemAudit(tx, { logicalItemId: itemId, commandId, actorId: null, actorKind: 'system', action: 'origin_verified', category: null, note: null, result: { kind: 'verified', sourceId, publisherId, batchKey }, now })

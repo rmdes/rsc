@@ -352,10 +352,20 @@ export function reconcileClaim(tx: WriteTx, input: ReconcileClaimInput): Reconci
       .run(randomUUID(), publisherId, v.source_id, v.version_id, level, normalizedName, now)
   }
   const existingClaim = tx.prepare(
-    `SELECT id FROM publisher_claims_v2 WHERE logical_item_id = ? AND publisher_id = ? AND observation_version_id = ?`,
-  ).get(targetId, publisherId, v.version_id) as { id: string } | undefined
+    `SELECT id, evidence_level FROM publisher_claims_v2 WHERE logical_item_id = ? AND publisher_id = ? AND observation_version_id = ?`,
+  ).get(targetId, publisherId, v.version_id) as { id: string; evidence_level: EvidenceLevel } | undefined
   if (existingClaim) {
-    tx.prepare(`UPDATE publisher_claims_v2 SET evidence_level = ? WHERE id = ?`).run(level, existingClaim.id)
+    // Never downgrade (Task 2 follow-on, I4): verification now re-pends a
+    // verified delivery's observation job into this SAME drain on every edit, so
+    // this exact (item, publisher, version) triple can already carry
+    // verification's 'verified_origin' claim (the strongest rung, spec §4.3)
+    // by the time an ordinary re-reconcile reaches it here. This path only ever
+    // computes aggregate_assertion/bound_single_publisher (evidenceLevelFor never
+    // returns 'verified_origin'), so guard it from silently overwriting the
+    // stronger rung with a weaker one.
+    if (existingClaim.evidence_level !== 'verified_origin' || level === 'verified_origin') {
+      tx.prepare(`UPDATE publisher_claims_v2 SET evidence_level = ? WHERE id = ?`).run(level, existingClaim.id)
+    }
   } else {
     tx.prepare(`INSERT INTO publisher_claims_v2 (id, logical_item_id, publisher_id, source_id, observation_version_id, evidence_level, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(randomUUID(), targetId, publisherId, v.source_id, v.version_id, level, now)
