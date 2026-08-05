@@ -27,6 +27,7 @@ export interface UserDirectory {
   getUserByAuthUserId(authUserId: string): Promise<User | undefined>
   createLocalUser(u: { handle: string; displayName: string; authUserId?: string }): Promise<User>
   getAuthUserAdminFields(authUserId: string): Promise<{ email: string | null; emailVerified: boolean | null } | undefined>
+  countApiKeys(authUserId: string, configId: string): Promise<number>
 }
 
 // Lazy mint (spec P-1 + direct-registration coverage): the core identity is

@@ -534,6 +534,13 @@ const ALLOWED_KEY_PERMISSIONS: Readonly<Record<string, readonly string[]>> = {
   follows: ['write'],
   profile: ['write']
 }
+// A generous ceiling, not a tight one — this exists to bound unbounded
+// growth from a scripted rate-limit-bypass loop (the apiKey plugin's
+// 300/hr limit is stored and evaluated per KEY ROW, not per user), not to
+// constrain a real integration author who legitimately wants a handful of
+// scoped keys. Counted separately per configId ('user' vs 'admin' tier).
+const MAX_API_KEYS_PER_USER = 20
+
 function isValidKeyPermissions(v: unknown): v is Record<string, string[]> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
   const entries = Object.entries(v as Record<string, unknown>)
@@ -802,6 +809,11 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     // own check and throw past this route as a raw 500.
     if (!body || !isString(body.name, 1, 32)) return c.json({ error: 'name invalid' }, 400)
     if (!isValidKeyPermissions(body.permissions)) return c.json({ error: 'permissions invalid' }, 400)
+    // Security audit M4: without this, a scripted caller could mint keys
+    // without bound to cycle past the plugin's per-KEY 300/hr rate limit.
+    if ((await users.countApiKeys(session.user.id, 'user')) >= MAX_API_KEYS_PER_USER) {
+      return c.json({ error: 'api key limit reached' }, 429)
+    }
     try {
       const created = await apiKeyCreateApi.createApiKey({
         body: { configId: 'user', userId: session.user.id, name: body.name, permissions: body.permissions }
@@ -874,7 +886,7 @@ function isValidAdminKeyPermissions(v: unknown): v is Record<string, string[]> {
 // gate; c.get('coreUser') is already set by `authed` by the time any
 // handler below runs.
 export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
-  const { auth } = deps
+  const { auth, users } = deps
   const apiKeyCreateApi = auth.api as unknown as ApiKeyCreation
 
   app.post('/admin/api-keys', jsonWrite, async (c) => {
@@ -897,6 +909,11 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
     // above ("a key minted through this route actually works").
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'authentication required' }, 401)
+    // Security audit M4: same cap as /me/api-keys, counted separately per
+    // configId — see MAX_API_KEYS_PER_USER above.
+    if ((await users.countApiKeys(session.user.id, 'admin')) >= MAX_API_KEYS_PER_USER) {
+      return c.json({ error: 'api key limit reached' }, 429)
+    }
     try {
       const created = await apiKeyCreateApi.createApiKey({
         body: { configId: 'admin', userId: session.user.id, name: body.name, permissions: body.permissions },
@@ -913,7 +930,7 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
   // transcribed from those exact handlers. Only the auth middleware differs
   // (apiKeyAuthAdmin's per-request admin re-verification vs sessionAuth +
   // requireAdmin's session check).
-  const { users, adminEmails, service, sourceRepo, sourceService, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
+  const { adminEmails, service, sourceRepo, sourceService, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
   const readAdmin = apiKeyAuthAdmin(auth, users, adminEmails, { 'admin.read': ['read'] })
 
   app.get('/admin-api/sources', readAdmin, async (c) => {

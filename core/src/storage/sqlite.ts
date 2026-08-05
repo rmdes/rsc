@@ -490,6 +490,17 @@ export class SqliteRepository implements Repository, SourceRepository {
     return { email: row.email, emailVerified: row.emailVerified === null ? null : row.emailVerified === 1 }
   }
 
+  // Security audit M4: backs the per-user api-key issuance cap in
+  // logical-routes.ts (POST /me/api-keys, POST /admin/api-keys). referenceId
+  // and configId each have their own single-column index (apikey_referenceId_idx,
+  // apikey_configId_idx below) — no composite index, but this table stays
+  // small per user (capped at 20), so the plan scan on the smaller of the two
+  // indexed columns is fine.
+  async countApiKeys(authUserId: string, configId: string): Promise<number> {
+    const row = this.raw.prepare(`SELECT COUNT(*) AS n FROM apikey WHERE referenceId = ? AND configId = ?`).get(authUserId, configId) as { n: number }
+    return row.n
+  }
+
   // --- v2 source-control plane administrative reads (served by the
   // /admin/sources routes) — nothing here touches legacy tables; these methods
   // only ever read the five v2 tables.
