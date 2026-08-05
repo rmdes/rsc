@@ -13,6 +13,8 @@ import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
 import { memberRows, memberRowsPage, memberCounts, healMembers } from '../logical/membership.ts'
+import { findCurrentDeliveryVersion } from '../logical/acquisition.ts'
+import { deleteObservationVersions } from '../logical/tombstones.ts'
 
 // --- V2 logical journal integration (Task 9, spec §3.7) ----------------------
 // These source-command methods run whenever the source-control plane is wired
@@ -1474,6 +1476,14 @@ export const MIGRATIONS: string[][] = [
     `create index "apikey_referenceId_idx" on "apikey" ("referenceId")`,
     `create index "apikey_key_idx" on "apikey" ("key")`,
   ],
+  // 22 — Phase B collapse migration marker (spec 2026-08-05). Pure no-op SQL:
+  // this entry exists ONLY to advance user_version so the migrate() gate below
+  // fires collapseVersionHistory exactly once. The actual work (collapsing
+  // pre-existing multi-version deliveries to one version + one presentation
+  // entry) is imperative TS, not SQL — it calls deleteObservationVersions,
+  // which MIGRATIONS (pure sqlite.exec SQL) cannot do. Same split as
+  // migration #19 / healMembers.
+  [],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
@@ -1498,6 +1508,46 @@ function migrate(sqlite: InstanceType<typeof Database>): void {
   // the first time this DB crosses migration 19. healMembers wraps its own
   // transaction — safe even if the process dies mid-heal.
   if (version < 19) healMembers(sqlite)
+  // 22 — Phase B: collapse every pre-existing multi-version delivery down to
+  // one version + one presentation entry, the first time this DB crosses
+  // migration 22. collapseVersionHistory wraps its own transaction — safe
+  // even if the process dies mid-heal, and idempotent (a re-run finds nothing
+  // left with >1 version).
+  if (version < 22) collapseVersionHistory(sqlite)
+}
+
+// Phase B collapse migration (spec 2026-08-05, plan Task 4; review C-A/C-C/I-B).
+// For every remote delivery still carrying more than one observation_versions_v2
+// row (the pre-Task-1/2 cap era let a changed fingerprint append a sibling
+// instead of overwriting in place), keep exactly the CURRENT-DISPLAY version —
+// the one backing the delivery's top-sequence presentation_entries_v2 row, or,
+// absent a presentation entry (I-B), the newest by arrival_at — and delete every
+// other version of that delivery via the shared deleteObservationVersions
+// cascade (tombstones.ts:205), which also removes their publisher_claims_v2/
+// publisher_names_v2 rows. No byline re-point (review C-C): selectAuthor already
+// prefers the retained current publisher, so the survivor's own claim is a fine
+// byline post-collapse. Local post_revisions/posts are a separate table tree,
+// untouched. Idempotent: a delivery already down to one version never matches
+// the GROUP BY HAVING > 1 below, so a second run is a no-op.
+export function collapseVersionHistory(sqlite: InstanceType<typeof Database>): void {
+  sqlite.transaction(() => {
+    const deliveries = sqlite.prepare(
+      `SELECT delivery_id AS id FROM observation_versions_v2 GROUP BY delivery_id HAVING COUNT(*) > 1`,
+    ).all() as { id: string }[]
+    for (const { id: deliveryId } of deliveries) {
+      const survivor = findCurrentDeliveryVersion(sqlite, deliveryId)
+      if (!survivor) continue // unreachable (the GROUP BY guarantees >=2 rows) — never delete on an absent survivor
+      const others = (sqlite.prepare(
+        `SELECT id FROM observation_versions_v2 WHERE delivery_id = ? AND id != ?`,
+      ).all(deliveryId, survivor.id) as { id: string }[]).map((r) => r.id)
+      deleteObservationVersions(sqlite, others)
+      // At most one presentation_entries_v2 row can remain for this delivery now
+      // (UNIQUE observation_version_id, and every other version's entry was just
+      // deleted with it) — normalize its sequence to 0, matching the one-entry-
+      // per-delivery invariant Task 1 established for the write path.
+      sqlite.prepare(`UPDATE presentation_entries_v2 SET sequence = 0 WHERE delivery_id = ?`).run(deliveryId)
+    }
+  })()
 }
 
 export async function createSqliteRepository(filename: string): Promise<SqliteRepository> {
