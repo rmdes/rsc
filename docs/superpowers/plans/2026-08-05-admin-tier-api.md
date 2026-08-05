@@ -28,12 +28,28 @@ better-auth's own `user` table, SvelteKit 5 for the new admin panel.
 
 - **Scope is the spec's literal route list, not full admin-UI parity**
   (explicit maintainer decision, 2026-08-05): the live `/admin/*` surface has
-  grown to 24 routes since the spec was written; only the ~9 the spec
-  actually names get a key-authed twin. Everything else (acquisition-runs
-  detail, tombstones, item hide/restore, source purge/refresh/reap,
-  `/admin/sources/:id` detail, subscriptions/audit/members) stays
-  cookie-only. Do not add more "for completeness" — that is out of scope for
-  this plan.
+  grown to 27 routes since the spec was written (corrected in rev 2 — a
+  ponytail-review pass found the rev-1 count of 24 stale); only the ~9 the
+  spec actually names get a key-authed twin. Everything else
+  (acquisition-runs detail, tombstones, item hide/restore, source
+  purge/refresh/reap, `/admin/sources/:id` detail,
+  subscriptions/audit/members) stays cookie-only. Do not add more "for
+  completeness" — that is out of scope for this plan.
+  - **Rev 2 note on `overview`/`settings`:** a ponytail-audit pass argued
+    these two reads fit the spec's "governance/moderation state" phrase
+    less well than the per-source detail/audit endpoints this plan already
+    excludes, and that they're the sole reason `AdminApiDeps` grows as wide
+    as it does. Deliberately kept anyway: the maintainer's own scoping
+    decision (the AskUserQuestion answered before this plan was drafted)
+    explicitly named "overview/settings reads" as in-scope, and `/admin
+    -api/overview` is genuine, useful state for this tier's actual named
+    consumer (a script managing several instances benefits from a per
+    -instance health/config snapshot before deciding what governance action
+    to take, same spirit as the write-tier's own multi-instance framing). A
+    second reviewer (ponytail-review) independently judged the resulting
+    `AdminApiDeps` width as mirroring the cookie-authed route's own real
+    dependency footprint, not padding. Not reversed; recorded here so the
+    tension is visible rather than silently resolved.
 - **New routes never live under `/admin/*`** except the one that is meant to
   inherit the existing cookie-session gate (`POST /admin/api-keys`, Task 2).
   Every other new route lives under `/admin-api/*`, a verified-live, distinct
@@ -62,7 +78,7 @@ better-auth's own `user` table, SvelteKit 5 for the new admin panel.
 - **Admin re-verification is per-request, not per-key-mint** (spec,
   "Admin tier (phase 4)"): every `/admin-api/*` route re-derives `isAdmin`
   from the *current* `adminEmails` config for the key's owning user on every
-  call, via a new `apiKeyAuthAdmin` middleware (Task 3) — not just once at
+  call, via a new `apiKeyAuthAdmin` middleware (Task 3a) — not just once at
   key-creation time. A key minted while its owner was an admin must stop
   working the moment they're removed from `RSC_ADMIN_EMAIL`, without needing
   the key itself revoked.
@@ -112,6 +128,34 @@ better-auth's own `user` table, SvelteKit 5 for the new admin panel.
 - Consumes: `deriveIsAdmin(user: {email?: string|null; emailVerified?: boolean|null}, adminEmails: ReadonlySet<string>): boolean` (already exported from `core/src/api/auth.ts:55`) — import it into `core/src/auth.ts` (a type-only import already runs the other direction, `core/src/api/auth.ts:3` imports `type Auth` from `../auth.ts`; importing a real value the other way does not create a cycle since that existing import is type-only and erased at compile time).
 - Produces: `AuthDeps` gains `adminEmails: ReadonlySet<string>`, consumed by Task 2's `mountAdminApiRoutes` indirectly (via `config.adminEmails`, already threaded into `createApp` today at `core/src/api/app.ts:122`) and directly by this task's own `before` hook.
 
+**Rev 2 correction (ponytail-review Critical finding):** the rev-1 draft of
+this test suite put a `permissions` field in every real-HTTP request body
+(cookie/header-authed `createApiKey` calls). That is unconditionally
+rejected by the plugin itself — confirmed against the installed source,
+`core/node_modules/@better-auth/api-key/dist/index.mjs:730-738` (create) and
+`:1481-1489` (update): both throw `SERVER_ONLY_PROPERTY` whenever
+`(ctx.request || ctx.headers)` is truthy AND `permissions !== undefined`,
+*regardless of the caller's admin status* — this codebase's own existing
+`core/test/api-key-plugin.test.ts:33-35` already documents the same rule.
+Two consequences, both folded in below:
+1. Every rev-1 test that put `permissions` in a real-HTTP body was either
+   silently passing for the wrong reason (`rejects.toThrow()` is satisfied
+   by `SERVER_ONLY_PROPERTY` just as much as by this hook's own rejection —
+   the test couldn't tell them apart) or, for the one positive-path test,
+   would have failed permanently, not just pre-implementation. Rewritten
+   below to never put `permissions` in a real-HTTP body at all.
+2. Because of this, the hook's job over real HTTP reduces to exactly one
+   check — `configId === 'admin'` — since any `permissions` field on a real
+   request is already rejected upstream by the plugin itself before the
+   hook's own admin-status check could matter, and the same in-process-only
+   visibility that makes the hook a no-op for `POST /me/api-keys` /
+   `POST /admin/api-keys` (Global Constraints) also means the hook never
+   sees THOSE calls to check permissions on. Scanning `body?.permissions`
+   for `admin.*` keys in the hook (as rev 1 did) is checking something that
+   is provably unreachable on every path the hook can actually observe —
+   Step 4 below drops that branch instead of keeping dead code around "just
+   in case."
+
 - [ ] **Step 1: Write the failing test**
 
 ```ts
@@ -139,62 +183,38 @@ describe('admin-tier api-key gate (before hook)', () => {
     })
   }
 
-  async function registerAndVerify(auth: ReturnType<typeof createAuth>, email: string) {
+  async function signUpAndSignIn(auth: ReturnType<typeof createAuth>, email: string) {
     const signUp = await auth.api.signUpEmail({ body: { email, password: 'password123', name: email } })
-    const userId = signUp.user.id
-    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(userId)
-    const session = await auth.api.getSession({ headers: new Headers() }) // placeholder; real header set below per-test
-    return userId
+    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
+    const signIn = await auth.api.signInEmail({
+      body: { email, password: 'password123' }, returnHeaders: true,
+    }) as unknown as { headers: Headers }
+    return { userId: signUp.user.id, cookie: signIn.headers.get('set-cookie') ?? '' }
   }
+
+  // No `permissions` field in any of these three bodies — see the rev-2
+  // correction above for why a real-HTTP request can never carry one
+  // regardless of what this test is trying to prove.
 
   test('a non-admin session cannot create a configId:admin key over real HTTP', async () => {
     const auth = makeAuth(new Set())
-    const signUp = await auth.api.signUpEmail({ body: { email: 'nonadmin@x.test', password: 'password123', name: 'x' } })
-    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
-    const signIn = await auth.api.signInEmail({
-      body: { email: 'nonadmin@x.test', password: 'password123' }, returnHeaders: true,
-    }) as unknown as { headers: Headers }
-    const cookie = signIn.headers.get('set-cookie') ?? ''
+    const { cookie } = await signUpAndSignIn(auth, 'nonadmin@x.test')
     await expect(
-      auth.api.createApiKey({
-        headers: new Headers({ cookie }),
-        body: { configId: 'admin', name: 'k', permissions: { 'admin.read': ['read'] } },
-      }),
-    ).rejects.toThrow()
-  })
-
-  test('a non-admin session cannot create a configId:user key with an admin.* permission', async () => {
-    const auth = makeAuth(new Set())
-    const signUp = await auth.api.signUpEmail({ body: { email: 'sneaky@x.test', password: 'password123', name: 'x' } })
-    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
-    const signIn = await auth.api.signInEmail({
-      body: { email: 'sneaky@x.test', password: 'password123' }, returnHeaders: true,
-    }) as unknown as { headers: Headers }
-    const cookie = signIn.headers.get('set-cookie') ?? ''
-    await expect(
-      auth.api.createApiKey({
-        headers: new Headers({ cookie }),
-        body: { configId: 'user', name: 'k', permissions: { 'admin.moderation': ['write'] } },
-      }),
-    ).rejects.toThrow()
+      auth.api.createApiKey({ headers: new Headers({ cookie }), body: { configId: 'admin', name: 'k' } }),
+    ).rejects.toThrow(/admin only/)
   })
 
   test('an admin session (verified email in adminEmails) CAN create a configId:admin key', async () => {
     const auth = makeAuth(new Set(['boss@x.test']))
-    const signUp = await auth.api.signUpEmail({ body: { email: 'boss@x.test', password: 'password123', name: 'x' } })
-    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
-    const signIn = await auth.api.signInEmail({
-      body: { email: 'boss@x.test', password: 'password123' }, returnHeaders: true,
-    }) as unknown as { headers: Headers }
-    const cookie = signIn.headers.get('set-cookie') ?? ''
+    const { cookie } = await signUpAndSignIn(auth, 'boss@x.test')
     const created = await auth.api.createApiKey({
-      headers: new Headers({ cookie }),
-      body: { configId: 'admin', name: 'k', permissions: { 'admin.read': ['read'] } },
+      headers: new Headers({ cookie }), body: { configId: 'admin', name: 'k' },
     })
     expect(created.id).toBeTruthy()
+    expect(created.permissions).toBeFalsy() // defaultPermissions: {} — the empty-permissions key itself is inert; Task 2 is the real issuance path
   })
 
-  test('an in-process call (no headers) still works for configId:user — the hook is a no-op for server-side calls', async () => {
+  test('an in-process call still works for configId:user — the hook is a no-op for server-side calls (unchanged phase 2/3 behavior)', async () => {
     const auth = makeAuth(new Set())
     const signUp = await auth.api.signUpEmail({ body: { email: 'inproc@x.test', password: 'password123', name: 'x' } })
     const created = await auth.api.createApiKey({
@@ -210,9 +230,9 @@ describe('admin-tier api-key gate (before hook)', () => {
 Run (from the repo root, or the appropriate worktree):
 `docker compose exec -T core npm test -w core -- auth-admin-key-gate`
 Expected: FAIL — `createAuth` doesn't accept `adminEmails` yet (TypeScript
-error under `tsc --noEmit`; at runtime, every `configId:'admin'` / `admin.*`
-request currently succeeds unchecked, so the "cannot create" tests fail by
-NOT throwing).
+error under `tsc --noEmit`; at runtime, the `configId:'admin'` request
+currently succeeds unchecked, so the "cannot create" test fails by NOT
+throwing).
 
 - [ ] **Step 3: Add `adminEmails` to `AuthDeps` and thread it from `server.ts`**
 
@@ -269,13 +289,26 @@ array literal):
         defaultPermissions: {},
       },
     }),
-    // The ONLY authoritative gate on configId:'admin'/admin.* — see this
-    // plan's Global Constraints. Covers BOTH create and update (the spec's
+    // The ONLY authoritative gate on configId:'admin' — see this plan's
+    // Global Constraints. Covers BOTH create and update (the spec's
     // "Enforcement correction, rev 2" explicitly calls out update too, since
-    // create then update-with-permissions would otherwise be a bypass).
-    // Same is-this-a-real-HTTP-request guard as reject-anon-api-key-create
-    // above, for the same reason: an in-process call (no ctx.request/
-    // ctx.headers) is this app's own code, already trusted one layer up.
+    // create then update-with-configId otherwise risks a bypass, though in
+    // practice `configId` on update is used only to LOOK UP a key, not
+    // reassign one — checked anyway, cheap and correct either way). Same
+    // is-this-a-real-HTTP-request guard as reject-anon-api-key-create
+    // above: an in-process call (no ctx.request/ctx.headers) is this app's
+    // own code, already trusted one layer up.
+    //
+    // Rev 2 (ponytail-review Critical finding): does NOT also scan
+    // ctx.body.permissions for admin.* keys, unlike rev 1's draft. That
+    // check was dead on every path this hook can observe: a real HTTP
+    // request carrying ANY `permissions` field — admin.* or not — is
+    // already rejected by the plugin's own SERVER_ONLY_PROPERTY check
+    // (@better-auth/api-key/dist/index.mjs:730-738/1481-1489) regardless of
+    // admin status, and an in-process call never reaches this hook at all
+    // (no ctx.request/ctx.headers, same early return as below) — which is
+    // exactly why POST /admin/api-keys (Task 2) enforces its OWN
+    // permission whitelist instead of relying on this hook for that part.
     {
       id: 'reject-non-admin-admin-key',
       hooks: {
@@ -284,11 +317,8 @@ array literal):
             matcher: (ctx) => ctx.path === '/api-key/create' || ctx.path === '/api-key/update',
             handler: createAuthMiddleware(async (ctx) => {
               if (!ctx.request && !ctx.headers) return
-              const body = ctx.body as { configId?: string; permissions?: Record<string, string[]> } | undefined
-              const requestsAdmin =
-                body?.configId === 'admin' ||
-                Object.keys(body?.permissions ?? {}).some((resource) => resource.startsWith('admin.'))
-              if (!requestsAdmin) return
+              const body = ctx.body as { configId?: string } | undefined
+              if (body?.configId !== 'admin') return
               const session = await getSessionFromCtx(ctx)
               const isAdmin = session
                 ? deriveIsAdmin(session.user as { email?: string | null; emailVerified?: boolean | null }, deps.adminEmails)
@@ -304,7 +334,7 @@ array literal):
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `docker compose exec -T core npm test -w core -- auth-admin-key-gate`
-Expected: PASS (4/4).
+Expected: PASS (3/3).
 
 - [ ] **Step 6: Run the full core suite + typecheck**
 
@@ -346,7 +376,7 @@ EOF
 - Consumes: `auth.api.createApiKey` (the same in-process call `POST
   /me/api-keys` already makes — `ApiKeyCreation` interface at
   `logical-routes.ts:564` is reusable as-is, no change needed).
-- Produces: `AdminApiDeps { auth: Auth }` (Task 3 extends this with more
+- Produces: `AdminApiDeps { auth: Auth }` (Task 3b extends this with more
   fields as later routes need them — `users`, `adminEmails`, `service`,
   `sourceRepo`, `sourceService`, `logicalStore`, `feeds`, `websubMode`,
   `pushInEnabled`, `mailEnabled`, `pollSeconds`). `mountAdminApiRoutes(app:
@@ -562,108 +592,123 @@ EOF
 
 ---
 
-### Task 3: Admin re-verification middleware + admin.read routes
+### Task 3a: Admin re-verification middleware + storage lookup
+
+**Rev 2 note:** split out of a single, larger "Task 3" per both
+ponytail-review and ponytail-audit independently recommending it — this is
+the one genuinely novel, security-critical piece in the whole plan (the
+per-request admin re-derivation the spec requires) and deserves its own
+isolated review checkpoint, separate from the mechanical route-transcription
+work in 3b. Mirrors phase 3's own Task 2 → 2a/2b split.
 
 **Files:**
 - Modify: `core/src/api/auth.ts` (extend `UserDirectory`, add
   `apiKeyAuthAdmin`)
 - Modify: `core/src/storage/sqlite.ts` (implement the new `UserDirectory`
   method)
-- Modify: `core/src/api/logical-routes.ts` (extend `AdminApiDeps`, add 4
-  read routes to `mountAdminApiRoutes`)
-- Modify: `core/src/api/app.ts` (extend the `mountAdminApiRoutes` call site)
-- Test: `core/test/admin-api-routes.test.ts` (extend)
+- Test: `core/test/api-key-auth-admin.test.ts` (new)
 
 **Interfaces:**
-- Consumes: `deriveIsAdmin` (already imported for Task 1's hook, in a
-  different file — `core/src/api/auth.ts` already defines it locally, no new
-  import needed there).
+- Consumes: `deriveIsAdmin` (already defined locally in `core/src/api/
+  auth.ts`, no new import needed here).
 - Produces: `UserDirectory` gains `getAuthUserAdminFields(authUserId:
   string): Promise<{email: string | null; emailVerified: boolean | null} |
   undefined>`. `apiKeyAuthAdmin(auth: Auth, users: UserDirectory,
   adminEmails: ReadonlySet<string>, permissions: Record<string, string[]>):
-  MiddlewareHandler` — Tasks 4-5 reuse this unchanged, only varying
-  `permissions`.
+  MiddlewareHandler` — Task 3b and Tasks 4-5 all reuse this unchanged, only
+  varying `permissions`.
 
 **Why a new `UserDirectory` method, not reusing `getUserByAuthUserId`:**
 that method returns the domain `User` (id/handle/displayName/…), which has
 no `email`/`emailVerified` fields at all — those live only in better-auth's
-own `user` table. This mirrors the existing `instanceStats` method's own
-pattern of a raw `this.raw.prepare(...)` query against that same table
-(`core/src/storage/sqlite.ts:428-429`) rather than inventing a new
-better-auth API call from memory.
+own `user` table. `listUsers` (`core/src/storage/sqlite.ts:443-470`) already
+joins that same table for `emailVerified` on a paginated, local-id-keyed
+query — closer precedent than `instanceStats`'s plain count, but neither
+fits a single by-`authUserId` lookup, so a new method is the minimal
+correct addition, not a missed shortcut.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `core/test/admin-api-routes.test.ts`:
+This task has no route to test through yet — test `apiKeyAuthAdmin`
+directly against a throwaway single-route `Hono` instance, the same way
+this plan's own planning verified Hono's middleware behavior live.
 
 ```ts
-import { mintKey } from './auth-helper.ts' // reuse the existing helper if present; otherwise inline the auth.api.createApiKey call directly, matching Tasks 1-3's phase-3 test style
+// core/test/api-key-auth-admin.test.ts
+import { describe, test, expect } from 'vitest'
+import { Hono } from 'hono'
+import Database from 'better-sqlite3'
+import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { createAuth } from '../src/auth.ts'
+import { apiKeyAuthAdmin } from '../src/api/auth.ts'
 
-describe('admin.read routes (admin re-verification)', () => {
-  test('GET /admin-api/sources works for an admin-tier key', async () => {
-    const { app, auth, repo, db } = await setup()
-    const { userId } = await registerSession(auth, db, 'admin@x.test')
+async function setup(adminEmails: ReadonlySet<string>) {
+  const db = new Database(':memory:')
+  const repo = createSqliteRepository(db)
+  const auth = createAuth({
+    sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
+    webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
+    authOpenApi: false, adminEmails,
+  })
+  const app = new Hono()
+  app.get('/probe', apiKeyAuthAdmin(auth, repo, adminEmails, { 'admin.read': ['read'] }), (c) => c.json({ ok: true }))
+  return { app, auth, db }
+}
+
+describe('apiKeyAuthAdmin', () => {
+  test('401s with no key', async () => {
+    const { app } = await setup(new Set())
+    const res = await app.request('/probe')
+    expect(res.status).toBe(401)
+  })
+
+  test('403s a valid admin-tier key whose owner is no longer in adminEmails', async () => {
+    const { app, auth, db } = await setup(new Set()) // owner never admin at mint time either — simplest reproduction
+    const signUp = await auth.api.signUpEmail({ body: { email: 'x@x.test', password: 'password123', name: 'x' } })
+    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
     const created = await auth.api.createApiKey({
-      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+      body: { configId: 'admin', userId: signUp.user.id, name: 'k', permissions: { 'admin.read': ['read'] } },
     })
-    const res = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
+    const res = await app.request('/probe', { headers: { 'x-api-key': created.key } })
+    expect(res.status).toBe(403)
+  })
+
+  test('200s a valid admin-tier key whose owner IS currently in adminEmails', async () => {
+    const { app, auth, db } = await setup(new Set(['boss@x.test']))
+    const signUp = await auth.api.signUpEmail({ body: { email: 'boss@x.test', password: 'password123', name: 'x' } })
+    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
+    const created = await auth.api.createApiKey({
+      body: { configId: 'admin', userId: signUp.user.id, name: 'k', permissions: { 'admin.read': ['read'] } },
+    })
+    const res = await app.request('/probe', { headers: { 'x-api-key': created.key } })
     expect(res.status).toBe(200)
   })
 
-  test('GET /admin-api/overview and /admin-api/users and /admin-api/settings all work with the same key', async () => {
-    const { app, auth, db } = await setup()
-    const { userId } = await registerSession(auth, db, 'admin@x.test')
+  test('401s a valid admin-tier key with the wrong permission', async () => {
+    const { app, auth, db } = await setup(new Set(['boss@x.test']))
+    const signUp = await auth.api.signUpEmail({ body: { email: 'boss@x.test', password: 'password123', name: 'x' } })
+    db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
     const created = await auth.api.createApiKey({
-      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+      body: { configId: 'admin', userId: signUp.user.id, name: 'k', permissions: { 'admin.moderation': ['write'] } },
     })
-    for (const path of ['/admin-api/overview', '/admin-api/users', '/admin-api/settings']) {
-      const res = await app.request(path, { headers: { 'x-api-key': created.key } })
-      expect(res.status).toBe(200)
-    }
-  })
-
-  test('a key survives its owner staying admin, but 403s the moment they are removed from adminEmails', async () => {
-    const db = new Database(':memory:')
-    const repo = createSqliteRepository(db)
-    let adminEmails = new Set(['revocable@x.test'])
-    const auth = createAuth({
-      sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
-      webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null, authOpenApi: false,
-      adminEmails, // NOTE: captured by reference — createApp below must read from the same live Set the test mutates
-    })
-    const bus = createEventBus()
-    const service = createService(repo, bus)
-    const sourceService = createSourceService(repo, null)
-    const app = createApp({
-      service, bus, token: 'ops-token', auth, users: repo, adminEmails,
-      sources: { service: sourceService, repo },
-      logical: { store: { schedulerStats: () => ({ dueNow: 0, lastPollAt: null }) } } as never,
-    })
-    const { userId } = await registerSession(auth, db, 'revocable@x.test')
-    const created = await auth.api.createApiKey({
-      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
-    })
-    const before = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
-    expect(before.status).toBe(200)
-    adminEmails.delete('revocable@x.test') // Set is mutated in place — confirm adminEmails is threaded as a live reference, not copied, before relying on this
-    const after = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
-    expect(after.status).toBe(403)
+    const res = await app.request('/probe', { headers: { 'x-api-key': created.key } })
+    expect(res.status).toBe(401)
   })
 })
 ```
 
-Note for the implementer: if `adminEmails` turns out to be copied (not held
-by reference) anywhere along the `createApp` → `mountAdminApiRoutes` →
-`apiKeyAuthAdmin` chain, the third test's mutation won't be observed — trace
-the actual reference chain fresh rather than assuming; adjust the test to
-construct a NEW `Set` and rebuild `app`/`auth` between the "before" and
-"after" calls if a live-mutation test proves impractical.
+Note: these tests call `auth.api.createApiKey` in-process (no
+`headers`/`request`) specifically so `permissions` can be set at all — see
+Task 1's rev-2 note on `SERVER_ONLY_PROPERTY`. This is testing
+`apiKeyAuthAdmin` itself, not the Task-1 issuance path, so bypassing that
+restriction here (the same way this project's existing `core/test/
+api-key-plugin.test.ts` and phase 2/3's own tests already do for their own
+middleware tests) is correct, not a shortcut around something real.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `docker compose exec -T core npm test -w core -- admin-api-routes`
-Expected: FAIL — none of the 4 new routes exist yet (404).
+Run: `docker compose exec -T core npm test -w core -- api-key-auth-admin`
+Expected: FAIL — `apiKeyAuthAdmin` doesn't exist yet.
 
 - [ ] **Step 3: Add the `UserDirectory` method + `SqliteRepository` implementation**
 
@@ -678,8 +723,8 @@ export interface UserDirectory {
 ```
 
 In `core/src/storage/sqlite.ts`, add the implementation on
-`SqliteRepository`, near `instanceStats` (same raw-query pattern against the
-better-auth `user` table):
+`SqliteRepository`, near `instanceStats`/`listUsers` (same raw-query pattern
+against the better-auth `user` table `listUsers` already joins):
 
 ```ts
   async getAuthUserAdminFields(authUserId: string): Promise<{ email: string | null; emailVerified: boolean | null } | undefined> {
@@ -691,10 +736,10 @@ better-auth `user` table):
   }
 ```
 
-(SQLite stores booleans as 0/1 — confirm the exact column type/affinity
-against the real `user` table schema before assuming this cast is correct;
-`instanceStats`'s own `isAnonymous = 1` comparison above is evidence for the
-same convention, but verify rather than trust this plan.)
+`emailVerified` is `integer not null` on the `user` table
+(`core/src/storage/sqlite.ts:1306`) and `listUsers` already does the exact
+same `=== 1` cast against it — confirmed during rev-2 review, not just
+asserted.
 
 - [ ] **Step 4: Add `apiKeyAuthAdmin` middleware**
 
@@ -705,10 +750,12 @@ In `core/src/api/auth.ts`, near `apiKeyAuth`:
 // that the key's owner is CURRENTLY an admin (spec: "a key minted while its
 // owner was an admin stops working the moment they're removed from
 // adminEmails, without needing to revoke the key itself"). Deliberately a
-// separate middleware, not a flag on apiKeyAuth: the extra lookup has a
-// real cost (one more query per request) that only admin-tier routes should
-// pay, and conflating the two would make apiKeyAuth's signature ambiguous
-// about whether adminEmails is required.
+// separate middleware, not a flag on apiKeyAuth: apiKeyAuth hardcodes
+// configId:'user' and never exposes the raw authUserId via context (only
+// coreUser, which has no email field), so it can't be composed with a
+// bolt-on admin check the way registeredOnly() composes after sessionAuth
+// — and the extra lookup has a real per-request cost that only admin-tier
+// routes should pay.
 export function apiKeyAuthAdmin(
   auth: Auth, users: UserDirectory, adminEmails: ReadonlySet<string>, permissions: Record<string, string[]>,
 ): MiddlewareHandler {
@@ -726,12 +773,201 @@ export function apiKeyAuthAdmin(
 }
 ```
 
-- [ ] **Step 5: Extend `AdminApiDeps` and add the 4 read routes**
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `docker compose exec -T core npm test -w core -- api-key-auth-admin`
+Expected: PASS (4/4).
+
+- [ ] **Step 6: Run the full core suite + typecheck**
+
+Run: `docker compose exec -T core npm test -w core` and
+`docker compose exec -T core npm run typecheck -w core`
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add core/src/api/auth.ts core/src/storage/sqlite.ts core/test/api-key-auth-admin.test.ts
+git commit -m "$(cat <<'EOF'
+feat(core): per-request admin re-verification middleware (apiKeyAuthAdmin)
+
+Verifies an admin-tier key's permission AND re-derives the owning user's
+CURRENT admin status on every request, not just at key-mint time — a key
+minted while its owner was an admin stops working the moment they're
+removed from RSC_ADMIN_EMAIL, without needing the key itself revoked.
+
+developed with the help of AI tools
+EOF
+)"
+```
+
+---
+
+### Task 3b: admin.read routes (`GET /admin-api/sources`, `/users`, `/overview`, `/settings`)
+
+**Files:**
+- Modify: `core/src/api/logical-routes.ts` (extend `AdminApiDeps`, add 4
+  read routes to `mountAdminApiRoutes`)
+- Modify: `core/src/api/app.ts` (export `pageArgs`, hoist+export
+  `readTabOverrides`; extend the `mountAdminApiRoutes` call site)
+- Test: `core/test/admin-api-routes.test.ts` (new — this file grows through
+  Tasks 3b-5)
+
+**Interfaces:**
+- Consumes: `apiKeyAuthAdmin` (Task 3a, unchanged).
+- Produces: `AdminApiDeps` gains `users`, `adminEmails`, `service`,
+  `sourceRepo`, `logicalStore`, `feeds`, `websubMode`, `pushInEnabled`,
+  `mailEnabled`, `pollSeconds` (alongside Task 2's `auth`).
+
+**Rev 2 correction (ponytail-review Medium finding):** rev 1 claimed
+`pageArgs` and `readTabOverrides` would get "the same treatment
+`isBadSourceUrl` already got" (a bare `export`). Verified during rev 2:
+- `pageArgs` (`core/src/api/app.ts:62-76`) really is that simple — it's
+  already a top-level function with zero closure capture, exactly like
+  `isBadSourceUrl`. Add `export` in front of it, nothing else.
+- `readTabOverrides` (`core/src/api/app.ts:166-176`) is NOT top-level — it's
+  nested inside `createApp`, and closes over one thing: the local `TAB_KEYS`
+  constant (`app.ts:141`, `['local', 'federated', 'personal', 'public'] as
+  const`). It already takes `getSetting` as a parameter, so hoisting it
+  needs exactly one change: move `TAB_KEYS` (and `readTabOverrides` itself)
+  to module scope in `app.ts`, above `createApp`, then export
+  `readTabOverrides`. `TAB_KEYS` itself doesn't need exporting — nothing
+  outside `readTabOverrides` uses it once hoisted.
+- `establishFederation` is Task 4's concern (it's not called by any Task 3b
+  route), corrected there.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// core/test/admin-api-routes.test.ts
+import { describe, test, expect } from 'vitest'
+import Database from 'better-sqlite3'
+import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { createAuth } from '../src/auth.ts'
+import { createApp } from '../src/api/app.ts'
+import { createService } from '../src/domain/service.ts'
+import { createEventBus } from '../src/domain/bus.ts'
+import { createSourceService } from '../src/domain/source-service.ts'
+
+async function setup(adminEmails: ReadonlySet<string> = new Set(['admin@x.test'])) {
+  const db = new Database(':memory:')
+  const repo = createSqliteRepository(db)
+  const auth = createAuth({
+    sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
+    webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
+    authOpenApi: false, adminEmails,
+  })
+  const bus = createEventBus()
+  const service = createService(repo, bus)
+  const sourceService = createSourceService(repo, null)
+  const app = createApp({
+    service, bus, token: 'ops-token', auth, users: repo, adminEmails,
+    sources: { service: sourceService, repo },
+    logical: { store: { schedulerStats: () => ({ dueNow: 0, lastPollAt: null }) } } as never,
+  })
+  return { app, auth, repo, db }
+}
+
+async function registerSession(auth: ReturnType<typeof createAuth>, db: Database.Database, email: string) {
+  const signUp = await auth.api.signUpEmail({ body: { email, password: 'password123', name: email } })
+  db.prepare(`UPDATE user SET emailVerified = 1 WHERE id = ?`).run(signUp.user.id)
+  const signIn = await auth.api.signInEmail({
+    body: { email, password: 'password123' }, returnHeaders: true,
+  }) as unknown as { headers: Headers }
+  return { userId: signUp.user.id, cookie: signIn.headers.get('set-cookie') ?? '' }
+}
+
+describe('admin.read routes', () => {
+  test('GET /admin-api/sources, /users, /overview, /settings all work with one admin.read key', async () => {
+    const { app, auth, db } = await setup()
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await auth.api.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+    })
+    for (const path of ['/admin-api/sources', '/admin-api/users', '/admin-api/overview', '/admin-api/settings']) {
+      const res = await app.request(path, { headers: { 'x-api-key': created.key } })
+      expect(res.status).toBe(200)
+    }
+  })
+
+  test('a key survives its owner staying admin, but 403s once removed from adminEmails', async () => {
+    const db = new Database(':memory:')
+    const repo = createSqliteRepository(db)
+    const adminEmails = new Set(['revocable@x.test'])
+    const auth = createAuth({
+      sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
+      webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null, authOpenApi: false,
+      adminEmails,
+    })
+    const bus = createEventBus()
+    const service = createService(repo, bus)
+    const sourceService = createSourceService(repo, null)
+    const app = createApp({
+      service, bus, token: 'ops-token', auth, users: repo, adminEmails,
+      sources: { service: sourceService, repo },
+      logical: { store: { schedulerStats: () => ({ dueNow: 0, lastPollAt: null }) } } as never,
+    })
+    const { userId } = await registerSession(auth, db, 'revocable@x.test')
+    const created = await auth.api.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.read': ['read'] } },
+    })
+    const before = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
+    expect(before.status).toBe(200)
+    adminEmails.delete('revocable@x.test')
+    const after = await app.request('/admin-api/sources', { headers: { 'x-api-key': created.key } })
+    expect(after.status).toBe(403)
+  })
+})
+```
+
+Note for the implementer: the second test relies on `adminEmails` being
+threaded by reference from this test's own local `Set` all the way down to
+`apiKeyAuthAdmin`'s per-request check — trace that reference chain fresh
+(`createApp` → `mountAdminApiRoutes` → `apiKeyAuthAdmin`) rather than
+assuming it holds; if any layer copies the `Set` instead of passing it
+through, rebuild `app`/`auth` between the "before" and "after" calls instead
+of mutating in place.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `docker compose exec -T core npm test -w core -- admin-api-routes`
+Expected: FAIL — none of the 4 new routes exist yet (404).
+
+- [ ] **Step 3: Export `pageArgs` and hoist+export `readTabOverrides`**
+
+In `core/src/api/app.ts`: add `export` to `pageArgs` (no other change — see
+the rev-2 correction above). Move `TAB_KEYS` and `readTabOverrides` out of
+`createApp`'s body to module scope (above `function createApp`), and export
+`readTabOverrides`:
+
+```ts
+const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
+
+export async function readTabOverrides(getSetting: (k: string) => Promise<string | undefined>) {
+  const labels: Record<string, string | null> = {}
+  const subtitles: Record<string, string | null> = {}
+  for (const k of TAB_KEYS) {
+    const l = await getSetting(`tab_label_${k}`)
+    const s = await getSetting(`tab_subtitle_${k}`)
+    labels[k] = l && l !== '' ? l : null
+    subtitles[k] = s && s !== '' ? s : null
+  }
+  return { tabLabels: labels, tabSubtitles: subtitles }
+}
+```
+
+`type TabKey`, `isTabKey`, `CONTROL_CHARS`, and `validateTabCopy` stay where
+they are inside `createApp` — nothing else in this task needs them, and
+moving more than `TAB_KEYS`+`readTabOverrides` would widen this task's diff
+for no benefit. Confirm nothing inside `createApp` that still references
+`TAB_KEYS` breaks from the hoist (it shouldn't — a module-scope `const` is
+still visible inside `createApp`'s body) before moving on.
+
+- [ ] **Step 4: Extend `AdminApiDeps` and add the 4 read routes**
 
 In `core/src/api/logical-routes.ts`, extend the interface and imports (add
 whatever's not already imported in this file — `Service`, `SourceRepository`,
-`LogicalStore`/scheduler stats type, `FeedContext` — read the file fresh to
-see what's already imported before adding duplicates):
+`FeedContext`, and the two newly-exported `app.ts` functions — read the file
+fresh to see what's already imported before adding duplicates):
 
 ```ts
 export interface AdminApiDeps {
@@ -792,14 +1028,7 @@ validation, same response shapes, only the auth middleware differs:
     }))
 ```
 
-`pageArgs` and `readTabOverrides` are defined in `app.ts`, not
-`logical-routes.ts` — check whether they're already exported/importable, or
-whether they need exporting from `app.ts` (same treatment `isBadSourceUrl`
-already got in phase 3, Task 2b: exported and imported rather than
-duplicated). Read both files fresh to confirm the current export surface
-before deciding.
-
-- [ ] **Step 6: Update the `mountAdminApiRoutes` call site in `app.ts`**
+- [ ] **Step 5: Update the `mountAdminApiRoutes` call site in `app.ts`**
 
 ```ts
   mountAdminApiRoutes(app, {
@@ -813,28 +1042,28 @@ before deciding.
 `pollSeconds`, `adminEmails` are all already local variables in `createApp`
 by this point in the file — reuse them, don't reconstruct.)
 
-- [ ] **Step 7: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `docker compose exec -T core npm test -w core -- admin-api-routes`
 Expected: PASS (all tests in the file).
 
-- [ ] **Step 8: Run the full core suite + typecheck**
+- [ ] **Step 7: Run the full core suite + typecheck**
 
 Run: `docker compose exec -T core npm test -w core` and
 `docker compose exec -T core npm run typecheck -w core`
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add core/src/api/auth.ts core/src/storage/sqlite.ts core/src/api/logical-routes.ts core/src/api/app.ts core/test/admin-api-routes.test.ts
+git add core/src/api/logical-routes.ts core/src/api/app.ts core/test/admin-api-routes.test.ts
 git commit -m "$(cat <<'EOF'
-feat(core): admin.read routes + per-request admin re-verification
+feat(core): admin.read routes (GET /admin-api/sources, /users, /overview, /settings)
 
-Adds apiKeyAuthAdmin (verifies the key's permission AND re-derives the
-owning user's current admin status every request, not just at key-mint
-time) and the four admin.read routes: GET /admin-api/sources, /users,
-/overview, /settings — key-authed twins of the existing cookie-authed
-admin routes, same validation and response shapes.
+Key-authed twins of the existing cookie-authed admin routes, gated by
+Task 3a's apiKeyAuthAdmin — same validation and response shapes,
+transcribed from app.ts. pageArgs exported as-is; readTabOverrides hoisted
+out of createApp's closure (it only ever closed over the static TAB_KEYS
+constant) and exported alongside it.
 
 developed with the help of AI tools
 EOF
@@ -852,13 +1081,28 @@ EOF
 - Test: `core/test/admin-api-routes.test.ts` (extend)
 
 **Interfaces:**
-- Consumes: `apiKeyAuthAdmin` (Task 3, unchanged). `sourceService:
-  SourceService`'s `transition` and `establishFederation` methods (same
-  ones `app.ts`'s cookie-authed `/admin/sources/:id/:action` and `/admin/
-  sources` already call — confirm exact method names/signatures by reading
-  `app.ts` fresh, since this plan paraphrases them).
-- Produces: `AdminApiDeps` gains `sourceService: SourceService` (Task 5 does
-  not need this field, but Task 6, if it ever needs a source lookup, could).
+- Consumes: `apiKeyAuthAdmin` (Task 3a, unchanged). `sourceService.transition(...)`
+  (the actual transition call `app.ts`'s cookie-authed `POST /admin/sources/
+  :id/:action` makes — confirm the exact signature by reading `app.ts`
+  fresh, this plan paraphrases it). `establishFederation` (a standalone
+  function, NOT a `SourceService` method — see the rev-2 correction below,
+  it needs hoisting + a new parameter before it's reusable here).
+- Produces: `AdminApiDeps` gains `sourceService: SourceService`.
+
+**Rev 2 correction (ponytail-review Medium finding):** rev 1 claimed
+`establishFederation` would get the same one-word `export` treatment as
+`isBadSourceUrl`. Verified during rev 2: `establishFederation` (`core/src/
+api/app.ts:435-459`) is nested inside `createApp` and closes over one real
+value — the local `v2` binding (`= sources.service`, a `SourceService`).
+Its own params are already `(c: Context, actorId: string, actorKind:
+'administrator' | 'operator_token')` — no session/request state leaks in
+beyond that. Hoisting it needs: add a fourth parameter for the
+`SourceService` it currently closes over, move the function to module
+scope (above `createApp`), export it, and update its two EXISTING call
+sites (`POST /admin/sources` and the ops-token route `POST /ops/sources/
+federation`) to pass `v2`/`sources.service` explicitly, before this task's
+own new call site in `mountAdminApiRoutes` is a third — not the zero-effort
+export rev 1 implied.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -915,11 +1159,61 @@ Expected: FAIL — routes don't exist yet (404 for all, including the
 the right reason — read the actual failure output rather than assuming
 which assertion fails).
 
-- [ ] **Step 3: Add the 2 routes**
+- [ ] **Step 3: Hoist + export `establishFederation` with a `sourceService` parameter**
 
-Read `app.ts`'s current `POST /admin/sources/:id/:action` and `POST
-/admin/sources` bodies fresh (they're long — validation, the transition
-matrix lookup, the `establishFederation` helper) and transcribe them into
+In `core/src/api/app.ts`, move `establishFederation` to module scope (above
+`createApp`), add a fourth parameter, and export it:
+
+```ts
+export async function establishFederation(
+  c: Context, actorId: string, actorKind: 'administrator' | 'operator_token', sourceService: SourceService,
+): Promise<Response> {
+  const body = await readJsonBody(c)
+  if (!body) return c.json({ error: 'body invalid' }, 400)
+  const { url, attributionMode, category, note, commandId } = body
+  if (!isString(url, 1, 2048)) return c.json({ error: 'url invalid' }, 400)
+  if (!isAttributionMode(attributionMode)) return c.json({ error: 'attributionMode invalid' }, 400)
+  if (!isAuditCategory(category)) return c.json({ error: 'category invalid' }, 400)
+  if (note !== undefined && note !== null && !isString(note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+  if (!isString(commandId, 1, 200)) return c.json({ error: 'commandId invalid' }, 400)
+  let result
+  try {
+    result = await sourceService.establishFederation({
+      url, attributionMode, category, note: typeof note === 'string' ? note : null,
+      commandId, actorId, actorKind,
+    })
+  } catch (err) {
+    if (isBadSourceUrl(err)) return c.json({ error: 'url invalid' }, 400)
+    throw err
+  }
+  if (result.kind === 'established') return c.json({ source: result.source, federation: result.federation }, 201)
+  if (result.kind === 'exists') return c.json({ error: 'federation already exists' }, 409)
+  if (result.kind === 'conflict') return c.json(IDEMPOTENCY_CONFLICT, 409)
+  return c.json(NEUTRAL_UNAVAILABLE, 409)
+}
+```
+
+(Body is the existing function's, unchanged — only the closed-over `v2` is
+now the explicit `sourceService` parameter.) Update its two EXISTING call
+sites inside `createApp` to pass `v2` (the local binding, unchanged
+elsewhere):
+
+```ts
+  app.post('/admin/sources', jsonWrite, (c) => establishFederation(c, c.get('coreUser').id, 'administrator', v2))
+  // ...
+  app.post('/ops/sources/federation', bearerAuth(token), jsonWrite, (c) => establishFederation(c, opsActorId, 'operator_token', v2))
+```
+
+Read both call sites fresh (search for `establishFederation(c,`) — line
+numbers will have shifted from what's shown above once `v2` is declared;
+confirm `v2`'s declaration (`const v2 = sources.service`) is still in scope
+at both call sites after the hoist, since they're now calling an imported
+module-scope function rather than a local closure.
+
+- [ ] **Step 4: Add the 2 routes**
+
+Read `app.ts`'s current `POST /admin/sources/:id/:action` body fresh (long —
+validation, the transition matrix lookup) and transcribe it into
 `mountAdminApiRoutes`, with ONE addition: the six-verb allowlist this plan's
 Global Constraints require.
 
@@ -938,17 +1232,10 @@ Global Constraints require.
   })
 
   app.post('/admin-api/sources', writeAdminSources, jsonWrite, (c) =>
-    establishFederation(c, c.get('coreUser').id, 'administrator'))
+    establishFederation(c, c.get('coreUser').id, 'administrator', sourceService))
 ```
 
-`establishFederation` is currently a local function inside `app.ts`'s
-`createApp` (not exported) — it needs exporting (or the whole handler
-inlined a second time, matching how `POST /admin/sources` calls it today).
-Given `isBadSourceUrl` was already exported for exactly this reason in phase
-3, exporting `establishFederation` the same way is the smaller, more
-consistent diff. Check its exact signature fresh before wiring the call.
-
-- [ ] **Step 4: Extend `AdminApiDeps` and the call site**
+- [ ] **Step 5: Extend `AdminApiDeps` and the call site**
 
 ```ts
 export interface AdminApiDeps {
@@ -966,16 +1253,16 @@ export interface AdminApiDeps {
 
 (`v2` is already `sources.service` by this point in `createApp` — reuse it.)
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `docker compose exec -T core npm test -w core -- admin-api-routes`
 
-- [ ] **Step 6: Run the full core suite + typecheck**
+- [ ] **Step 7: Run the full core suite + typecheck**
 
 Run: `docker compose exec -T core npm test -w core` and
 `docker compose exec -T core npm run typecheck -w core`
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add core/src/api/logical-routes.ts core/src/api/app.ts core/test/admin-api-routes.test.ts
@@ -1003,7 +1290,7 @@ EOF
 **Interfaces:**
 - Consumes: `service.deleteLocalAccount(handle)`, `service.deletePost(id)` —
   already available via the existing `service: Service` field on
-  `AdminApiDeps` (Task 3). No new deps needed.
+  `AdminApiDeps` (Task 3b). No new deps needed.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1302,11 +1589,11 @@ EOF
 
 **Spec coverage:** all three "Admin tier (phase 4)" bullets from the spec
 are covered within the agreed literal-list scope: `GET /api/v1/admin/...`
-(Task 3, 4 routes) → `admin.read`; governance actions (Task 4, restricted to
-the 6 named verbs) → `admin.sources: write`; hard removal (Task 5) →
-`admin.moderation: write`. Admin re-verification per request (Task 3) and
-admin key issuance via the standard whitelist-plus-hook mechanism (Tasks 1-2)
-are both covered. "Key management UX" admin-tier panel is Task 6. The
+(Task 3b, 4 routes) → `admin.read`; governance actions (Task 4, restricted
+to the 6 named verbs) → `admin.sources: write`; hard removal (Task 5) →
+`admin.moderation: write`. Admin re-verification per request (Task 3a) and
+admin key issuance via the standard whitelist-plus-hook mechanism (Tasks
+1-2) are both covered. "Key management UX" admin-tier panel is Task 6. The
 named-consumer rationale (multi-instance scripting) needs no separate task —
 it's satisfied by the routes existing and being scriptable, not by any
 additional code.
@@ -1317,29 +1604,88 @@ additional code.
 the implementer. No other TBD/TODO-style gaps found.
 
 **Type consistency:** `AdminApiDeps` is introduced minimally in Task 2
-(`{auth}`) and grows additively in Tasks 3-4 (`users`, `adminEmails`,
+(`{auth}`) and grows additively in Tasks 3b-4 (`users`, `adminEmails`,
 `service`, `sourceRepo`, `logicalStore`, `feeds`, `websubMode`,
-`pushInEnabled`, `mailEnabled`, `pollSeconds`, `sourceService`), matching
-`PersonalApiDeps`'s established growth pattern from phase 3. `readAdmin`/
+`pushInEnabled`, `mailEnabled`, `pollSeconds`, `sourceService`) — wider than
+`PersonalApiDeps` ever grew in phase 3, and deliberately not narrowed (see
+the Global Constraints' rev-2 note on `overview`/`settings` above): it
+mirrors the genuinely disparate dependencies the cookie-authed `/admin/*`
+composite routes already use inline, not artificial padding. `readAdmin`/
 `writeAdminSources`/`writeAdminModeration` middleware instances are each
 constructed once per `mountAdminApiRoutes` call and reused across that
 bucket's routes, matching phase 3's `apiKeyAuth(...)`-per-call style closely
 enough while avoiding reconstructing the same middleware per route.
 
+**Rev 2 (2026-08-05) — folding in a parallel ponytail-review + ponytail-audit
+pass, both run against the rev-1 plan before any code was written:**
+- **Critical, fixed:** rev 1's Task 1 tests put a `permissions` field in
+  every real-HTTP request body. `@better-auth/api-key`'s installed source
+  unconditionally rejects any `permissions` field on a real HTTP call
+  (`SERVER_ONLY_PROPERTY`, independent of admin status) — so those tests
+  either passed for the wrong reason or, for the one positive-path test,
+  could never pass at all. Rewritten to never carry `permissions` over real
+  HTTP; the hook itself was simplified in the same pass, dropping an
+  `admin.*`-permission-scanning branch that turned out to be dead code on
+  every path the hook can actually observe (real HTTP: blocked upstream
+  regardless of content; in-process: hook doesn't fire at all).
+- **Medium, fixed:** rev 1 understated the effort to export
+  `pageArgs`/`readTabOverrides`/`establishFederation`, claiming all three
+  would get "the same treatment `isBadSourceUrl` already got" (a bare
+  `export`). True only for `pageArgs` (genuinely zero closure). The other
+  two needed real work, now spelled out with real code: `readTabOverrides`
+  needed hoisting alongside the one constant (`TAB_KEYS`) it closes over;
+  `establishFederation` needed a new explicit `sourceService` parameter
+  replacing what it used to close over, plus updating its two existing call
+  sites, not just adding an `export` keyword.
+- **Minor, fixed:** the live `/admin/*` route count (Global Constraints) was
+  stale at 24; corrected to 27. Doesn't change the scope decision.
+- **Structural, applied:** the original single "Task 3" bundled a new
+  storage method, a new security-critical middleware, an `AdminApiDeps`
+  interface jump from 1 field to 11, and four transcribed routes into one
+  review checkpoint — both reviewers independently flagged this and
+  recommended splitting it, mirroring phase 3's own Task 2 → 2a/2b
+  precedent. Split into **Task 3a** (storage method + `apiKeyAuthAdmin`
+  middleware only — small, the one genuinely novel piece) and **Task 3b**
+  (the `AdminApiDeps` growth + 4 read routes — larger, mechanical
+  transcription work).
+- **Acknowledged, not reversed:** a ponytail-audit finding argued
+  `/admin-api/overview` and `/admin-api/settings` fit the spec's
+  "governance/moderation state" phrase less well than the per-source
+  detail/audit endpoints this plan already excludes, and that they're the
+  reason `AdminApiDeps` is as wide as it is (dropping just `overview` would
+  shrink it from 12 fields to 6). A second, independent ponytail-review pass
+  judged the same width as a faithful mirror of the cookie-authed route's
+  real dependency footprint, not bloat. Kept both routes: the scoping
+  decision was already made explicitly before this plan was drafted (the
+  maintainer's own answer named "overview/settings reads" as in-scope), and
+  `overview` is genuine, useful per-instance state for this tier's actual
+  named consumer (a script managing several instances). Recorded here,
+  cross-referenced from the Global Constraints, rather than silently
+  resolved either way.
+- **Considered, not applied:** the audit also noted `apiKeyAuth` and
+  `apiKeyAuthAdmin` share ~8 lines of near-identical header/verify/
+  `ensureCoreUser` boilerplate that could be factored into a small shared
+  helper. Left as-is — two call sites doesn't meet this project's own
+  established rule-of-three bar for extraction (see phase 3's precedent on
+  the same question for its own two-call-site test duplication), and the
+  audit itself flagged this as optional, not a defect.
+
 **Known open questions left for implementers, not resolved here** (per this
 plan's own Global Constraints reminder to read code fresh rather than trust
 paraphrase):
-- Whether `pageArgs`/`readTabOverrides`/`establishFederation` need exporting
-  from `app.ts` (very likely yes, given `isBadSourceUrl` already needed the
-  same treatment in phase 3) — Tasks 3 and 4 flag this explicitly rather
-  than assuming the exact mechanism.
 - The exact SQLite boolean representation for `emailVerified` in the
-  better-auth `user` table (Task 3, Step 3) — flagged for verification
-  against the real schema rather than asserted.
-- Task 3's third test (adminEmails-mutation-by-reference) may not work if
-  `adminEmails` is copied anywhere in the dependency chain — an explicit
+  better-auth `user` table — confirmed during rev 2 (`integer not null`,
+  matching `listUsers`'s existing `=== 1` cast), but still worth a fresh
+  glance at the live schema before trusting it blindly.
+- Task 3b's second test (`adminEmails`-mutation-by-reference) may not work
+  if `adminEmails` is copied anywhere in the dependency chain — an explicit
   fallback (rebuild `app`/`auth` between assertions) is given rather than
   leaving the implementer to discover this cold.
+- `establishFederation`'s two existing call sites (`POST /admin/sources`,
+  `POST /ops/sources/federation`) will have shifted line numbers once
+  `TAB_KEYS`/`readTabOverrides` (Task 3b) and `establishFederation` itself
+  (Task 4) are hoisted out of `createApp` — find them by function name, not
+  by the line numbers quoted anywhere in this plan.
 
 **Scope discipline:** re-affirms the Global Constraints' scope boundary —
 this plan does NOT add key-authed twins for `/admin/sources/:id` (detail),
