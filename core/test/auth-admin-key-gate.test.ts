@@ -26,7 +26,7 @@ describe('admin-tier api-key gate (before hook)', () => {
     return createAuth({
       sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
       webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
-      authOpenApi: false, adminEmails,
+      authOpenApi: false, adminEmails, trustClientIp: true,
     })
   }
 

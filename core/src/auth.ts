@@ -21,6 +21,46 @@ export interface AuthDeps {
   mailer: Mailer | null
   authOpenApi: boolean
   adminEmails: ReadonlySet<string>
+  // Whether x-forwarded-for can be believed on this deployment
+  // (RSC_TRUST_CLIENT_IP — see config.ts). Only affects the per-IP
+  // customRules below; the magic-link volume cap holds regardless.
+  trustClientIp: boolean
+}
+
+// Instance-wide ceiling on magic-link mail, per fixed window.
+//
+// POST /sign-in/magic-link mails a login link to ANY address and (magicLink's
+// disableSignUp defaults false) also creates the account, so without this the
+// instance is a mailer any anonymous caller can aim at a third party.
+//
+// This counts MESSAGES SENT, not identities — nothing a caller supplies can
+// inflate it or aim it at someone. A per-recipient cap was specced first and
+// rejected: the caller supplies the address, and addresses are harvested lists
+// rather than credentials, so N-per-address x unlimited addresses bounds
+// nothing (the same refutation this repo already wrote about per-IP caps at
+// logical-routes/public.ts) — and keying on a victim's real, public email
+// would let anyone deny THEM a login link, the exact "control becomes the
+// attack" shape config.ts documents for forgeable keys.
+//
+// Accepted cost: a global cap is exhaustible, so a determined attacker can
+// deny magic-link login to everyone until the window rolls. That damage is
+// undirected, self-healing, and leaves /register + password login untouched —
+// the same trade the firehose's global cap already accepts.
+//
+// ponytail: single-process in-memory counters, reset on deploy/restart, same
+// accepted ceiling as the firehose/api-key caps; a shared store only if an
+// instance ever runs multiple replicas. A single fixed window needs two
+// integers — no per-key windows, no sweep.
+const MAGIC_LINK_WINDOW_MS = 60 * 60 * 1000
+export const MAGIC_LINK_MAX_PER_WINDOW = 20
+let magicLinkWindowEnd = 0
+let magicLinkSent = 0
+
+// Test-only: the counters are module state (one auth instance per process in
+// prod), so a suite building several apps needs a reset between cases.
+export function resetMagicLinkCap(): void {
+  magicLinkWindowEnd = 0
+  magicLinkSent = 0
 }
 
 export function createAuth(deps: AuthDeps) {
@@ -184,6 +224,33 @@ export function createAuth(deps: AuthDeps) {
         ],
       },
     },
+    // The instance-wide magic-link mail ceiling (constants above). Placed here,
+    // not in app.ts's MAIL_GATED handler, because reading the body there means
+    // c.req.json(), which consumes c.req.raw's body and hands better-auth an
+    // unusable request unless explicitly cloned; ctx.body is already parsed on
+    // this seam. Same before-hook shape as the two plugins above.
+    {
+      id: 'cap-magic-link-volume',
+      hooks: {
+        before: [
+          {
+            matcher: (ctx) => ctx.path === '/sign-in/magic-link',
+            handler: createAuthMiddleware(async (ctx) => {
+              if (!ctx.request && !ctx.headers) return // server-only call — this app's own code, trusted
+              const now = Date.now()
+              if (now >= magicLinkWindowEnd) {
+                magicLinkWindowEnd = now + MAGIC_LINK_WINDOW_MS
+                magicLinkSent = 0
+              }
+              if (magicLinkSent >= MAGIC_LINK_MAX_PER_WINDOW) {
+                throw new APIError('TOO_MANY_REQUESTS', { message: 'Too many login links requested. Please try again later.' })
+              }
+              magicLinkSent++
+            }),
+          },
+        ],
+      },
+    },
   ]
   // Dev-only OpenAPI reference (spec 2026-07-19). Routes ride the /api/auth/*
   // mount; the web proxy independently 404s them so this never goes public.
@@ -218,7 +285,19 @@ export function createAuth(deps: AuthDeps) {
     // /me is the real fix (recorded follow-up)
     session: { expiresIn: deps.anonTtlDays * 4 * 86400 },
     // ponytail: per-IP throttle only; CAPTCHA/turnstile if a real flood ever happens
-    rateLimit: { enabled: true, customRules: { '/sign-in/anonymous': { window: 60, max: 10 }, '/sign-in/magic-link': { window: 60, max: 5 } } },
+    // Per-IP rules only where the address can actually be believed. On a
+    // deployment whose edge forwards the CALLER'S OWN X-Forwarded-For (Cloudron
+    // — see config.ts's RSC_TRUST_CLIENT_IP), a per-IP limit is worse than
+    // none: it stops nobody (rotate the header) while letting anyone spend a
+    // few requests under a victim's address to lock THAT PERSON out. `false`
+    // disables the rule for a path. The magic-link volume cap above is
+    // unforgeable and applies on every topology.
+    rateLimit: {
+      enabled: true,
+      customRules: deps.trustClientIp
+        ? { '/sign-in/anonymous': { window: 60, max: 10 }, '/sign-in/magic-link': { window: 60, max: 5 } }
+        : { '/sign-in/anonymous': false, '/sign-in/magic-link': false },
+    },
     // disableOriginCheck defaults to true under NODE_ENV=test (better-auth's
     // isTest() shortcut) — pin it off so CSRF/origin checks are real in our
     // own (vitest) test suite too, not just in production.

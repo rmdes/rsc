@@ -9,6 +9,7 @@ import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { ensureCoreUser } from '../src/api/auth.ts'
+import { resetMagicLinkCap, MAGIC_LINK_MAX_PER_WINDOW } from '../src/auth.ts'
 import { makeAuth, anonSession, registeredSession, fakeMailer, uniqueIp } from './auth-helper.ts'
 import type { Mailer } from '../src/mail.ts'
 
@@ -357,4 +358,40 @@ test('guest upgrade abandoned: register but never verify — guest stays anonymo
   const { swept } = repo.sweepAnonymousUsers(7, store)
   expect(swept).toBeGreaterThanOrEqual(1)
   expect(await repo.getUserByHandle(guest.handle)).toBeUndefined()
+})
+
+// The instance-wide magic-link mail ceiling (auth.ts). POST /sign-in/magic-link
+// mails a login link to ANY address and creates the account, so without a cap
+// the instance is a mailer anyone can aim at a third party.
+test('magic-link mail is capped instance-wide, and DISTINCT addresses do not evade it', async () => {
+  resetMagicLinkCap()
+  const { app, mail } = await makeApp()
+  const statuses: number[] = []
+  // Every request a DIFFERENT recipient — the exact evasion a per-recipient
+  // cap would have allowed (addresses are supplied by the caller and free).
+  for (let i = 0; i < MAGIC_LINK_MAX_PER_WINDOW + 3; i++) {
+    const r = await app.request('/api/auth/sign-in/magic-link', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://web.test', 'x-forwarded-for': uniqueIp() },
+      body: JSON.stringify({ email: `flood${i}@b.test` }),
+    })
+    statuses.push(r.status)
+  }
+  expect(statuses.slice(0, MAGIC_LINK_MAX_PER_WINDOW).every((s) => s === 200)).toBe(true)
+  expect(statuses.slice(MAGIC_LINK_MAX_PER_WINDOW)).toEqual([429, 429, 429])
+  // The bound is about MAIL, so assert mail — not just the status code.
+  expect(mail.sent.filter((m) => /login/i.test(m.subject))).toHaveLength(MAGIC_LINK_MAX_PER_WINDOW)
+})
+
+// The 503 mail-gate (app.ts MAIL_GATED) must still win: a capped instance and a
+// mailer-less instance are different answers and neither may mask the other.
+test('with no mailer the magic-link route still answers 503, not the cap', async () => {
+  resetMagicLinkCap()
+  const { app } = await makeApp({ mailEnabled: false, mailer: null })
+  const r = await app.request('/api/auth/sign-in/magic-link', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'http://web.test', 'x-forwarded-for': uniqueIp() },
+    body: JSON.stringify({ email: 'x@b.test' }),
+  })
+  expect(r.status).toBe(503)
 })
