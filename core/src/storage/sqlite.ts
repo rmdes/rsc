@@ -1500,6 +1500,16 @@ export const MIGRATIONS: string[][] = [
   // which MIGRATIONS (pure sqlite.exec SQL) cannot do. Same split as
   // migration #19 / healMembers.
   [],
+  // 23 — instance-member reap recovery heal (spec 2026-08-06 Part 2). Pure
+  // no-op SQL: this entry exists ONLY to advance user_version so the
+  // migrate() gate below fires healStrandedMembers exactly once. The actual
+  // work (resetting verified checks/jobs stranded by the pre-fix reap bug so
+  // the normal verification drain re-mints them, now guard-protected) is
+  // imperative TS, not SQL — same split as migration #19 / healMembers and
+  // migration #22 / collapseVersionHistory. Appended at the TAIL, AFTER
+  // migration #22 — mid-array insertion corrupts user_version on live
+  // databases.
+  [],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
@@ -1530,6 +1540,13 @@ function migrate(sqlite: InstanceType<typeof Database>): void {
   // even if the process dies mid-heal, and idempotent (a re-run finds nothing
   // left with >1 version).
   if (version < 22) collapseVersionHistory(sqlite)
+  // 23 — instance-member reap recovery: reset every verification_checks_v2
+  // row stranded 'verified' by the pre-fix reap bug (its minted member
+  // source was deleted) back to 'pending' and re-pend its verification job,
+  // the first time this DB crosses migration 23. healStrandedMembers wraps
+  // its own transaction — safe even if the process dies mid-heal, and
+  // idempotent (a re-run finds nothing left in the stranded state).
+  if (version < 23) healStrandedMembers(sqlite)
 }
 
 // Phase B collapse migration (spec 2026-08-05, plan Task 4; review C-A/C-C/I-B).
@@ -1564,6 +1581,36 @@ export function collapseVersionHistory(sqlite: InstanceType<typeof Database>): v
       sqlite.prepare(`UPDATE presentation_entries_v2 SET sequence = 0 WHERE delivery_id = ?`).run(deliveryId)
     }
   })()
+}
+
+// One-time recovery heal (spec 2026-08-06 Part 2, plan Task 4). The pre-fix
+// reapSource bug deleted an instance-governed member's remote_sources_v2 row
+// whenever its verified_origin claim churned away between polls, leaving
+// verification_checks_v2 stuck 'verified' for a source that no longer
+// exists and its reconciliation_jobs_v2 verification job stuck terminal.
+// Reset both back to their fresh-scheduleVerification shape so the normal
+// verification drain re-mints the member — now guard-protected by Task 1, so
+// it cannot be reaped out from under itself again. A batch key covered by a
+// live remote_sources_v2 row, or by a blocked_source_tombstones_v2 row (a
+// deliberately purged member — never resurrect it), is left untouched.
+export function healStrandedMembers(sqlite: InstanceType<typeof Database>): void {
+  const bks = (sqlite.prepare(`
+    SELECT DISTINCT vc.batch_key AS bk FROM verification_checks_v2 vc
+    WHERE vc.state = 'verified'
+      AND NOT EXISTS (SELECT 1 FROM remote_sources_v2 s WHERE s.canonical_url = vc.batch_key)
+      AND NOT EXISTS (SELECT 1 FROM blocked_source_tombstones_v2 t WHERE t.canonical_url = vc.batch_key)
+  `).all() as { bk: string }[]).map((r) => r.bk)
+  if (bks.length === 0) return
+  const now = new Date().toISOString()
+  const CHUNK = 500
+  const run = sqlite.transaction(() => {
+    for (let i = 0; i < bks.length; i += CHUNK) {
+      const c = bks.slice(i, i + CHUNK); const ph = c.map(() => '?').join(',')
+      sqlite.prepare(`UPDATE verification_checks_v2 SET state='pending', resolved_at=NULL WHERE state='verified' AND batch_key IN (${ph})`).run(...c)
+      sqlite.prepare(`UPDATE reconciliation_jobs_v2 SET status='pending', attempts=0, next_attempt_at=?, failure_category=NULL, diagnostic=NULL WHERE kind='verification' AND verification_batch_key IN (${ph})`).run(now, ...c)
+    }
+  })
+  run()
 }
 
 export async function createSqliteRepository(filename: string): Promise<SqliteRepository> {
