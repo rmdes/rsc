@@ -641,14 +641,17 @@ export class SqliteRepository implements Repository, SourceRepository {
 
   // A display-only retention-reason label for ANY source (getSourceDetail and
   // listSourceMembers call this unconditionally, not just for orphans) — first
-  // match wins, in priority order: verified_origin > admin_retained >
-  // audit_history > reapable. This checks only those 3 signals, NOT the full
-  // reapSourceIfOrphaned guard chain (which also checks subscribers/governance/
-  // federation first). Trap: 'reapable' means "nothing here is retaining it,"
-  // NOT "safe to reap" — a source with active subscriptions still shows
-  // 'reapable' when rendered via getSourceDetail/listSourceMembers, since
-  // neither pre-filters to orphans the way listSourceSummaries's orphan
-  // filter does.
+  // match wins, in priority order: instance_member > verified_origin >
+  // admin_retained > audit_history > reapable. instance_member (an
+  // origin_verification-provenance member covered by an approved instance)
+  // is checked first, ahead of its own verified_origin claim, since that
+  // claim churns far more often than the membership itself. This checks only
+  // those 4 signals, NOT the full reapSourceIfOrphaned guard chain (which
+  // also checks subscribers/governance/federation first). Trap: 'reapable'
+  // means "nothing here is retaining it," NOT "safe to reap" — a source with
+  // active subscriptions still shows 'reapable' when rendered via
+  // getSourceDetail/listSourceMembers, since neither pre-filters to orphans
+  // the way listSourceSummaries's orphan filter does.
   private retentionFor(sourceId: string): 'instance_member' | 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' {
     const s = this.raw.prepare(`SELECT canonical_url, provenance FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { canonical_url: string; provenance: string } | undefined
     if (s?.provenance === 'origin_verification' && approvedInstanceFor(this.raw, s.canonical_url) !== null) return 'instance_member'
