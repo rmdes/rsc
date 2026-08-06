@@ -37,8 +37,15 @@ Load-bearing invariants — don't break these without understanding why:
   **absolute** string (never `new URL(params.path, base)` — that permits
   `//evil.host`), match on `target.pathname`, and keep the auth proxy confined
   to `/api/auth/`.
-- **Feeds/federation are the ONLY core paths exposed publicly** (via Caddy in
-  prod); the rest of core stays internal. See `Caddyfile`.
+- **Feeds/federation are the only core paths reachable DIRECTLY** (`Caddyfile`'s
+  `@core` matcher / `cloudron/nginx.conf`: per-user feeds, comments feeds,
+  following OPML, WebSub+rssCloud callbacks, `/hub`). Everything else reaches
+  core **only through web** — which is a real, internet-facing path, not
+  "internal": `web/src/routes/api/v1/[...path]` forwards the whole key-authed
+  surface (`/me/*`, `/admin-api/*`) and `web/src/routes/api/auth/[...path]`
+  forwards auth. Do NOT read "core is internal" as "core is unreachable" and
+  under-protect a core route on that basis; equally, the v1 proxy is by design,
+  not a perimeter breach. Both proxies match the RESOLVED upstream path (below).
 
 ## Core building blocks — Hono + better-auth
 
@@ -55,11 +62,15 @@ reach for a new dependency where they already solve it.
   **`better-auth` MCP** (`search_docs` → `get_doc`) for the current shape —
   don't write it from memory (many bugs here came from an assumed API). Config
   lives in `core/src/auth.ts`; the web proxy (`/api/auth` invariant above) is
-  load-bearing. Plugins in use: `emailAndPassword` (hard verify), `magicLink`,
-  `anonymous`. Candidate plugins/adapters (passkey, username, multi-session,
-  open-api; `@better-auth/mongo-adapter` for a future Cloudron-on-Mongo
-  switch) are **backlog** in `docs/superpowers/ideas.md`, not yet adopted —
-  each is a feature that goes through brainstorm→spec, not a drop-in.
+  load-bearing. Plugins ACTUALLY in use (`core/src/auth.ts`): `emailAndPassword`
+  (hard verify), `magicLink`, `anonymous`, `multiSession` (max 4), `apiKey`
+  (ONE call, an ARRAY of two configs — `user` and `admin`; a second `apiKey()`
+  call would REPLACE the first, the plugin registry keys on a fixed id), and
+  `openAPI` dev-only. Plus three hand-rolled `hooks.before` plugins:
+  `reject-anon-api-key-create`, `reject-non-admin-admin-key`,
+  `cap-magic-link-volume` — copy that shape for any new gate.
+  Still backlog in `docs/superpowers/ideas.md` (NOT adopted): passkey,
+  username, `@better-auth/mongo-adapter`.
   Dev-only: `RSC_AUTH_OPENAPI=on` mounts the better-auth OpenAPI
   reference at `/api/auth/reference`; it is **never public** — the flag
   defaults off in prod AND the web proxy hard-404s `/api/auth/reference` +
@@ -111,8 +122,9 @@ below: `docs/superpowers/reviews/YYYY-MM-DD-<topic>.md`.
 ## UI and design system
 
 `design-system/rsc/MASTER.md` is the source of truth for all UI:
-color tokens (light + dark via `light-dark()`), typography (Libre Bodoni /
-Public Sans), spacing, component specs, and RSC-specific constraints
+color tokens (light + dark via `light-dark()`), typography (**Archivo**
+throughout — the Libre Bodoni / Public Sans pairing was REPLACED by the
+Modernist revision; MASTER.md records the old one only as history), spacing, component specs, and RSC-specific constraints
 (no-JS first-class, jank-free live prepends, local/remote legibility, text
 first / enclosures second, theme toggle as enhancement only).
 

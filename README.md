@@ -21,10 +21,10 @@ IndieWeb interop (IndieAuth, Micropub, Webmention) next — see the roadmap.
 
 **One live timeline, four tabs.** Local posts and polled-in remote feed items
 share a single server-rendered timeline that updates live over SSE
-(Server-Sent Events), filtered through four tabs: **Local** (posts born here),
-**Federated** (connected RSC instances), **Personal** (you + who you
-follow), and **Public** (everything). Logged-in users land on Personal, guests
-on Public. Works with JavaScript off — tabs are plain links and the live
+(Server-Sent Events), filtered through four tabs: **local** (posts born here),
+**federated** (connected RSC instances), **following** (you + who you
+follow), and **explore** (everything) — labels and subtitles an admin can
+rename per instance. Logged-in users land on *following*, guests on *explore*. Works with JavaScript off — tabs are plain links and the live
 updates are a progressive enhancement, not a requirement.
 
 **Your own feed reader.** Registered users subscribe to any RSS/JSON/Atom
@@ -46,8 +46,8 @@ keeps a full revision history (browsable per post) instead of silently
 overwriting. Because posts travel as feeds, an edit stays current *everywhere
 it federated*: it rides the post's stable permalink `guid` with an
 `<atom:updated>` marker, so every instance that already ingested the post
-detects the change on its next poll or push, updates its copy, and records its
-own revision — all over plain RSS, and without bumping the post to the top of
+detects the change on its next poll or push and updates its copy in place —
+all over plain RSS, and without bumping the post to the top of
 the timeline.
 
 **Real conversations over plain RSS.** Replies are posts. Each conversation
