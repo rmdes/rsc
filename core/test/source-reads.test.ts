@@ -249,3 +249,41 @@ test('addedBy resolves the first 3 subscriber handles in created_at order, empty
   expect(row.addedBy.map((a) => a.handle)).toEqual(['alice', 'bob'])
   repo.close()
 })
+
+// Members match the orphan predicate BY DEFINITION (no subscribers, no
+// federation row of their own — their items arrive via the aggregate). The
+// 2026-08-06 reap fix labelled them 'instance_member' so they'd stop being
+// deleted, but left them listed here: on rsc.rmdes.be that made 60 of 60
+// orphan rows members, so the section described itself falsely and a real
+// orphan would be buried across pages. They already appear under their
+// aggregate ("Show members", same per-row actions), so they are excluded here.
+test('filter=orphan excludes instance-governed members but keeps real orphans', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw
+  const instanceId = randomUUID()
+  const memberId = randomUUID()
+  const realOrphanId = randomUUID()
+
+  // An approved federated aggregate, plus a member nested under its prefix.
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, 'https://peer.test/users/rss.xml', 'aggregate', 'enabled', 'allowed', 'admin_federation', NULL, 0, ?)`,
+  ).run(instanceId, T)
+  raw.prepare(
+    `INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, 'approved', NULL, ?, ?)`,
+  ).run(instanceId, T, T)
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, created_at)
+     VALUES (?, 'https://peer.test/users/alice/rss.xml', 'single_publisher', 'enabled', 'allowed', 'origin_verification', NULL, 0, ?)`,
+  ).run(memberId, T)
+  insertSource(raw, realOrphanId) // ordinary orphan on a different host
+
+  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  const ids = orphans.items.map((i) => i.source.id)
+  expect(ids).toContain(realOrphanId)
+  expect(ids).not.toContain(memberId)
+
+  // The member is still a real, listable source — only this ONE list excludes it.
+  expect(await repo.getSource(memberId)).toBeDefined()
+  repo.close()
+})

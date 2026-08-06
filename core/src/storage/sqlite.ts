@@ -12,7 +12,7 @@ import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_I
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
-import { memberRows, memberRowsPage, memberCounts, healMembers, approvedInstanceFor } from '../logical/membership.ts'
+import { memberRows, memberRowsPage, memberCounts, healMembers, approvedInstanceFor, instancePrefix, prefixUpperBound } from '../logical/membership.ts'
 import { findCurrentDeliveryVersion } from '../logical/acquisition.ts'
 import { deleteObservationVersions } from '../logical/tombstones.ts'
 
@@ -553,6 +553,19 @@ export class SqliteRepository implements Repository, SourceRepository {
             AND NOT EXISTS(SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id)
             AND NOT EXISTS(SELECT 1 FROM source_subscriptions_v2 s WHERE s.source_id = remote_sources_v2.id))`
         : '1=1'
+    // Instance-governed members match the orphan predicate BY DEFINITION — a
+    // member has no subscribers and no federation row of its own, because its
+    // items arrive through the aggregate. Labelling them 'instance_member' (the
+    // 2026-08-06 reap fix) stopped them being deleted but left this list
+    // describing itself falsely: on rsc.rmdes.be every one of its 60 rows was a
+    // member, so the section's own promise — "kept only by whatever's still
+    // retaining them" — was untrue for 100% of it, and a real orphan would be
+    // buried across pages of members. Members already have their own home
+    // (per-aggregate counts + "Show members", with the same per-row actions),
+    // so exclude them here rather than relabel: the other retained reasons
+    // (admin_retained/audit_history/verified_origin) are rare individual
+    // exceptions, while membership is systematic and arrives in dozens.
+    const memberEx = filter === 'orphan' ? this.memberExclusionClause() : { sql: '', params: [] as string[] }
     // Escape LIKE's own wildcards in the user's literal search text — otherwise
     // a search for e.g. '%' or '_' matches far more than the substring typed.
     const qEscaped = q?.replace(/[\\%_]/g, (m) => `\\${m}`)
@@ -560,10 +573,10 @@ export class SqliteRepository implements Repository, SourceRepository {
     const qParams = q ? [qEscaped] : []
     const rows = (cursor
       ? this.raw.prepare(
-          `SELECT * FROM remote_sources_v2 WHERE ${where}${qClause} AND ((created_at < ?) OR (created_at = ? AND id < ?))
+          `SELECT * FROM remote_sources_v2 WHERE ${where}${memberEx.sql}${qClause} AND ((created_at < ?) OR (created_at = ? AND id < ?))
            ORDER BY created_at DESC, id DESC LIMIT ?`,
-        ).all(...qParams, cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
-      : this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE ${where}${qClause} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...qParams, lim + 1)
+        ).all(...memberEx.params, ...qParams, cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : this.raw.prepare(`SELECT * FROM remote_sources_v2 WHERE ${where}${memberEx.sql}${qClause} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...memberEx.params, ...qParams, lim + 1)
     ) as RemoteSourceV2Row[]
     const { page, nextCursor } = this.splitPage(rows, lim)
     const items: SourceSummary[] = page.map((r) => {
@@ -660,6 +673,40 @@ export class SqliteRepository implements Repository, SourceRepository {
     if (source?.admin_retained === 1) return 'admin_retained'
     if (this.raw.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return 'audit_history'
     return 'reapable'
+  }
+
+  // Set-based twin of the per-source membership test used by reapSource's guard
+  // and retentionFor: a row is a member when it is origin_verification-
+  // provenanced, is not itself approved-federated (the F14 self-governing
+  // exclusion, mirrored from MEMBER_RANGE_SQL), and falls inside some approved
+  // instance's prefix range. Built from instancePrefix/prefixUpperBound rather
+  // than SQL string surgery on the URL, so all three encodings of "member"
+  // share one definition. Approved instances are few (single digits), so the
+  // OR-list is small and every bound is a parameter, never interpolated.
+  private memberExclusionClause(): { sql: string; params: string[] } {
+    const instances = this.raw.prepare(
+      `SELECT s.canonical_url FROM remote_sources_v2 s
+       JOIN federation_relationships_v2 f ON f.source_id = s.id AND f.status = 'approved'`,
+    ).all() as { canonical_url: string }[]
+    const ranges: string[] = []
+    const params: string[] = []
+    const seen = new Set<string>()
+    for (const i of instances) {
+      const prefix = instancePrefix(i.canonical_url)
+      if (!prefix || seen.has(prefix)) continue
+      seen.add(prefix)
+      ranges.push('(canonical_url >= ? AND canonical_url < ?)')
+      params.push(prefix, prefixUpperBound(prefix))
+    }
+    // No approved instances ⇒ nothing can be a member ⇒ no exclusion at all
+    // (an empty OR-list would be a syntax error, not a no-op).
+    if (ranges.length === 0) return { sql: '', params: [] }
+    return {
+      sql: ` AND NOT (provenance = 'origin_verification'
+        AND NOT EXISTS (SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = remote_sources_v2.id AND f.status = 'approved')
+        AND (${ranges.join(' OR ')}))`,
+      params,
+    }
   }
 
   // ponytail: one small indexed lookup per listed source (the page is clamped
