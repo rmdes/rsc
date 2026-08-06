@@ -8,7 +8,7 @@ import type { UserDirectory } from '../auth.ts'
 import { apiKeyAuth } from '../auth.ts'
 import type { Service } from '../../domain/service.ts'
 import type { SourceService } from '../../domain/source-service.ts'
-import { isString, readJsonBody, clampLimit, decodeBeforeCursor } from './shared.ts'
+import { isString, readJsonBody, clampLimit, decodeBeforeCursor, MAX_API_KEYS_PER_USER } from './shared.ts'
 import type { ApiKeyCreation } from './shared.ts'
 
 // =============================================================================
@@ -291,6 +291,11 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     // own check and throw past this route as a raw 500.
     if (!body || !isString(body.name, 1, 32)) return c.json({ error: 'name invalid' }, 400)
     if (!isValidKeyPermissions(body.permissions)) return c.json({ error: 'permissions invalid' }, 400)
+    // Security audit M4: without this, a scripted caller could mint keys
+    // without bound to cycle past the plugin's per-KEY 300/hr rate limit.
+    if ((await users.countApiKeys(session.user.id, 'user')) >= MAX_API_KEYS_PER_USER) {
+      return c.json({ error: 'api key limit reached' }, 429)
+    }
     try {
       const created = await apiKeyCreateApi.createApiKey({
         body: { configId: 'user', userId: session.user.id, name: body.name, permissions: body.permissions }

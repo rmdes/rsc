@@ -4,12 +4,28 @@ import { listAdminApiKeys, createAdminApiKey, revokeApiKey, type ApiKeySummary }
 import { authedFetch, cookieHeader } from '$lib/server/session'
 import { PERMISSION_OPTIONS } from './permissions.ts'
 
-// No guard() / hasSession() here (unlike settings/api-keys/+page.server.ts):
-// this route lives under /admin/, so web/src/routes/admin/+layout.server.ts's
-// `if (!me?.isAdmin) throw error(404, 'Not found')` already keeps a
-// non-admin (or anonymous/unauthenticated visitor) from ever reaching this
-// page's load or actions — matching the plain-load style the other admin
-// sub-routes (admin/users, admin/settings) already use.
+// SvelteKit runs form actions BEFORE any layout load() (including this
+// route's own admin/+layout.server.ts isAdmin check) — so, contrary to an
+// earlier version of this comment, the layout gate alone does NOT protect
+// these actions.
+//
+// web/src/hooks.server.ts's `handle` gates by WEB URL PATH, not by which
+// core route the action later calls — both `create` and `revoke` submit to
+// THIS page (`/admin/api-keys?/create` and `/admin/api-keys?/revoke`, same
+// pathname, action selected by query string), so the hook covers both
+// equally at the web layer. The two DO differ, but only downstream, at
+// core:
+// - create POSTs on to core's /admin/api-keys, behind
+//   `app.use('/admin/*', authed, requireAdmin())` (core/src/api/app.ts).
+// - revoke POSTs on to /api/auth/api-key/delete — a different Hono mount
+//   the /admin/* wildcard never touches. Its real protection is
+//   better-auth's own per-key ownership check (@better-auth/api-key:
+//   apiKey.referenceId !== session.user.id → 404) — admin status is
+//   irrelevant there; any registered user can only ever revoke their own
+//   keys.
+// Matches the same honest split settings/api-keys/+page.server.ts documents
+// for its own guard() (SvelteKit-layer = UX/defense-in-depth, core = the
+// real security boundary).
 
 // Same split as settings/api-keys/+page.server.ts's toActionFail — a clean
 // core rejection keeps its own status; a 401 means the browser's whole
@@ -53,7 +69,7 @@ export const actions = {
 			// it, same as settings/api-keys.
 			return { createdKey: created.key, createdName: created.name }
 		} catch (err) {
-			return toActionFail(err, [400, 403], 'could not create key')
+			return toActionFail(err, [400, 403, 429], 'could not create key')
 		}
 	},
 

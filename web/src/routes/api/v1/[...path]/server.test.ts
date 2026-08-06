@@ -88,3 +88,19 @@ test('GET 404s an api/ path reached by traversal, without ever calling fetch', a
 	expect(res.status).toBe(404)
 	expect(fetchMock).not.toHaveBeenCalled()
 })
+
+// M1 (security audit): a leading slash on params.path produces a DOUBLED
+// slash in target.pathname ('//api/auth/reference'), which the plain
+// startsWith('/api/') guard misses — '//...' does not start with '/api/'.
+// Not currently exploitable (core's own router doesn't collapse `//`
+// either, so it 404s the doubled path on its own) but the guard itself
+// must hold the property it claims to.
+test('GET 404s a path with a doubled leading slash that would bypass the plain guard', async () => {
+	const fetchMock = vi.fn(async () => new Response('should not be called', { status: 200 }))
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	const res = await GET({ params: { path: '/api/auth/reference' }, url: new URL('http://x/api/v1//api/auth/reference'), request: new Request('http://x/api/v1//api/auth/reference') } as never)
+
+	expect(res.status).toBe(404)
+	expect(fetchMock).not.toHaveBeenCalled()
+})

@@ -47,6 +47,20 @@ test('traversal cannot escape /api/auth/ into core at large (perimeter invariant
   expect(upstream).not.toHaveBeenCalled()
 })
 
+// M2 (security audit): a leading slash on params.path produces a doubled
+// slash in target.pathname ('/api/auth//reference'), which still starts
+// with '/api/auth/' but no longer equals '/api/auth/reference' — the
+// exact-match guard on the reference page misses it. Not currently
+// exploitable (core's own router doesn't collapse `//` either) but the
+// guard itself must hold the property it claims to.
+test('doubled slash in the path does not bypass the reference guard', async () => {
+  const upstream = vi.fn(async () => new Response('should not be called', { status: 200 }))
+  vi.stubGlobal('fetch', upstream)
+  const res = await GET(event('/reference') as never)
+  expect(res.status).toBe(404)
+  expect(upstream).not.toHaveBeenCalled()
+})
+
 test('proxy still forwards a normal auth path to core', async () => {
   const upstream = vi.fn(async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }))
   vi.stubGlobal('fetch', upstream)

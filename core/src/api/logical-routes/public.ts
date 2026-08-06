@@ -143,6 +143,13 @@ export interface PublicFirehoseDeps {
   heartbeatMs?: number
   maxConnectionsPerIp?: number
   maxConnectionsTotal?: number
+  connectionRateWindowMs?: number
+  maxConnectionsPerWindow?: number
+  // Whether x-forwarded-for can be believed here (RSC_TRUST_CLIENT_IP, see
+  // config.ts for the per-topology reasoning). Every per-IP limit below is
+  // skipped when false — a limit keyed on forgeable input doesn't just fail
+  // to stop an attacker, it hands them a way to evict a chosen victim.
+  trustClientIp?: boolean
 }
 
 const FIREHOSE_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
@@ -171,10 +178,38 @@ function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string,
   }
 }
 
+// Exported (rather than inlined in the closure below) so it's directly
+// unit-testable: deletes any window entry that has already expired. Without
+// this, connectionAttempts (unlike ipCounts/totalConnections, which
+// release() cleans up) has no eviction path at all — a window entry is only
+// ever overwritten in place once expired, never deleted — so an IP seen
+// exactly once would grow the map by one permanent entry forever. The map
+// key is NOT client-spoofable in either live prod topology (both Caddy and
+// the Cloudron nginx config route only /api/v1/firehose/stream to the web
+// app, and web's proxy — web/src/routes/api/v1/firehose/stream/+server.ts —
+// builds x-forwarded-for server-side from SvelteKit's getClientAddress(),
+// discarding any client-supplied header), so this bounds a real but
+// non-adversarial ceiling: distinct real client IPs seen within the last
+// window, not an attacker-inflatable one. Throttled to run at most once per
+// window (see lastSweep in the route closure below), not once per request —
+// final-review Finding 2: an unthrottled per-request sweep turned an O(1)
+// rejection into an O(n) scan on exactly the flood path this endpoint
+// defends.
+export function sweepExpiredConnectionAttempts(
+  attempts: Map<string, { count: number; windowStart: number }>,
+  now: number,
+  windowMs: number,
+): void {
+  for (const [ip, entry] of attempts) {
+    if (now - entry.windowStart >= windowMs) attempts.delete(ip)
+  }
+}
+
 export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): void {
   const { source, bus, feeds } = deps
   const pollMs = deps.pollMs ?? 1000
   const heartbeatMs = deps.heartbeatMs ?? 15000
+  const trustClientIp = deps.trustClientIp ?? false
   const maxPerIp = deps.maxConnectionsPerIp ?? 5
   // A per-IP cap alone bounds nothing: addresses are free, so N attackers get
   // N*5 streams. This endpoint is anonymous, so the GLOBAL ceiling is the one
@@ -188,6 +223,21 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const ipCounts = new Map<string, number>()
   let totalConnections = 0
 
+  // Separate from ipCounts/totalConnections above (which bound CONCURRENT
+  // connections): those alone don't stop an attacker who opens and closes
+  // connections rapidly, each one still triggering a full journal-replay
+  // pump before releasing. This bounds connection ATTEMPTS per IP over a
+  // fixed window. ponytail: same single-process in-memory counter
+  // convention as the two above — same accepted ceiling, same reset-on-
+  // restart tradeoff.
+  const connectionWindowMs = deps.connectionRateWindowMs ?? 60_000
+  const maxConnectionsPerWindow = deps.maxConnectionsPerWindow ?? 20
+  const connectionAttempts = new Map<string, { count: number; windowStart: number }>()
+  // Throttles sweepExpiredConnectionAttempts to at most once per window
+  // instead of once per request (final-review Finding 2) — same eviction
+  // guarantee (nothing outlives one window past its expiry), amortized cost.
+  let lastSweep = 0
+
   // One awaited MACROTASK yield between pump batches. A cursor is unauthenticated
   // and `sequence = 0` is serveable against a journal that is never pruned, so any
   // anonymous caller can demand a full-history replay: without this the `for(;;)`
@@ -198,17 +248,40 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const breathe = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve) })
 
   app.get('/firehose/stream', (c) => {
-    const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    // `null` means "this deployment cannot supply a trustworthy address", not
+    // "no address" — every per-IP branch below is then skipped entirely rather
+    // than bucketing everyone under one placeholder key (which would turn each
+    // per-IP cap into a global one and lock the whole instance out).
+    const ip = trustClientIp ? (c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown') : null
+    if (ip !== null) {
+      const now = Date.now()
+      if (now - lastSweep >= connectionWindowMs) {
+        lastSweep = now
+        sweepExpiredConnectionAttempts(connectionAttempts, now, connectionWindowMs)
+      }
+      const attempt = connectionAttempts.get(ip)
+      if (attempt && now - attempt.windowStart < connectionWindowMs) {
+        if (attempt.count >= maxConnectionsPerWindow) return c.json({ error: 'too many connection attempts, slow down' }, 429)
+        attempt.count++
+      } else {
+        connectionAttempts.set(ip, { count: 1, windowStart: now })
+      }
+    }
+    // Unforgeable by construction — it counts CONNECTIONS, not identities — so
+    // it applies on every topology and is the only ceiling when ip is null.
     if (totalConnections >= maxGlobal) return c.json({ error: 'firehose at capacity' }, 429)
-    const current = ipCounts.get(ip) ?? 0
-    if (current >= maxPerIp) return c.json({ error: 'too many connections from this address' }, 429)
-    ipCounts.set(ip, current + 1)
+    if (ip !== null) {
+      const current = ipCounts.get(ip) ?? 0
+      if (current >= maxPerIp) return c.json({ error: 'too many connections from this address' }, 429)
+      ipCounts.set(ip, current + 1)
+    }
     totalConnections++
     let released = false
     const release = (): void => {
       if (released) return
       released = true
       totalConnections--
+      if (ip === null) return
       const n = (ipCounts.get(ip) ?? 1) - 1
       if (n <= 0) ipCounts.delete(ip)
       else ipCounts.set(ip, n)

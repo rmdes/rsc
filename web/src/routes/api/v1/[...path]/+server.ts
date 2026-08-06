@@ -20,7 +20,12 @@ const proxy: RequestHandler = async ({ request, params, url }) => {
 	// landing on the route this guard exists to block. Same shape as the auth
 	// proxy's guard — see the note there.
 	const target = new URL(`${base()}/${params.path}${url.search}`)
-	if (target.pathname.startsWith('/api/')) return new Response(null, { status: 404 })
+	// M1 (security audit): repeated slashes (e.g. a leading slash in
+	// params.path) survive into target.pathname untouched, so the guard
+	// below normalizes its own view of the path before matching. What's
+	// actually fetched (target.href) is untouched.
+	const normalizedPath = target.pathname.replace(/\/{2,}/g, '/')
+	if (normalizedPath.startsWith('/api/')) return new Response(null, { status: 404 })
 	const headers: Record<string, string> = {}
 	const apiKey = request.headers.get('x-api-key')
 	if (apiKey) headers['x-api-key'] = apiKey

@@ -462,3 +462,53 @@ describe('admin.moderation write routes', () => {
     expect(await repo.getPost(postId)).toBeUndefined()
   })
 })
+
+// Guardrail: every /admin-api/* route must reject a keyless request.
+//
+// The cookie-authed /admin/* surface gets its safety structurally, from one
+// `app.use('/admin/*', authed, requireAdmin())` gate — a new route there
+// cannot ship ungated by forgetting the guard. /admin-api/* CANNOT reuse that
+// gate (it runs cookie sessionAuth, incompatible with key auth), so it relies
+// on a per-route guard instead, on the one surface that hard-deletes users and
+// posts. This restores the missing half reflectively, the same way
+// logical-fk-indexes.test.ts fails CI on any future un-indexed FK: it walks
+// Hono's own route table rather than a hand-maintained list, so a route added
+// without a guard fails here without anyone remembering to add a case.
+//
+// Deliberately NOT a blanket middleware: stacking a second apiKeyAuthAdmin
+// would call verifyApiKey twice per request, and better-auth's own docs warn
+// that double verification double-increments the key's rate limit — halving
+// the effective 300/hour budget. A catch-all `app.all` fallback wouldn't work
+// either: Hono matches in registration order, so a new ungated route declared
+// above it still wins.
+describe('/admin-api/* guard coverage', () => {
+  test('every registered admin-api route 401s without an api key', async () => {
+    const { app } = await setup()
+
+    // One entry per handler, so `app.get(p, guard, handler)` appears twice —
+    // dedupe on method+path. ALL entries are prefix middleware, not routes.
+    const routes = [
+      ...new Set(
+        app.routes
+          .filter((r) => r.path.startsWith('/admin-api/') && r.method !== 'ALL')
+          .map((r) => `${r.method} ${r.path}`),
+      ),
+    ].sort()
+
+    // Anti-vacuity: a reflective test that discovers nothing passes silently.
+    // Pin the destructive pair explicitly so renaming the prefix fails loudly
+    // rather than emptying the set.
+    expect(routes).toContain('DELETE /admin-api/users/:handle')
+    expect(routes).toContain('DELETE /admin-api/posts/:id')
+    expect(routes.length).toBeGreaterThanOrEqual(8)
+
+    for (const route of routes) {
+      const [method, pattern] = route.split(' ')
+      // Params never reach a handler here — the guard runs first, which is the
+      // property under test — so any concrete value does.
+      const path = pattern.replace(/:[^/]+/g, 'guard-coverage-probe')
+      const res = await app.request(path, { method })
+      expect(res.status, `${method} ${path} must 401 without an api key`).toBe(401)
+    }
+  })
+})

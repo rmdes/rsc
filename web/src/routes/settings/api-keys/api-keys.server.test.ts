@@ -104,6 +104,18 @@ test('create action surfaces a core validation error (e.g. name too long) as a 4
 	expect(out).toMatchObject({ status: 400, data: { error: 'name invalid' } })
 })
 
+// Final review Minor 2: hitting the per-user api-key cap (core's new 429,
+// {error: 'api key limit reached'}) used to fall outside toActionFail's
+// passthrough array and collapse to a raw 500 — it must surface as a real
+// 429 with core's own message so the user knows to revoke a key first.
+test('create action surfaces the api-key cap (429) with its real message, not a 500', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'api key limit reached' }), { status: 429 }))
+	const form = new URLSearchParams({ name: 'script', 'timeline:read': 'on' })
+	const event = ctx({ fetch, request: new Request('http://x/settings/api-keys?/create', { method: 'POST', body: form }) })
+	const out = await actions.create(event as never)
+	expect(out).toMatchObject({ status: 429, data: { error: 'api key limit reached' } })
+})
+
 // A genuine core-side failure (not a clean 4xx rejection) still passes
 // through as a 500 — the create action doesn't collapse every error to 400.
 test('create action surfaces a genuine core server error as a 500', async () => {

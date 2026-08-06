@@ -73,7 +73,7 @@ Every error is JSON: `{"error": "..."}` with a meaningful status.
 | `403` | Authenticated, but not yours to touch (someone else's post, a remote post) |
 | `404` | No such post, user, or subscription |
 | `409` | Idempotency conflict, or the target isn't a local post |
-| `429` | Subscription cap reached, the public firehose at instance-wide capacity, the public firehose's per-IP connection cap, or an api-key rate limit — see `code` in the body for the rate-limit case (`RATE_LIMITED`); the other three are durable (don't retry) while a rate limit carries `tryAgainIn` and should be retried after that many ms |
+| `429` | Subscription cap reached, api key limit reached, the public firehose at instance-wide or per-IP concurrent-connection capacity, the public firehose's per-IP connection-*attempt* rate limit, or an api-key rate limit — see `code` in the body for the rate-limit case (`RATE_LIMITED`, carries `tryAgainIn`, retry after that many ms). The firehose connection-attempt limit is also transient — back off ~60s and retry. Every other cause here is durable: don't retry (an api key limit needs a revoke first) |
 
 `401` deliberately does not distinguish "no key" from "wrong permission" —
 don't parse the message to tell them apart.
@@ -104,7 +104,11 @@ With a raw client, pass the last `id:` you saw as `?last=`. If the cursor is
 too old or the journal has reset, the stream answers with a `reset` event —
 resubscribe from scratch rather than assuming continuity.
 
-Connections are capped instance-wide; over the cap the endpoint returns `429`.
+Connections are capped instance-wide and per IP; over either cap the endpoint
+returns `429` (durable — don't retry until a connection frees up). New
+connection *attempts* from one IP are separately rate-limited over a rolling
+~60s window; over that limit the endpoint also returns `429`, but this one is
+transient — back off and retry.
 
 ---
 

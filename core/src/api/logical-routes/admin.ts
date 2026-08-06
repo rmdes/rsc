@@ -9,7 +9,7 @@ import { apiKeyAuthAdmin } from '../auth.ts'
 import type { Service } from '../../domain/service.ts'
 import type { SourceService } from '../../domain/source-service.ts'
 import type { FeedContext } from '../../domain/feed.ts'
-import { isString, readJsonBody } from './shared.ts'
+import { isString, readJsonBody, MAX_API_KEYS_PER_USER } from './shared.ts'
 import type { ApiKeyCreation } from './shared.ts'
 
 // =============================================================================
@@ -73,7 +73,7 @@ function isValidAdminKeyPermissions(v: unknown): v is Record<string, string[]> {
 // gate; c.get('coreUser') is already set by `authed` by the time any
 // handler below runs.
 export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
-  const { auth } = deps
+  const { auth, users } = deps
   const apiKeyCreateApi = auth.api as unknown as ApiKeyCreation
 
   app.post('/admin/api-keys', jsonWrite, async (c) => {
@@ -96,6 +96,11 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
     // above ("a key minted through this route actually works").
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
     if (!session) return c.json({ error: 'authentication required' }, 401)
+    // Security audit M4: same cap as /me/api-keys, counted separately per
+    // configId — see MAX_API_KEYS_PER_USER above.
+    if ((await users.countApiKeys(session.user.id, 'admin')) >= MAX_API_KEYS_PER_USER) {
+      return c.json({ error: 'api key limit reached' }, 429)
+    }
     try {
       const created = await apiKeyCreateApi.createApiKey({
         body: { configId: 'admin', userId: session.user.id, name: body.name, permissions: body.permissions },
@@ -112,7 +117,7 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
   // transcribed from those exact handlers. Only the auth middleware differs
   // (apiKeyAuthAdmin's per-request admin re-verification vs sessionAuth +
   // requireAdmin's session check).
-  const { users, adminEmails, service, sourceRepo, sourceService, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
+  const { adminEmails, service, sourceRepo, sourceService, logicalStore, feeds, websubMode, pushInEnabled, mailEnabled, pollSeconds } = deps
   const readAdmin = apiKeyAuthAdmin(auth, users, adminEmails, { 'admin.read': ['read'] })
 
   app.get('/admin-api/sources', readAdmin, async (c) => {

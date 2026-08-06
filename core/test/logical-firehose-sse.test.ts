@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { test, expect, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { Hono } from 'hono'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
@@ -9,7 +9,7 @@ import { createService } from '../src/domain/service.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { createStreamSource, activateLogicalV2 } from '../src/logical/runtime.ts'
-import { mountPublicFirehoseRoute } from '../src/api/logical-routes.ts'
+import { mountPublicFirehoseRoute, sweepExpiredConnectionAttempts } from '../src/api/logical-routes.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 
 type Raw = InstanceType<typeof Database>
@@ -33,7 +33,7 @@ async function acquireRemote(db: ReturnType<typeof createDatabaseContext>, sourc
   await eng.acquireSource(sourceId, { kind: 'scheduled' }, undefined)
 }
 
-async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number } = {}) {
+async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number; connectionRateWindowMs?: number; maxConnectionsPerWindow?: number; trustClientIp?: boolean } = {}) {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw as Raw
   const db = createDatabaseContext(raw)
@@ -43,7 +43,10 @@ async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?:
   activateLogicalV2(db, NOW)
   bus.onNewPost(() => { bus.emitSequenceHint(store.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })
   const app = new Hono()
-  mountPublicFirehoseRoute(app, { source: createStreamSource(db), bus, feeds: FEEDS, pollMs: 5, heartbeatMs: 30, ...caps })
+  // Default TRUE so the per-IP tests below exercise the limits they name; the
+  // real default is false (config.ts), and the two tests at the end of this
+  // file cover that side.
+  mountPublicFirehoseRoute(app, { source: createStreamSource(db), bus, feeds: FEEDS, pollMs: 5, heartbeatMs: 30, trustClientIp: true, ...caps })
   return { repo, raw, db, store, bus, service, app }
 }
 // A resumable cursor at the current high water — connecting with THIS (not a
@@ -143,6 +146,22 @@ test('a per-IP connection cap rejects the (N+1)th concurrent connection with 429
   for (const r of responses) await r.body?.cancel()
 })
 
+test('a per-IP connection-rate limit rejects rapid reconnects even though each connection releases quickly', async () => {
+  // Concurrency caps left generous — only the rate limiter should be able to
+  // fire here, matching the attack shape: connect, drain, disconnect, repeat,
+  // never holding more than one connection open at a time.
+  const { app } = await setup({ maxConnectionsPerIp: 100, maxConnectionsTotal: 100, maxConnectionsPerWindow: 3 })
+  const opts = { headers: { 'x-forwarded-for': '203.0.113.5' } }
+  const statuses: number[] = []
+  for (let i = 0; i < 5; i++) {
+    const res = await app.request('/firehose/stream', opts)
+    statuses.push(res.status)
+    await res.body?.cancel()
+  }
+  expect(statuses.slice(0, 3)).toEqual([200, 200, 200])
+  expect(statuses.slice(3)).toEqual([429, 429])
+})
+
 // The per-IP cap above bounds ONE address, and addresses are free — an
 // anonymous endpoint needs a ceiling on the process itself, or N clients get
 // N*maxPerIp streams each holding a journal replay.
@@ -157,6 +176,106 @@ test('a GLOBAL connection cap rejects once the process ceiling is reached, regar
   )
   const statuses = responses.map((r) => r.status)
   expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(3)
+  expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
+  for (const r of responses) await r.body?.cancel()
+})
+
+// connectionAttempts (the map behind the rate limiter above) has no eviction
+// path other than this sweep: release() only cleans up ipCounts/totalConnections,
+// and an expired window entry is otherwise only ever overwritten in place, never
+// deleted. An IP seen exactly once would otherwise grow the map by one permanent
+// entry forever — a real but bounded ceiling (distinct real client IPs seen
+// within the last window; the key is NOT client-spoofable in prod, see the
+// sweepExpiredConnectionAttempts doc comment), not an attacker-inflatable one.
+// This unit-tests the extracted sweep directly — the exact deletion logic the
+// finding was about — since the map itself is private to
+// mountPublicFirehoseRoute's closure and not otherwise inspectable from a
+// route-level test.
+test('sweepExpiredConnectionAttempts deletes only windows that have already expired', () => {
+  const windowMs = 1000
+  const now = 10_000
+  const attempts = new Map<string, { count: number; windowStart: number }>([
+    ['expired-1', { count: 5, windowStart: now - windowMs }], // exactly at the boundary — expired
+    ['expired-2', { count: 3, windowStart: now - windowMs - 500 }], // well past — expired
+    ['fresh', { count: 2, windowStart: now - windowMs + 1 }], // just inside the window — not expired
+  ])
+  sweepExpiredConnectionAttempts(attempts, now, windowMs)
+  expect([...attempts.keys()]).toEqual(['fresh'])
+})
+
+test('the firehose route sweeps expired attempt windows (throttled to at most once per window) — a fixed pool of IPs does not accumulate stale entries across many expired-window cycles', async () => {
+  // Behavioral proof at the route level (the unit test above proves the sweep
+  // logic itself): drive the SAME small pool of distinct IPs through many
+  // successive windows, well past connectionRateWindowMs each time via fake
+  // timers. Without the sweep, each of these IPs' entries would simply sit in
+  // connectionAttempts forever (harmlessly reused since the `else` branch
+  // already overwrote expired entries in place) — that part was never broken.
+  // What WAS broken (per the finding) is IPs that appear only ONCE, ever: such
+  // an IP still plants a permanent entry with no fix. The sweep is now
+  // throttled to at most once per window (final-review Finding 2) rather than
+  // once per request — irrelevant to this test's assertions, since each cycle
+  // here only issues requests after the window has already elapsed, so the
+  // throttle never suppresses the sweep this test relies on. We can't read
+  // connectionAttempts' size from here (private to the route closure), so
+  // this test demonstrates the mechanism is wired up (the route keeps working
+  // correctly, cycle after cycle, exactly as if each expired entry had been
+  // swept and re-created) rather than asserting the internal map's size — the
+  // unit test above is the direct, exact proof for that.
+  // Fake only Date — the route's async SSE pump uses real setImmediate/setTimeout
+  // internally (breathe(), stream.sleep), so faking those too would hang the
+  // response body's background writer; we only need control over Date.now(),
+  // which the rate limiter reads synchronously before streamSSE even starts.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const { app } = await setup({ maxConnectionsPerIp: 100, maxConnectionsTotal: 100, maxConnectionsPerWindow: 1, connectionRateWindowMs: 1000 })
+    const pool = ['203.0.113.50', '203.0.113.51', '203.0.113.52']
+    for (let cycle = 0; cycle < 20; cycle++) {
+      for (const ip of pool) {
+        const res = await app.request('/firehose/stream', { headers: { 'x-forwarded-for': ip } })
+        expect(res.status).toBe(200)
+        await res.body?.cancel()
+      }
+      vi.advanceTimersByTime(1500) // past connectionRateWindowMs — each IP's window has expired
+    }
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+// RSC_TRUST_CLIENT_IP=off (the default, and what the Cloudron package sets).
+//
+// Measured on a live Cloudron instance 2026-08-06: its proxy runs real_ip
+// TRUSTING the caller's X-Forwarded-For and then stamps both XFF and
+// X-Real-IP with the result, so the address reaching core is the caller's own
+// claim. A per-IP limit on that input doesn't merely fail to stop an attacker
+// (addresses are free AND forgeable) — it lets anyone spend a few requests
+// under a VICTIM's address to lock that victim out. So the per-IP branches
+// must be skipped entirely, not fed a placeholder key: bucketing everyone
+// under one 'unknown' would silently convert each per-IP cap into a global
+// one and lock out the whole instance.
+test('with an untrusted client address, per-IP limits are skipped entirely (not collapsed onto one shared bucket)', async () => {
+  const { app } = await setup({ trustClientIp: false, maxConnectionsPerIp: 1, maxConnectionsPerWindow: 1, maxConnectionsTotal: 100 })
+  const statuses: number[] = []
+  for (let i = 0; i < 5; i++) {
+    // Same forged address every time: under a per-IP rule this is 1 pass then
+    // 429s; with the address untrusted it must not gate anything.
+    const res = await app.request('/firehose/stream', { headers: { 'x-forwarded-for': '203.0.113.9' } })
+    statuses.push(res.status)
+    await res.body?.cancel()
+  }
+  expect(statuses).toEqual([200, 200, 200, 200, 200])
+})
+
+test('the GLOBAL cap still applies when the client address is untrusted — it counts connections, not identities', async () => {
+  const { app, store } = await setup({ trustClientIp: false, maxConnectionsTotal: 2 })
+  const cursor = cursorNow(store)
+  const responses = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      app.request('/firehose/stream', { headers: { 'x-forwarded-for': '203.0.113.9', 'Last-Event-ID': cursor } }),
+    ),
+  )
+  const statuses = responses.map((r) => r.status)
+  expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(2)
   expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
   for (const r of responses) await r.body?.cancel()
 })

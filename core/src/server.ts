@@ -100,7 +100,7 @@ mountLogicalStreamRoute(app, {
     return { localAccountId: u ? u.id : null, activeSourceIds: [] }
   },
 })
-mountPublicFirehoseRoute(app, { source: runtime.streamSource, bus, feeds })
+mountPublicFirehoseRoute(app, { source: runtime.streamSource, bus, feeds, trustClientIp: config.trustClientIp })
 // Local mutations still emit an after-commit hint so the stream catches up before
 // its heartbeat (spec §7.4); reads the coalesced high water once.
 bus.onNewPost(() => { bus.emitSequenceHint(logicalStore.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })

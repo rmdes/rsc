@@ -41,6 +41,17 @@ export function decodeBeforeCursor(c: Context): TimelineCursorV2 | null | 'inval
   return { version: 1, timelineSortAt: dec.tuple[0], logicalItemId: dec.tuple[1] }
 }
 
+// A generous ceiling, not a tight one — this exists to bound unbounded
+// growth from a scripted rate-limit-bypass loop (the apiKey plugin's
+// 300/hr limit is stored and evaluated per KEY ROW, not per user), not to
+// constrain a real integration author who legitimately wants a handful of
+// scoped keys. Counted separately per configId ('user' vs 'admin' tier).
+// Exported so auth.ts's reject-anon-api-key-create hook (the gate on
+// better-auth's own REST /api-key/create, final-review Finding: this app's
+// two in-process cap checks below don't cover that endpoint) can enforce the
+// same ceiling without a duplicated literal.
+export const MAX_API_KEYS_PER_USER = 20
+
 // Same auth.api erasure this file already works around for apiKeyAuth's
 // verifyApiKey cast (api/auth.ts) — createApiKey needs its own narrow slice.
 // REAL FINDING (found by hitting the live REST endpoint, not from any plan):

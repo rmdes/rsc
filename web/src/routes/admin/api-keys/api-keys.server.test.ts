@@ -1,12 +1,13 @@
 import { test, expect, vi } from 'vitest'
 import { load, actions } from './+page.server.ts'
 
-// No guard()/hasSession here (unlike settings/api-keys) — this route lives
-// under /admin/, so web/src/routes/admin/+layout.server.ts's own
-// `if (!me?.isAdmin) throw error(404, 'Not found')` already keeps a
-// non-admin from ever reaching this page's load/actions. Matches the other
-// admin sub-routes (admin/users, admin/settings): plain load, no extra
-// guard.
+// No guard()/hasSession here (unlike settings/api-keys) — SvelteKit's
+// layout load() doesn't run before form actions, so the layout's isAdmin
+// check alone doesn't cover this file's actions. See the comment atop
+// +page.server.ts for the real gates: core's `/admin/*` wildcard +
+// web/src/hooks.server.ts for `create`, better-auth's own per-key
+// ownership check for `revoke`. Matches the other admin sub-routes
+// (admin/users, admin/settings): plain load, no extra guard in this file.
 function ctx(over: Record<string, unknown> = {}) {
 	return {
 		fetch: vi.fn(),
@@ -89,6 +90,18 @@ test('create action surfaces a genuine core server error as a 500', async () => 
 	const event = ctx({ fetch, request: new Request('http://x/admin/api-keys?/create', { method: 'POST', body: form }) })
 	const out = await actions.create(event as never)
 	expect(out).toMatchObject({ status: 500, data: { error: 'boom' } })
+})
+
+// Final review Minor 2: hitting the per-user api-key cap (core's new 429,
+// {error: 'api key limit reached'}) used to fall outside toActionFail's
+// passthrough array and collapse to a raw 500 — it must surface as a real
+// 429 with core's own message so the admin knows to revoke a key first.
+test('create action surfaces the api-key cap (429) with its real message, not a 500', async () => {
+	const fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'api key limit reached' }), { status: 429 }))
+	const form = new URLSearchParams({ name: 'ops', 'admin.read:read': 'on' })
+	const event = ctx({ fetch, request: new Request('http://x/admin/api-keys?/create', { method: 'POST', body: form }) })
+	const out = await actions.create(event as never)
+	expect(out).toMatchObject({ status: 429, data: { error: 'api key limit reached' } })
 })
 
 test('create action redirects to / on a 401 (session expired mid-flow)', async () => {
