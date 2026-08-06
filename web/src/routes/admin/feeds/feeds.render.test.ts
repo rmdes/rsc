@@ -571,6 +571,22 @@ for (const reason of ['verified_origin_evidence', 'admin_retained', 'audit_histo
 	})
 }
 
+// Task 3 of the instance-member-reap fix: a fourth force-liftable retention
+// reason (core's reapSource guard + retentionFor both gained this rung —
+// see source-repository.ts/sqlite.ts). Same shape as the loop above: the
+// row must show the instance-member label AND the force ("Reap anyway")
+// flow, never a bare token with a plain "Reap" that would just 409.
+test('a retention=instance_member orphan row shows the instance-member label and renders "Reap anyway" (force), not a plain Reap', () => {
+	const { body } = render(Page, { props: { data: orphanData({ orphanRows: [orphanRow({ id: 'orph1', url: 'https://orph1.test/feed.xml', retention: 'instance_member' })] }), form: null } } as never)
+	expect(body).toContain('Instance member')
+	expect(body).toContain('name="force" value="true"')
+	expect(body).toContain('name="commandId" value="orph-cmd-1"') // the row's ONE commandId, reused
+	const gateStart = body.lastIndexOf('class="confirm-gate')
+	const detailsChunk = body.slice(gateStart, body.indexOf('</details>', gateStart) + '</details>'.length)
+	expect(detailsChunk).toContain('Confirm reap anyway')
+	expect(detailsChunk).toContain('governed member of an approved federated instance')
+})
+
 // --- Task 5: bulk checkboxes + the per-group bulk toolbar ---
 
 function bulkData(over: Record<string, unknown> = {}) {

@@ -53,7 +53,7 @@ interface SourceSummary {
 	}
 	federationStatus: 'none' | 'pending' | 'approved'
 	subscriptionCounts: { active: number; pending: number; pendingReview: number }
-	retention: 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' | null
+	retention: 'instance_member' | 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' | null
 	addedBy: { handle: string; displayName: string }[]
 }
 

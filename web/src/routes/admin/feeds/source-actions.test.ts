@@ -37,7 +37,7 @@ const summary = (
 // An orphan-filter row: core only fills in `retention` (non-null) for
 // `filter=orphan` results — addedBy is always empty here too, since an
 // orphan by definition has zero subscriptions of any kind.
-const orphanSummary = (id: string, retention: 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable') => ({
+const orphanSummary = (id: string, retention: 'instance_member' | 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable') => ({
 	source: { id, canonicalUrl: `https://orphan.test/${id}.xml`, attributionMode: 'single_publisher', operation: 'enabled', governance: 'allowed', provenance: 'user_subscription', adminRetained: false },
 	federationStatus: 'none',
 	subscriptionCounts: { active: 0, pending: 0, pendingReview: 0 },

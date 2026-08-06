@@ -101,10 +101,12 @@
 		federated: 'This source has an active federation relationship.',
 		admin_retained: 'This source is marked admin-retained.',
 		audit_history: 'This source has audit history.',
-		verified_origin_evidence: 'This source backs verified-origin evidence for a logical item.'
+		verified_origin_evidence: 'This source backs verified-origin evidence for a logical item.',
+		instance_member: 'This source is a governed member of an approved federated instance.'
 	}
 
 	const RETENTION_LABEL: Record<string, string> = {
+		instance_member: 'Instance member — retained',
 		verified_origin: 'Verified-origin evidence — retained',
 		admin_retained: 'Admin-retained — retained',
 		audit_history: 'Has audit history — retained',
@@ -114,7 +116,7 @@
 	// Design §10, retention-driven (no round trip): retention is already
 	// known at load time (Task 4's toOrphanRow), so which consequence text
 	// and which button ("Reap" vs "Reap anyway") a row shows is decided
-	// directly from `row.retention` — never from a prior refusal. The three
+	// directly from `row.retention` — never from a prior refusal. The four
 	// reasons below are exactly the ones core's reapSource lifts when
 	// force:true is sent (see the `!opts.force &&` guards in
 	// core/src/domain/source-repository.ts); every other reason
@@ -124,6 +126,8 @@
 	const REAP_CONSEQUENCE =
 		'Reaping permanently deletes this source and its evidence — items, publisher claims and any history of its own are removed for good. Only offered for sources with no subscribers and no federation relationship.'
 	const FORCE_REAP_CONSEQUENCE: Record<string, string> = {
+		instance_member:
+			'This source is a governed member of an approved federated instance. Reaping anyway removes it permanently — if new content arrives for it later, a fresh member source is re-minted from scratch.',
 		verified_origin: // orphanRow.retention's spelling (no _evidence suffix), unlike the reason string core's 409 used to return
 			'This source backs verified-origin evidence for a logical item. Reaping anyway removes that evidence permanently — the affected item loses its verified-origin claim. This cannot be undone.',
 		admin_retained:
