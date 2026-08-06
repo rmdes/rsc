@@ -23,6 +23,7 @@
 
 - `core/src/domain/source-repository.ts` — `reapSource` guard + `SELECT` widen + `ReapResult` `'instance_member'` reason (Task 1).
 - `core/src/storage/sqlite.ts` — `retentionFor` rung (Task 2); recovery heal + `migrate()` gate + `MIGRATIONS` marker (Task 4).
+- `core/src/domain/types.ts` — `SourceSummary.retention` union gains `instance_member` (Task 2).
 - `core/src/logical/membership.ts` — reuse `approvedInstanceFor` (import; no change).
 - `web/src/routes/admin/feeds/+page.server.ts` — `retention` union widen (Task 3).
 - `web/src/routes/admin/feeds/+page.svelte` — `RETENTION_LABEL` / `FORCE_REAP_CONSEQUENCE` / `REAP_REFUSAL_LABEL` + comment fix (Task 3).
@@ -66,10 +67,11 @@
 ## Task 2: `retentionFor` gains the `instance_member` rung
 
 **Files:**
-- Modify: `core/src/storage/sqlite.ts` (`retentionFor` L653-660)
+- Modify: `core/src/storage/sqlite.ts` (`retentionFor` L652-660)
+- Modify: `core/src/domain/types.ts` (`SourceSummary.retention` union, L164)
 - Test: `core/test/instance-member-reap.test.ts` (extend)
 
-**Interfaces produced:** `retentionFor` return type becomes `'instance_member' | 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable'`. Task 3's web union mirrors this.
+**Interfaces produced:** `retentionFor` return type AND `SourceSummary.retention` both become `'instance_member' | 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable'` (+ `| null` for `SourceSummary.retention`). Task 3's web union mirrors this. **`instance_member` lives in FOUR encodings** (this union, `retentionFor`'s return, `ReapResult` from Task 1, the web union in Task 3) — all must match.
 
 - [ ] **Step 1: Failing test.** Extend the test: a member (as in Task 1, no `verified_origin` claim) → `retentionFor(memberId)` returns `'instance_member'`. (If `retentionFor` is `private`, exercise it through the public read that calls it — `getSourceDetail`/`listSourceMembers` — asserting the surfaced `retention` field.)
 
@@ -80,7 +82,7 @@
   const s = this.raw.prepare(`SELECT canonical_url, provenance FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { canonical_url: string; provenance: string } | undefined
   if (s?.provenance === 'origin_verification' && approvedInstanceFor(this.raw, s.canonical_url) !== null) return 'instance_member'
   ```
-  Widen the method's return-type annotation. Import `approvedInstanceFor` if not already in `sqlite.ts` (it imports from `membership.ts` already — `healMembers` etc.).
+  Widen the method's return-type annotation. **Also widen `SourceSummary.retention` at `core/src/domain/types.ts:164`** to include `'instance_member'` — it is the declared contract for the three call sites that assign `retentionFor`'s return (`sqlite.ts:577/617/726`); without it, `tsc` fails (this task's own gate). `approvedInstanceFor` is already importable in `sqlite.ts` (it imports `healMembers` etc. from `membership.ts`).
 
 - [ ] **Step 4: Green + tsc.** `npm test -w core -- instance-member-reap`; `npm run typecheck -w core`.
 
@@ -100,6 +102,7 @@
 - [ ] **Step 3: Implement.**
   - `+page.server.ts:56`: add `'instance_member'` to the `retention` union.
   - `+page.svelte`: `RETENTION_LABEL['instance_member'] = 'Instance member — retained'`; `FORCE_REAP_CONSEQUENCE['instance_member'] = '<consequence copy: force-reaping removes a governed member of an approved instance>'`; `REAP_REFUSAL_LABEL['instance_member'] = 'This source is a governed member of an approved federated instance.'`; update the L114-123 comment from "three reasons" to four, listing `instance_member`.
+  - Widen the test helper's local `retention` union at `web/src/routes/admin/feeds/source-actions.test.ts:40` to include `'instance_member'` (natural fallout of adding the new test case).
 
 - [ ] **Step 4: Green + svelte-check.** web test passes; `npm run check -w web` (svelte-check 0).
 
@@ -155,4 +158,5 @@
 
 - **Spec coverage:** Part 1 guard (Task 1) ✓; Part 3 `retentionFor`+web (Tasks 2, 3) ✓; Part 2 heal+gate (Task 4) ✓; guard-ordering/F14 (Task 1 Step 1 test) ✓; tombstone exclusion (Task 4) ✓; revoke-vs-quarantine (Task 1 tests) ✓; drift-guard (Task 5 Step 2) ✓.
 - **Placeholder scan:** exact files/lines, real SQL + TS, exact commands. The one FORCE_REAP_CONSEQUENCE copy string is intentionally author-chosen at implementation (marked).
-- **Type consistency:** `'instance_member'` added to `ReapResult` (Task 1), `retentionFor` return (Task 2), and the web `retention` union (Task 3) — all three the same literal; `healStrandedMembers` signature matches the `migrate()` call.
+- **Type consistency:** `'instance_member'` added in **four** places, all the same literal — `ReapResult` (Task 1); `retentionFor` return AND `SourceSummary.retention` at `types.ts:164` (Task 2 — the fourth, caught by the plan review); the web `retention` union (Task 3). `healStrandedMembers` signature matches the `migrate()` call.
+- **Plan rev:** rev 2 (2026-08-06) folded the clean-context plan review — 1 Critical (`types.ts:164` was missing from Task 2 → would fail tsc) fixed; import-cycle/migration/heal/guard-ordering/web-lines all confirmed correct as written.
