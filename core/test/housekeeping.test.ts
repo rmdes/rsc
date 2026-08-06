@@ -57,6 +57,71 @@ test('sweepHousekeeping reclaims an idle anonymous account that posted under v2,
   expect(await repo.getUserByHandle('idle-guest')).toBeUndefined() // reclaimed, not just "didn't throw"
 })
 
+// F-3 (email-flows review): the sweep reclaimed only anonymous rows, so an
+// abandoned sign-up or an SMTP-down outage left a never-verified `user` row
+// that nothing ever cleaned up. Safe to hard-delete because `auth.ts:266` sets
+// requireEmailVerification: true — better-auth then issues NO session token at
+// sign-up (docs, email-enumeration-protection), so such a row can never sign
+// in, and therefore never posted, followed or subscribed. `createdAt` is its
+// only clock.
+const unverifiedEnv = { RSC_TOKEN: 'x', RSC_AUTH_SECRET: 'x' }
+const insertAuthUser = (
+  repo: Awaited<ReturnType<typeof createSqliteRepository>>,
+  id: string,
+  opts: { verified: boolean; anonymous: boolean; ageDays: number },
+) => {
+  const at = new Date(Date.now() - opts.ageDays * 86400_000).toISOString()
+  repo.raw
+    .prepare(`INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt, isAnonymous) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, id, `${id}@example.test`, opts.verified ? 1 : 0, at, at, opts.anonymous ? 1 : null)
+}
+
+test('sweepHousekeeping reclaims a never-verified account past the TTL', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const config = loadConfig(unverifiedEnv)
+  insertAuthUser(repo, 'stale-signup', { verified: false, anonymous: false, ageDays: 8 })
+
+  const { unverifiedSwept } = await sweepHousekeeping(repo, config)
+  expect(unverifiedSwept).toBe(1)
+  expect(repo.raw.prepare(`SELECT id FROM user WHERE id = ?`).get('stale-signup')).toBeUndefined()
+})
+
+test('sweepHousekeeping spares verified, recent, and anonymous rows', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const config = loadConfig(unverifiedEnv)
+  insertAuthUser(repo, 'verified-old', { verified: true, anonymous: false, ageDays: 400 })
+  insertAuthUser(repo, 'unverified-fresh', { verified: false, anonymous: false, ageDays: 1 })
+  // Anonymous rows are the anon sweep's job and are counted there, not here —
+  // otherwise one row would be swept (and counted) twice.
+  insertAuthUser(repo, 'anon-old', { verified: false, anonymous: true, ageDays: 30 })
+
+  const { anonSwept, unverifiedSwept } = await sweepHousekeeping(repo, config)
+  expect(unverifiedSwept).toBe(0)
+  expect(anonSwept).toBe(1)
+  expect(repo.raw.prepare(`SELECT id FROM user WHERE id = ?`).get('verified-old')).toBeDefined()
+  expect(repo.raw.prepare(`SELECT id FROM user WHERE id = ?`).get('unverified-fresh')).toBeDefined()
+})
+
+test('a never-verified account with a core user and an api key is fully reclaimed', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const db = createDatabaseContext(repo.raw)
+  const logical = createLogicalStore(db)
+  const config = loadConfig(unverifiedEnv)
+  insertAuthUser(repo, 'stale-with-rows', { verified: false, anonymous: false, ageDays: 8 })
+  await repo.createLocalUser({ handle: 'stale', displayName: 'stale', authUserId: 'stale-with-rows' })
+  // Pins the deleteAuthRows apikey lesson (sqlite.ts:410-417) for this new
+  // entry point too: a surviving key resurrects the identity via ensureCoreUser.
+  const at = new Date().toISOString()
+  repo.raw
+    .prepare(`INSERT INTO apikey (id, configId, referenceId, key, createdAt, updatedAt) VALUES (?, 'user', ?, ?, ?, ?)`)
+    .run('key-1', 'stale-with-rows', 'hashed', at, at)
+
+  const { unverifiedSwept } = await sweepHousekeeping(repo, config, logical)
+  expect(unverifiedSwept).toBe(1)
+  expect(await repo.getUserByHandle('stale')).toBeUndefined()
+  expect(repo.raw.prepare(`SELECT id FROM apikey WHERE referenceId = ?`).get('stale-with-rows')).toBeUndefined()
+})
+
 // Independently re-verified review finding (Task 8c follow-up): deleteLocalAccount
 // (logical/local.ts) deletes follows/push_subscriptions/users but never read
 // source_subscriptions_v2 nor called reapSourceIfOrphaned, unlike its sibling

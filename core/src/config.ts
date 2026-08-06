@@ -16,6 +16,7 @@ export interface Config {
   authSecret: string
   webOrigin: string
   anonTtlDays: number
+  unverifiedTtlDays: number
   smtpUrl: string | null
   mailFrom: string
   mailEnabled: boolean
@@ -80,6 +81,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!authSecret) throw new Error('RSC_AUTH_SECRET is required')
   const webOrigin = httpUrl('RSC_WEB_ORIGIN', env.RSC_WEB_ORIGIN ?? 'http://localhost:5173').replace(/\/+$/, '')
   const anonTtlDays = positiveInt('RSC_ANON_TTL_DAYS', env.RSC_ANON_TTL_DAYS ?? '7')
+  // Deliberately its own knob rather than reusing anonTtlDays: an idle guest
+  // session and an abandoned sign-up are different clocks, and an operator
+  // under sign-up abuse wants to shorten one without touching the other.
+  const unverifiedTtlDays = positiveInt('RSC_UNVERIFIED_TTL_DAYS', env.RSC_UNVERIFIED_TTL_DAYS ?? '7')
 
   const smtpUrl = env.RSC_SMTP_URL ?? null
   // From-address default derives from the public origin's host, else webOrigin's.
@@ -104,6 +109,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     authSecret,
     webOrigin,
     anonTtlDays,
+    unverifiedTtlDays,
     smtpUrl,
     mailFrom,
     mailEnabled: smtpUrl !== null,

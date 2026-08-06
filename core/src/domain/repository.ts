@@ -29,5 +29,6 @@ export interface Repository {
   listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]>
   countActiveSubscriptions(filter: { callbackHost?: string; topic?: string }, now: string): Promise<number>
   purgeExpiredSubscriptions(now: string): Promise<void>
+  sweepUnverifiedUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
   sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
 }

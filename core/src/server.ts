@@ -112,8 +112,9 @@ bus.onNewPost((e) => { void push.onLocalPost(e) })
 let sweepTimer: NodeJS.Timeout
 async function sweepLoop() {
   try {
-    const { anonSwept } = await sweepHousekeeping(repo, config, logicalStore)
+    const { anonSwept, unverifiedSwept } = await sweepHousekeeping(repo, config, logicalStore)
     if (anonSwept > 0) console.log(`swept ${anonSwept} abandoned anonymous account(s)`)
+    if (unverifiedSwept > 0) console.log(`swept ${unverifiedSwept} never-verified account(s)`)
   } catch (err) {
     console.error('housekeeping sweep failed:', err instanceof Error ? err.message : err)
   }

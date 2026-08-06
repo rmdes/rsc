@@ -1247,9 +1247,24 @@ export class SqliteRepository implements Repository, SourceRepository {
     this.raw.close()
   }
 
-  // Idle = latest session update, else auth-user createdAt. Anon guests are
-  // few; candidate selection in JS dodges better-auth's date-storage format
-  // (new Date() parses ISO strings and epoch numbers alike).
+  // The reclaim core shared by sweepAnonymousUsers and sweepUnverifiedUsers.
+  // Extracted rather than copied on purpose: the deletion path below must stay
+  // single-sourced. Duplicating this loop is exactly how the post_revisions /
+  // logical_local_origins_v2 FK bugs and the surviving-apikey resurrection
+  // would come back. Callers pass their own candidate set; `orphans` is the
+  // general users-without-an-auth-row repair and belongs to sweepAnonymousUsers
+  // only, so the other caller passes [].
+  //
+  // Idle = latest session update, else auth-user createdAt. Candidate selection
+  // happens in JS rather than SQL to dodge better-auth's date-storage format
+  // (new Date() parses ISO strings and epoch numbers alike) — the cutoff is not
+  // expressible as one portable comparison across both.
+  // ponytail: loads every candidate row into memory per sweep. Fine for anon
+  // guests ("few" was the original justification) but F-3's unverified set is
+  // precisely the one that grows under sign-up abuse — bounded today by the
+  // 20/hr instance-wide mail cap, so worst case is ~480 new rows/day. If that
+  // cap is ever raised or bypassed, push the cutoff into SQL by normalizing
+  // createdAt at write time instead of widening this scan.
   //
   // `logical` (when passed) routes both branches through
   // logical.deleteLocalAccount instead of the raw this.deleteUserCascade:
@@ -1261,17 +1276,18 @@ export class SqliteRepository implements Repository, SourceRepository {
   // origin row per-post first, so it never hits the FK. Falls back to
   // deleteUserCascade only when no logical store is available (never true in
   // production since Task 6; kept for tests that omit the store).
-  sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
+  private sweepAuthUsers(
+    candidates: { id: string; createdAt: string | number }[],
+    orphans: { id: string }[],
+    ttlDays: number,
+    logical?: LogicalStore,
+  ): { swept: number } {
     const raw = this.raw
     const cutoff = Date.now() - ttlDays * 86400_000
-    const anons = raw.prepare(`SELECT id, createdAt FROM user WHERE isAnonymous = 1`).all() as { id: string; createdAt: string | number }[]
     const latest = new Map(
       (raw.prepare(`SELECT userId, MAX(updatedAt) AS ts FROM session GROUP BY userId`).all() as { userId: string; ts: string | number }[]).map((r) => [r.userId, r.ts]),
     )
-    const idle = anons.filter((a) => new Date(latest.get(a.id) ?? a.createdAt).getTime() < cutoff)
-    const orphans = raw
-      .prepare(`SELECT u.id FROM users u LEFT JOIN user au ON au.id = u.auth_user_id WHERE u.auth_user_id IS NOT NULL AND au.id IS NULL AND u.kind = 'local'`)
-      .all() as { id: string }[]
+    const idle = candidates.filter((a) => new Date(latest.get(a.id) ?? a.createdAt).getTime() < cutoff)
 
     const deleteAccount = (id: string) => {
       if (logical) logical.deleteLocalAccount({ accountId: id, actorId: id, now: new Date().toISOString() })
@@ -1292,6 +1308,33 @@ export class SqliteRepository implements Repository, SourceRepository {
       }
     })()
     return { swept }
+  }
+
+  sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
+    const raw = this.raw
+    const anons = raw.prepare(`SELECT id, createdAt FROM user WHERE isAnonymous = 1`).all() as { id: string; createdAt: string | number }[]
+    const orphans = raw
+      .prepare(`SELECT u.id FROM users u LEFT JOIN user au ON au.id = u.auth_user_id WHERE u.auth_user_id IS NOT NULL AND au.id IS NULL AND u.kind = 'local'`)
+      .all() as { id: string }[]
+    return this.sweepAuthUsers(anons, orphans, ttlDays, logical)
+  }
+
+  // F-3: an abandoned sign-up or an SMTP-down outage leaves a never-verified
+  // row that nothing else reclaims. Hard deletion is safe here because
+  // auth.ts sets requireEmailVerification: true, so better-auth issues no
+  // session token at sign-up (docs, "Email Enumeration Protection") — an
+  // unverified row can never sign in, and therefore never posted, followed or
+  // subscribed. It has no session either, so `createdAt` is its only clock,
+  // which the shared idle filter already falls back to.
+  //
+  // `COALESCE(isAnonymous, 0) = 0` is load-bearing: anonymous rows are also
+  // emailVerified = 0 and are the anon sweep's business. Without it one row
+  // would be swept — and counted — twice.
+  sweepUnverifiedUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
+    const rows = this.raw
+      .prepare(`SELECT id, createdAt FROM user WHERE emailVerified = 0 AND COALESCE(isAnonymous, 0) = 0`)
+      .all() as { id: string; createdAt: string | number }[]
+    return this.sweepAuthUsers(rows, [], ttlDays, logical)
   }
 }
 

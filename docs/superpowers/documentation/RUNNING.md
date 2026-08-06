@@ -167,6 +167,7 @@ RSC_AUTH_SECRET=$(openssl rand -hex 32)   # paste the output as the value
 | `RSC_TOKEN` | yes | — | Ops bearer token. Its only job is `POST /ops/sources/federation` — the same federation-establish operation the admin UI performs, audited under the `operator_token` actor kind. It is refused (401) on every `/admin/*` route, and it has **no destructive reach at all**: `DELETE /users/:handle` no longer exists, and blocking or purging a source is a session-admin-only operation under `/admin/*`. Size the token's distribution to "seed a federation entry", not to any form of removal. |
 | `RSC_WEB_ORIGIN` | no | `http://localhost:5173` | Must match the web app's public origin. Any request that carries a session cookie to `/api/auth/*` without a matching `Origin` header is rejected 403 by better-auth's CSRF check. |
 | `RSC_ANON_TTL_DAYS` | no | `7` | Anonymous (guest) accounts idle longer than this are reclaimed by an hourly sweep. |
+| `RSC_UNVERIFIED_TTL_DAYS` | no | `7` | Never-verified sign-ups older than this are reclaimed by the same hourly sweep. Separate from the knob above so sign-up abuse can be tightened without shortening guest sessions. |
 | `RSC_ADMIN_EMAIL` | no | — | Comma-separated admin email(s). An account whose **verified** email matches becomes an instance admin (`isAdmin` on `/me`; unlocks admin-only routes like `GET /admin/status`). Unset = no admin (admin routes 403 for everyone). |
 | `RSC_SMTP_URL` | no | — | SMTP connection URL, e.g. `smtp://localhost:1025` (Mailpit, no TLS/auth) or `smtps://user:pass@host:465` (production). Unset means mail is off — see "Email" below. |
 | `RSC_MAIL_FROM` | no | `rsc@<host of RSC_PUBLIC_URL or RSC_WEB_ORIGIN>` | From-address on outgoing mail. |
@@ -244,6 +245,14 @@ start using the app:
 - **Idle guests are swept.** An anonymous identity untouched for
   `RSC_ANON_TTL_DAYS` (and abandoned guests from the above) are
   deleted, cascading their posts and follows, by an hourly background sweep.
+- **Never-verified sign-ups are swept too.** The same hourly sweep deletes
+  accounts that were created but never verified their email, once they are
+  older than `RSC_UNVERIFIED_TTL_DAYS`. Nothing is lost: this instance runs
+  hard verification, so an unverified account can never sign in, and therefore
+  has no posts, follows or subscriptions to cascade — the row is an email
+  address and a password hash. This is what bounds the accumulation left
+  behind by abandoned sign-ups, an SMTP outage, or sign-up spam (the mail
+  *rate* is capped separately, at 20/hour instance-wide).
 - **Adding a feed requires registration.** `POST /me/subscriptions`
   (subscribe by URL) and OPML import (`POST /me/follows/opml`) 403 for
   anonymous sessions — each new feed is a standing polling cost, so only

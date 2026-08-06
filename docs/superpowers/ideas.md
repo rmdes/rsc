@@ -34,16 +34,21 @@ alongside it (section below). Remaining follow-ups + adjacent deferrals:
   oversight: `core/src/logical/push.ts:17-21` states it outright ("NO unsubscribe
   request ever — pause, block and unsubscribe-to-zero simply stop renewing and
   the lease lapses"), per V4 spec §1.1-1.3. The SP2 Minor predates that spec.
-- **F-3: purge non-anonymous never-verified accounts** — the idle sweep only
-  reclaims anonymous rows; an SMTP-down or abandoned sign-up leaves a permanent
-  unverified row nothing cleans up. (The exact F-3 flagged in the email-flows
-  review; cf. "Lantern posts" below — same sweep.) **Verified still open
-  2026-08-06:** `sweepHousekeeping` (`core/src/housekeeping.ts:17-18`) calls only
-  `sweepAnonymousUsers` + `purgeExpiredSubscriptions`. Now more relevant than
-  when filed — the magic-link cap (`a85c639`) bounds mail *rate* at 20/hr but
-  nothing bounds the accumulation of unverified rows those sign-ups leave behind.
-  Shape to mirror: `sweepAnonymousUsers(ttlDays)` (`sqlite.ts:1264`), config
-  `RSC_ANON_TTL_DAYS` (`config.ts:82`, default 7).
+- ~~**F-3: purge non-anonymous never-verified accounts**~~ — **BUILT 2026-08-06,
+  not yet deployed.** `sweepUnverifiedUsers` (`storage/sqlite.ts`) joins the
+  existing hourly sweep, gated on a new `RSC_UNVERIFIED_TTL_DAYS` (default 7,
+  deliberately separate from `RSC_ANON_TTL_DAYS` — an idle guest session and an
+  abandoned sign-up are different clocks). Hard deletion is safe because
+  `auth.ts:266` sets `requireEmailVerification: true`, so better-auth issues no
+  session token at sign-up (confirmed in its "Email Enumeration Protection"
+  docs) — an unverified row can never sign in, therefore never posted, followed
+  or subscribed. The reclaim loop was **extracted, not copied**
+  (`sweepAuthUsers`), so the deletion path stays single-sourced; duplicating it
+  is how the `post_revisions` FK and surviving-apikey resurrection bugs would
+  return. Together with the magic-link cap (`a85c639`, which bounds mail *rate*)
+  this bounds the *accumulation* those sign-ups leave behind. 4 tests added;
+  core 1139/1139, tsc 0. Live counts: skyfleet.blue 0 affected rows; the four
+  `my.infinitespace.click` instances still to be surveyed before deploy.
 - **Cloudron/Docker hardening** — ⚠️ **the "slim the ~4 GB image" half is CLOSED
   as not-actionable (measured 2026-08-06).** `rmdes/rsc:20260806-211724-270d163`
   is 4.25 GB, of which **~3.6 GB is `cloudron/base:5.0.0` itself** — fixed, and

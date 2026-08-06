@@ -62,6 +62,15 @@ test('auth env defaults: webOrigin and anonTtlDays', () => {
   expect(c2.anonTtlDays).toBe(30)
 })
 
+// F-3: same default as anonTtlDays, but they must move independently — that
+// separation is the whole reason this is its own knob.
+test('unverifiedTtlDays defaults to 7 and is independent of anonTtlDays', () => {
+  expect(loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' }).unverifiedTtlDays).toBe(7)
+  const c = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_UNVERIFIED_TTL_DAYS: '2', RSC_ANON_TTL_DAYS: '30' })
+  expect(c.unverifiedTtlDays).toBe(2)
+  expect(c.anonTtlDays).toBe(30)
+})
+
 test('mail config: absent SMTP url disables mail; present enables it', () => {
   const c = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' })
   expect(c.smtpUrl).toBeNull()

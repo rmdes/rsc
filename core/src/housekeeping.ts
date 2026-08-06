@@ -10,11 +10,14 @@ import type { LogicalStore } from './logical/store.ts'
 // logical/scheduler.ts — so this call has no v2 equivalent and must be wired
 // in explicitly, or the outbound table grows unbounded forever.
 export async function sweepHousekeeping(
-  repo: Pick<Repository, 'sweepAnonymousUsers' | 'purgeExpiredSubscriptions'>,
+  repo: Pick<Repository, 'sweepAnonymousUsers' | 'sweepUnverifiedUsers' | 'purgeExpiredSubscriptions'>,
   config: Config,
   logical?: LogicalStore,
-): Promise<{ anonSwept: number }> {
+): Promise<{ anonSwept: number; unverifiedSwept: number }> {
   const { swept } = repo.sweepAnonymousUsers(config.anonTtlDays, logical)
+  // F-3: anonymous first, so a row that is both (guests are emailVerified = 0)
+  // is claimed by the sweep that owns it and counted once.
+  const { swept: unverifiedSwept } = repo.sweepUnverifiedUsers(config.unverifiedTtlDays, logical)
   await repo.purgeExpiredSubscriptions(new Date().toISOString())
-  return { anonSwept: swept }
+  return { anonSwept: swept, unverifiedSwept }
 }
