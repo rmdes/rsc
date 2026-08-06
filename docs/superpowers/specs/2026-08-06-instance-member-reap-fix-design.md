@@ -1,6 +1,8 @@
 # Fix: Instance-Governed Members Reaped As Orphans (+ recovery) — Design
 
-**Status:** Rev 2 (2026-08-06; clean-context correctness review folded — no
+**Status:** Rev 3 (2026-08-06; post-deploy review folded — documents that
+pre-heal `force`-reaps are undone, with the verified live outcome; no code
+change). Rev 2 (2026-08-06; clean-context correctness review folded — no
 Criticals). Rev 2 adds the duplicated `retentionFor` classifier + admin-orphan-list
 web surface to scope (the guard alone would leave the orphan list offering a "Reap"
 button that now silently refuses members), a tombstone exclusion in the heal, and
@@ -164,9 +166,24 @@ two hand-duplicated encodings of the same retention truth — both must gain the
 ## Edge cases (decided)
 
 - **Force-reap vs. heal:** the heal is one-time and version-gated, so it does not
-  fight a later operator `force`-reap. (Pre-existing, out of scope: any source that
+  fight a **later** operator `force`-reap. (Pre-existing, out of scope: any source that
   keeps receiving new content re-mints from fresh `pending` checks — not introduced
   by this fix.)
+- **Force-reaps performed BEFORE the heal ARE undone (accepted, rev 3).** The
+  rev-2 tombstone exclusion only covers block/purge: a plain `force`-reap writes
+  **no** tombstone (`reapSource`: "NO block tombstone") and its audit rows
+  cascade away (`source_audit_v2.source_id … ON DELETE CASCADE`), so nothing
+  distinguishes a deliberately removed member from one the bug destroyed. Such a
+  member is therefore re-minted once, and — now protected by Part 1 — a repeat
+  removal needs `force` again. Accepted rather than fixed: no discriminator
+  survives to build a guard on, and the bug destroyed members indiscriminately,
+  so recovering is the better default. **Outcome on the live fleet (verified
+  2026-08-06, post-deploy):** the only instance with known deliberate force-reaps
+  (`rsc.rmendes.net`, 22 forced on 2026-07-29) measured **0 stranded checks**, so
+  its heal was a no-op and nothing there was resurrected; recovery landed on
+  `bob` (+8) and `rsc.rmdes.be` (+44), where no deliberate reaps are known.
+  **Still applies to any instance that has not yet crossed migration 23** — e.g.
+  a separately-managed install on an older image, or a restored pre-fix backup.
 - **Revoked instance:** handled by the live `approvedInstanceFor` predicate (above).
 
 ## Non-goals
