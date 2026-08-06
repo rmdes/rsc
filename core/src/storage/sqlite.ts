@@ -1543,9 +1543,13 @@ function migrate(sqlite: InstanceType<typeof Database>): void {
   // 23 — instance-member reap recovery: reset every verification_checks_v2
   // row stranded 'verified' by the pre-fix reap bug (its minted member
   // source was deleted) back to 'pending' and re-pend its verification job,
-  // the first time this DB crosses migration 23. healStrandedMembers wraps
-  // its own transaction — safe even if the process dies mid-heal, and
-  // idempotent (a re-run finds nothing left in the stranded state).
+  // the first time this DB crosses migration 23. healStrandedMembers wraps its
+  // own transaction, so it is ATOMIC (a crash mid-heal rolls back cleanly, no
+  // corruption) and idempotent (a re-run finds nothing stranded). Like
+  // migrations 19/22 it is NOT re-run-guaranteed: user_version commits in its
+  // own txn above, so a crash after that bump but before the heal commit skips
+  // this one-time recovery forever — harmless, since prevention (the reap
+  // guard) is unaffected and members re-mint from new content over time.
   if (version < 23) healStrandedMembers(sqlite)
 }
 
