@@ -53,18 +53,28 @@ export ORIGIN="${CLOUDRON_APP_ORIGIN}"
 export ADDRESS_HEADER="X-Forwarded-For"
 export XFF_DEPTH="2"
 
-# OFF on Cloudron, deliberately — do not flip this without re-measuring.
-# Measured 2026-08-06 on a live instance: sending `X-Forwarded-For: 1.2.3.4`
-# makes Cloudron's own proxy hand this container exactly that, and stamp
-# X-Real-IP with it too (an explicitly-sent X-Real-IP was ignored in favour of
-# the XFF-derived value) — its nginx runs real_ip TRUSTING the client's
-# X-Forwarded-For. Cloudron staff confirm there is no trusted-proxy setting
-# and that adding one is an open feature request, so the address reaching us
-# is the caller's own claim. No XFF_DEPTH helps: index 0 is the claim, and the
-# only other entry is the docker bridge (172.18.0.1), identical for everyone.
-# With this off, core skips per-IP limits rather than enforcing one on
-# forgeable input — which would let anyone lock out a chosen victim.
-export RSC_TRUST_CLIENT_IP="off"
+# Defaults OFF, but this is a SERVER setting question — not a Cloudron defect.
+#
+# Cloudron has a documented "Trusted IPs" control (Network → Trusted IPs,
+# docs.cloudron.io/network): listing a proxy there makes the platform trust
+# that request's X-Forwarded-For and treat it as the client address. On an
+# install with an empty/correct list, Cloudron uses the real socket address and
+# apps receive a trustworthy client IP — which is why other Cloudron apps do
+# not have to degrade anything.
+#
+# On rmdes' fleet (measured 2026-08-06) that list was too broad: a spoofed
+# `X-Forwarded-For` sent from an ordinary internet client came through
+# untouched, and X-Real-IP was stamped from it too. With no proxy in front of
+# those hosts, nothing justified it. Until the server-side list is corrected,
+# the address reaching this container is the caller's own claim, so core skips
+# per-IP limits rather than enforcing one on forgeable input (which would let
+# anyone lock out a chosen victim — see core/src/config.ts).
+#
+# TO RE-ENABLE, in this order: fix Network → Trusted IPs, verify a spoofed
+# X-Forwarded-For no longer becomes the client address, then
+# `cloudron env set RSC_TRUST_CLIENT_IP=on` — the `:-` below lets that override
+# win without a rebuild. Per-IP limits then come back on their own.
+export RSC_TRUST_CLIENT_IP="${RSC_TRUST_CLIENT_IP:-off}"
 
 chown -R cloudron:cloudron /app/data
 

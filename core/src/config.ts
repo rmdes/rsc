@@ -80,13 +80,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   //   on  — compose.prod.yaml: Caddy APPENDS the real address to
   //         X-Forwarded-For and XFF_DEPTH=1 reads the RIGHTMOST entry, so a
   //         client-prepended value can never shift the result.
-  //   off — the Cloudron package: measured 2026-08-06, Cloudron's own proxy
-  //         runs real_ip TRUSTING the client's X-Forwarded-For and then
-  //         stamps both XFF and X-Real-IP with the result, so the address
-  //         reaching the app is the client's own claim. Cloudron staff
-  //         confirm no trusted-proxy setting exists (open feature request);
-  //         no XFF_DEPTH fixes it, since the only other entry is the docker
-  //         bridge, identical for everyone.
+  //   off — the Cloudron package DEFAULT, pending a server-side fix. Cloudron
+  //         has a documented "Trusted IPs" control (Network → Trusted IPs):
+  //         a proxy listed there has its X-Forwarded-For trusted as the client
+  //         address. On a correctly-configured install that list is empty (or
+  //         only the real fronting proxy) and apps get a trustworthy IP — this
+  //         is a per-server setting, NOT a Cloudron limitation, which is why
+  //         other Cloudron apps need no such flag. On rmdes' fleet the list was
+  //         measured too broad on 2026-08-06 (a spoofed header from an ordinary
+  //         client came through untouched, with no proxy in front), so the
+  //         address is the caller's claim until that is corrected; see
+  //         cloudron/start.sh for the re-enable order.
   const rawTrustClientIp = env.RSC_TRUST_CLIENT_IP ?? 'off'
   if (rawTrustClientIp !== 'on' && rawTrustClientIp !== 'off') throw new Error(`RSC_TRUST_CLIENT_IP must be "on" or "off", got "${rawTrustClientIp}"`)
   const trustClientIp = rawTrustClientIp === 'on'
