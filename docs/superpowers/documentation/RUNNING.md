@@ -485,6 +485,29 @@ curl http://localhost:8787/timeline?author=alice
 curl http://localhost:8787/timeline?followed_by=alice
 ```
 
+**Pagination — `?before=` and `?limit=`.** The timeline pages backwards through
+time with an opaque cursor. Every `GET /timeline` response carries a
+`nextCursor`; pass it back as `?before=` to get the next page. (Don't confuse it
+with the sibling `journalCursor` in the same envelope — that one is the SSE
+replay position, documented under "Feature notes".)
+
+| Query param | Meaning |
+|---|---|
+| `before=<cursor>` | Opaque cursor from the previous response's `nextCursor`. Malformed input is a hard `400 {"error":"invalid cursor"}`. |
+| `limit=<n>` | Page size, **clamped to 1..100**; default 50. Unlike `before`, a non-integer `limit` is *not* an error — it silently falls back to the default. |
+
+```bash
+# page 1, then follow the cursor
+curl 'http://localhost:8787/timeline?limit=2'
+curl 'http://localhost:8787/timeline?limit=2&before=WzEsIjIwMjYtMDgtMDZUMTk6...'
+```
+
+The same `?before=`/`?limit=` pair paginates the `GET /me/*` personal-timeline
+routes — one shared decoder (`core/src/api/logical-routes/shared.ts`) serves
+both. Note that the **admin** listings use a *different* codec and parameter
+name (`?cursor=`, `pageArgs` in `core/src/api/app.ts`), and that one *does*
+`400` on a non-integer `limit`.
+
 OPML routes (import requires a registered session; export is public):
 
 | Method | Route | Notes |

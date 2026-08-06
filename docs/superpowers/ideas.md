@@ -29,16 +29,32 @@ alongside it (section below). Remaining follow-ups + adjacent deferrals:
   subscribe form, mode-switched following manager, `/admin/settings` cap). Users
   now subscribe to their own feeds and read a personal timeline — RSC is a
   feed reader with a social layer, distinct from admin-managed instance feeds.
-- **WebSub unsubscribe on feed removal** — `deleteUserCascade` drops our local
-  subscription but never sends `hub.mode=unsubscribe`; self-heals on lease expiry
-  (SP2 final-review Minor).
+- ~~**WebSub unsubscribe on feed removal**~~ — **CLOSED 2026-08-06, not debt.**
+  Sending no `hub.mode=unsubscribe` is the *specified* v2 lifecycle, not an
+  oversight: `core/src/logical/push.ts:17-21` states it outright ("NO unsubscribe
+  request ever — pause, block and unsubscribe-to-zero simply stop renewing and
+  the lease lapses"), per V4 spec §1.1-1.3. The SP2 Minor predates that spec.
 - **F-3: purge non-anonymous never-verified accounts** — the idle sweep only
   reclaims anonymous rows; an SMTP-down or abandoned sign-up leaves a permanent
   unverified row nothing cleans up. (The exact F-3 flagged in the email-flows
-  review; cf. "Lantern posts" below — same sweep.)
-- **Cloudron/Docker hardening** — slim the ~4 GB image, and bind core/web to
-  `127.0.0.1` instead of `0.0.0.0` (only the httpPort is published today, so it's
-  contained, not urgent).
+  review; cf. "Lantern posts" below — same sweep.) **Verified still open
+  2026-08-06:** `sweepHousekeeping` (`core/src/housekeeping.ts:17-18`) calls only
+  `sweepAnonymousUsers` + `purgeExpiredSubscriptions`. Now more relevant than
+  when filed — the magic-link cap (`a85c639`) bounds mail *rate* at 20/hr but
+  nothing bounds the accumulation of unverified rows those sign-ups leave behind.
+  Shape to mirror: `sweepAnonymousUsers(ttlDays)` (`sqlite.ts:1264`), config
+  `RSC_ANON_TTL_DAYS` (`config.ts:82`, default 7).
+- **Cloudron/Docker hardening** — ⚠️ **the "slim the ~4 GB image" half is CLOSED
+  as not-actionable (measured 2026-08-06).** `rmdes/rsc:20260806-211724-270d163`
+  is 4.25 GB, of which **~3.6 GB is `cloudron/base:5.0.0` itself** — fixed, and
+  required for a Cloudron package. Our own layers total ~655 MB: Node tarball
+  215 MB · `npm ci` 297 MB · `COPY . /app/code` 58 MB · web build 85 MB. The only
+  real lever left is `npm prune --omit=dev` after the web build (~150 MB, 3.5% of
+  the image) — not worth the deploy risk. What *was* actionable: `graphify-out/`
+  (32 MB of codebase knowledge-graph dump), `.claude/` and `.remember/` were
+  landing in the production image; added to `.dockerignore` 2026-08-06.
+  Still open, still not urgent: bind core/web to `127.0.0.1` instead of
+  `0.0.0.0` (only the httpPort is published, so it's contained).
 - **SP3 accepted deferrals** (opus final review, non-blocking) — non-atomic
   account delete (`deleteLocalAccount` runs `deleteUserCascade` + `deleteAuthRows`
   as two transactions, matching `removeRemoteFeed`); `.danger-link` CSS block
@@ -124,12 +140,19 @@ end for the record).
   while `/api/auth/get-session` and `/api/v1/me/timeline` still work.
 
 **Small & real (still open)**
-- **`purgeExpiredSubscriptions` skips `push_subscriptions`** — confirmed it only
-  `deleteFrom('subscriptions')` (inbound); outbound expired rows aren't swept —
-  bounded to ~2/user by `UNIQUE(user_id, mode)`, so low severity.
-- **Unknown handle → empty profile, no 404** — `u/[handle]` renders a blank
-  timeline for a nonexistent user rather than a not-found page (core-down is
-  handled separately via `coreDown`, so this is just a missing "user not found").
+- ~~**`purgeExpiredSubscriptions` skips `push_subscriptions`**~~ — **CLOSED
+  2026-08-06, moot.** `push_subscriptions` is the v1 table and is now **write-dead**:
+  post-V1-retirement nothing inserts into it (the only `INSERT INTO
+  push_subscriptions*` sites target `push_subscriptions_v2` —
+  `logical/store.ts:659`, `migration/convert.ts:401`). It is only ever *read* by
+  the legacy converter (`convert.ts:398`) and *deleted from* on account cascade
+  (`sqlite.ts:397`, `logical/local.ts:266`). A table that only shrinks needs no
+  sweep. The live v2 lease table is purged by the v2 scheduler, as
+  `housekeeping.ts:5-11` already documents.
+- ~~**Unknown handle → empty profile, no 404**~~ — **CLOSED 2026-08-06, already
+  fixed.** `web/src/routes/u/[handle]/+page.server.ts:39` throws
+  `error(404, 'No such user')` when core returns no stats; the surrounding
+  comments distinguish it from the `coreDown` path. Ledger entry was stale.
 - **Phase-3 (authed write API) final review, Minor findings (2026-08-04)** —
   none blocked merge. Status as of 2026-08-05 (dedicated cleanup branch off
   `main` picking up items 1/2/5 below; item 3 deferred, item 4 downgraded to
@@ -179,7 +202,12 @@ end for the record).
   no isIP check; documented accepted residual, neutralized by challenge-verify.
 - **rssCloud challenge lookup expiry** — plausibly omits an expiry filter (minor
   "sub once existed" info-leak); the one item not fully confirmed.
-- **timeline cursor not documented in RUNNING.md** (migrations + SSE replay are).
+- ~~**timeline cursor not documented in RUNNING.md**~~ — **DONE 2026-08-06.**
+  `?before=`/`?limit=` documented under "API: query parameters and OPML routes",
+  incl. the `nextCursor` vs `journalCursor` distinction, the 1..100 clamp, and
+  the deliberate inconsistency that a bad `limit` defaults while a bad `before`
+  400s. Verified live against the dev core (cursor round-trip, `limit=abc`→50,
+  `limit=999`→100).
 
 *Verified resolved — excluded (were stale in the ledger):* FK enforcement
 (`PRAGMA foreign_keys = ON`, `sqlite.ts:573`) · input validation on

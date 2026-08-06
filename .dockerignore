@@ -10,3 +10,6 @@ web/build
 **/.env.*
 .superpowers
 docs
+graphify-out
+.claude
+.remember
