@@ -13,7 +13,6 @@ export interface Config {
   rssCloud: boolean
   pushIn: boolean
   authOpenApi: boolean
-  trustClientIp: boolean
   authSecret: string
   webOrigin: string
   anonTtlDays: number
@@ -72,29 +71,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (rawAuthOpenApi !== 'on' && rawAuthOpenApi !== 'off') throw new Error(`RSC_AUTH_OPENAPI must be "on" or "off", got "${rawAuthOpenApi}"`)
   const authOpenApi = rawAuthOpenApi === 'on'
 
-  // Does this deployment's edge proxy supply a client address the client
-  // cannot forge? Only the operator knows, so it is declared, not guessed —
-  // and it defaults OFF, because a per-IP limit fed forgeable input is worse
-  // than no limit at all (anyone can spend a few requests to lock out a
-  // CHOSEN victim, turning the control into the attack).
-  //   on  — compose.prod.yaml: Caddy APPENDS the real address to
-  //         X-Forwarded-For and XFF_DEPTH=1 reads the RIGHTMOST entry, so a
-  //         client-prepended value can never shift the result.
-  //   off — the Cloudron package DEFAULT, pending a server-side fix. Cloudron
-  //         has a documented "Trusted IPs" control (Network → Trusted IPs):
-  //         a proxy listed there has its X-Forwarded-For trusted as the client
-  //         address. On a correctly-configured install that list is empty (or
-  //         only the real fronting proxy) and apps get a trustworthy IP — this
-  //         is a per-server setting, NOT a Cloudron limitation, which is why
-  //         other Cloudron apps need no such flag. On rmdes' fleet the list was
-  //         measured too broad on 2026-08-06 (a spoofed header from an ordinary
-  //         client came through untouched, with no proxy in front), so the
-  //         address is the caller's claim until that is corrected; see
-  //         cloudron/start.sh for the re-enable order.
-  const rawTrustClientIp = env.RSC_TRUST_CLIENT_IP ?? 'off'
-  if (rawTrustClientIp !== 'on' && rawTrustClientIp !== 'off') throw new Error(`RSC_TRUST_CLIENT_IP must be "on" or "off", got "${rawTrustClientIp}"`)
-  const trustClientIp = rawTrustClientIp === 'on'
-
   // Fail-fast ONLY for explicitly enabled push (spec H1): defaults stay bootable.
   if ((websub.mode !== 'off' || rssCloud) && !publicUrl) {
     throw new Error('RSC_PUBLIC_URL is required when RSC_WEBSUB or RSC_RSSCLOUD is enabled')
@@ -125,7 +101,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rssCloud,
     pushIn,
     authOpenApi,
-    trustClientIp,
     authSecret,
     webOrigin,
     anonTtlDays,

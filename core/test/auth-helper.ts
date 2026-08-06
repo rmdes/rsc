@@ -14,7 +14,7 @@ export function makeAuth(
   authOpenApi = false,
   adminEmails: ReadonlySet<string> = new Set(),
 ) {
-  return createAuth({ sqlite: repo.raw, users: repo, secret: 'test-secret', webOrigin: 'http://web.test', anonTtlDays: 7, mailer, authOpenApi, adminEmails, trustClientIp: true })
+  return createAuth({ sqlite: repo.raw, users: repo, secret: 'test-secret', webOrigin: 'http://web.test', anonTtlDays: 7, mailer, authOpenApi, adminEmails })
 }
 
 // better-auth's rate limiter keys on client IP + path; in tests there's no

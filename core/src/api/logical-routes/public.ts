@@ -145,11 +145,6 @@ export interface PublicFirehoseDeps {
   maxConnectionsTotal?: number
   connectionRateWindowMs?: number
   maxConnectionsPerWindow?: number
-  // Whether x-forwarded-for can be believed here (RSC_TRUST_CLIENT_IP, see
-  // config.ts for the per-topology reasoning). Every per-IP limit below is
-  // skipped when false — a limit keyed on forgeable input doesn't just fail
-  // to stop an attacker, it hands them a way to evict a chosen victim.
-  trustClientIp?: boolean
 }
 
 const FIREHOSE_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
@@ -209,7 +204,6 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const { source, bus, feeds } = deps
   const pollMs = deps.pollMs ?? 1000
   const heartbeatMs = deps.heartbeatMs ?? 15000
-  const trustClientIp = deps.trustClientIp ?? false
   const maxPerIp = deps.maxConnectionsPerIp ?? 5
   // A per-IP cap alone bounds nothing: addresses are free, so N attackers get
   // N*5 streams. This endpoint is anonymous, so the GLOBAL ceiling is the one
@@ -248,12 +242,8 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
   const breathe = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve) })
 
   app.get('/firehose/stream', (c) => {
-    // `null` means "this deployment cannot supply a trustworthy address", not
-    // "no address" — every per-IP branch below is then skipped entirely rather
-    // than bucketing everyone under one placeholder key (which would turn each
-    // per-IP cap into a global one and lock the whole instance out).
-    const ip = trustClientIp ? (c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown') : null
-    if (ip !== null) {
+    const ip = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    {
       const now = Date.now()
       if (now - lastSweep >= connectionWindowMs) {
         lastSweep = now
@@ -267,10 +257,8 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
         connectionAttempts.set(ip, { count: 1, windowStart: now })
       }
     }
-    // Unforgeable by construction — it counts CONNECTIONS, not identities — so
-    // it applies on every topology and is the only ceiling when ip is null.
     if (totalConnections >= maxGlobal) return c.json({ error: 'firehose at capacity' }, 429)
-    if (ip !== null) {
+    {
       const current = ipCounts.get(ip) ?? 0
       if (current >= maxPerIp) return c.json({ error: 'too many connections from this address' }, 429)
       ipCounts.set(ip, current + 1)
@@ -281,7 +269,6 @@ export function mountPublicFirehoseRoute(app: Hono, deps: PublicFirehoseDeps): v
       if (released) return
       released = true
       totalConnections--
-      if (ip === null) return
       const n = (ipCounts.get(ip) ?? 1) - 1
       if (n <= 0) ipCounts.delete(ip)
       else ipCounts.set(ip, n)

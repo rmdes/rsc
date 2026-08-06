@@ -89,7 +89,7 @@ test('apiKeyAuthAdmin: rate-limit exhaustion surfaces as 429 with tryAgainIn and
   const auth = createAuth({
     sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
     webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
-    authOpenApi: false, adminEmails, trustClientIp: true,
+    authOpenApi: false, adminEmails,
   })
   const app = new Hono()
   app.get('/probe', apiKeyAuthAdmin(auth, repo, adminEmails, { 'admin.read': ['read'] }), (c) => c.json({ ok: true }))

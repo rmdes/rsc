@@ -67,13 +67,6 @@ services:
       RSC_PUSH_IN: ${RSC_PUSH_IN:-on}
       RSC_SMTP_URL: ${RSC_SMTP_URL:-smtp://mailpit:1025}
       RSC_MAIL_FROM: ${RSC_MAIL_FROM:-rsc@${RSC_DOMAIN}}
-      # Safe to trust the client address on THIS topology only: Caddy appends
-      # the real peer address to X-Forwarded-For and the web app reads the
-      # RIGHTMOST entry (XFF_DEPTH=1 above), so a client-prepended value can
-      # never shift the result. Enables the firehose per-IP limits. Do NOT
-      # copy this to a deployment whose edge proxy forwards a client-supplied
-      # X-Forwarded-For — see core/src/config.ts.
-      RSC_TRUST_CLIENT_IP: ${RSC_TRUST_CLIENT_IP:-on}
     volumes:
       - core-data:/data
     healthcheck:

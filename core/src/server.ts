@@ -47,7 +47,7 @@ await runtime.ready
 
 const service = createService(repo, bus, config.publicUrl, logicalStore)
 const mailer = createMailer(config.smtpUrl, config.mailFrom)
-const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecret, webOrigin: config.webOrigin, anonTtlDays: config.anonTtlDays, mailer, authOpenApi: config.authOpenApi, adminEmails: config.adminEmails, trustClientIp: config.trustClientIp })
+const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecret, webOrigin: config.webOrigin, anonTtlDays: config.anonTtlDays, mailer, authOpenApi: config.authOpenApi, adminEmails: config.adminEmails })
 const push = createPush({ repo, config })
 if (config.pushIn && !config.publicUrl) console.log('push-in inactive: no public URL')
 // The source-control plane, through the ONE composition helper — it takes the
@@ -100,7 +100,7 @@ mountLogicalStreamRoute(app, {
     return { localAccountId: u ? u.id : null, activeSourceIds: [] }
   },
 })
-mountPublicFirehoseRoute(app, { source: runtime.streamSource, bus, feeds, trustClientIp: config.trustClientIp })
+mountPublicFirehoseRoute(app, { source: runtime.streamSource, bus, feeds })
 // Local mutations still emit an after-commit hint so the stream catches up before
 // its heartbeat (spec §7.4); reads the coalesced high water once.
 bus.onNewPost(() => { bus.emitSequenceHint(logicalStore.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })

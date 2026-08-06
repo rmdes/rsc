@@ -26,7 +26,7 @@ async function setup(adminEmails: ReadonlySet<string> = new Set(['admin@x.test']
   const auth = createAuth({
     sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
     webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
-    authOpenApi: false, adminEmails, trustClientIp: true,
+    authOpenApi: false, adminEmails,
   })
   const bus = createEventBus()
   // These 3 tests only exercise POST /admin/api-keys, which never touches
@@ -57,7 +57,7 @@ async function setupWithLogicalStore(adminEmails: ReadonlySet<string> = new Set(
   const auth = createAuth({
     sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
     webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null,
-    authOpenApi: false, adminEmails, trustClientIp: true,
+    authOpenApi: false, adminEmails,
   })
   const bus = createEventBus()
   const dbContext = createDatabaseContext(repo.raw)
@@ -218,7 +218,7 @@ describe('admin.read routes', () => {
     const auth = createAuth({
       sqlite: repo.raw, users: repo, secret: 'test-secret-test-secret-32chars',
       webOrigin: 'http://localhost:5173', anonTtlDays: 30, mailer: null, authOpenApi: false,
-      adminEmails, trustClientIp: true,
+      adminEmails,
     })
     const bus = createEventBus()
     const logicalStoreStub = { schedulerStats: () => ({ dueNow: 0, lastPollAt: null }) } as never

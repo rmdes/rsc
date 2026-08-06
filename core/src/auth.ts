@@ -21,10 +21,6 @@ export interface AuthDeps {
   mailer: Mailer | null
   authOpenApi: boolean
   adminEmails: ReadonlySet<string>
-  // Whether x-forwarded-for can be believed on this deployment
-  // (RSC_TRUST_CLIENT_IP — see config.ts). Only affects the per-IP
-  // customRules below; the magic-link volume cap holds regardless.
-  trustClientIp: boolean
 }
 
 // Instance-wide ceiling on magic-link mail, per fixed window.
@@ -285,19 +281,7 @@ export function createAuth(deps: AuthDeps) {
     // /me is the real fix (recorded follow-up)
     session: { expiresIn: deps.anonTtlDays * 4 * 86400 },
     // ponytail: per-IP throttle only; CAPTCHA/turnstile if a real flood ever happens
-    // Per-IP rules only where the address can actually be believed. On a
-    // deployment whose edge forwards the CALLER'S OWN X-Forwarded-For (Cloudron
-    // — see config.ts's RSC_TRUST_CLIENT_IP), a per-IP limit is worse than
-    // none: it stops nobody (rotate the header) while letting anyone spend a
-    // few requests under a victim's address to lock THAT PERSON out. `false`
-    // disables the rule for a path. The magic-link volume cap above is
-    // unforgeable and applies on every topology.
-    rateLimit: {
-      enabled: true,
-      customRules: deps.trustClientIp
-        ? { '/sign-in/anonymous': { window: 60, max: 10 }, '/sign-in/magic-link': { window: 60, max: 5 } }
-        : { '/sign-in/anonymous': false, '/sign-in/magic-link': false },
-    },
+    rateLimit: { enabled: true, customRules: { '/sign-in/anonymous': { window: 60, max: 10 }, '/sign-in/magic-link': { window: 60, max: 5 } } },
     // disableOriginCheck defaults to true under NODE_ENV=test (better-auth's
     // isTest() shortcut) — pin it off so CSRF/origin checks are real in our
     // own (vitest) test suite too, not just in production.
