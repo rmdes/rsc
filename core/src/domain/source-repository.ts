@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { removeSourceEvidence } from '../logical/tombstones.ts'
 import { appendJournal } from '../logical/journal.ts'
+import { approvedInstanceFor } from '../logical/membership.ts'
 import { encodeCursor as encodeTupleCursor, decodeCursor as decodeTupleCursor } from './cursor.ts'
 import type { CommandEnvelope, RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, OwnerSourceFollow, PublicLocalFollow, OwnerFollowingView, PublicFollowingEntry, AttributionMode, AuditCategory, FederationRelationship, FederationStatus, SourceGovernance, SourceOperation, SourceTransitionResult } from './types.ts'
 
@@ -235,7 +236,7 @@ export function checkCommand<T>(tx: Db, command: CommandEnvelope): LedgerCheck<T
 // structural tombstones, unreferenced publishers delete — then deletes the source
 // row. It writes NO block tombstone (cleanup is not a moderation action) and
 // appends ONE journal reset only when an ordinary item was actually affected.
-export type ReapResult = { kind: 'reaped' } | { kind: 'refused'; reason: 'has_subscribers' | 'not_allowed' | 'federated' | 'admin_retained' | 'audit_history' | 'verified_origin_evidence' }
+export type ReapResult = { kind: 'reaped' } | { kind: 'refused'; reason: 'has_subscribers' | 'not_allowed' | 'federated' | 'instance_member' | 'admin_retained' | 'audit_history' | 'verified_origin_evidence' }
 // The command-layer outcome adds the two idempotency-ledger cases (source
 // not found, replayed command fingerprint mismatch) that only apply once
 // reapSource is wrapped behind checkCommand/storeCommand in sqlite.ts —
@@ -252,9 +253,17 @@ export type ReapCommandResult = ReapResult | { kind: 'unknown' } | { kind: 'conf
 export function reapSource(tx: Db, sourceId: string, opts: { force: boolean }, now: string = new Date().toISOString()): ReapResult {
   const { n } = tx.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(sourceId) as { n: number }
   if (n > 0) return { kind: 'refused', reason: 'has_subscribers' }
-  const source = tx.prepare(`SELECT governance, admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { governance: SourceGovernance; admin_retained: 0 | 1 } | undefined
+  const source = tx.prepare(`SELECT governance, admin_retained, canonical_url, provenance FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { governance: SourceGovernance; admin_retained: 0 | 1; canonical_url: string; provenance: string } | undefined
   if (!source || source.governance !== 'allowed') return { kind: 'refused', reason: 'not_allowed' }
   if (tx.prepare(`SELECT 1 FROM federation_relationships_v2 WHERE source_id = ?`).get(sourceId)) return { kind: 'refused', reason: 'federated' }
+  // Instance-membership retention guard (2026-08-06 design rev 2): a member's
+  // verified_origin claim churns far more often than its membership does, so
+  // gating reap on the claim alone (verified_origin_evidence, below) let a
+  // still-governed member get auto-reaped the moment its claim lapsed. Check
+  // membership directly instead — force is still the only way past it.
+  if (!opts.force && source.provenance === 'origin_verification' && approvedInstanceFor(tx, source.canonical_url) !== null) {
+    return { kind: 'refused', reason: 'instance_member' }
+  }
   if (!opts.force && source.admin_retained !== 0) return { kind: 'refused', reason: 'admin_retained' }
   if (!opts.force && tx.prepare(`SELECT 1 FROM source_audit_v2 WHERE source_id = ? LIMIT 1`).get(sourceId)) return { kind: 'refused', reason: 'audit_history' }
   // Verification-evidence retention guard (spec §2.4/§7): a source whose
