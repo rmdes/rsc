@@ -77,3 +77,19 @@ test('a row that is itself approved-federated is refused federated, not instance
   const result = reapSource(raw, 'self-fed', { force: false }, NOW)
   expect(result).toEqual({ kind: 'refused', reason: 'federated' })
 })
+
+// Task 2 — retentionFor (the admin orphan-list's display classifier) must
+// agree with reapSource's guard: a live instance member surfaces
+// retention === 'instance_member', not 'reapable', even with no
+// verified_origin claim. Exercised through getSourceDetail, the public read
+// that wraps the private retentionFor.
+test('getSourceDetail surfaces retention "instance_member" for a live instance member with no verified_origin claim', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  seedSource(raw, { id: 'inst', url: 'https://rss.chat/hub.xml', provenance: 'admin_federation' })
+  approveFederation(raw, 'inst')
+  seedSource(raw, { id: 'member', url: 'https://rss.chat/users/a.xml' })
+
+  const detail = await repo.getSourceDetail('member')
+  expect(detail?.retention).toBe('instance_member')
+})

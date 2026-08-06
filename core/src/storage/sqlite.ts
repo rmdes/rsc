@@ -12,7 +12,7 @@ import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_I
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
-import { memberRows, memberRowsPage, memberCounts, healMembers } from '../logical/membership.ts'
+import { memberRows, memberRowsPage, memberCounts, healMembers, approvedInstanceFor } from '../logical/membership.ts'
 import { findCurrentDeliveryVersion } from '../logical/acquisition.ts'
 import { deleteObservationVersions } from '../logical/tombstones.ts'
 
@@ -649,7 +649,9 @@ export class SqliteRepository implements Repository, SourceRepository {
   // 'reapable' when rendered via getSourceDetail/listSourceMembers, since
   // neither pre-filters to orphans the way listSourceSummaries's orphan
   // filter does.
-  private retentionFor(sourceId: string): 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' {
+  private retentionFor(sourceId: string): 'instance_member' | 'verified_origin' | 'audit_history' | 'admin_retained' | 'reapable' {
+    const s = this.raw.prepare(`SELECT canonical_url, provenance FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { canonical_url: string; provenance: string } | undefined
+    if (s?.provenance === 'origin_verification' && approvedInstanceFor(this.raw, s.canonical_url) !== null) return 'instance_member'
     if (this.raw.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)) return 'verified_origin'
     const source = this.raw.prepare(`SELECT admin_retained FROM remote_sources_v2 WHERE id = ?`).get(sourceId) as { admin_retained: 0 | 1 } | undefined
     if (source?.admin_retained === 1) return 'admin_retained'
