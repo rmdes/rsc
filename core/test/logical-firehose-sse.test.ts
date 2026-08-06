@@ -33,7 +33,7 @@ async function acquireRemote(db: ReturnType<typeof createDatabaseContext>, sourc
   await eng.acquireSource(sourceId, { kind: 'scheduled' }, undefined)
 }
 
-async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number; connectionRateWindowMs?: number; maxConnectionsPerWindow?: number } = {}) {
+async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?: number; connectionRateWindowMs?: number; maxConnectionsPerWindow?: number; trustClientIp?: boolean } = {}) {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw as Raw
   const db = createDatabaseContext(raw)
@@ -43,7 +43,10 @@ async function setup(caps: { maxConnectionsPerIp?: number; maxConnectionsTotal?:
   activateLogicalV2(db, NOW)
   bus.onNewPost(() => { bus.emitSequenceHint(store.snapshot((tx) => tx.getJournalMetadata().highWaterSeq)) })
   const app = new Hono()
-  mountPublicFirehoseRoute(app, { source: createStreamSource(db), bus, feeds: FEEDS, pollMs: 5, heartbeatMs: 30, ...caps })
+  // Default TRUE so the per-IP tests below exercise the limits they name; the
+  // real default is false (config.ts), and the two tests at the end of this
+  // file cover that side.
+  mountPublicFirehoseRoute(app, { source: createStreamSource(db), bus, feeds: FEEDS, pollMs: 5, heartbeatMs: 30, trustClientIp: true, ...caps })
   return { repo, raw, db, store, bus, service, app }
 }
 // A resumable cursor at the current high water — connecting with THIS (not a
@@ -237,4 +240,42 @@ test('the firehose route sweeps expired attempt windows (throttled to at most on
   } finally {
     vi.useRealTimers()
   }
+})
+
+// RSC_TRUST_CLIENT_IP=off (the default, and what the Cloudron package sets).
+//
+// Measured on a live Cloudron instance 2026-08-06: its proxy runs real_ip
+// TRUSTING the caller's X-Forwarded-For and then stamps both XFF and
+// X-Real-IP with the result, so the address reaching core is the caller's own
+// claim. A per-IP limit on that input doesn't merely fail to stop an attacker
+// (addresses are free AND forgeable) — it lets anyone spend a few requests
+// under a VICTIM's address to lock that victim out. So the per-IP branches
+// must be skipped entirely, not fed a placeholder key: bucketing everyone
+// under one 'unknown' would silently convert each per-IP cap into a global
+// one and lock out the whole instance.
+test('with an untrusted client address, per-IP limits are skipped entirely (not collapsed onto one shared bucket)', async () => {
+  const { app } = await setup({ trustClientIp: false, maxConnectionsPerIp: 1, maxConnectionsPerWindow: 1, maxConnectionsTotal: 100 })
+  const statuses: number[] = []
+  for (let i = 0; i < 5; i++) {
+    // Same forged address every time: under a per-IP rule this is 1 pass then
+    // 429s; with the address untrusted it must not gate anything.
+    const res = await app.request('/firehose/stream', { headers: { 'x-forwarded-for': '203.0.113.9' } })
+    statuses.push(res.status)
+    await res.body?.cancel()
+  }
+  expect(statuses).toEqual([200, 200, 200, 200, 200])
+})
+
+test('the GLOBAL cap still applies when the client address is untrusted — it counts connections, not identities', async () => {
+  const { app, store } = await setup({ trustClientIp: false, maxConnectionsTotal: 2 })
+  const cursor = cursorNow(store)
+  const responses = await Promise.all(
+    Array.from({ length: 5 }, () =>
+      app.request('/firehose/stream', { headers: { 'x-forwarded-for': '203.0.113.9', 'Last-Event-ID': cursor } }),
+    ),
+  )
+  const statuses = responses.map((r) => r.status)
+  expect(statuses.filter((s) => s === 200).length).toBeLessThanOrEqual(2)
+  expect(statuses.filter((s) => s === 429).length).toBeGreaterThan(0)
+  for (const r of responses) await r.body?.cancel()
 })

@@ -13,6 +13,7 @@ export interface Config {
   rssCloud: boolean
   pushIn: boolean
   authOpenApi: boolean
+  trustClientIp: boolean
   authSecret: string
   webOrigin: string
   anonTtlDays: number
@@ -71,6 +72,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (rawAuthOpenApi !== 'on' && rawAuthOpenApi !== 'off') throw new Error(`RSC_AUTH_OPENAPI must be "on" or "off", got "${rawAuthOpenApi}"`)
   const authOpenApi = rawAuthOpenApi === 'on'
 
+  // Does this deployment's edge proxy supply a client address the client
+  // cannot forge? Only the operator knows, so it is declared, not guessed —
+  // and it defaults OFF, because a per-IP limit fed forgeable input is worse
+  // than no limit at all (anyone can spend a few requests to lock out a
+  // CHOSEN victim, turning the control into the attack).
+  //   on  — compose.prod.yaml: Caddy APPENDS the real address to
+  //         X-Forwarded-For and XFF_DEPTH=1 reads the RIGHTMOST entry, so a
+  //         client-prepended value can never shift the result.
+  //   off — the Cloudron package: measured 2026-08-06, Cloudron's own proxy
+  //         runs real_ip TRUSTING the client's X-Forwarded-For and then
+  //         stamps both XFF and X-Real-IP with the result, so the address
+  //         reaching the app is the client's own claim. Cloudron staff
+  //         confirm no trusted-proxy setting exists (open feature request);
+  //         no XFF_DEPTH fixes it, since the only other entry is the docker
+  //         bridge, identical for everyone.
+  const rawTrustClientIp = env.RSC_TRUST_CLIENT_IP ?? 'off'
+  if (rawTrustClientIp !== 'on' && rawTrustClientIp !== 'off') throw new Error(`RSC_TRUST_CLIENT_IP must be "on" or "off", got "${rawTrustClientIp}"`)
+  const trustClientIp = rawTrustClientIp === 'on'
+
   // Fail-fast ONLY for explicitly enabled push (spec H1): defaults stay bootable.
   if ((websub.mode !== 'off' || rssCloud) && !publicUrl) {
     throw new Error('RSC_PUBLIC_URL is required when RSC_WEBSUB or RSC_RSSCLOUD is enabled')
@@ -101,6 +121,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rssCloud,
     pushIn,
     authOpenApi,
+    trustClientIp,
     authSecret,
     webOrigin,
     anonTtlDays,
