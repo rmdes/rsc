@@ -1,6 +1,21 @@
 # Bounding magic-link mail abuse — Design
 
-**Status:** Rev 2 (2026-08-06; clean-context ponytail review folded — 2 Criticals,
+**Status: IMPLEMENTED 2026-08-06 (`a85c639`), deployed to all five instances on
+`270d163`.** Shipped exactly rev 2's recommendation: the instance-wide cap alone
+(20 mails/hour, module constants, a better-auth `hooks.before` plugin in
+`core/src/auth.ts`). The per-recipient layer was NOT built — see the open
+decision below, now closed as "no".
+
+**⛔ Rev 2's section "Also fix: the existing per-IP rule contradicts our own
+policy" is VOID.** It rested on `RSC_TRUST_CLIENT_IP`, a flag built on a false
+premise and since removed entirely (`270d163`). Cloudron sets both `X-Real-IP`
+and `X-Forwarded-For` to `$remote_addr` and discards the client's value, so the
+per-IP `customRules` in `core/src/auth.ts:221` are fed a trustworthy address and
+remain unconditional. Ignore every `trustClientIp` reference in this document;
+they describe code that no longer exists. See memory `cloudron-networking-verified`.
+
+
+**History:** Rev 2 (2026-08-06; clean-context ponytail review folded — 2 Criticals,
 3 Importants, 4 Cuts). **Rev 1 was NOT READY and its central mechanism was
 wrong**: it proposed a per-recipient throttle as the primary bound, which bounds
 nothing in aggregate (C1) and manufactures a targeted-denial vector this repo's
@@ -18,11 +33,12 @@ it: a fresh `m@b.test` ends up a `user` row with `emailVerified = 1`. The
 instance is a mailer any anonymous caller can aim at a third party.
 
 The only brake is better-auth's per-IP rule
-(`core/src/auth.ts:221`, `/sign-in/magic-link` `{ window: 60, max: 5 }`), and on
-Cloudron that key is the caller's own claim — see
-[[cloudron-client-ip-untrustworthy]]. Rotating the header gives unlimited fresh
-buckets; spending 5 requests under a victim's address denies that victim a login
-link. It fails in both directions at once.
+(`core/src/auth.ts:221`, `/sign-in/magic-link` `{ window: 60, max: 5 }`).
+**Corrected 2026-08-06:** rev 1/2 claimed that key was forgeable on Cloudron.
+It is not — Cloudron sets `X-Forwarded-For` to `$remote_addr` and discards the
+client's value (see memory `cloudron-networking-verified`), so the per-IP rule
+works as intended. It still does not bound AGGREGATE volume, which is the real
+gap and the reason the instance-wide cap below was built.
 
 Consequences, in severity order:
 
@@ -70,9 +86,11 @@ operator, because it carries a cost this project has already ruled on:
 - **Against.** The email is caller-supplied, and unlike an IP it is the victim's
   real, publicly-known identifier — no guessing, no rotation. Three requests for
   `victim@example.com` deny that person magic-link login for the whole window.
-  `core/src/config.ts:76-79` and `docs/superpowers/documentation/RUNNING.md:180`
-  already state the rule: *a limit fed caller-supplied input that lets anyone
-  lock out a chosen victim is worse than having no limit.* A passwordless user
+  The rule this project applied at the time — *a limit fed caller-supplied
+  input that lets anyone lock out a chosen victim is worse than having no
+  limit* — was written into `config.ts`/`RUNNING.md` alongside the since-removed
+  `RSC_TRUST_CLIENT_IP` flag; those citations no longer resolve, but the
+  principle stands and is why this layer was not built. A passwordless user
   (one who never set a password) has no escape hatch during that window.
 - **For.** Without it, the whole global budget can be aimed at one inbox.
 - **If kept, it must be cheap and short:** 3 per **15 minutes** per address, not
@@ -136,7 +154,12 @@ In the `hooks.before` handler, before better-auth processes the request:
   literal at `auth.ts:221` and the firehose's constructor defaults. Add an
   `RSC_*` var when an operator actually asks.
 
-## Also fix: the existing per-IP rule contradicts our own policy (rev 2 — I2)
+## ~~Also fix: the existing per-IP rule contradicts our own policy (rev 2 — I2)~~ ⛔ VOID
+
+**This entire section is void — never implemented, premise false.** It rested on
+`RSC_TRUST_CLIENT_IP`, removed in `270d163`. Cloudron supplies a trustworthy
+client address, so the per-IP `customRules` stay unconditional. Kept only as a
+record of the wrong turn.
 
 `config.ts:90` computes `trustClientIp` but `server.ts:103` wires it to the
 firehose **only**; `auth.ts:221` applies its per-IP limits unconditionally, on
