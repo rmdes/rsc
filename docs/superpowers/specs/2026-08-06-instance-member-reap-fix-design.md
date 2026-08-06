@@ -1,9 +1,13 @@
 # Fix: Instance-Governed Members Reaped As Orphans (+ recovery) — Design
 
-**Status:** Rev 1 (2026-08-06). Root-caused via systematic-debugging against a
-live instance (evidence below). Widespread: reproduces on most deployed RSC
-instances (member counts decay to 0). Authorizes no code (→ clean-context spec
-review → plan).
+**Status:** Rev 2 (2026-08-06; clean-context correctness review folded — no
+Criticals). Rev 2 adds the duplicated `retentionFor` classifier + admin-orphan-list
+web surface to scope (the guard alone would leave the orphan list offering a "Reap"
+button that now silently refuses members), a tombstone exclusion in the heal, and
+corrects the quarantine-vs-revoke prose + guard ordering. Root-caused via
+systematic-debugging against a live instance (evidence below). Widespread:
+reproduces on most deployed RSC instances (member counts decay to 0). Authorizes no
+code (→ plan).
 
 ## Problem
 
@@ -72,9 +76,22 @@ In `reapSource` (`core/src/domain/source-repository.ts`), add one guard, gated o
   reason: **`'instance_member'`**.
 - `reapSource`'s source `SELECT` must also read `canonical_url` and `provenance`
   (currently only `governance, admin_retained`).
-- **Revoked/quarantined instance = correct cleanup for free:** `approvedInstanceFor`
-  is live-computed against `isApprovedFederatedInstance`; if federation is revoked
-  the member is no longer covered → becomes reapable. No extra code.
+- **Guard ordering (review #4):** insert the new guard AFTER the existing
+  unconditional `federated` guard (`source-repository.ts:257`, refuses any source
+  with a `federation_relationships_v2` row). `MEMBER_RANGE_SQL`'s F14 exclusion
+  (`id != ? AND NOT EXISTS(...status='approved')`, membership.ts:43-51) keeps a
+  *self-governing* approved-federated row out of the member set; the new predicate
+  has no such exclusion, but the `federated` guard already refuses those first, so
+  ordering (not a predicate change) preserves F14. A test must pin this ordering.
+- **Revoke vs. quarantine (review #3 — corrected):** only **revoke** deletes the
+  `federation_relationships_v2` row (`sqlite.ts:1150`), so `approvedInstanceFor`
+  then returns null and the member correctly becomes reapable. **Quarantine** does
+  NOT null `approvedInstanceFor` (it only sets `governance='quarantined'` and leaves
+  the federation row `status='approved'`) — a quarantined member stays protected by
+  the pre-existing unconditional `not_allowed` guard instead, because
+  `cascadeInstanceAction` (`sqlite.ts:50-68`) propagates `governance='quarantined'`
+  to every non-overridden member. Both outcomes are correct; the new guard is only
+  the *revoke*/aged-out protection.
 - **`force=true` still reaps** a member (operator override), like the other
   `!force` guards.
 - **Keep** the existing `verified_origin_evidence` guard (complementary evidence-
@@ -90,7 +107,12 @@ marker `MIGRATIONS` entry):
 
 - **Identify stranded state:** `verification_checks_v2` rows with `state='verified'`
   whose `batch_key` has **no** matching `remote_sources_v2` row
-  (`canonical_url = batch_key`) — i.e. the minted member is gone.
+  (`canonical_url = batch_key`) — i.e. the minted member is gone — **AND** whose
+  `batch_key` is not a `blocked_source_tombstones_v2.canonical_url` (review #2:
+  a legitimately blocked+purged member leaves the same signature; excluding
+  tombstoned batch keys avoids re-pending jobs that would only fail fast on the
+  `isTombstoned` hop-0 check and terminalize back to `unverified` — bounded noise,
+  but cheap to skip).
 - **Reset:** those checks → `state='pending'`, `resolved_at=NULL`; and re-pend
   their verification jobs (`reconciliation_jobs_v2` `kind='verification'`,
   `verification_batch_key IN <those batch_keys>`): `status='pending'`,
@@ -102,6 +124,42 @@ marker `MIGRATIONS` entry):
   correctly won't re-mint (fresh containment check).
 - **Idempotent / one-time:** version-gated, so it recovers only today's bug damage
   and never re-runs — future intentional `force`-reaps stay reaped.
+
+## Part 3 — Admin-surface consistency (review #1, required)
+
+The reap guard alone leaves the admin orphan list actively misleading for exactly
+the rows this fix protects. `retentionFor` (`sqlite.ts:653`) is a **separate,
+hand-duplicated** retention-reason classifier (drives the orphan/detail
+`retention` label) that today checks only
+`verified_origin > admin_retained > audit_history > reapable` — **not membership**.
+And the orphan-list SQL filter (`sqlite.ts:551-554`,
+`governance='allowed' AND no federation AND no subscriptions`) does **not** exclude
+`origin_verification` members. So a stranded member already appears in the orphan
+list labeled `'reapable'` with a plain **"Reap"** button; post-guard, clicking it
+silently 409s (`instance_member`), and — because the web maps don't know the new
+reason — the row shows the bare token and never offers "Reap anyway".
+
+Required changes (thread the new protection through the duplicated classifier +
+web, mirroring how the existing three reasons are handled):
+- **`retentionFor`** gains an **`instance_member`** rung, checked **first**
+  (highest priority — it is the protection once the `verified_origin` claim has
+  churned away): if `provenance='origin_verification' AND approvedInstanceFor(...)`,
+  return `'instance_member'`.
+- **Web** (`web/src/routes/admin/feeds/+page.server.ts:56` `retention` union;
+  `+page.svelte` `RETENTION_LABEL` L107, `FORCE_REAP_CONSEQUENCE` L126,
+  `REAP_REFUSAL_LABEL` L~98): add an `instance_member` entry to each
+  (label e.g. "Instance member — retained"; a force-reap consequence line; a
+  refusal label) so the row renders correctly and offers **"Reap anyway"** (force).
+- **Correct the stale comment** at `+page.svelte:114-123` ("The three reasons
+  below…") to four — `instance_member` is a fourth force-liftable reason.
+- The orphan-list SQL *filter* itself is left as-is (members stay orphan-shaped and
+  force-reapable, exactly like the other retained-but-orphan-shaped reasons); only
+  the label/force-flow must know the new reason. `memberCounts`/`MEMBER_RANGE_SQL`
+  unchanged.
+
+This is a drift hazard by design: `reapSource`'s guard chain and `retentionFor` are
+two hand-duplicated encodings of the same retention truth — both must gain the
+`instance_member` rung or the UI and the enforcement disagree.
 
 ## Edge cases (decided)
 
@@ -126,7 +184,14 @@ marker `MIGRATIONS` entry):
   approved instance is **not** reaped by `reapSourceIfOrphaned` (refused
   `instance_member`), even with **no** `verified_origin` claim present; **is**
   reaped with `force=true`; **becomes** reapable once its instance's federation is
-  revoked (`approvedInstanceFor` → null).
+  **revoked** (`approvedInstanceFor` → null). A quarantined member stays refused via
+  the pre-existing `not_allowed` guard (governance cascaded). A *self-governing*
+  approved-federated `origin_verification` row is refused by the **`federated`**
+  guard (ordering test, #4), not the new one.
+- **Admin surface (Part 3):** `retentionFor` returns `'instance_member'` for a
+  member with **no** `verified_origin` claim; the admin orphan-list row for that
+  member renders the `instance_member` retention label and offers **"Reap anyway"**
+  (force), not a plain "Reap".
 - **Recovery heal:** given a `verified` check whose `batch_key` source is missing,
   the heal resets it + re-pends its job; a subsequent verification drain re-mints
   the member source + `verified_origin` claim; the member is then guard-protected.
@@ -143,8 +208,13 @@ marker `MIGRATIONS` entry):
 - `core/src/logical/membership.ts` — reuse `approvedInstanceFor` (no change
   expected; export already present).
 - `core/src/storage/sqlite.ts` — the imperative recovery heal + a `MIGRATIONS`
-  version-marker entry.
-- Admin surface (web) — only if the new refused reason needs display copy.
+  version-marker entry; **and** the `retentionFor` classifier (`:653`) gains the
+  `instance_member` rung (Part 3).
+- `web/src/routes/admin/feeds/+page.server.ts` — widen the `retention` union type
+  (`:56`) with `instance_member`.
+- `web/src/routes/admin/feeds/+page.svelte` — `RETENTION_LABEL`,
+  `FORCE_REAP_CONSEQUENCE`, `REAP_REFUSAL_LABEL` entries for `instance_member`;
+  correct the stale "three reasons" comment (Part 3).
 
 ## Sequencing
 
