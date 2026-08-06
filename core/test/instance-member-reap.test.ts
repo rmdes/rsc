@@ -94,6 +94,29 @@ test('getSourceDetail surfaces retention "instance_member" for a live instance m
   expect(detail?.retention).toBe('instance_member')
 })
 
+// Task 5 — drift guard. reapSource's guard (source-repository.ts, the
+// `instance_member` branch above approvedInstanceFor) and retentionFor's
+// classifier (sqlite.ts, same approvedInstanceFor call) are two
+// hand-duplicated encodings of the same "is this an origin_verification
+// source covered by an approved instance" predicate. Task 1's test and
+// Task 2's test each assert one side in isolation; this one asserts BOTH on
+// the SAME fixture in a SINGLE test, so if a future edit changes one
+// predicate but not the other, this test — not two independently-passing
+// tests — is what catches it.
+test('reapSource and retentionFor agree on the same instance-member fixture (drift guard: source-repository.ts guard vs sqlite.ts retentionFor)', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  seedSource(raw, { id: 'inst', url: 'https://rss.chat/hub.xml', provenance: 'admin_federation' })
+  approveFederation(raw, 'inst')
+  seedSource(raw, { id: 'member', url: 'https://rss.chat/users/a.xml' }) // origin_verification, no verified_origin claim
+
+  const refused = reapSource(raw, 'member', { force: false }, NOW)
+  expect(refused).toEqual({ kind: 'refused', reason: 'instance_member' })
+
+  const detail = await repo.getSourceDetail('member')
+  expect(detail?.retention).toBe('instance_member')
+})
+
 // Task 4 — healStrandedMembers (one-time recovery heal, migration #23). The
 // pre-fix reap bug already deleted some instance-governed members' source
 // rows before Task 1's guard landed, leaving their verification_checks_v2
