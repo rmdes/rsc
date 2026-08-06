@@ -1,153 +1,188 @@
-# Per-recipient magic-link throttle — Design
+# Bounding magic-link mail abuse — Design
 
-**Status:** Rev 1 (2026-08-06). Root-caused and measured against live Cloudron
-instances (evidence below). Authorizes no code (→ clean-context spec review →
-plan → SDD).
+**Status:** Rev 2 (2026-08-06; clean-context ponytail review folded — 2 Criticals,
+3 Importants, 4 Cuts). **Rev 1 was NOT READY and its central mechanism was
+wrong**: it proposed a per-recipient throttle as the primary bound, which bounds
+nothing in aggregate (C1) and manufactures a targeted-denial vector this repo's
+own doctrine calls worse than no control at all (C2). Rev 2 makes an
+**instance-wide cap** the bound. Authorizes no code (→ plan → SDD).
 
 ## Problem
 
 `POST /api/auth/sign-in/magic-link` mails a login link to **any address given**,
 and `magicLink()` runs with better-auth's default `disableSignUp: false`
-(`core/src/auth.ts`), so an unknown address also gets an account created
-(`core/test/auth.test.ts:276` proves this: a fresh `m@b.test` ends up a verified
-user row). The instance is therefore a mailer that any anonymous caller can aim
-at an arbitrary third party.
+(`core/src/auth.ts:28-33`; default confirmed in
+`node_modules/better-auth/dist/plugins/magic-link/index.d.mts`), so an unknown
+address also gets an account created — `core/test/auth.test.ts:276-289` proves
+it: a fresh `m@b.test` ends up a `user` row with `emailVerified = 1`. The
+instance is a mailer any anonymous caller can aim at a third party.
 
-The only brake today is better-auth's per-IP rate limit
-(`customRules: { '/sign-in/magic-link': { window: 60, max: 5 } }`,
-`core/src/auth.ts:221`), and **on Cloudron that key is attacker-controlled.**
-Measured 2026-08-06 (see [[cloudron-client-ip-untrustworthy]] and
-`RSC_TRUST_CLIENT_IP`): Cloudron's proxy runs `real_ip` trusting the caller's
-`X-Forwarded-For` and stamps both XFF and `X-Real-IP` with it, so rotating that
-header gives unlimited fresh buckets — and spending 5 requests under a victim's
-address locks *that victim* out of requesting a login link. The limit thus fails
-in both directions at once.
+The only brake is better-auth's per-IP rule
+(`core/src/auth.ts:221`, `/sign-in/magic-link` `{ window: 60, max: 5 }`), and on
+Cloudron that key is the caller's own claim — see
+[[cloudron-client-ip-untrustworthy]]. Rotating the header gives unlimited fresh
+buckets; spending 5 requests under a victim's address denies that victim a login
+link. It fails in both directions at once.
 
 Consequences, in severity order:
 
-1. **Third-party mail abuse** — unbounded login mail sent to addresses their
-   owners never gave us. Deliverability/reputation damage lands on the
-   instance's domain, not the attacker's.
+1. **Third-party mail abuse** — unbounded login mail to addresses whose owners
+   never gave them to us. Deliverability damage lands on the instance's domain.
 2. **Unbounded account creation** — each such request also writes a user row.
-3. **Targeted login denial** — a victim can be kept from requesting a link.
+3. **Targeted login denial** — a victim kept from requesting a link.
 
-## Decision (why not the alternatives)
+## What actually bounds this (rev 2 — C1)
 
-- **NOT `disableSignUp: true`.** It would close (1) and (2) outright, but
-  magic-link is currently a real passwordless signup path — the login form
-  creates accounts for unknown addresses today. Removing that is a product
-  decision the operator declined; and it would trade the problem for **account
-  enumeration** (unknown address starts erroring, `/login` surfaces the message),
-  requiring a uniform-response change to be safe.
-- **NOT "fix the IP".** No `XFF_DEPTH` helps on Cloudron: index 0 is the
-  caller's claim and the only other entry is the docker bridge, identical for
-  everyone. The platform has no trusted-proxy setting (Cloudron staff: open
-  feature request).
-- **Throttle on the RECIPIENT instead.** The target email is supplied by the
-  caller but is not a *credential they can rotate for free* — rotating it
-  changes who gets mailed, which is precisely the thing being bounded. Unlike
-  the IP it needs no trust in any proxy, so it behaves identically on every
-  deploy topology.
+**Volume is bounded only by a ceiling the caller cannot multiply.** Rev 1
+proposed *3 per hour per recipient address*. That is not a bound: an attacker
+supplies the address, and addresses are harvested target lists, not credentials —
+3/hour × unlimited addresses is still unlimited mail and unlimited user rows, so
+consequences #1 and #2 stayed wide open. This repo already refuted the identical
+argument shape about IPs, in `core/src/api/logical-routes/public.ts:214-217`:
 
-## Placement — core, not web (load-bearing)
+> *"A per-IP cap alone bounds nothing: addresses are free, so N attackers get
+> N\*maxPerIp streams. This endpoint is anonymous, so the GLOBAL ceiling is the
+> one that actually protects the process."*
 
-There are **two** independent paths to this route and only core sees both:
+**Primary control: an instance-wide magic-link mail cap per fixed window.**
+Unforgeable by construction — it counts *messages sent*, not identities, so
+nothing a caller supplies can inflate it or aim it. This is the direct analogue
+of `maxConnectionsTotal` (`public.ts:217`) and it is what closes #1 and #2.
+
+Proposed default: **20 magic-link mails per hour instance-wide**, a module
+constant. Rationale: a healthy small instance sends a handful of login links a
+day; 20/hour is far above organic use and far below anything that damages a
+sending domain. On reaching the cap the route answers 429 without sending.
+
+**Accepted cost, stated plainly:** a global cap is exhaustible, so a determined
+attacker can spend it and deny magic-link login to *everyone* for the rest of the
+window. That is strictly better than the alternatives — the damage is undirected
+(no victim can be singled out), it is self-healing at the window boundary, and
+`/register` + password login remain unaffected. It is the same trade the firehose
+already accepts.
+
+## The per-recipient layer — OPEN DECISION (rev 2 — C2)
+
+Rev 1's per-address throttle is **not** reinstated as the bound. Whether it
+survives at all as a secondary fairness layer is an open decision for the
+operator, because it carries a cost this project has already ruled on:
+
+- **Against.** The email is caller-supplied, and unlike an IP it is the victim's
+  real, publicly-known identifier — no guessing, no rotation. Three requests for
+  `victim@example.com` deny that person magic-link login for the whole window.
+  `core/src/config.ts:76-79` and `docs/superpowers/documentation/RUNNING.md:180`
+  already state the rule: *a limit fed caller-supplied input that lets anyone
+  lock out a chosen victim is worse than having no limit.* A passwordless user
+  (one who never set a password) has no escape hatch during that window.
+- **For.** Without it, the whole global budget can be aimed at one inbox.
+- **If kept, it must be cheap and short:** 3 per **15 minutes** per address, not
+  per hour — the window length *is* the lockout duration. That still caps one
+  address at 12 mails/hour (useless for flooding) while cutting the denial from
+  60 minutes to 15.
+
+**Recommendation: ship the global cap alone first.** It closes the severe
+consequences, adds no denial vector, and is the smaller change. Add the
+per-recipient layer only if a real inbox-flooding incident shows the global cap
+insufficient — at which point the tradeoff is being paid for a measured reason
+rather than a hypothetical one.
+
+## Placement — core, via a better-auth `hooks.before` plugin (rev 2 — I1)
+
+There are **two** independent paths to this route and only core sees both
+(verified):
 
 - `web/src/routes/login/+page.server.ts:33` fetches
   `${base()}/api/auth/sign-in/magic-link` **directly**, bypassing the
-  `/api/auth/[...path]` proxy entirely.
-- `web/src/routes/api/auth/[...path]/+server.ts` relays the same path for any
-  client that posts to it.
+  `/api/auth/[...path]` proxy.
+- `web/src/routes/api/auth/[...path]/+server.ts` relays the same path.
 
-A web-side throttle would therefore miss the primary path. **The throttle must
-live in core.**
+A web-side gate would miss the primary path. **The gate lives in core.**
 
-Core already intercepts this exact route: `MAIL_GATED`
-(`core/src/api/app.ts:258-262`) is a `Set` containing
-`/api/auth/sign-in/magic-link`, handled by an `app.on('POST', [...MAIL_GATED])`
-that short-circuits with 503 when no mailer is configured and otherwise delegates
-to `deps.auth.handler`. That handler is the natural seam: it already owns
-"should this mail-sending route proceed at all", and it runs before better-auth.
+**Seam: a third `hooks.before` plugin in `core/src/auth.ts`**, matching the two
+existing precedents (`reject-anon-api-key-create` at `auth.ts:128-141`,
+`reject-non-admin-admin-key` at `auth.ts:172-181`). Matcher:
+`ctx.path === '/sign-in/magic-link'`; rejection is one line —
+`throw new APIError('TOO_MANY_REQUESTS', …)` → 429.
 
-The alternative seam — a third better-auth `hooks.before` plugin, matching the
-two existing ones (`reject-anon-api-key-create`,
-`reject-non-admin-admin-key`) — is also viable and closer to those precedents.
-**Open for the plan:** pick one, do not build both. The `MAIL_GATED` handler is
-preferred because it needs no `getSessionFromCtx`, no `ctx.request`/`ctx.headers`
-in-process discrimination, and keeps the mail-abuse rules in one place.
+**Rev 1 preferred the `MAIL_GATED` handler (`core/src/api/app.ts:259-263`) and
+that was wrong.** Reading the body there means `c.req.json()`, which resolves via
+`cachedBody('text') → raw.text()` (`node_modules/hono/dist/request.js:103,118`)
+and **consumes `c.req.raw`'s body**, so the subsequent
+`deps.auth.handler(c.req.raw)` receives an unusable request unless explicitly
+`.clone()`d. It would also need path discrimination (`MAIL_GATED` covers three
+paths) and hand-validation of untrusted JSON. The `hooks.before` seam has none of
+those problems: `ctx.body` is already parsed. Rev 1's stated reasons for
+preferring `MAIL_GATED` (no `getSessionFromCtx`, no in-process discrimination)
+do not apply — a volume cap needs no session, and there is no in-process
+magic-link caller.
 
 ## Mechanism
 
-On `POST /api/auth/sign-in/magic-link`, before delegating to better-auth:
+In the `hooks.before` handler, before better-auth processes the request:
 
-- Read the JSON body's `email`; normalize (trim + lowercase) as the bucket key.
-  A body without a usable string email is left to better-auth's own validation —
-  this gate never invents a 400 that the auth layer would answer differently.
-- Fixed-window counter per key. **Proposed defaults: 3 per hour per address**,
-  operator-overridable. Rationale: a real person requesting a login link needs
-  one, occasionally two (mail delayed, link expired); three per hour is generous
-  for humans and useless for flooding. Deliberately *stricter* than the existing
-  per-IP `5/60s`, because this bound is the one that actually holds.
-- Over the limit → `429` with a neutral body. **The response must be identical
-  whether or not the address has an account**, so this cannot become the
-  enumeration oracle that `disableSignUp` would have been.
-- Window eviction must have a real path: sweep expired entries, throttled to at
-  most once per window (NOT once per request — an unthrottled sweep turns an
-  O(1) rejection into an O(n) scan on exactly the flood path being defended;
-  this is the `sweepExpiredConnectionAttempts` lesson from the firehose,
-  `logical-routes/public.ts`).
-- **ponytail:** single-process in-memory Map, reset on deploy/restart — the same
-  accepted ceiling, and the same named upgrade path (a shared store if an
-  instance ever runs multiple replicas), as the firehose counters and the
-  api-key caps.
+- A single fixed window: `let windowEnd`, `let sent`. If `now >= windowEnd`,
+  reset (`sent = 0; windowEnd = now + WINDOW`). If `sent >= MAX`, throw 429.
+  Otherwise increment.
+- **No sweep machinery** (rev 2 — Cut). Rev 1 reproduced the firehose's
+  per-key `windowStart` + `sweepExpired*` + `lastSweep` apparatus. A single
+  global fixed window needs none of it: two integers, reset on rollover. The
+  firehose needed per-key windows because each IP's window starts on first
+  sight; nothing here does. (If the per-recipient layer is ever added, a
+  `Map` cleared wholesale on rollover — not per-entry sweeping — is sufficient.)
+- **ponytail:** single-process in-memory counter, reset on deploy/restart — the
+  same accepted ceiling and the same named upgrade path (a shared store if an
+  instance ever runs multiple replicas) as the firehose caps and api-key caps.
+- **No operator knob** (rev 2 — Cut). Module constants, matching the hardcoded
+  literal at `auth.ts:221` and the firehose's constructor defaults. Add an
+  `RSC_*` var when an operator actually asks.
+
+## Also fix: the existing per-IP rule contradicts our own policy (rev 2 — I2)
+
+`config.ts:90` computes `trustClientIp` but `server.ts:103` wires it to the
+firehose **only**; `auth.ts:221` applies its per-IP limits unconditionally, on
+input `config.ts:76-79` documents as forgeable. Under this project's own rule
+that such a limit is worse than none, set
+`customRules['/sign-in/magic-link'] = false` when `!trustClientIp` — one line,
+`customRules` accepts `false` — removing an existing targeted-denial vector
+rather than preserving it. (Rev 1 waved this away as a non-goal without noticing
+the contradiction.) `/sign-in/anonymous` is in the same position and should get
+the same treatment; it sends no mail, so it is not otherwise in scope here.
 
 ## Explicit non-goals
 
 - **Not** changing `disableSignUp`, the login form's UX, or the recovery
   invariant that consuming a magic link marks an account verified
-  (`core/test/auth.test.ts:284`) — a user stuck behind hard verification must
-  keep that escape hatch.
-- **Not** removing better-auth's per-IP `customRules`. They remain as a
-  best-effort layer; on a topology where the address IS trustworthy
-  (`RSC_TRUST_CLIENT_IP=on`, e.g. the bundled Caddy compose) they still add
-  value. This spec adds a bound that holds *everywhere*.
-- **Not** touching `/sign-in/anonymous` (10/60s) or
-  `/request-password-reset`. Password reset mails only existing users and does
-  not create accounts; anonymous sign-in sends no mail. Both inherit the same
-  poisoned IP key and are worth a follow-up, but neither is a third-party mail
-  vector.
+  (`core/test/auth.test.ts:284-289`).
+- **Not** `trustedProxies`. It exists in better-auth 1.6.23
+  (`@better-auth/core/dist/types/init-options.d.mts:196-210`) and walks the XFF
+  chain right-to-left skipping trusted hops — but on Cloudron the only
+  non-claim hop is the shared docker bridge, so it still lands on the attacker's
+  value. Conclusion unchanged.
+- **Not** `/request-password-reset` (mails only existing users, creates no
+  accounts).
 - No new dependencies.
 
-## Testing / acceptance
+## Testing / acceptance (rev 2 — trimmed)
 
-- **Bound holds:** N+1 requests for the same address within the window → the
-  first N delegate to better-auth, the rest `429`, and **no mail is sent** for
-  the rejected ones (assert against the mailer stub, not just the status).
-- **Per-address, not global:** a second, different address is unaffected while
-  the first is throttled — the bug being fixed is precisely a limiter that
-  collapses onto one bucket.
-- **Case/whitespace folding:** `A@B.test`, `a@b.test ` share one bucket.
-- **No enumeration:** the 429 body/status for a throttled *existing* account and
-  a throttled *unknown* address are byte-identical.
-- **Window expiry:** after the window, the address is allowed again (fake timers,
-  as in `logical-firehose-sse.test.ts`).
-- **Mailer-off precedence:** with no mailer configured the route still answers
-  503, unchanged — the throttle must not mask that.
-- **Recovery invariant intact:** the existing magic-link → verified test still
-  passes.
+- **The bound holds:** MAX+1 requests within the window → the first MAX delegate
+  to better-auth, the rest 429, and **no mail is sent** for the rejected ones
+  (assert the mailer stub, not just the status). Fold the window-expiry assert
+  into this test (fake timers, as in `logical-firehose-sse.test.ts`).
+- **Distinct addresses do not evade it:** MAX+1 requests each to a *different*
+  address still 429s — this is the C1 regression, the exact thing rev 1 got
+  wrong, and it must be pinned.
+- **Mailer-off precedence:** with no mailer, the route still answers 503
+  unchanged (`app.ts:259-263`); the cap must not mask it.
+- **Recovery invariant intact:** the existing magic-link → verified test passes.
 - **Completion gate:** core Vitest, `tsc`, web Vitest, `svelte-check`.
 
 ## Files (expected)
 
-- `core/src/api/app.ts` — the `MAIL_GATED` handler gains the per-recipient check
-  (or `core/src/auth.ts` if the plan picks the `hooks.before` seam instead).
-- `core/src/config.ts` — optional operator knob for the limit/window, following
-  the `RSC_*` validation style.
+- `core/src/auth.ts` — the `hooks.before` plugin + the `!trustClientIp`
+  `customRules` change; module constants for MAX/WINDOW.
 - `core/test/auth.test.ts` (or a sibling) — the cases above.
-- `docs/superpowers/documentation/RUNNING.md` — the knob, if added.
 
 ## Sequencing
 
-Spec → clean-context spec review (fold as revs) → `writing-plans` → clean-context
-plan review → `subagent-driven-development` → merge. No code authorized by this
-document.
+Spec → `writing-plans` → clean-context plan review → `subagent-driven-development`
+→ merge. No code authorized by this document.
