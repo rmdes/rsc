@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - **No TypeScript parameter properties in `core/src`** — Node's native type stripping rejects them; constructors assign fields plainly.
-- **`tsc` is not optional.** Native type-stripping means vitest passes on type errors. Every task runs `npx tsc --noEmit` in the affected workspace.
+- **`tsc` is not optional.** Native type-stripping means vitest passes on type errors. Every task runs `npm run typecheck -w core` (the existing script — do not invent a `tsc` invocation).
+- **Work in the worktree** `/home/rmdes/textcaster-interop`, branch `interop-rsschat-compliance`. Baseline before Task 1: core 1140/1140 in 106 files, typecheck 0.
 - **Never `git add -A`.** This is a shared checkout with a parallel session committing to `main`. Stage explicit paths only, exactly as listed in each task.
 - **Commit messages end with the line** `developed with the help of AI tools`.
 - **The sanitizer is the XSS gate.** `core/src/domain/markdown.ts` and `web/src/lib/server/render.ts` are hand-duplicated twins with a drift-canary test in both suites. No task here changes either — if a change seems to require it, stop and escalate.
@@ -31,7 +32,7 @@ Relocates `parentReplyRef` to a leaf module (required — see below), then uses 
 
 **Files:**
 - Modify: `core/src/logical/roots.ts` (add `parentReplyRef`)
-- Modify: `core/src/logical/local.ts:52-66` (remove it), `:8` (import it)
+- Modify: `core/src/logical/local.ts:45-63` (remove it — docblock `45-51` + body `52-63`), `:8` (import it)
 - Modify: `core/src/logical/projector.ts:601`
 - Test: `core/test/feed.test.ts`
 
@@ -43,32 +44,21 @@ Relocates `parentReplyRef` to a leaf module (required — see below), then uses 
 
 Append to `core/test/feed.test.ts`. It reuses the existing `acquireFeed` helper and the `CTX`/`makeApp` conventions already in that file.
 
-```ts
-test('comments feed: a relayed remote reply carries source:inReplyTo pointing at the parent guid', async () => {
-  const ctx = await makeApp(CTX)
-  const { service, app } = ctx
-  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
-  await acquireFeed(ctx, {
-    url: 'https://elsewhere.example/users/dan/feed.xml',
-    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Dan</title>`
-      + `<item><guid isPermaLink="false">origin-guid-91</guid><link>https://elsewhere.example/notes/91</link>`
-      + `<description>a remote reply</description><source:inReplyTo>${root.url}</source:inReplyTo></item>`
-      + `</channel></rss>`,
-  })
-  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
-  expect(body).toContain('a remote reply') // sanity: it resolved onto the local root
-  expect(body).toContain(`<source:inReplyTo>${root.url}</source:inReplyTo>`)
-  expect(body).toContain(`<thr:in-reply-to ref="${root.url}"`)
-})
+ONE test, not two: the divergent fixture is a strict superset — it resolves onto
+the same parent, asserts the same emitted ref, AND additionally fails any
+verbatim implementation. A separate non-divergent test would add no coverage.
 
-test('comments feed: a divergent origin ref is emitted as the parent own guid', async () => {
+```ts
+test('comments feed: a relayed remote reply points back at the parent guid', async () => {
   const ctx = await makeApp(CTX)
   const { service, app } = ctx
   const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
-  // The origin cites the parent with a fragment. reconcile.ts:235 runs the ref
-  // through normalizePermalink (which strips the fragment), so it RESOLVES onto
-  // our root — but a verbatim re-emission would not string-match the parent's
-  // <guid>, which is exactly what replyDoesntPointBack checks.
+  // The origin cites the parent WITH a fragment. reconcile.ts:235 runs the ref
+  // through normalizePermalink (which strips the fragment) and the local identity
+  // key is posts.url verbatim, so this RESOLVES onto our root — but a verbatim
+  // re-emission would not string-match the parent's <guid>, which is exactly what
+  // the validator's replyDoesntPointBack compares. That makes this fixture the
+  // one that bites: it passes only if we emit the parent's own advertised guid.
   await acquireFeed(ctx, {
     url: 'https://elsewhere.example/users/eve/feed.xml',
     xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Eve</title>`
@@ -77,22 +67,26 @@ test('comments feed: a divergent origin ref is emitted as the parent own guid', 
       + `</channel></rss>`,
   })
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
-  expect(body).toContain('divergent ref reply')
+  expect(body).toContain('divergent ref reply') // sanity: it really resolved onto the local root
   expect(body).toContain(`<source:inReplyTo>${root.url}</source:inReplyTo>`)
+  expect(body).toContain(`<thr:in-reply-to ref="${root.url}"`) // feedsmith emits ref before href
   expect(body).not.toContain(`${root.url}#comment`)
 })
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Run the test to verify it fails**
 
-Run: `npm test -w core -- feed.test.ts -t 'source:inReplyTo'`
-Expected: FAIL — both tests fail because no `<source:inReplyTo>` is emitted for remote items at all.
+Run: `npm test -w core -- feed.test.ts -t 'points back at the parent guid'`
+Expected: FAIL — no `<source:inReplyTo>` is emitted for remote items at all.
 
 - [ ] **Step 3: Move `parentReplyRef` into `roots.ts`**
 
-Cut the function from `core/src/logical/local.ts:52-66` (including its docblock) and paste it into `core/src/logical/roots.ts`, adding `export` and renaming the parameter type to `ReadTx` (it performs only SELECTs; `ReadTx` and `WriteTx` are both aliases of `BetterSqlite3.Database`, so this is type-compatible everywhere):
+Cut lines `45-63` from `core/src/logical/local.ts` — the docblock is `45-51` and the body `52-63`. Do **not** cut past `63`: line `64` is blank and `65-67` is `materializeLocalItem`'s own docblock. Paste into `core/src/logical/roots.ts`, adding `export` and changing the parameter type to `ReadTx` (it performs only SELECTs; `ReadTx` and `WriteTx` are both aliases of `BetterSqlite3.Database`, so `local.ts:175`'s existing call still type-checks):
 
 ```ts
+// The parent's on-the-wire reply reference (v1 parity, service.ts): the string the
+// outbound feed emits as <source:inReplyTo>, which a peer instance string-matches to
+// the parent's own <guid>. It MUST equal what the parent's feed advertises as its
 // guid: a LOCAL parent's guid is its absolute permalink (`url`) or, url-less, its own
 // id (logicalToFeedEntry emits guid = dto.id === post.id in the null-url fallback —
 // NOT the opaque posts.guid column); a REMOTE parent (logical-only, not in `posts`)
@@ -132,7 +126,7 @@ Expected: PASS, same count as before the move (the two new tests still FAIL).
 
 - [ ] **Step 5: Use it for remote items in the projector**
 
-In `core/src/logical/projector.ts`, add `parentReplyRef` to the existing `roots.ts` import if present, otherwise add the import line:
+`core/src/logical/projector.ts` has no `roots.ts` import today, so add one beside its existing imports:
 
 ```ts
 import { parentReplyRef } from './roots.ts'
@@ -155,14 +149,14 @@ with:
       : safeUrl(mat.material.inReplyTo),
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 6: Run the test to verify it passes**
 
-Run: `npm test -w core -- feed.test.ts -t 'source:inReplyTo'`
-Expected: PASS (both).
+Run: `npm test -w core -- feed.test.ts -t 'points back at the parent guid'`
+Expected: PASS.
 
 - [ ] **Step 7: Full gates**
 
-Run: `npm test -w core && npx tsc --noEmit -p core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: full suite PASS, `tsc` exits 0 with no output.
 
 - [ ] **Step 8: Commit**
@@ -222,7 +216,7 @@ test('comments feed: a remote guid equal to its permalink emits no isPermaLink a
 })
 ```
 
-Note: the existing test at `feed.test.ts:362` ("keeps its origin guid") uses an opaque guid (`origin-guid-77`) that differs from its link, so it must stay green — that is the guid ≠ url half of this behavior.
+Note: the existing test at `feed.test.ts:360` ("keeps its origin guid") uses an opaque guid (`origin-guid-77`) that differs from its link, so it must stay green — that is the guid ≠ url half of this behavior.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -255,7 +249,7 @@ Expected: PASS, including the pre-existing `origin-guid-77` test (guid ≠ url �
 
 - [ ] **Step 5: Full gates**
 
-Run: `npm test -w core && npx tsc --noEmit -p core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: full suite PASS, `tsc` exits 0.
 
 - [ ] **Step 6: Commit**
@@ -272,6 +266,10 @@ downgraded it on relay, so a reply pointing at it had nothing to fetch
 Uses guid === url rather than a URL-shape test: acquisition discards the
 origin's isPermaLink, so shape inference would promote guids the origin
 explicitly declared non-permalinks.
+
+Scope note: this also covers link-only remote items (no <guid> at all), which
+get keyKind='permalink' so originGuid === permalink and they likewise emit a
+bare guid. Correct by construction, and broader than the peer-instance case.
 
 developed with the help of AI tools"
 ```
@@ -330,7 +328,7 @@ with:
         // Feed bytes only — the web UI reads /post/:id/thread, not comments.xml, so
         // the chronological conversation order users see is unaffected. injectComments
         // keys by guid and is order-independent, so both consumers take this array.
-        .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt) || b.id.localeCompare(a.id))
+        .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : a.id < b.id ? 1 : -1))
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -338,12 +336,30 @@ with:
 Run: `npm test -w core -- feed.test.ts -t 'newest-first'`
 Expected: PASS.
 
-- [ ] **Step 5: Full gates**
+- [ ] **Step 5: Update the threadwalker test's expected outline (EXPECTED — not a regression)**
 
-Run: `npm test -w core && npx tsc --noEmit -p core`
-Expected: full suite PASS, `tsc` exits 0. The existing threadwalker test in `feed.test.ts` asserts on content presence, not order — if it fails on ordering, STOP and report rather than loosening it.
+`core/test/feed.test.ts:442` asserts an exact **ordered** array, and its `walk()` iterates the comments feed directly (`:431`), so newest-first legitimately reorders the root's two same-depth direct replies. "Carol replies to the root" is created last (`:402`), so it now comes first. Nesting is structural and does not move.
 
-- [ ] **Step 6: Commit**
+Replace the `expect(outline).toEqual([...])` block at `core/test/feed.test.ts:442` with:
+
+```ts
+  // Feed order is newest-first (RSS convention); nesting stays structural, so
+  // Carol's reply to the root sorts above Bob's older one while Carol's reply to
+  // Bob stays nested under Bob.
+  expect(outline).toEqual([
+    'Alice: first body',
+    '  Carol: Carol replies to the root',
+    '  Bob: Bob replies to Alice',
+    '    Carol: Carol replies to Bob',
+  ])
+```
+
+- [ ] **Step 6: Full gates**
+
+Run: `npm test -w core && npm run typecheck -w core`
+Expected: full suite PASS, typecheck 0.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add core/src/api/logical-routes/read.ts core/test/feed.test.ts
@@ -352,6 +368,10 @@ git commit -m "fix(core): comments feed items newest-first
 projectThread returns depth-then-time ascending, so the comments feed served
 oldest-first (valid.rss.chat itemsOutOfOrder). Sorted once before both the
 renderer and the source:comments injector.
+
+The threadwalker test's expected outline changes with it: its walk reads the
+comments feed directly, so two same-depth sibling replies swap. Nesting is
+structural and unchanged. That reordering IS the fix, not a regression.
 
 developed with the help of AI tools"
 ```
@@ -457,7 +477,7 @@ Expected: PASS, including the extended no-config test.
 
 - [ ] **Step 8: Full gates**
 
-Run: `npm test -w core && npx tsc --noEmit -p core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: full suite PASS, `tsc` exits 0.
 
 - [ ] **Step 9: Commit**
@@ -557,7 +577,7 @@ Expected: PASS.
 
 - [ ] **Step 6: Full gates, both workspaces**
 
-Run: `npm test -w core && npx tsc --noEmit -p core`
+Run: `npm test -w core && npm run typecheck -w core`
 Then, because this changes what remote items render as in the web UI:
 Run: `env -u CORE_API_URL npm test -w web && npm run check -w web`
 Expected: all PASS. `web/src/lib/server/render.test.ts:9` already pins that a remote item WITH `contentMarkdown` renders the markdown and ignores the HTML — this task is what finally supplies that data, so that test should stay green, not change.
@@ -589,7 +609,7 @@ developed with the help of AI tools"
 Items v2 acquired natively since cutover have no markdown stored. This captures it going forward and heals existing ones on their next poll.
 
 **Files:**
-- Modify: `core/src/logical/acquisition.ts` — `RawItem` (~:114), the RSS adapter branch (~:242-254), `normalized` (~:329), the unchanged branch (~:673-677)
+- Modify: `core/src/logical/acquisition.ts` — `RawItem` (~:114), the RSS adapter branch (~:242-256), `normalized` (~:329), the unchanged branch (~:673-677)
 - Test: `core/test/logical-acquisition.test.ts`, `core/test/feed.test.ts`
 
 **Interfaces:**
@@ -600,12 +620,13 @@ Items v2 acquired natively since cutover have no markdown stored. This captures 
 
 Append to `core/test/logical-acquisition.test.ts`:
 
+Reuse the file's existing `RSS()` envelope helper (`core/test/logical-acquisition.test.ts:45`) rather than hand-rolling one. `source:markdown` parses with or without an `xmlns:source` declaration, so the plain envelope is fine.
+
 ```ts
 test('source:markdown never enters the fingerprint', () => {
-  const base = `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>F</title>`
-    + `<item><guid>https://x.example/1</guid><link>https://x.example/1</link><description>body</description>`
-  const without = parseCandidates(base + `</item></channel></rss>`)
-  const with_ = parseCandidates(base + `<source:markdown>**body**</source:markdown></item></channel></rss>`)
+  const item = `<item><guid>https://x.example/1</guid><link>https://x.example/1</link><description>body</description>`
+  const without = parseCandidates(RSS(item + `</item>`))
+  const with_ = parseCandidates(RSS(item + `<source:markdown>**body**</source:markdown></item>`))
   // The 2026-07-25 runaway (763k observation_versions, 2.6GB) was volatile fields
   // in the fingerprint. Markdown rides normalized_json and must never change it.
   expect(with_.candidates[0].fingerprint).toBe(without.candidates[0].fingerprint)
@@ -614,7 +635,7 @@ test('source:markdown never enters the fingerprint', () => {
 })
 ```
 
-`parseCandidates` is already imported there (`core/test/logical-acquisition.test.ts:5`), and `:60-61` uses the same two-parse fingerprint-comparison shape — follow it.
+`parseCandidates` is already imported there (`core/test/logical-acquisition.test.ts:5`), and `:59-60` uses the same two-parse fingerprint-comparison shape — follow it.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
@@ -675,9 +696,6 @@ test('an unchanged re-poll heals stored markdown without a new version row', asy
   const healed = repo.raw.prepare(`SELECT normalized_json FROM observation_versions_v2 LIMIT 1`).get() as { normalized_json: string }
   expect(JSON.parse(healed.normalized_json).contentMarkdown).toBe('**body**')
   expect(countVersions()).toBe(before) // no new version row
-
-  await acquireFeed(ctx, { url, xml: item('<source:markdown>**body**</source:markdown>'), sourceId: SRC })
-  expect(countVersions()).toBe(before) // second pass is a no-op
 })
 ```
 
@@ -688,7 +706,13 @@ Expected: FAIL — `contentMarkdown` is `undefined`; the unchanged branch only b
 
 - [ ] **Step 7: Add the guarded heal**
 
-In `core/src/logical/acquisition.ts`, add beside the other prepared statements (~:641):
+First widen the cast the loop **already performs** at `core/src/logical/acquisition.ts:646` — do NOT add a second `JSON.parse` of the same blob, which would run per unchanged item per poll, on every feed, forever:
+
+```ts
+    const norm = JSON.parse(obs.normalizedJson) as { keyKind: KeyKind; key: string; contentMarkdown?: string | null }
+```
+
+Then add beside the other prepared statements (~:641):
 
 ```ts
   // Heal: an item already stored WITHOUT markdown gains it on a later poll.
@@ -714,7 +738,7 @@ with:
           // Markdown is not fingerprinted, so an item stored before capture existed
           // stays markdown-less forever without this. Rewrites the whole blob, so
           // fresh enclosure URLs / replyContext ride along — harmless.
-          if (JSON.parse(obs.normalizedJson).contentMarkdown != null) healMarkdown.run(obs.normalizedJson, priorVersion.id)
+          if (norm.contentMarkdown != null) healMarkdown.run(obs.normalizedJson, priorVersion.id)
           counters.unchanged++
 ```
 
@@ -725,7 +749,7 @@ Expected: PASS.
 
 - [ ] **Step 9: Full gates, both workspaces**
 
-Run: `npm test -w core && npx tsc --noEmit -p core`
+Run: `npm test -w core && npm run typecheck -w core`
 Run: `env -u CORE_API_URL npm test -w web && npm run check -w web`
 Expected: all PASS.
 
@@ -753,6 +777,13 @@ developed with the help of AI tools"
 ```
 
 ---
+
+## Deliberately dropped from spec §5
+
+Two "folded" test items in the spec are already covered and are NOT re-added:
+
+- **`source:comments` injection onto an attribute-free guid** — `injectItemElements` keys on the marker `` >${guid}</guid> ``, which matches with or without the attribute, and `core/test/feed.test.ts:313` already exercises injection against a bare permalink guid.
+- **A `render.ts` twin extension for remote + markdown** — `web/src/lib/server/render.test.ts:9` already asserts exactly that (`remote('<p>ignored</p>', '**md**')` → `<strong>md</strong>`). Task 5 supplies the data that path was always built for; the assertion needs no change.
 
 ## Post-implementation
 
