@@ -80,6 +80,12 @@ export function firehoseUrl(publicUrl: string): string {
   return `${publicUrl}/users/rss.xml`
 }
 
+// The comments feed for one item. Shared so a feed's advertised
+// source:comments feedUrl and that feed's own self-pointer cannot disagree.
+export function commentsFeedUrl(publicUrl: string, id: string): string {
+  return `${publicUrl}/post/${id}/comments.xml`
+}
+
 export function urlPort(u: URL): number {
   return u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80
 }
@@ -144,6 +150,7 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
       description: `Posts by ${user.displayName}`,
       ...(atomLinks.length ? { atom: { links: atomLinks } } : {}),
       ...(cloud ? { cloud } : {}),
+      ...(ctx.publicUrl ? { sourceNs: { self: feedUrls(ctx.publicUrl, user.handle).xml } } : {}),
       items: posts.map((p) => ({
         ...(p.title !== null ? { title: p.title } : {}), // Textcasting: never synthesize a title
         guid: localGuid(p),
@@ -242,11 +249,14 @@ function authorSourceUrl(author: User, ctx: FeedContext): string | null {
 export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: FeedContext): string {
   const chars = Array.from(post.content) // code-point safe: .length/.slice on a string split surrogate pairs
   const label = post.title ?? (chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : post.content)
+  const self = ctx.publicUrl ? commentsFeedUrl(ctx.publicUrl, post.id) : null
   return generateRssFeed(
     {
       title: `Comments on "${label}"`,
       link: post.url ?? ctx.publicUrl ?? 'https://rsc.invalid',
       description: `Replies to "${label}"`,
+      ...(self ? { atom: { links: [{ href: self, rel: 'self', type: 'application/rss+xml' }] } } : {}),
+      ...(self ? { sourceNs: { self } } : {}),
       items: replies.map((p) => {
         const srcUrl = authorSourceUrl(p.author, ctx)
         return {

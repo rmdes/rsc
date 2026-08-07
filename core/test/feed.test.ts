@@ -126,6 +126,10 @@ test('links are omitted without config: no self/hub/cloud when unset', async () 
   const body = await (await app.request('/users/alice/feed.xml')).text()
   expect(body).not.toContain('rel="hub"')
   expect(body).not.toContain('<cloud ')
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root')
+  const comments = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(comments).not.toContain('<source:self>')
+  expect(comments).not.toContain('rel="self"')
 })
 
 test('feed description renders breaks, emoji, and highlighted code (unified pipeline)', async () => {
@@ -625,4 +629,16 @@ test('comments feed items are newest-first', async () => {
   await service.createLocalPostAs('carol', 'Carol', 'newer reply', root)
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
   expect(body.indexOf('newer reply')).toBeLessThan(body.indexOf('older reply'))
+})
+
+test('comments feed advertises where it lives; user feed carries source:self', async () => {
+  const { service, app } = await makeApp(CTX)
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  await service.createLocalPostAs('bob', 'Bob', 'a reply', root)
+  const comments = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  const self = `${CTX.publicUrl}/post/${root.id}/comments.xml`
+  expect(comments).toContain(`<source:self>${self}</source:self>`)
+  expect(comments).toContain(`href="${self}"`)
+  const user = await (await app.request('/users/alice/feed.xml')).text()
+  expect(user).toContain(`<source:self>${CTX.publicUrl}/users/alice/feed.xml</source:self>`)
 })

@@ -1,5 +1,5 @@
 import type { Hono, Context } from 'hono'
-import { injectSourceComments, emittedGuid, logicalToFeedEntry, renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed } from '../../domain/feed.ts'
+import { injectSourceComments, emittedGuid, logicalToFeedEntry, renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, commentsFeedUrl } from '../../domain/feed.ts'
 import type { LogicalStore } from '../../logical/store.ts'
 import type { Auth } from '../../auth.ts'
 import type { UserDirectory } from '../auth.ts'
@@ -133,7 +133,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     if (!feeds.publicUrl) return xml
     const pub = feeds.publicUrl
     return injectSourceComments(xml, items.filter((d) => d.directReplyCount > 0)
-      .map((d) => ({ guid: emittedGuid(logicalToFeedEntry(d)), count: d.directReplyCount, feedUrl: `${pub}/post/${d.id}/comments.xml` })))
+      .map((d) => ({ guid: emittedGuid(logicalToFeedEntry(d)), count: d.directReplyCount, feedUrl: commentsFeedUrl(pub, d.id) })))
   }
 
   // The all-users firehose: origin=local WITHOUT the river predicate (transports
