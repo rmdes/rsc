@@ -390,26 +390,36 @@ test('comments feed: a remote cross-instance reply keeps its origin guid and sti
 
 test('comments feed: a relayed remote reply points back at the parent guid', async () => {
   const ctx = await makeApp(CTX)
-  const { service, app } = ctx
-  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
-  // The origin cites the parent WITH a fragment. reconcile.ts:235 runs the ref
-  // through normalizePermalink (which strips the fragment) and the local identity
-  // key is posts.url verbatim, so this RESOLVES onto our root — but a verbatim
-  // re-emission would not string-match the parent's <guid>, which is exactly what
-  // the validator's replyDoesntPointBack compares. That makes this fixture the
-  // one that bites: it passes only if we emit the parent's own advertised guid.
+  const { repo, app } = ctx
+  // The parent is REMOTE and has an OPAQUE-only guid — no <link>, so reconcile
+  // claims only the opaque identity key (acquisition.ts's `it.link ?? (isPermaLink
+  // !== false ? guid.value : null)` leaves normalized.permalink null here). The
+  // reply cites that guid verbatim as a bare, non-URL source:inReplyTo (both items
+  // ride the SAME acquired source, so the opaque key's publisher scope matches).
+  // safeUrl() requires a parseable http(s) URL and rejects a bare opaque string
+  // outright (`new URL('origin-guid-92')` throws) — a verbatim
+  // `safeUrl(mat.material.inReplyTo)` implementation therefore emits NO
+  // source:inReplyTo at all. Only parentReplyRef's own-identity-key DB lookup
+  // (roots.ts) can recover the parent's advertised guid here, so this fixture
+  // bites a verbatim implementation.
   await acquireFeed(ctx, {
     url: 'https://elsewhere.example/users/eve/feed.xml',
     xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Eve</title>`
-      + `<item><guid isPermaLink="false">origin-guid-92</guid><link>https://elsewhere.example/notes/92</link>`
-      + `<description>divergent ref reply</description><source:inReplyTo>${root.url}#comment</source:inReplyTo></item>`
+      + `<item><guid isPermaLink="false">origin-guid-92</guid><description>eve's post</description></item>`
+      + `<item><guid isPermaLink="false">origin-guid-93</guid><link>https://elsewhere.example/notes/93</link>`
+      + `<description>divergent ref reply</description><source:inReplyTo>origin-guid-92</source:inReplyTo></item>`
       + `</channel></rss>`,
   })
-  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
-  expect(body).toContain('divergent ref reply') // sanity: it really resolved onto the local root
-  expect(body).toContain(`<source:inReplyTo>${root.url}</source:inReplyTo>`)
-  expect(body).toContain(`<thr:in-reply-to ref="${root.url}"`) // feedsmith emits ref before href
-  expect(body).not.toContain(`${root.url}#comment`)
+  const parentId = (repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = 'origin-guid-92'`,
+  ).get() as { id: string } | undefined)?.id
+  expect(parentId).toBeDefined() // sanity: the parent reconciled and claimed its own opaque guid
+  const body = await (await app.request(`/post/${parentId}/comments.xml`)).text()
+  expect(body).toContain('divergent ref reply') // sanity: the reply really resolved onto the remote parent
+  // isPermaLink="false" / no href: replyWireElements' isUrl branch, since a bare
+  // opaque guid is not a URL — feedsmith's non-URL reply-ref shape.
+  expect(body).toContain(`<source:inReplyTo isPermaLink="false">origin-guid-92</source:inReplyTo>`)
+  expect(body).toContain(`<thr:in-reply-to ref="origin-guid-92"/>`)
 })
 
 test('a RSC conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {
