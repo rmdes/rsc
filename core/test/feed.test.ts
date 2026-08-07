@@ -399,8 +399,8 @@ test('comments feed: a relayed remote reply points back at the parent guid', asy
   // safeUrl() requires a parseable http(s) URL and rejects a bare opaque string
   // outright (`new URL('origin-guid-92')` throws) — a verbatim
   // `safeUrl(mat.material.inReplyTo)` implementation therefore emits NO
-  // source:inReplyTo at all. Only parentReplyRef's own-identity-key DB lookup
-  // (roots.ts) can recover the parent's advertised guid here, so this fixture
+  // source:inReplyTo at all. Only parentReplyRef's own DB re-derivation of the
+  // parent's advertised guid (projector.ts) can recover it here, so this fixture
   // bites a verbatim implementation.
   await acquireFeed(ctx, {
     url: 'https://elsewhere.example/users/eve/feed.xml',
@@ -420,6 +420,50 @@ test('comments feed: a relayed remote reply points back at the parent guid', asy
   // opaque guid is not a URL — feedsmith's non-URL reply-ref shape.
   expect(body).toContain(`<source:inReplyTo isPermaLink="false">origin-guid-92</source:inReplyTo>`)
   expect(body).toContain(`<thr:in-reply-to ref="origin-guid-92"/>`)
+})
+
+test('comments feed: a reply to a remote parent points back at the guid that parent is EMITTED with', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
+  // The ordinary RSS item shape: the remote parent carries BOTH a <guid> and a
+  // DISTINCT <link>, so reconcile claims two identity keys for it (permalink AND
+  // opaque:publisher:<id>) while the feed advertises only the <guid>. The child
+  // cites the parent's permalink — a legitimate divergent ref — so nothing but
+  // the parent's own emitted guid can be re-emitted here.
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/frank/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Frank</title>`
+      + `<item><guid isPermaLink="false">origin-guid-parent</guid><link>https://elsewhere.example/notes/parent</link>`
+      + `<description>remote parent body</description><source:inReplyTo>${root.url}</source:inReplyTo></item>`
+      + `<item><guid isPermaLink="false">origin-guid-child</guid><link>https://elsewhere.example/notes/child</link>`
+      + `<description>remote child body</description><source:inReplyTo>https://elsewhere.example/notes/parent</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+
+  // Cross-check both ends through the wire, never through a hardcoded guess: the
+  // parent's OWN emitted <guid> comes from the root's comments feed; the child's
+  // <source:inReplyTo> from the parent's. replyDoesntPointBack is exactly this
+  // string compare.
+  const rootFeed = await parseFeedWithMeta(await (await app.request(`/post/${root.id}/comments.xml`)).text())
+  const parent = rootFeed.items.find((i) => i.content.includes('remote parent body'))
+  expect(parent).toBeDefined() // sanity: the remote parent resolved onto the local root
+
+  const parentId = ctx.repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = 'origin-guid-parent'`,
+  ).get() as { id: string } | undefined
+  const parentFeed = await parseFeedWithMeta(await (await app.request(`/post/${parentId?.id}/comments.xml`)).text())
+  const child = parentFeed.items.find((i) => i.content.includes('remote child body'))
+  expect(child).toBeDefined() // sanity: the child really resolved onto the remote parent
+
+  expect(child?.inReplyTo).toBe(parent?.guid)
+
+  // parentReplyRef's OTHER caller (local.ts): a LOCAL reply to the same remote
+  // parent must point back at the same guid. createLocalPostAs reads only
+  // replyTo.id (service.ts resolveReplyTarget's documented contract).
+  await service.createLocalPostAs('bob', 'Bob', 'local reply body', { id: parentId?.id } as Post)
+  const bobFeed = await parseFeedWithMeta(await (await app.request('/users/bob/feed.xml')).text())
+  expect(bobFeed.items.find((i) => i.content.includes('local reply body'))?.inReplyTo).toBe(parent?.guid)
 })
 
 test('a RSC conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {

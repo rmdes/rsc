@@ -5,7 +5,10 @@ import type { User } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
 import { reapSourceIfOrphaned } from '../domain/source-repository.ts'
-import { deriveRoot, parentReplyRef } from './roots.ts'
+import { deriveRoot } from './roots.ts'
+// parentReplyRef must mirror what projectRemote emits, so it lives there; local.ts
+// already reaches projector.ts through threading.ts, so this adds no cycle.
+import { parentReplyRef } from './projector.ts'
 
 export { resolveInitialParent }
 

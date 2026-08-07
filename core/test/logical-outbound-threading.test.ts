@@ -112,21 +112,30 @@ test('v2 local reply to an OPAQUE-ONLY remote parent emits the opaque guid as so
   expect(xml).toContain(`<source:inReplyTo isPermaLink="false">${wireGuid}</source:inReplyTo>`)
 })
 
-test('precedence: a remote parent with BOTH a permalink AND an opaque key emits the permalink (permalink wins over guid)', async () => {
+// REVERSED (interop: replyDoesntPointBack). This fixture has identity keys but no
+// delivery, so it pins parentReplyRef's key FALLBACK rung — reached only when the
+// parent has no ordinary-eligible delivery left. The old expectation (permalink
+// wins) was the bug: an item bearing a <guid> is emitted with that guid (the
+// delivery key priority in acquisition.ts), so a reply citing its permalink pointed
+// at a string the parent's feed never advertises. Opaque now wins; the permalink is
+// used only for a parent that had no <guid>. The delivery-bearing (production) path
+// is pinned end-to-end in feed.test.ts.
+test('fallback precedence: a delivery-less remote parent with BOTH keys emits the opaque guid (what its origin advertised)', async () => {
   const { repo, service, db, app } = await v2app(PUB)
   const remoteId = 'rem-both'
   const remoteUrl = 'https://a.example/post/orig'
   repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'none', NULL, NULL, NULL, ?)`).run(remoteId, NOW, NOW)
   repo.raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('permalink', ?, ?)`).run(remoteUrl, remoteId)
-  repo.raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('opaque:publisher:pub-1', 'opaque-loser', ?)`).run(remoteId)
+  repo.raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('opaque:publisher:pub-1', 'opaque-wins', ?)`).run(remoteId)
 
   repo.raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at) VALUES ('u-bob','local','bob','Bob',NULL,?)`).run(NOW)
   const bob = (await service.getUserByHandle('bob'))!
   db.write((tx) => createLocalPost({ tx, author: bob, content: 'REPLYBOTH', replyToId: remoteId, now: NOW, publicUrl: PUB }))
 
   const xml = await (await app.request('/users/bob/feed.xml')).text()
-  expect(xml).toContain(`<source:inReplyTo>${remoteUrl}</source:inReplyTo>`)
-  expect(xml).not.toContain('opaque-loser')
+  // non-URL ref ⇒ isPermaLink="false", the shape a peer string-matches to the guid.
+  expect(xml).toContain(`<source:inReplyTo isPermaLink="false">opaque-wins</source:inReplyTo>`)
+  expect(xml).not.toContain(remoteUrl)
 })
 
 test('O2 archive: a v1-era reply (absolute in_reply_to) still emits source:inReplyTo after v2 projection', async () => {

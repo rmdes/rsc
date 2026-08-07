@@ -7,7 +7,6 @@ import type {
 } from './types.ts'
 import { snapshotJournalCursor } from './journal.ts'
 import { encodeCursor } from '../domain/cursor.ts'
-import { parentReplyRef } from './roots.ts'
 
 // Pure effective-selection and presentation-chain comparators (spec §3.2, §3.3,
 // §3.6, §4.4). NO database access — reconciliation calls these to write hints and
@@ -340,7 +339,7 @@ function eligibleDeliveries(tx: ReadTx, itemId: string): EligibleDelivery[] {
 }
 
 // The effective display delivery of a remote item, re-derived (never the raw hint).
-function selectedDeliveryFor(tx: ReadTx, item: ItemRow): EligibleDelivery | null {
+function selectedDeliveryFor(tx: ReadTx, item: Pick<ItemRow, 'id' | 'selected_delivery_id'>): EligibleDelivery | null {
   const cands = eligibleDeliveries(tx, item.id)
   if (cands.length === 0) return null
   const chosen = selectDisplayDelivery(cands.map((d) => ({ deliveryId: d.deliveryId, level: d.level, eligible: true, arrival: d.arrival })), item.selected_delivery_id)
@@ -484,6 +483,50 @@ function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; 
   const material = JSON.parse(v.canonical_material.toString('utf8')) as RemoteMaterial
   const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }
   return { material, normalized }
+}
+
+// The guid an item's outbound feed advertises — projectRemote's `originGuid`,
+// re-derived by the SAME path (selected delivery → its latest presentation entry →
+// that version's normalized.key), because "what we emit" is the only definition a
+// peer's string compare can agree with.
+function remoteOriginGuid(tx: ReadTx, itemId: string): string | null {
+  const row = tx.prepare(`SELECT id, selected_delivery_id FROM logical_items_v2 WHERE id = ? AND origin = 'remote'`).get(itemId) as Pick<ItemRow, 'id' | 'selected_delivery_id'> | undefined
+  if (!row) return null
+  const display = selectedDeliveryFor(tx, row)
+  if (!display) return null // no ordinary-eligible delivery ⇒ the item is never emitted
+  const pres = tx.prepare(`SELECT observation_version_id FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(display.deliveryId) as { observation_version_id: string } | undefined
+  if (!pres) return null
+  return materialOf(tx, pres.observation_version_id)?.normalized.key ?? null
+}
+
+// The parent's on-the-wire reply reference (v1 parity, service.ts): the string the
+// outbound feed emits as <source:inReplyTo>, which a peer instance string-matches to
+// the parent's own <guid>. It MUST equal what the parent's feed advertises as its
+// guid: a LOCAL parent's guid is its absolute permalink (`url`) or, url-less, its own
+// id (logicalToFeedEntry emits guid = dto.id === post.id in the null-url fallback —
+// NOT the opaque posts.guid column); a REMOTE parent advertises `remoteOriginGuid`.
+//
+// Lives HERE, not in roots.ts (a dependency leaf that must not import this module),
+// because the remote branch is only correct while it re-derives the very value
+// projectRemote emits: an ordinary RSS parent bearing a <guid> AND a distinct <link>
+// claims BOTH a `permalink` and an `opaque:publisher:<id>` identity key, so picking
+// a key by precedence emitted the permalink at a parent advertising the guid
+// (valid.rss.chat's replyDoesntPointBack).
+export function parentReplyRef(tx: ReadTx, parentId: string): string | null {
+  const local = tx.prepare(`SELECT url FROM posts WHERE id = ? AND source = 'local'`).get(parentId) as { url: string | null } | undefined
+  if (local) return local.url ?? parentId
+  const emitted = remoteOriginGuid(tx, parentId)
+  if (emitted) return emitted
+  // No ordinary-eligible delivery left (governance revoked after a local reply
+  // resolved onto it, retained evidence): the parent is no longer emitted here, but
+  // an already-threaded reply must still point at what its ORIGIN advertised. Fall
+  // back to the claimed identity keys in acquisition's own delivery-key priority —
+  // opaque <guid> first, permalink only when the item had no <guid> (acquisition.ts
+  // §delivery key priority) — never the reverse, which is the bug above.
+  const o = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
+  if (o) return o.key
+  const k = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'permalink' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
+  return k ? k.key : null
 }
 
 function projectEnclosures(encs: EnclosureDto[] | undefined): EnclosureDto[] {
