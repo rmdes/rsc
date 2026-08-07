@@ -126,6 +126,19 @@ export function itemContentFields(p: Post) {
   }
 }
 
+// feedsmith hardcodes the http spelling of the source namespace (its `uris[0]`,
+// node_modules/feedsmith/dist/namespaces/source/common/config.js) with no option to
+// change it — but rss.chat, the reference implementation, declares https, and the
+// validator flags http. A namespace name is an OPAQUE identifier compared by exact
+// string match and is never dereferenced, so this is cosmetic to any parser that
+// accepts both — feedsmith accepts all four spellings on the READ side (probed), so
+// changing what we EMIT cannot break ingesting peers who still declare http.
+// Replaces the FIRST occurrence only, which is always the <rss> root tag: it
+// precedes every item, so a CDATA body containing this literal can never be hit.
+function httpsSourceNs(xml: string): string {
+  return xml.replace('xmlns:source="http://source.scripting.com/"', 'xmlns:source="https://source.scripting.com/"')
+}
+
 export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): string {
   const atomLinks: Array<{ href: string; rel: string; type?: string }> = []
   let cloud
@@ -143,7 +156,7 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
       }
     }
   }
-  return generateRssFeed(
+  return httpsSourceNs(generateRssFeed(
     {
       title: user.displayName,
       link: channelLink(ctx, user.handle),
@@ -164,7 +177,7 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
     // ISO date *strings* type-check; generateRfc822Date accepts string|Date at
     // runtime regardless (probed), so this has no runtime effect.
     { lenient: true },
-  )
+  ))
 }
 
 // The all-users firehose (rss.chat's /users/rss.xml convention): every LOCAL
@@ -182,7 +195,7 @@ export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): s
       cloud = { domain: u.hostname, port: urlPort(u), path: '/rsscloud/pleaseNotify', registerProcedure: '', protocol: 'http-post' }
     }
   }
-  return generateRssFeed(
+  return httpsSourceNs(generateRssFeed(
     {
       title: `${host}: all posts`,
       link: ctx.publicUrl ?? 'https://rsc.invalid',
@@ -202,7 +215,7 @@ export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): s
       })),
     },
     { lenient: true },
-  )
+  ))
 }
 
 const xmlEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -246,7 +259,7 @@ function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: st
   for (const e of edits) { out += xml.slice(cut, e.close) + e.fragment; cut = e.close }
   out += xml.slice(cut)
   if (!out.slice(out.indexOf('<rss'), out.indexOf('>', out.indexOf('<rss')) + 1).includes('xmlns:source=')) {
-    out = out.replace('<rss ', '<rss xmlns:source="http://source.scripting.com/" ')
+    out = out.replace('<rss ', '<rss xmlns:source="https://source.scripting.com/" ')
   }
   return out
 }
@@ -270,7 +283,7 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
   const chars = Array.from(post.content) // code-point safe: .length/.slice on a string split surrogate pairs
   const label = post.title ?? (chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : post.content)
   const self = ctx.publicUrl ? commentsFeedUrl(ctx.publicUrl, post.id) : null
-  return generateRssFeed(
+  return httpsSourceNs(generateRssFeed(
     {
       title: `Comments on "${label}"`,
       link: post.url ?? ctx.publicUrl ?? 'https://rsc.invalid',
@@ -308,7 +321,7 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
       }),
     },
     { lenient: true },
-  )
+  ))
 }
 
 export function renderJsonFeed(user: User, posts: Post[], ctx: FeedContext): string {

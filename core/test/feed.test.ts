@@ -275,12 +275,14 @@ test('xmlns dedup checks the opening tag, not the whole document (body text may 
   )
   // Verify body text contains the substring but opening tag doesn't have xmlns yet
   expect(xml).toContain('xmlns:source=') // body text mention
-  expect(xml.slice(xml.indexOf('<rss'), xml.indexOf('>', xml.indexOf('<rss')) + 1)).not.toContain('xmlns:source="http://source') // opening tag
+  expect(xml.slice(xml.indexOf('<rss'), xml.indexOf('>', xml.indexOf('<rss')) + 1)).not.toContain('xmlns:source=') // opening tag
   // Inject source comments; the check must scope to opening tag only, not whole doc
   xml = injectSourceComments(xml, [{ guid: 'guid-1', count: 3, feedUrl: 'https://tc.example/post/guid-1/comments.xml' }])
-  // After injection, opening <rss> tag MUST have the xmlns declaration
+  // After injection, opening <rss> tag MUST have the xmlns declaration — in the
+  // https spelling rss.chat uses (the injector's fallback, for XML we generated
+  // without feedsmith having declared it).
   const rssOpenTag = xml.slice(xml.indexOf('<rss'), xml.indexOf('>', xml.indexOf('<rss')) + 1)
-  expect(rssOpenTag).toContain('xmlns:source="http://source.scripting.com/"')
+  expect(rssOpenTag).toContain('xmlns:source="https://source.scripting.com/"')
   // And source:comments must be present
   expect(xml).toContain('<source:comments count="3"')
 })
@@ -771,4 +773,33 @@ test('an unchanged re-poll heals stored markdown without a new version row', asy
   await acquireFeed(ctx, { url, xml: item('<source:markdown>**rewritten**</source:markdown>'), sourceId: SRC })
   expect(markdownNow()).toBe('**body**')
   expect(countVersions()).toBe(before)
+})
+
+test('feeds declare the source namespace as https, and we still ingest peers who declare http', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  // Every RSS render path must declare the https spelling rss.chat uses. The
+  // namespace is an opaque identifier — this is cosmetic to parsers that accept
+  // both, but it matches the reference implementation and clears the validator's
+  // sourceNamespaceUnexpected note.
+  const openTag = (xml: string) => xml.slice(xml.indexOf('<rss'), xml.indexOf('>', xml.indexOf('<rss')) + 1)
+  for (const path of ['/users/rss.xml', '/users/alice/feed.xml', `/post/${root.id}/comments.xml`]) {
+    const tag = openTag(await (await app.request(path)).text())
+    expect(tag).toContain('xmlns:source="https://source.scripting.com/"')
+    expect(tag).not.toContain('"http://source.scripting.com/"')
+  }
+  // Emission changing MUST NOT change what we accept: a peer still declaring the
+  // http spelling must round-trip its source:* elements through our ingest.
+  await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/ivy/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Ivy</title>`
+      + `<item><guid isPermaLink="false">ivy-1</guid><link>https://elsewhere.example/notes/1</link>`
+      + `<description>&lt;p&gt;ivy body&lt;/p&gt;</description><source:markdown>ivy **body**</source:markdown>`
+      + `<source:inReplyTo>${root.url}</source:inReplyTo></item></channel></rss>`,
+  })
+  const comments = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(comments).toContain('ivy body')
+  expect(comments).toContain('<source:markdown>ivy **body**</source:markdown>') // http-declared input still parsed
+  expect(comments).toContain(`<source:inReplyTo>${root.url}</source:inReplyTo>`)
 })

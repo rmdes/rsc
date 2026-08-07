@@ -54,7 +54,7 @@ test('injectSourceComments: lands inside the RIGHT item, declares xmlns:source w
   </channel>
 </rss>`
   const out = injectSourceComments(xml, [{ guid: 'g-two', count: 3, feedUrl: 'https://cast.example/post/p2/comments.xml' }])
-  expect(out).toContain('xmlns:source="http://source.scripting.com/"')
+  expect(out).toContain('xmlns:source="https://source.scripting.com/"') // https spelling, matching rss.chat
   const itemTwo = out.slice(out.indexOf('g-two'))
   expect(itemTwo).toContain('<source:comments count="3" feedUrl="https://cast.example/post/p2/comments.xml"/>')
   expect(out.slice(0, out.indexOf('g-two'))).not.toContain('source:comments') // not in item one
