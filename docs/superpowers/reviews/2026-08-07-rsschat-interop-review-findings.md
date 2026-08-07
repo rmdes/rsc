@@ -76,6 +76,45 @@ byte-equal `unchanged` branch — no version row, no job re-pend, no journal eff
 idempotent by SQL guard (`json_extract(...) IS NULL` matches key-absent *and*
 key-null).
 
+## ⚠️ Validating only `/users/rss.xml` gives false PASSes
+
+Found 2026-08-07, pre-deploy. The all-users feed is a **bounded moving window**
+(`FEED_LIMIT`), so an offending item scrolls out as new posts arrive and the
+validator simply stops seeing it. On that date `rsc.rmdes.be/users/rss.xml`
+reported **0 errors** while the defect was fully intact — the same post still
+produced `replyDoesntPointBack` on `/users/paul/feed.xml`, and its comments feed
+still carried all four warnings.
+
+**A green `/users/rss.xml` is therefore not evidence of anything.** Spec §6's
+verification step names only that URL and would have reported success for a build
+that changed nothing. Always validate all three kinds:
+
+```bash
+V() { curl -sS -m 150 -N "https://valid.rss.chat/validatestreaming?url=$(python3 -c \
+  "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$1")" \
+  | python3 -c "import json,sys
+for l in sys.stdin:
+    l=l.strip()
+    if not l: continue
+    try: d=json.loads(l)
+    except: continue
+    if 'result' in d:
+        r=d['result']; print('%s e=%s w=%s' % ('$1', r['ctErrors'], r['ctWarnings']))
+        [print('  [%s] %s @ %s' % (f['severity'], f['rule'], f.get('where','')[:70])) for f in r['findings']]"; }
+
+V https://rsc.rmdes.be/users/rss.xml                                      # aggregate (windowed!)
+V https://rsc.rmdes.be/users/paul/feed.xml                                # a user feed that HAS a reply
+V https://rsc.rmdes.be/post/e0d403d4-a57d-4df7-bdd6-d1daed8a2a4f/comments.xml  # the known-bad comments feed
+```
+
+Pre-deploy baseline to compare against (2026-08-07, old code live):
+aggregate 0e/2w · paul 1e/3w · comments 0e/5w.
+After deploy, expect: paul's error gone; `selfMissing`, `guidNotPermalink`,
+`itemsOutOfOrder` gone from the comments feed; `sourceNamespaceUnexpected` and the
+reddit `urlAnsweredWithAnError` deliberately remaining; `markupWithoutMarkdown`
+clearing on its own schedule (immediately for v1-converted items, on next poll for
+post-cutover ones).
+
 ## Open follow-ups
 
 - `remoteOriginGuid` re-queries a presentation entry `projectRemote` already holds
