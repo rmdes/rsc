@@ -663,3 +663,25 @@ test('comments feed: a remote reply with stored contentMarkdown emits source:mar
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
   expect(body).toContain('<source:markdown>rendered **markdown**</source:markdown>')
 })
+
+test('an unchanged re-poll heals stored markdown without a new version row', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, repo } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  const SRC = randomUUID()
+  const item = (md: string) => `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Hal</title>`
+    + `<item><guid isPermaLink="false">origin-guid-94</guid><link>https://elsewhere.example/notes/94</link>`
+    + `<description>body</description><source:inReplyTo>${root.url}</source:inReplyTo>${md}</item>`
+    + `</channel></rss>`
+  const url = 'https://elsewhere.example/users/hal/feed.xml'
+  await acquireFeed(ctx, { url, xml: item(''), sourceId: SRC })
+  const countVersions = () => (repo.raw.prepare(`SELECT count(*) AS n FROM observation_versions_v2`).get() as { n: number }).n
+  const before = countVersions()
+
+  // Same content ⇒ same fingerprint ⇒ the "unchanged" branch. Markdown is not
+  // fingerprinted, so only the heal can put it in normalized_json.
+  await acquireFeed(ctx, { url, xml: item('<source:markdown>**body**</source:markdown>'), sourceId: SRC })
+  const healed = repo.raw.prepare(`SELECT normalized_json FROM observation_versions_v2 LIMIT 1`).get() as { normalized_json: string }
+  expect(JSON.parse(healed.normalized_json).contentMarkdown).toBe('**body**')
+  expect(countVersions()).toBe(before) // no new version row
+})

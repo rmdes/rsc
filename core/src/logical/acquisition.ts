@@ -119,6 +119,9 @@ interface RawItem {
   rawDate: string
   updatedAt: string | null
   inReplyTo: string | null
+  // rss.chat's source:markdown — the writer's original. RSS only; no other
+  // adapter has an equivalent. Rides normalizedJson, NEVER the fingerprint.
+  contentMarkdown?: string | null
   sourceName: string | null
   // RSS core <source url>name</source> — the origin feed a firehose/aggregator
   // item claims (rss.chat). Only the RSS adapter carries it; others leave it
@@ -247,6 +250,7 @@ function extractRawItems(doc: string, pageUrl: string): { adapter: ParseResult['
     rawDate: str(it.pubDate) ?? '',
     updatedAt: str(it.atom?.updated ?? null),
     inReplyTo: it.sourceNs?.inReplyTo?.value ?? it.thr?.inReplyTos?.[0]?.ref ?? null,
+    contentMarkdown: str(it.sourceNs?.markdown ?? null),
     // <source> attribution wins (rss.chat aggregates); the CHANNEL title is the
     // fallback name evidence, matching the atom/jsonfeed/h-feed adapters. Never
     // the item title — reconcile treats a missing name as no evidence.
@@ -326,7 +330,7 @@ export function parseCandidates(doc: string, pageUrl = 'https://source.invalid/'
     // originFeedUrl (spec §7): the item's claimed origin feed (RSS <source url>),
     // http(s) only — reconcile schedules verification from it on aggregate claims.
     const originFeedUrl = it.sourceFeedUrl && /^https?:\/\//i.test(it.sourceFeedUrl) ? it.sourceFeedUrl : null
-    const normalized = { keyKind, key, permalink: it.link ? normalizePermalink(it.link) : null, inReplyTo: it.inReplyTo, enclosures: it.enclosures, originFeedUrl, replyContextAuthor: it.replyContextAuthor ?? null, replyContextSnippet: it.replyContextSnippet ?? null }
+    const normalized = { keyKind, key, permalink: it.link ? normalizePermalink(it.link) : null, inReplyTo: it.inReplyTo, contentMarkdown: it.contentMarkdown ?? null, enclosures: it.enclosures, originFeedUrl, replyContextAuthor: it.replyContextAuthor ?? null, replyContextSnippet: it.replyContextSnippet ?? null }
     candidates.push({ wireOrdinal: ordinal, keyKind, key, fingerprint, canonicalMaterial, rawEvidenceJson: JSON.stringify(rawEvidence), normalizedJson: JSON.stringify(normalized), enclosures: it.enclosures })
   }
   return { adapter, candidates, findings, candidateCount, examined, omitted, itemsTruncated: omitted > 0 }
@@ -641,9 +645,14 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
   const bumpVersion = tx.prepare(`UPDATE observation_versions_v2 SET last_seen_at = ?, last_seen_run_id = ?, seen_count = seen_count + 1 WHERE id = ?`)
   const insertVersion = tx.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
   const insertJob = tx.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`)
+  // Heal: an item already stored WITHOUT markdown gains it on a later poll.
+  // Guarded in SQL so it is idempotent by construction and needs no read-back;
+  // json_extract matches both key-absent and key-null. No new version row, no
+  // job re-pend, no journal effect — deliberately off the churn path.
+  const healMarkdown = tx.prepare(`UPDATE observation_versions_v2 SET normalized_json = ? WHERE id = ? AND json_extract(normalized_json, '$.contentMarkdown') IS NULL`)
 
   for (const obs of input.observations) {
-    const norm = JSON.parse(obs.normalizedJson) as { keyKind: KeyKind; key: string }
+    const norm = JSON.parse(obs.normalizedJson) as { keyKind: KeyKind; key: string; contentMarkdown?: string | null }
     counters.candidates++
     counters.seen++
     // resolve-or-create the delivery (spec §2.2 identity update rides here).
@@ -674,6 +683,10 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
         // fingerprint match: compare canonical material (spec §2.2).
         if (Buffer.compare(Buffer.from(priorVersion.canonical_material), Buffer.from(obs.canonicalMaterial)) === 0) {
           bumpVersion.run(committedAt, runId, priorVersion.id) // unchanged
+          // Markdown is not fingerprinted, so an item stored before capture existed
+          // stays markdown-less forever without this. Rewrites the whole blob, so
+          // fresh enclosure URLs / replyContext ride along — harmless.
+          if (norm.contentMarkdown != null) healMarkdown.run(obs.normalizedJson, priorVersion.id)
           counters.unchanged++
         } else {
           // fingerprint collision: bounded evidence, skipped, no version/job change.

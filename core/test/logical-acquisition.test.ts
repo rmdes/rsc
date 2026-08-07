@@ -465,3 +465,14 @@ test('polling a changing item repeatedly keeps ONE observation version, ONE pres
   expect(env.timeline).toHaveLength(1) // one logical item throughout — no duplicate/fork
   expect(env.timeline[0].selectedAuthor.displayName).toBe('T')
 })
+
+test('source:markdown never enters the fingerprint', () => {
+  const item = `<item><guid>https://x.example/1</guid><link>https://x.example/1</link><description>body</description>`
+  const without = parseCandidates(RSS(item + `</item>`))
+  const with_ = parseCandidates(RSS(item + `<source:markdown>**body**</source:markdown></item>`))
+  // The 2026-07-25 runaway (763k observation_versions, 2.6GB) was volatile fields
+  // in the fingerprint. Markdown rides normalized_json and must never change it.
+  expect(with_.candidates[0].fingerprint).toBe(without.candidates[0].fingerprint)
+  expect(JSON.parse(with_.candidates[0].normalizedJson).contentMarkdown).toBe('**body**')
+  expect(JSON.parse(without.candidates[0].normalizedJson).contentMarkdown ?? null).toBe(null)
+})
