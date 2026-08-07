@@ -66,13 +66,28 @@ test('reply+markdown co-occurrence: a LOCAL reply carries inReplyTo AND source:m
 // run against core's renderLocalHtml. Two sanitizer configs, one behavioral
 // contract — this catches the allowlist drifting apart between them.
 test('renderLocalHtml hostile fixtures never survive (drift canary vs web/src/lib/server/render.ts)', () => {
-  expect(renderLocalHtml('<script>alert(1)</script>ok')).not.toContain('script')
+  // Every assertion here is negative, so ALL of them pass if renderLocalHtml
+  // returns '' — proven by mutation probe (2026-08-07), which made this canary
+  // green against a completely broken sanitizer. The paired positive assertions
+  // below are what make it bite: the benign payload must SURVIVE while the
+  // hostile part dies. Keep both halves, and keep this in sync with the web twin.
+  // LIVENESS: without this, a renderLocalHtml that just returned '' would satisfy
+  // every negative assertion below. Ordinary markdown must still render.
+  expect(renderLocalHtml('plain **bold** text')).toContain('<strong>bold</strong>')
+  // Measured behaviour (probed 2026-08-07), NOT assumed: a raw-HTML BLOCK is
+  // dropped wholesale by remark, so these two legitimately render to '' — the
+  // benign text does not survive, and that is stronger, not weaker.
+  expect(renderLocalHtml('<script>alert(1)</script>ok')).toBe('')
+  expect(renderLocalHtml('<p class="x" style="y">attrs stripped</p>')).toBe('')
+  // INLINE html in a paragraph is different: the tag dies, the text survives.
+  // This is the one fixture that proves "hostile stripped, benign kept".
+  const link = renderLocalHtml('<a href="//evil.com">x</a>')
+  expect(link).not.toContain('href=')
+  expect(link).toContain('x')
   expect(renderLocalHtml('<img src="x" onerror="p()">')).not.toContain('onerror')
   expect(renderLocalHtml('<a href="javascript:alert(1)">x</a>')).not.toContain('javascript:')
   expect(renderLocalHtml('<img src="data:image/png;base64,xx">')).not.toContain('data:')
   expect(renderLocalHtml('<svg onload="p()"></svg>')).not.toContain('svg')
-  expect(renderLocalHtml('<p class="x" style="y">attrs stripped</p>')).not.toContain('class=')
-  expect(renderLocalHtml('<a href="//evil.com">x</a>')).not.toContain('href=')
 })
 
 test('GFM parity mirror: tables/del survive, checkbox inputs never (drift canary)', () => {

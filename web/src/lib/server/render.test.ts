@@ -12,16 +12,35 @@ test('precedence: contentMarkdown wins; local content is markdown; remote conten
 })
 
 test('hostile fixtures never survive', () => {
-	expect(renderPostHtml(remote('<script>alert(1)</script>ok'))).not.toContain('script')
+	// Every assertion here WAS negative, so all of them passed if renderPostHtml
+	// returned '' — mutation-proven on both twins (2026-08-07). The paired positive
+	// assertions are what make it bite: the benign payload must SURVIVE while the
+	// hostile part dies.
+	//
+	// NOTE the twins are NOT behaviourally identical, despite the drift canary
+	// framing: they share SANITIZE_CONFIG, but core's renderLocalHtml always parses
+	// as markdown (so a raw-HTML BLOCK is dropped wholesale and renders to ''),
+	// while this one sanitizes remote HTML directly when there is no markdown — so
+	// benign text survives here and does not there. Measured, not assumed. Keep the
+	// hostile fixtures in sync; expect the positive assertions to differ.
+	const script = renderPostHtml(remote('<script>alert(1)</script>ok'))
+	expect(script).not.toContain('script')
+	expect(script).toContain('ok')
+	const attrs = renderPostHtml(remote('<p class="x" style="y">attrs stripped</p>'))
+	expect(attrs).not.toContain('class=')
+	expect(attrs).toContain('attrs stripped')
+	const link = renderPostHtml(remote('<a href="//evil.com">x</a>'))
+	expect(link).not.toContain('href=')
+	expect(link).toContain('x')
+	// THE load-bearing one: markdown that embeds raw HTML — the unified parser drops
+	// raw HTML (remark-rehype never sets allowDangerousHtml) and the sanitizer still runs after
+	const embedded = renderPostHtml(remote('x', 'safe **md**\n\n<script>alert(1)</script>'))
+	expect(embedded).not.toContain('script')
+	expect(embedded).toContain('<strong>md</strong>') // the markdown around it still rendered
 	expect(renderPostHtml(remote('<img src="x" onerror="p()">'))).not.toContain('onerror')
 	expect(renderPostHtml(remote('<a href="javascript:alert(1)">x</a>'))).not.toContain('javascript:')
 	expect(renderPostHtml(remote('<img src="data:image/png;base64,xx">'))).not.toContain('data:')
 	expect(renderPostHtml(remote('<svg onload="p()"></svg>'))).not.toContain('svg')
-	// THE load-bearing one: markdown that embeds raw HTML — the unified parser drops
-	// raw HTML (remark-rehype never sets allowDangerousHtml) and the sanitizer still runs after
-	expect(renderPostHtml(remote('x', 'safe **md**\n\n<script>alert(1)</script>'))).not.toContain('script')
-	expect(renderPostHtml(remote('<p class="x" style="y">attrs stripped</p>'))).not.toContain('class=')
-	expect(renderPostHtml(remote('<a href="//evil.com">x</a>'))).not.toContain('href=')
 })
 
 test('transform-added attributes survive in the OUTPUT (allowedAttributes gotcha)', () => {

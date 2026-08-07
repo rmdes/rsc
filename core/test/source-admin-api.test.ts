@@ -130,6 +130,12 @@ test('no admin body — success or error — carries a secret, callback token, a
     textOf(app.request(`/admin/sources/${randomUUID()}`, { headers: { cookie } })),
     textOf(app.request('/admin/sources', { headers: { authorization: `Bearer ${OPS_TOKEN}` } })),
   ])
+  // Guard against a vacuous pass: every assertion below is negative, and a 404 or
+  // 401 body trivially lacks every secret — so a broken or renamed route would
+  // keep this test GREEN while checking nothing. Prove the reads really answered
+  // with the source before trusting that they answered without the secrets.
+  expect(bodies[1]).toContain(sourceId) // list
+  expect(bodies[2]).toContain(sourceId) // detail
   for (const body of bodies) {
     for (const secret of [PUSH_SECRET, CALLBACK_TOKEN, `Bearer ${OPS_TOKEN}`, OPS_TOKEN]) expect(body).not.toContain(secret)
   }

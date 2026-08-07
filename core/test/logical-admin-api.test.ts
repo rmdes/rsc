@@ -303,11 +303,16 @@ test('no logical admin body carries the ops token', async () => {
   const cookie = await registeredSession(app, 'boss@x.test', repo)
   seedSource(repo.raw, 's1', 'https://feed.test/a')
   const created = await (await app.request('/admin/sources/s1/refresh', refresh({ cookie }, 's1', 'c1'))).json()
-  const bodies = await Promise.all([
-    (await app.request(`/admin/acquisition-runs/${created.runId}`, { headers: { cookie } })).text(),
-    (await app.request('/admin/sources/s1/runs', { headers: { cookie } })).text(),
-    (await app.request(`/admin/acquisition-runs/${created.runId}/jobs`, { headers: { cookie } })).text(),
+  const responses = await Promise.all([
+    app.request(`/admin/acquisition-runs/${created.runId}`, { headers: { cookie } }),
+    app.request('/admin/sources/s1/runs', { headers: { cookie } }),
+    app.request(`/admin/acquisition-runs/${created.runId}/jobs`, { headers: { cookie } }),
   ])
+  const bodies = await Promise.all(responses.map((r) => r.text()))
+  // Guard against a vacuous pass: a 404/401 body trivially lacks the token, so a
+  // broken route (or an undefined created.runId in the URL) would keep this test
+  // GREEN while checking nothing.
+  expect(responses.map((r) => r.status)).toEqual([200, 200, 200])
   for (const body of bodies) for (const secret of [OPS_TOKEN, `Bearer ${OPS_TOKEN}`]) expect(body).not.toContain(secret)
   repo.close()
 })

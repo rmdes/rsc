@@ -428,14 +428,18 @@ test('no review body carries the ops token (list, detail, error, audit, ledger-r
   seedTombstone(raw, 'tomb-1', 'https://a.example/feed', 'purge', 'abuse', ['https://a.example/alias1'])
   await app.request('/admin/items/li-1/hide', post({ cookie }, { commandId: 'c1', category: 'spam' }))
 
-  const bodies = await Promise.all([
-    (await app.request('/admin/items/li-1', { headers: { cookie } })).text(),
-    (await app.request('/admin/items/li-1/audit', { headers: { cookie } })).text(),
-    (await app.request('/admin/sources/s1/items', { headers: { cookie } })).text(),
-    (await app.request('/admin/tombstones', { headers: { cookie } })).text(),
-    (await app.request('/admin/items/nope', { headers: { cookie } })).text(), // error
-    (await app.request('/admin/items/li-1/hide', post({ cookie }, { commandId: 'c1', category: 'spam' }))).text(), // ledger replay
+  const responses = await Promise.all([
+    app.request('/admin/items/li-1', { headers: { cookie } }),
+    app.request('/admin/items/li-1/audit', { headers: { cookie } }),
+    app.request('/admin/sources/s1/items', { headers: { cookie } }),
+    app.request('/admin/tombstones', { headers: { cookie } }),
+    app.request('/admin/items/nope', { headers: { cookie } }), // error
+    app.request('/admin/items/li-1/hide', post({ cookie }, { commandId: 'c1', category: 'spam' })), // ledger replay
   ])
+  const bodies = await Promise.all(responses.map((r) => r.text()))
+  // Guard against a vacuous pass: a 404/401 body trivially lacks the token, so a
+  // broken or renamed route would keep this test GREEN while checking nothing.
+  expect(responses.map((r) => r.status)).toEqual([200, 200, 200, 200, 404, 200])
   for (const body of bodies) for (const secret of [OPS_TOKEN, `Bearer ${OPS_TOKEN}`]) expect(body).not.toContain(secret)
   repo.close()
 })
