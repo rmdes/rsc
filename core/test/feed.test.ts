@@ -803,3 +803,49 @@ test('feeds declare the source namespace as https, and we still ingest peers who
   expect(comments).toContain('<source:markdown>ivy **body**</source:markdown>') // http-declared input still parsed
   expect(comments).toContain(`<source:inReplyTo>${root.url}</source:inReplyTo>`)
 })
+
+test('a tombstoned parent cited by an OPAQUE guid still yields a reply ref, but a dangerous-scheme ref never does', async () => {
+  const ctx = await makeApp(CTX)
+  const { repo, db, app } = ctx
+  // Same shape as the tombstone test above, except the child cites its parent by
+  // the parent's opaque <guid> rather than its <link>. reconcile.ts replyReference
+  // treats a non-URL ref as a first-class publisher-scoped OPAQUE key, and
+  // feed.ts replyWireElements emits one with isPermaLink="false" — so opaque refs
+  // are supported end to end. The fallback must not null them just because they
+  // are not URLs. A dangerous scheme, however, must still be dropped: the value is
+  // attacker-controlled and a consuming reader may linkify it.
+  const feed = (childRef: string, tag: string) => ({
+    url: `https://elsewhere.example/users/${tag}/feed.xml`,
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>${tag}</title>`
+      + `<item><guid isPermaLink="false">${tag}-parent</guid><link>https://elsewhere.example/notes/${tag}-parent</link>`
+      + `<description>parent body</description></item>`
+      + `<item><guid isPermaLink="false">${tag}-child</guid><link>https://elsewhere.example/notes/${tag}-child</link>`
+      + `<description>child body</description><source:inReplyTo>${childRef}</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  const idOf = (key: string) => (repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = ?`,
+  ).get(key) as { id: string } | undefined)?.id
+  const refAfterTombstone = async (tag: string) => {
+    const parentId = idOf(`${tag}-parent`), childId = idOf(`${tag}-child`)
+    expect(parentId).toBeDefined()
+    expect(childId).toBeDefined()
+    const before = (await (await app.request(`/post/${childId}`)).json()) as { item: { parentResolutionState: string } }
+    expect(before.item.parentResolutionState).toBe('resolved') // sanity: it really resolved
+    db.write((tx) => convertToStructuralTombstone(tx, parentId!))
+    const after = (await (await app.request(`/post/${childId}`)).json()) as { item: { inReplyToRef: string | null } }
+    return after.item.inReplyToRef
+  }
+
+  await acquireFeed(ctx, feed('opq-parent', 'opq'))
+  expect(await refAfterTombstone('opq')).toBe('opq-parent') // opaque id survives verbatim
+
+  // A dangerous-scheme ref matches no parent, so it never resolves and takes the
+  // SAME fallback branch without needing a tombstone — the gate must drop it there.
+  await acquireFeed(ctx, feed('javascript:alert(1)', 'evil'))
+  const evilChild = idOf('evil-child')
+  expect(evilChild).toBeDefined()
+  const evil = (await (await app.request(`/post/${evilChild}`)).json()) as { item: { parentResolutionState: string; inReplyToRef: string | null } }
+  expect(evil.item.parentResolutionState).toBe('missing') // sanity: it really took the fallback branch
+  expect(evil.item.inReplyToRef).toBeNull() // dangerous scheme dropped, never relayed
+})

@@ -261,6 +261,36 @@ function evidenceLevelFor(mode: string): EvidenceLevel {
 }
 
 // http(s) only, no credentials, no fragment (spec §3.4 URL bounds). Web escapes.
+// The reply ref to emit when we cannot re-derive the parent's advertised guid —
+// the parent is unresolved, or tombstoned away every identity key. reconcile.ts
+// replyReference treats a NON-URL ref as a first-class publisher-scoped OPAQUE
+// key, and feed.ts replyWireElements emits one with isPermaLink="false", so an
+// opaque id must survive here; safeUrl alone nulled it, dropping the very
+// source:inReplyTo the validator checks for (#replyDoesntPointBack).
+//
+// The value is attacker-controlled (it comes off a remote feed), so it stays
+// gated. Behaviour below is MEASURED against Node's URL parser, not assumed:
+//   - parses as http(s)      -> safeUrl (rejects credentials, strips fragment)
+//   - parses as another URI  -> only the inert guid schemes real feeds actually
+//     use (Blogger emits `tag:blogger.com,1999:blog-1.post-2`; `urn:uuid:…` is
+//     common). `javascript:`, `data:`, `vbscript:`, `file:` all parse fine and
+//     are rejected — a consuming reader may linkify this ref. Case and leading
+//     whitespace are normalised by the parser, so `JAVASCRIPT:` cannot slip past.
+//   - does not parse         -> an opaque id, kept verbatim. EXCEPT a
+//     protocol-relative `//host/x`, which does NOT parse yet still linkifies as
+//     a navigable URL.
+// Length needs no bound here: inReplyTo is part of canonicalMaterialFor, so it
+// is already capped by the maxItemEvidenceBytes gate at acquisition.
+const OPAQUE_REF_SCHEMES = new Set(['tag:', 'urn:'])
+function opaqueReplyRef(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const http = safeUrl(raw)
+  if (http) return http
+  if (raw.startsWith('//')) return null
+  try { return OPAQUE_REF_SCHEMES.has(new URL(raw).protocol) ? raw : null } catch { /* not a URI at all — an opaque id */ }
+  return raw
+}
+
 function safeUrl(raw: string | null | undefined): string | null {
   if (!raw) return null
   try {
@@ -682,7 +712,7 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     // a still-resolved reply would emit no source:inReplyTo at all.
     inReplyToRef: (state === 'resolved' && item.parent_logical_item_id !== null
       ? parentReplyRef(tx, item.parent_logical_item_id)
-      : null) ?? safeUrl(mat.material.inReplyTo),
+      : null) ?? opaqueReplyRef(mat.material.inReplyTo),
     sourceLink: safeUrl(mat.material.link),
     replyContext,
     enclosures: projectEnclosures(mat.normalized.enclosures),
