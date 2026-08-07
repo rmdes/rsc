@@ -12,7 +12,8 @@ import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post } from '../src/domain/types.ts'
 import { renderFirehoseRss, injectSourceComments, localGuid } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
+import type { CommandEnvelope } from '../src/domain/types.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { convertToStructuralTombstone } from '../src/logical/threading.ts'
 import { projectItem, projectTimeline } from '../src/logical/projector.ts'
@@ -849,3 +850,62 @@ test('a tombstoned parent cited by an OPAQUE guid still yields a reply ref, but 
   expect(evil.item.parentResolutionState).toBe('missing') // sanity: it really took the fallback branch
   expect(evil.item.inReplyToRef).toBeNull() // dangerous scheme dropped, never relayed
 })
+
+test('the identity-key fallback rung fires on its REAL triggers: governance revoked, then source purged', async () => {
+  const ctx = await makeApp(CTX)
+  const { repo, app, store } = ctx
+  // Parent and child must come from DIFFERENT sources: purging the parent's source
+  // would otherwise take the child with it and leave nothing to project. The child
+  // cites the parent's <link>, and permalink identity keys are global (not
+  // publisher-scoped), so it resolves across the source boundary.
+  const parentSource = await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/gov/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Gov</title>`
+      + `<item><guid isPermaLink="false">gov-parent</guid><link>https://elsewhere.example/notes/gov-parent</link>`
+      + `<description>gov parent body</description></item></channel></rss>`,
+  })
+  await acquireFeed(ctx, {
+    url: 'https://other.example/users/kid/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Kid</title>`
+      + `<item><guid isPermaLink="false">gov-child</guid><link>https://other.example/notes/gov-child</link>`
+      + `<description>gov child body</description><source:inReplyTo>https://elsewhere.example/notes/gov-parent</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  const idOf = (key: string) => (repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = ?`,
+  ).get(key) as { id: string } | undefined)?.id
+  const parentId = idOf('gov-parent'), childId = idOf('gov-child')
+  expect(parentId).toBeDefined()
+  expect(childId).toBeDefined()
+  const refOfChild = async () =>
+    ((await (await app.request(`/post/${childId}`)).json()) as { item: { inReplyToRef: string | null } }).item.inReplyToRef
+
+  // Normal path: remoteOriginGuid re-derives the parent's emitted <guid>.
+  expect(await refOfChild()).toBe('gov-parent')
+
+  // TRIGGER A — governance revoked. eligibleDeliveries skips any delivery whose
+  // source governance !== 'allowed', so the parent has no ordinary-eligible
+  // delivery left and stops being projectable at all. Its identity keys survive,
+  // so an already-threaded reply must still point at what the origin advertised.
+  repo.raw.prepare(`UPDATE remote_sources_v2 SET governance = 'blocked' WHERE id = ?`).run(parentSource)
+  expect((await app.request(`/post/${parentId}`)).status).toBe(404) // proves the rung is what answers below
+  expect(await refOfChild()).toBe('gov-parent')
+
+  // PURGE IS NOT A SECOND TRIGGER FOR THIS RUNG — measured, and it corrected the
+  // assumption. tombstones.ts deletes only kind='delivery' keys, so it LOOKS like
+  // the opaque key should survive and answer here. It does not: purging the last
+  // delivery leaves the parent with none, which converts it to a structural
+  // tombstone, and threading.ts:294 deletes EVERY identity key. parentReplyRef
+  // therefore returns null and the answer comes from the #3 origin-ref fallback —
+  // i.e. what the CHILD originally cited, its parent's permalink.
+  // So the identity-key rung has exactly ONE reachable production trigger:
+  // governance revoked (above). Pinning both outcomes so the distinction survives.
+  const env: CommandEnvelope = {
+    actorScope: 'administrator', actorId: 'admin-1', commandId: 'purge-gov-1',
+    requestFingerprint: createHash('sha256').update(JSON.stringify(['purge', parentSource])).digest('hex'),
+  }
+  expect(store.purgeSource({ command: env, sourceId: parentSource, category: 'abuse', note: null, now: NOW }).kind).toBe('purged')
+  expect(repo.raw.prepare(`SELECT COUNT(*) AS n FROM logical_identity_keys_v2 WHERE logical_item_id = ?`).get(parentId)).toEqual({ n: 0 }) // ALL keys, not just delivery
+  expect(await refOfChild()).toBe('https://elsewhere.example/notes/gov-parent') // the child's own cited ref, via #3
+})
+
