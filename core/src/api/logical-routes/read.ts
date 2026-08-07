@@ -191,11 +191,6 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
         // Feed bytes only — the web UI reads /post/:id/thread, not comments.xml, so
         // the chronological conversation order users see is unaffected. injectComments
         // keys by guid, so resorting here cannot mis-target an injection.
-        // Order-independent is NOT the same as sound, though: the marker search is
-        // document-wide and takes the first hit, so an item whose CDATA body contains
-        // a guid-shaped literal can still steal another item's injected element. That
-        // is a known pre-existing defect in feed.ts's injectItemElements, out of scope
-        // here — see the ponytail: note there.
         .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : a.id < b.id ? 1 : -1))
       return { item, replies }
     })

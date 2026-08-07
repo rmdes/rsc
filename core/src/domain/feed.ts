@@ -212,27 +212,40 @@ const xmlAttrEscape = (s: string) => xmlEscape(s).replace(/"/g, '&quot;')
 // (probed: comments AND account are silently dropped), so they are injected
 // into XML WE generated, keyed by the <guid> element value.
 // ponytail: delete all of this the day feedsmith serializes them.
-// ponytail: the marker search is document-wide and takes the FIRST hit, so it is
-// spoofable — source:markdown/description are emitted as raw CDATA, and an item
-// whose body contains the literal text `>OTHER-GUID</guid>` steals that item's
-// injected source:comments (demonstrated live; pre-dates the rss.chat interop
-// branch). Ceiling: correct only while no body quotes a guid element. Upgrade
-// path: split the document into `<item>`…`</item>` spans first and search each
-// span for its own guid, so a match can never cross an item boundary.
+//
+// Matching is per-ITEM, never document-wide: description and source:markdown are
+// emitted as verbatim CDATA, so a remote body can contain any bytes at all —
+// `>OTHER-GUID</guid>`, a whole fake `<item>`, even a stray `</item>`. A
+// first-hit search over the raw document let such a body steal another item's
+// source:comments (demonstrated; the ad landed in the quoting item). So: blank
+// every CDATA span in a length-preserving SEARCH COPY (indices stay 1:1 with the
+// original, and spaces can't open a tag), walk the item spans of that copy, and
+// key each item by the guid text at its OWN <guid> offsets read from the
+// original. A body can then no longer influence any item's key or boundary.
 function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: string }>): string {
-  let out = xml
-  let injected = false
-  for (const ad of ads) {
-    const markers = [`<![CDATA[${ad.guid}]]>`, `>${xmlAttrEscape(ad.guid)}</guid>`]
-    let at = -1
-    for (const m of markers) { at = out.indexOf(m); if (at !== -1) break }
-    if (at === -1) continue
-    const close = out.indexOf('</item>', at)
-    if (close === -1) continue
-    out = out.slice(0, close) + ad.fragment + out.slice(close)
-    injected = true
+  const scan = xml.replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, (m) => ' '.repeat(m.length))
+  // guid value (CDATA-form raw, or plain-form as escaped on the wire) → the
+  // offset of that item's </item>. First item wins, as the old first-hit did.
+  const closeOf = new Map<string, number>()
+  for (const item of scan.matchAll(/<item\b[^>]*>[\s\S]*?<\/item>/g)) {
+    const guid = /<guid\b[^>]*>([\s\S]*?)<\/guid>/.exec(item[0])
+    if (!guid) continue
+    const from = item.index + guid.index + guid[0].length - guid[1].length - '</guid>'.length
+    const inner = xml.slice(from, from + guid[1].length).trim()
+    const key = /^<!\[CDATA\[([\s\S]*)\]\]>$/.exec(inner)?.[1] ?? inner
+    if (!closeOf.has(key)) closeOf.set(key, item.index + item[0].length - '</item>'.length)
   }
-  if (injected && !out.slice(out.indexOf('<rss'), out.indexOf('>', out.indexOf('<rss')) + 1).includes('xmlns:source=')) {
+  const edits = ads.flatMap((ad) => {
+    const close = closeOf.get(ad.guid) ?? closeOf.get(xmlAttrEscape(ad.guid))
+    return close === undefined ? [] : [{ close, fragment: ad.fragment }]
+  })
+  if (!edits.length) return xml
+  edits.sort((a, b) => a.close - b.close)
+  let out = ''
+  let cut = 0
+  for (const e of edits) { out += xml.slice(cut, e.close) + e.fragment; cut = e.close }
+  out += xml.slice(cut)
+  if (!out.slice(out.indexOf('<rss'), out.indexOf('>', out.indexOf('<rss')) + 1).includes('xmlns:source=')) {
     out = out.replace('<rss ', '<rss xmlns:source="http://source.scripting.com/" ')
   }
   return out

@@ -197,6 +197,58 @@ test('injectSourceComments: element lands inside the right item; xmlns declared 
   expect(xml.match(/xmlns:source=/g)?.length).toBe(1)
 })
 
+// Every <item>…</item> span of a feed document. The fixtures below never put a
+// literal `</item>` in a body, so a non-greedy split is a faithful reader here.
+const itemSpans = (xml: string) => [...xml.matchAll(/<item>[\s\S]*?<\/item>/g)].map((m) => m[0])
+
+test('a body quoting another item\'s guid element cannot steal that item\'s source:comments', () => {
+  const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
+  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+  const VICTIM = 'https://peer.example/post/one'
+  const entry = (id: string, content: string, url: string) => ({
+    id, authorId: 'u1', source: 'local' as const, guid: id, title: null, content, url,
+    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
+    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
+    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
+  })
+  // The decoy sorts FIRST and its markdown — emitted verbatim as CDATA — quotes
+  // the victim's guid element. A document-wide first-hit marker search lands here.
+  const xml = renderFirehoseRss([
+    entry('p1', `look at >${VICTIM}</guid> in my post`, 'https://tc.example/post/p1'),
+    entry('p2', 'the real one', VICTIM),
+  ], ctx)
+  const out = injectSourceComments(xml, [{ guid: VICTIM, count: 1, feedUrl: 'https://tc.example/post/p2/comments.xml' }])
+
+  const spans = itemSpans(out)
+  expect(spans).toHaveLength(2)
+  const decoy = spans.find((s) => s.includes('<guid>https://tc.example/post/p1</guid>'))!
+  const real = spans.find((s) => s.includes(`<guid>${VICTIM}</guid>`))!
+  expect(real).toContain('<source:comments count="1" feedUrl="https://tc.example/post/p2/comments.xml"/>')
+  expect(decoy).not.toContain('source:comments')
+})
+
+test('injectSourceComments still matches a guid feedsmith CDATA-wrapped (& in the permalink)', () => {
+  const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
+  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
+  const entry = (id: string, url: string) => ({
+    id, authorId: 'u1', source: 'local' as const, guid: id, title: null, content: `body ${id}`, url,
+    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
+    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
+    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
+  })
+  // `&` in the value ⇒ feedsmith emits <guid><![CDATA[…]]></guid> (probed), on
+  // its own lines — so the key can only be read by unwrapping and trimming.
+  const AMP = 'https://tc.example/post/p2?a=1&b=2'
+  const xml = renderFirehoseRss([entry('p1', 'https://tc.example/post/p1'), entry('p2', AMP)], ctx)
+  expect(xml).toContain(`<![CDATA[${AMP}]]>`) // fixture guard: really the CDATA form
+  const out = injectSourceComments(xml, [{ guid: AMP, count: 4, feedUrl: 'https://tc.example/post/p2/comments.xml' }])
+
+  const spans = itemSpans(out)
+  expect(spans).toHaveLength(2)
+  expect(spans.find((s) => s.includes(`<![CDATA[${AMP}]]>`))).toContain('<source:comments count="4"')
+  expect(spans.find((s) => s.includes('<guid>https://tc.example/post/p1</guid>'))).not.toContain('source:comments')
+})
+
 test('xmlns dedup checks the opening tag, not the whole document (body text may mention xmlns:source=)', () => {
   // Use generateRssFeed with a remote post to avoid feedsmith auto-declaring xmlns
   const post: Post = {
