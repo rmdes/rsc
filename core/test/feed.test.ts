@@ -14,6 +14,7 @@ import { renderFirehoseRss, injectSourceComments, localGuid } from '../src/domai
 import { generateRssFeed } from 'feedsmith'
 import { randomUUID } from 'node:crypto'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
+import { convertToStructuralTombstone } from '../src/logical/threading.ts'
 import { projectItem, projectTimeline } from '../src/logical/projector.ts'
 import type { ProjectionViewer } from '../src/logical/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
@@ -464,6 +465,49 @@ test('comments feed: a reply to a remote parent points back at the guid that par
   await service.createLocalPostAs('bob', 'Bob', 'local reply body', { id: parentId?.id } as Post)
   const bobFeed = await parseFeedWithMeta(await (await app.request('/users/bob/feed.xml')).text())
   expect(bobFeed.items.find((i) => i.content.includes('local reply body'))?.inReplyTo).toBe(parent?.guid)
+})
+
+test('a resolved reply whose parent degraded to a structural tombstone still emits source:inReplyTo (falls back to the origin ref)', async () => {
+  const ctx = await makeApp(CTX)
+  const { repo, db, app } = ctx
+  // Ordinary remote parent (<guid> + distinct <link>) and a remote child citing the
+  // parent's <link> — resolves via the parent's permalink identity key, same shape
+  // as the test above. Once the parent is a structural tombstone (purge/last-
+  // subscription-cleanup path, threading.ts convertToStructuralTombstone),
+  // parentReplyRef's re-derivation of the parent's advertised guid finds nothing —
+  // every identity key on the parent is gone — so it must fall back to what the
+  // CHILD's own delivery originally cited (mat.material.inReplyTo), not emit null.
+  await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/tomb/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Tomb</title>`
+      + `<item><guid isPermaLink="false">tomb-parent-guid</guid><link>https://elsewhere.example/notes/tomb-parent</link>`
+      + `<description>tombstone parent body</description></item>`
+      + `<item><guid isPermaLink="false">tomb-child-guid</guid><link>https://elsewhere.example/notes/tomb-child</link>`
+      + `<description>tombstone child body</description><source:inReplyTo>https://elsewhere.example/notes/tomb-parent</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+
+  const parentId = (repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = 'tomb-parent-guid'`,
+  ).get() as { id: string } | undefined)?.id
+  const childId = (repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = 'tomb-child-guid'`,
+  ).get() as { id: string } | undefined)?.id
+  expect(parentId).toBeDefined() // sanity: the parent reconciled
+  expect(childId).toBeDefined()
+
+  const before = (await (await app.request(`/post/${childId}`)).json()) as { item: { parentResolutionState: string; parentLogicalItemId: string | null } }
+  expect(before.item.parentResolutionState).toBe('resolved') // sanity: the child really resolved onto the remote parent
+  expect(before.item.parentLogicalItemId).toBe(parentId)
+
+  // Emulate the exact deletes convertToStructuralTombstone performs (threading.ts
+  // §5.3): every identity key gone, the row degraded — the child's parent edge
+  // survives (it's a structural, not a content, field).
+  db.write((tx) => convertToStructuralTombstone(tx, parentId!))
+
+  const after = (await (await app.request(`/post/${childId}`)).json()) as { item: { parentResolutionState: string; inReplyToRef: string | null } }
+  expect(after.item.parentResolutionState).toBe('resolved') // the edge survives the tombstone
+  expect(after.item.inReplyToRef).toBe('https://elsewhere.example/notes/tomb-parent') // NOT null — this is replyDoesntPointBack
 })
 
 test('a RSC conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {

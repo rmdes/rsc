@@ -485,6 +485,16 @@ function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; 
   return { material, normalized }
 }
 
+// The delivery key alone, without materialOf's JSON.parse of canonical_material
+// (title + full HTML content) — remoteOriginGuid needs only normalized.key, and
+// runs once per resolved remote reply projected (a 50-item firehose page pays
+// whatever this costs 50×).
+function normalizedKeyOf(tx: ReadTx, versionId: string): string | null {
+  const v = tx.prepare(`SELECT normalized_json FROM observation_versions_v2 WHERE id = ?`).get(versionId) as { normalized_json: string } | undefined
+  if (!v) return null
+  return (JSON.parse(v.normalized_json) as { key: string }).key
+}
+
 // The guid an item's outbound feed advertises — projectRemote's `originGuid`,
 // re-derived by the SAME path (selected delivery → its latest presentation entry →
 // that version's normalized.key), because "what we emit" is the only definition a
@@ -496,7 +506,7 @@ function remoteOriginGuid(tx: ReadTx, itemId: string): string | null {
   if (!display) return null // no ordinary-eligible delivery ⇒ the item is never emitted
   const pres = tx.prepare(`SELECT observation_version_id FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(display.deliveryId) as { observation_version_id: string } | undefined
   if (!pres) return null
-  return materialOf(tx, pres.observation_version_id)?.normalized.key ?? null
+  return normalizedKeyOf(tx, pres.observation_version_id)
 }
 
 // The parent's on-the-wire reply reference (v1 parity, service.ts): the string the
@@ -523,7 +533,17 @@ export function parentReplyRef(tx: ReadTx, parentId: string): string | null {
   // back to the claimed identity keys in acquisition's own delivery-key priority —
   // opaque <guid> first, permalink only when the item had no <guid> (acquisition.ts
   // §delivery key priority) — never the reverse, which is the bug above.
-  const o = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
+  //
+  // opaque keys are publisher-scoped, so an item relayed by two sources can leave
+  // two rows with two different values here — an unordered `LIMIT 1` picks whichever
+  // SQLite happens to return, which isn't guaranteed stable. ORDER BY rowid pins it
+  // to insertion order instead. Preferring the row whose kind matches
+  // logical_items_v2.selected_publisher_id was considered, but that column is
+  // recomputed from the SAME governance-eligible claims as the delivery selection
+  // above (reconcile.ts applySelectionHints) — the one case that reaches this rung
+  // (governance revoked) is exactly the case where selected_publisher_id has
+  // already gone null too, so it wouldn't disambiguate the case that matters.
+  const o = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND logical_item_id = ? ORDER BY rowid LIMIT 1`).get(parentId) as { key: string } | undefined
   if (o) return o.key
   const k = tx.prepare(`SELECT key FROM logical_identity_keys_v2 WHERE kind = 'permalink' AND logical_item_id = ? LIMIT 1`).get(parentId) as { key: string } | undefined
   return k ? k.key : null
@@ -644,10 +664,15 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     originGuid: mat.normalized.key,
     // A resolved parent's OWN advertised guid — replyDoesntPointBack is a string
     // compare against it, and an origin may cite a differently-formed URL that
-    // still resolves (fragment, alias). Unresolved: the origin's ref verbatim.
-    inReplyToRef: state === 'resolved' && item.parent_logical_item_id !== null
+    // still resolves (fragment, alias). Falls back to this item's OWN cited ref
+    // (mat.material.inReplyTo, verbatim) both when unresolved AND when resolved
+    // but parentReplyRef finds nothing to re-derive from — a structural tombstone
+    // (threading.ts convertToStructuralTombstone) strips every identity key off
+    // the parent while the child's parent edge survives, so without this fallback
+    // a still-resolved reply would emit no source:inReplyTo at all.
+    inReplyToRef: (state === 'resolved' && item.parent_logical_item_id !== null
       ? parentReplyRef(tx, item.parent_logical_item_id)
-      : safeUrl(mat.material.inReplyTo),
+      : null) ?? safeUrl(mat.material.inReplyTo),
     sourceLink: safeUrl(mat.material.link),
     replyContext,
     enclosures: projectEnclosures(mat.normalized.enclosures),
