@@ -188,10 +188,17 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
         .filter((n): n is { kind: 'item'; item: LogicalItemDto } => n.kind === 'item' && n.item.parentLogicalItemId === id)
         .map((n) => n.item)
         // RSS convention is newest-first; projectThread returns depth-then-time ASC.
+        // Shaped like threading.ts byOrder with ONLY the time comparison reversed:
+        // same ASCENDING id tie-break, and an explicit 0 for equal ids. (The former
+        // one-liner returned -1 there, so it was not a valid comparator — unreachable
+        // in practice since ids are unique, but it read as house style and wasn't.)
         // Feed bytes only — the web UI reads /post/:id/thread, not comments.xml, so
         // the chronological conversation order users see is unaffected. injectComments
         // keys by guid, so resorting here cannot mis-target an injection.
-        .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : a.id < b.id ? 1 : -1))
+        .sort((a, b) => {
+          if (a.publishedAt !== b.publishedAt) return a.publishedAt < b.publishedAt ? 1 : -1
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+        })
       return { item, replies }
     })
     if (!data) return c.json({ error: 'unknown post' }, 404)
