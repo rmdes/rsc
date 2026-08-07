@@ -36,9 +36,9 @@ test('reply compose: stores refs, resolves parent, thread endpoint returns the c
   const auth = { 'content-type': 'application/json', cookie }
   const root = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 'root post' }) })).json()
   const re = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 'a reply', inReplyTo: root.post.id }) })).json()
-  // v2 (logical/projector.ts:515 parentReplyRef): with no publicUrl the parent has no
-  // permalink, so the stored wire ref is the parent's ID — which is exactly the
-  // guid that parent's own feed advertises (logical-outbound-threading.test.ts:144).
+  // v2 (logical/projector.ts:525 parentReplyRef): with no publicUrl the parent has no
+  // permalink, so the wire ref is the parent's ID — which is exactly the
+  // guid that parent's own feed advertises (logical-outbound-threading.test.ts:153).
   expect(re.post.inReplyTo).toBe(root.post.id)
   expect(re.post.inReplyToPostId).toBe(root.post.id)
   expect(re.post.threadRootId).toBe(root.post.id)

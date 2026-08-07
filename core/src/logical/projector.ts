@@ -616,7 +616,14 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
     contentMarkdown: post.content_markdown,
     permalink: safeUrl(post.url),
     originGuid: null, // local items derive their guid from permalink/id (localGuid)
-    inReplyToRef: post.in_reply_to, // the stored absolute wire ref, re-emitted as <source:inReplyTo>
+    // Re-derived live, exactly as projectRemote does, NOT re-emitted from the stored
+    // column: local.ts snapshots this ref at create time, so a reply written before
+    // parentReplyRef was corrected still carries the old permalink-first value, and
+    // even a fresh one goes stale when the parent's selected delivery changes (a
+    // second source relays it, governance flips). Re-deriving heals both with no
+    // migration. posts.in_reply_to stays the fallback: a v1-archive or seeded reply
+    // whose parent has no identity keys left has nothing to re-derive from.
+    inReplyToRef: (post.in_reply_to_post_id ? parentReplyRef(tx, post.in_reply_to_post_id) : null) ?? post.in_reply_to,
     sourceLink: null,
     replyContext: null,
     enclosures: [],

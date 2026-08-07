@@ -212,6 +212,13 @@ const xmlAttrEscape = (s: string) => xmlEscape(s).replace(/"/g, '&quot;')
 // (probed: comments AND account are silently dropped), so they are injected
 // into XML WE generated, keyed by the <guid> element value.
 // ponytail: delete all of this the day feedsmith serializes them.
+// ponytail: the marker search is document-wide and takes the FIRST hit, so it is
+// spoofable — source:markdown/description are emitted as raw CDATA, and an item
+// whose body contains the literal text `>OTHER-GUID</guid>` steals that item's
+// injected source:comments (demonstrated live; pre-dates the rss.chat interop
+// branch). Ceiling: correct only while no body quotes a guid element. Upgrade
+// path: split the document into `<item>`…`</item>` spans first and search each
+// span for its own guid, so a match can never cross an item boundary.
 function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: string }>): string {
   let out = xml
   let injected = false
@@ -265,7 +272,7 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
           // cross-instance reply resolves onto our local post) — only local
           // items get the permalink-guid treatment; a remote item's guid VALUE
           // must stay p.guid verbatim, never swapped to p.url.
-          // Identity, NOT url-shape: acquisition.ts:243 stores the wire guid and
+          // Identity, NOT url-shape: acquisition.ts:258 stores the wire guid and
           // DISCARDS the origin's isPermaLink, so a shape test would promote a
           // WordPress-style <guid isPermaLink="false">https://x/?p=1</guid> to a
           // permalink the origin denied. guid === url is provable from stored data.

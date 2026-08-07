@@ -4,7 +4,7 @@ import type { Config } from '../config.ts'
 import type { TimelineEntry } from './types.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
-import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, emittedGuid } from './feed.ts'
+import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, emittedGuid, commentsFeedUrl } from './feed.ts'
 import type { User } from './types.ts'
 
 const PUSH_TIMEOUT_MS = 10_000
@@ -234,7 +234,7 @@ export function createPush(deps: PushDeps): Push {
               // before signing, so a subscriber's fat-ping body matches a pull.
               const counts = await repo.countRepliesByPostIds(posts.map((p) => p.id))
               body = injectSourceComments(body, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
-                .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
+                .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: commentsFeedUrl(ctx.publicUrl, p.id) })))
             }
             const contentType = format === 'xml' ? 'application/rss+xml; charset=utf-8' : 'application/feed+json; charset=utf-8'
             for (const sub of subs) {
@@ -254,7 +254,7 @@ export function createPush(deps: PushDeps): Push {
             let body = renderFirehoseRss(recent, ctx)
             const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
             body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
-              .map((p) => ({ guid: emittedGuid(p), count: fhCounts.get(p.id)!, feedUrl: `${ctx.publicUrl}/post/${p.id}/comments.xml` })))
+              .map((p) => ({ guid: emittedGuid(p), count: fhCounts.get(p.id)!, feedUrl: commentsFeedUrl(ctx.publicUrl, p.id) })))
             for (const sub of fhSubs) {
               const headers: Record<string, string> = {
                 'content-type': 'application/rss+xml; charset=utf-8',

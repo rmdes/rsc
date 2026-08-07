@@ -128,6 +128,7 @@ test('links are omitted without config: no self/hub/cloud when unset', async () 
   expect(body).not.toContain('<cloud ')
   const root = await service.createLocalPostAs('alice', 'Alice', 'root')
   const comments = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(comments).toContain('<rss') // a 404 body would satisfy both not.toContains below
   expect(comments).not.toContain('<source:self>')
   expect(comments).not.toContain('rel="self"')
 })
@@ -466,9 +467,19 @@ test('comments feed: a reply to a remote parent points back at the guid that par
   // parentReplyRef's OTHER caller (local.ts): a LOCAL reply to the same remote
   // parent must point back at the same guid. createLocalPostAs reads only
   // replyTo.id (service.ts resolveReplyTarget's documented contract).
-  await service.createLocalPostAs('bob', 'Bob', 'local reply body', { id: parentId?.id } as Post)
+  const localReply = await service.createLocalPostAs('bob', 'Bob', 'local reply body', { id: parentId?.id } as Post)
   const bobFeed = await parseFeedWithMeta(await (await app.request('/users/bob/feed.xml')).text())
   expect(bobFeed.items.find((i) => i.content.includes('local reply body'))?.inReplyTo).toBe(parent?.guid)
+
+  // ...and it must STILL point back after the fact. local.ts snapshots the ref into
+  // posts.in_reply_to at create time, so every reply written before this fix carries
+  // the old permalink-first value, and even a new one goes stale if the parent's
+  // selected delivery later changes (a second source relays it, governance flips).
+  // Overwriting the column with the permalink reproduces both cases exactly; the
+  // projection must re-derive, not re-emit the stale snapshot.
+  ctx.repo.raw.prepare(`UPDATE posts SET in_reply_to = ? WHERE id = ?`).run('https://elsewhere.example/notes/parent', localReply.id)
+  const staleFeed = await parseFeedWithMeta(await (await app.request('/users/bob/feed.xml')).text())
+  expect(staleFeed.items.find((i) => i.content.includes('local reply body'))?.inReplyTo).toBe(parent?.guid)
 })
 
 test('a resolved reply whose parent degraded to a structural tombstone still emits source:inReplyTo (falls back to the origin ref)', async () => {
@@ -628,6 +639,10 @@ test('comments feed items are newest-first', async () => {
   await wait()
   await service.createLocalPostAs('carol', 'Carol', 'newer reply', root)
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  // Both must be PRESENT first: a missing 'newer reply' indexOf's to -1, which is
+  // less than any real offset, so the ordering assertion alone passes vacuously.
+  expect(body).toContain('newer reply')
+  expect(body).toContain('older reply')
   expect(body.indexOf('newer reply')).toBeLessThan(body.indexOf('older reply'))
 })
 
@@ -686,7 +701,22 @@ test('an unchanged re-poll heals stored markdown without a new version row', asy
   expect(countVersions()).toBe(before) // no new version row
   // overwriteObservationVersion (the changed branch) also creates no new row, so the
   // count assertion alone can't tell heal apart from a real change — the job status
-  // does: overwriteObservationVersion re-pends via resetObservationJob (acquisition.ts:580),
+  // does: overwriteObservationVersion re-pends via resetObservationJob (acquisition.ts:591),
   // the heal never touches reconciliation_jobs_v2 at all.
   expect((repo.raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE kind = 'observation'`).get() as { status: string }).status).toBe('reconciled') // unchanged branch: job not re-pended
+
+  const markdownNow = () => JSON.parse((repo.raw.prepare(`SELECT normalized_json FROM observation_versions_v2 LIMIT 1`).get() as { normalized_json: string }).normalized_json).contentMarkdown
+
+  // Idempotent: polling the SAME body again heals nothing further and adds nothing.
+  await acquireFeed(ctx, { url, xml: item('<source:markdown>**body**</source:markdown>'), sourceId: SRC })
+  expect(markdownNow()).toBe('**body**')
+  expect(countVersions()).toBe(before)
+
+  // And the heal only FILLS a hole, never overwrites: markdown is deliberately not
+  // fingerprinted (the 2026-07-25 churn incident), so a changed source:markdown alone
+  // is still the unchanged branch — and healMarkdown's `IS NULL` guard skips a row
+  // that already carries one. Silent drift here would be the churn bug's twin.
+  await acquireFeed(ctx, { url, xml: item('<source:markdown>**rewritten**</source:markdown>'), sourceId: SRC })
+  expect(markdownNow()).toBe('**body**')
+  expect(countVersions()).toBe(before)
 })
