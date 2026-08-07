@@ -38,7 +38,7 @@ Relocates `parentReplyRef` to a leaf module (required — see below), then uses 
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces: `parentReplyRef(tx: ReadTx, parentId: string): string | null` exported from `core/src/logical/roots.ts`.
+- Produces: `parentReplyRef(tx: ReadTx, parentId: string): string | null`. **Execution note (`82efae4`):** it ended up exported from `core/src/logical/projector.ts:515`, NOT `roots.ts` — moved again so it mirrors `projectRemote`'s guid derivation exactly (a remote parent's advertised guid is its selected delivery's `normalized.key`, not its permalink). Later tasks import it from `projector.ts`.
 
 - [ ] **Step 1: Write the failing test**
 
