@@ -3,6 +3,7 @@ import type { WebSubMode } from '../config.ts'
 import type { Post, User, TimelineEntry } from './types.ts'
 import type { LogicalItemDto } from '../logical/types.ts'
 import { renderLocalHtml } from './markdown.ts'
+import { normalizePermalink } from '../logical/roots.ts'
 
 // Adapt a logical-v2 ordinary DTO to the TimelineEntry shape the existing feed
 // renderers consume (spec §4.6: all public feeds use the central projector). Local
@@ -259,7 +260,12 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
           // WordPress-style <guid isPermaLink="false">https://x/?p=1</guid> to a
           // permalink the origin denied. guid === url is provable from stored data.
           // Omits the attribute rather than emitting isPermaLink="true" (feed.ts:60).
-          guid: p.source === 'local' ? localGuid(p) : { value: p.guid, ...(p.guid === p.url ? {} : { isPermaLink: false }) },
+          // p.url is already normalizePermalink'd (roots.ts: fragment stripped,
+          // URL-canonicalized) while p.guid is the raw wire value — comparing them
+          // unnormalized rejects a legal fragment-bearing permalink guid whose
+          // <link> is identical. Normalize ONLY the comparison; the emitted VALUE
+          // stays p.guid verbatim (never swapped to p.url or a normalized form).
+          guid: p.source === 'local' ? localGuid(p) : { value: p.guid, ...((normalizePermalink(p.guid) ?? p.guid) === p.url ? {} : { isPermaLink: false }) },
           ...(p.url !== null ? { link: p.url } : {}),
           pubDate: p.publishedAt,
           // RSS core <source>: the reply's author + their feed. Dave's fixed

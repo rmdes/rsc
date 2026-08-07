@@ -590,3 +590,25 @@ test('comments feed: a remote guid equal to its permalink emits no isPermaLink a
   expect(body).toContain(`<guid>${PERMA}</guid>`)
   expect(body).not.toContain(`<guid isPermaLink="false">${PERMA}</guid>`)
 })
+
+test('comments feed: a remote guid equal to its permalink but carrying a URL fragment still emits no isPermaLink attribute, and keeps the fragment in the emitted value', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  // guid === link, both bearing a fragment — legal per RSS, and normalizePermalink
+  // strips the fragment from p.url (roots.ts) but the wire guid is stored raw. A
+  // naive p.guid === p.url compares a stripped value against a raw one and always
+  // loses this case, wrongly stamping isPermaLink="false" on a real permalink guid.
+  const PERMA = 'https://peer.example/post/frag-1#comments'
+  await acquireFeed(ctx, {
+    url: 'https://peer.example/users/gina/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Gina</title>`
+      + `<item><guid>${PERMA}</guid><link>${PERMA}</link>`
+      + `<description>peer reply with fragment</description><source:inReplyTo>${root.url}</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  // bare guid, fragment preserved verbatim in the emitted VALUE
+  expect(body).toContain(`<guid>${PERMA}</guid>`)
+  expect(body).not.toContain(`<guid isPermaLink="false">${PERMA}</guid>`)
+})
