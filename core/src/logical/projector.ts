@@ -7,6 +7,7 @@ import type {
 } from './types.ts'
 import { snapshotJournalCursor } from './journal.ts'
 import { encodeCursor } from '../domain/cursor.ts'
+import { parentReplyRef } from './roots.ts'
 
 // Pure effective-selection and presentation-chain comparators (spec §3.2, §3.3,
 // §3.6, §4.4). NO database access — reconciliation calls these to write hints and
@@ -598,7 +599,12 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     // (both === normalized.key). Outbound re-emission (feed.ts) uses it so a peer
     // dedupes its own item back on the guid it minted.
     originGuid: mat.normalized.key,
-    inReplyToRef: null, // remote items keep the current firehose/comments behavior (no source:inReplyTo re-emit)
+    // A resolved parent's OWN advertised guid — replyDoesntPointBack is a string
+    // compare against it, and an origin may cite a differently-formed URL that
+    // still resolves (fragment, alias). Unresolved: the origin's ref verbatim.
+    inReplyToRef: state === 'resolved' && item.parent_logical_item_id !== null
+      ? parentReplyRef(tx, item.parent_logical_item_id)
+      : safeUrl(mat.material.inReplyTo),
     sourceLink: safeUrl(mat.material.link),
     replyContext,
     enclosures: projectEnclosures(mat.normalized.enclosures),

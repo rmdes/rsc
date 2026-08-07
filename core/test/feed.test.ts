@@ -388,6 +388,30 @@ test('comments feed: a remote cross-instance reply keeps its origin guid and sti
   expect(body).not.toContain(`<guid>${CTX.publicUrl}/post/`) // not swapped for a local permalink either
 })
 
+test('comments feed: a relayed remote reply points back at the parent guid', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  // The origin cites the parent WITH a fragment. reconcile.ts:235 runs the ref
+  // through normalizePermalink (which strips the fragment) and the local identity
+  // key is posts.url verbatim, so this RESOLVES onto our root — but a verbatim
+  // re-emission would not string-match the parent's <guid>, which is exactly what
+  // the validator's replyDoesntPointBack compares. That makes this fixture the
+  // one that bites: it passes only if we emit the parent's own advertised guid.
+  await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/eve/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Eve</title>`
+      + `<item><guid isPermaLink="false">origin-guid-92</guid><link>https://elsewhere.example/notes/92</link>`
+      + `<description>divergent ref reply</description><source:inReplyTo>${root.url}#comment</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(body).toContain('divergent ref reply') // sanity: it really resolved onto the local root
+  expect(body).toContain(`<source:inReplyTo>${root.url}</source:inReplyTo>`)
+  expect(body).toContain(`<thr:in-reply-to ref="${root.url}"`) // feedsmith emits ref before href
+  expect(body).not.toContain(`${root.url}#comment`)
+})
+
 test('a RSC conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {
   const { service, app } = await makeApp(CTX)
   await seedAlice(service)
