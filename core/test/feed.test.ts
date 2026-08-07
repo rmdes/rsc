@@ -642,3 +642,24 @@ test('comments feed advertises where it lives; user feed carries source:self', a
   const user = await (await app.request('/users/alice/feed.xml')).text()
   expect(user).toContain(`<source:self>${CTX.publicUrl}/users/alice/feed.xml</source:self>`)
 })
+
+test('comments feed: a remote reply with stored contentMarkdown emits source:markdown', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app, repo } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/gina/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Gina</title>`
+      + `<item><guid isPermaLink="false">origin-guid-93</guid><link>https://elsewhere.example/notes/93</link>`
+      + `<description>&lt;p&gt;rendered html&lt;/p&gt;</description><source:inReplyTo>${root.url}</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  // Simulate what convert.ts:553-559 stores for a v1-converted item.
+  const row = repo.raw.prepare(`SELECT id, normalized_json FROM observation_versions_v2 LIMIT 1`).get() as { id: string; normalized_json: string }
+  const norm = JSON.parse(row.normalized_json)
+  norm.contentMarkdown = 'rendered **markdown**'
+  repo.raw.prepare(`UPDATE observation_versions_v2 SET normalized_json = ? WHERE id = ?`).run(JSON.stringify(norm), row.id)
+
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(body).toContain('<source:markdown>rendered **markdown**</source:markdown>')
+})

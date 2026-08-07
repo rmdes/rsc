@@ -477,11 +477,11 @@ function federatedRemote(tx: ReadTx, itemId: string): boolean {
 interface RemoteMaterial {
   title: string | null; content: string | null; link: string | null; inReplyTo: string | null
 }
-function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; normalized: { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null } } | null {
+function materialOf(tx: ReadTx, versionId: string): { material: RemoteMaterial; normalized: { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; contentMarkdown?: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null } } | null {
   const v = tx.prepare(`SELECT canonical_material, normalized_json FROM observation_versions_v2 WHERE id = ?`).get(versionId) as { canonical_material: Buffer; normalized_json: string } | undefined
   if (!v) return null
   const material = JSON.parse(v.canonical_material.toString('utf8')) as RemoteMaterial
-  const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }
+  const normalized = JSON.parse(v.normalized_json) as { keyKind: string; key: string; permalink: string | null; enclosures: EnclosureDto[]; inReplyTo: string | null; contentMarkdown?: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }
   return { material, normalized }
 }
 
@@ -655,7 +655,10 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     selectedAuthor: remoteAuthor(tx, item, display),
     title: mat.material.title,
     content: mat.material.content,
-    contentMarkdown: null,
+    // convert.ts:553-559 already stores this for every v1-converted item, and
+    // acquisition captures it for post-cutover ones. Textcasting's point: the
+    // writer's markdown is the original, the HTML is derived.
+    contentMarkdown: mat.normalized.contentMarkdown ?? null,
     permalink: safeUrl(mat.normalized.permalink ?? mat.material.link),
     // The delivery key IS the origin wire guid (v1 re-emitted posts.guid): the bare
     // <guid> for an opaque delivery, the normalized permalink for a permalink one
