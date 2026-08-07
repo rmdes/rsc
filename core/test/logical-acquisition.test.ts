@@ -476,3 +476,13 @@ test('source:markdown never enters the fingerprint', () => {
   expect(JSON.parse(with_.candidates[0].normalizedJson).contentMarkdown).toBe('**body**')
   expect(JSON.parse(without.candidates[0].normalizedJson).contentMarkdown ?? null).toBe(null)
 })
+
+test('an oversized source:markdown is dropped, not stored whole', () => {
+  const item = `<item><guid>https://x.example/2</guid><link>https://x.example/2</link><description>d</description>`
+  const oversized = 'x'.repeat(1024 * 1024 + 1) // over BOUNDS.maxItemEvidenceBytes (1 MiB)
+  const huge = parseCandidates(RSS(item + `<source:markdown>${oversized}</source:markdown></item>`))
+  expect(JSON.parse(huge.candidates[0].normalizedJson).contentMarkdown).toBe(null)
+  // A normal-sized value is unaffected by the same code path.
+  const normal = parseCandidates(RSS(item + `<source:markdown>**body**</source:markdown></item>`))
+  expect(JSON.parse(normal.candidates[0].normalizedJson).contentMarkdown).toBe('**body**')
+})

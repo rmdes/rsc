@@ -78,6 +78,18 @@ function boundRaw(kind: string, value: string | null): string | DigestEvidence |
   return utf8Bytes(value) > BOUNDS.maxRawEvidenceBytes ? digestEvidence(kind, value) : value
 }
 
+// contentMarkdown rides normalizedJson verbatim and is echoed straight back out as
+// <source:markdown>/firehose `contentMarkdown` (feed.ts itemContentFields) — it must
+// stay a plain string, never a DigestEvidence object like boundRaw's optional claims.
+// It's also NOT in canonicalMaterialFor, so unlike `content` it is never bounded by
+// the 1 MiB maxItemEvidenceBytes item-skip gate either — reuse that same ceiling
+// here rather than inventing a new one, and drop (not truncate) past it: a truncated
+// markdown blob would emit broken syntax mid-token into every reader's feed.
+function boundContentMarkdown(value: string | null): string | null {
+  if (value == null) return null
+  return utf8Bytes(value) > BOUNDS.maxItemEvidenceBytes ? null : value
+}
+
 // ---- delivery identity (spec §2.2) ------------------------------------------
 
 export type KeyKind = 'opaque' | 'permalink' | 'fallback'
@@ -250,7 +262,7 @@ function extractRawItems(doc: string, pageUrl: string): { adapter: ParseResult['
     rawDate: str(it.pubDate) ?? '',
     updatedAt: str(it.atom?.updated ?? null),
     inReplyTo: it.sourceNs?.inReplyTo?.value ?? it.thr?.inReplyTos?.[0]?.ref ?? null,
-    contentMarkdown: str(it.sourceNs?.markdown ?? null),
+    contentMarkdown: boundContentMarkdown(str(it.sourceNs?.markdown ?? null)),
     // <source> attribution wins (rss.chat aggregates); the CHANNEL title is the
     // fallback name evidence, matching the atom/jsonfeed/h-feed adapters. Never
     // the item title — reconcile treats a missing name as no evidence.
@@ -649,6 +661,8 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
   // Guarded in SQL so it is idempotent by construction and needs no read-back;
   // json_extract matches both key-absent and key-null. No new version row, no
   // job re-pend, no journal effect — deliberately off the churn path.
+  // Null→value only: a CHANGED markdown under unchanged markup is deliberately
+  // not chased (that is the churn path).
   const healMarkdown = tx.prepare(`UPDATE observation_versions_v2 SET normalized_json = ? WHERE id = ? AND json_extract(normalized_json, '$.contentMarkdown') IS NULL`)
 
   for (const obs of input.observations) {
@@ -685,7 +699,7 @@ export function commitAcquisition(tx: WriteTx, input: CommitAcquisitionInput): A
           bumpVersion.run(committedAt, runId, priorVersion.id) // unchanged
           // Markdown is not fingerprinted, so an item stored before capture existed
           // stays markdown-less forever without this. Rewrites the whole blob, so
-          // fresh enclosure URLs / replyContext ride along — harmless.
+          // fresh enclosure URLs / originFeedUrl ride along — harmless.
           if (norm.contentMarkdown != null) healMarkdown.run(obs.normalizedJson, priorVersion.id)
           counters.unchanged++
         } else {

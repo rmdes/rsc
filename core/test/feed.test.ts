@@ -684,4 +684,9 @@ test('an unchanged re-poll heals stored markdown without a new version row', asy
   const healed = repo.raw.prepare(`SELECT normalized_json FROM observation_versions_v2 LIMIT 1`).get() as { normalized_json: string }
   expect(JSON.parse(healed.normalized_json).contentMarkdown).toBe('**body**')
   expect(countVersions()).toBe(before) // no new version row
+  // overwriteObservationVersion (the changed branch) also creates no new row, so the
+  // count assertion alone can't tell heal apart from a real change — the job status
+  // does: overwriteObservationVersion re-pends via resetObservationJob (acquisition.ts:580),
+  // the heal never touches reconciliation_jobs_v2 at all.
+  expect((repo.raw.prepare(`SELECT status FROM reconciliation_jobs_v2 WHERE kind = 'observation'`).get() as { status: string }).status).toBe('reconciled') // unchanged branch: job not re-pended
 })
