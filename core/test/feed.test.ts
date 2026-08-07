@@ -561,11 +561,14 @@ test('a RSC conversation is walkable by threadwalker semantics (guid string-comp
   // Author label is the DISPLAY NAME: core <source> carries author.displayName
   // (matching Dave's feeds), and the starting feed's channel <title> is the
   // display name too — so 'Alice'/'Bob'/'Carol', not the lowercased handles.
+  // Feed order is newest-first (RSS convention); nesting stays structural, so
+  // Carol's reply to the root sorts above Bob's older one while Carol's reply to
+  // Bob stays nested under Bob.
   expect(outline).toEqual([
     'Alice: first body',
+    '  Carol: Carol replies to the root',
     '  Bob: Bob replies to Alice',
     '    Carol: Carol replies to Bob',
-    '  Carol: Carol replies to the root',
   ])
   // and never an unresolved author
   expect(outline.join('\n')).not.toContain('?:')
@@ -611,4 +614,15 @@ test('comments feed: a remote guid equal to its permalink but carrying a URL fra
   // bare guid, fragment preserved verbatim in the emitted VALUE
   expect(body).toContain(`<guid>${PERMA}</guid>`)
   expect(body).not.toContain(`<guid isPermaLink="false">${PERMA}</guid>`)
+})
+
+test('comments feed items are newest-first', async () => {
+  const { service, app } = await makeApp(CTX)
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  const wait = () => new Promise((r) => setTimeout(r, 2)) // force strictly-increasing published_at
+  await service.createLocalPostAs('bob', 'Bob', 'older reply', root)
+  await wait()
+  await service.createLocalPostAs('carol', 'Carol', 'newer reply', root)
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(body.indexOf('newer reply')).toBeLessThan(body.indexOf('older reply'))
 })

@@ -187,6 +187,11 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
       const replies = (thread?.nodes ?? [])
         .filter((n): n is { kind: 'item'; item: LogicalItemDto } => n.kind === 'item' && n.item.parentLogicalItemId === id)
         .map((n) => n.item)
+        // RSS convention is newest-first; projectThread returns depth-then-time ASC.
+        // Feed bytes only — the web UI reads /post/:id/thread, not comments.xml, so
+        // the chronological conversation order users see is unaffected. injectComments
+        // keys by guid and is order-independent, so both consumers take this array.
+        .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : a.id < b.id ? 1 : -1))
       return { item, replies }
     })
     if (!data) return c.json({ error: 'unknown post' }, 404)
