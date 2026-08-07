@@ -146,9 +146,10 @@ test('O4: comments.xml emits a remote reply ORIGIN guid (permalink + opaque wire
   const xml = await (await app.request('/post/root/comments.xml')).text()
   expect(xml).toContain('REPLYA') // both replies are serialized
   expect(xml).toContain('REPLYB')
-  // The emitted <guid> is the ORIGIN wire guid (v1 re-emitted posts.guid) — the
-  // permalink for a permalink delivery, the bare wire guid for an opaque one.
-  expect(xml).toContain('<guid isPermaLink="false">https://origin.test/reply-a</guid>')
+  // The emitted <guid> is the ORIGIN wire guid (v1 re-emitted posts.guid) — bare
+  // when it IS the item's own permalink (reply-a: keyKind='permalink', guid===url),
+  // isPermaLink="false" only when it is not (reply-b: opaque key, no permalink).
+  expect(xml).toContain('<guid>https://origin.test/reply-a</guid>')
   expect(xml).toContain('<guid isPermaLink="false">opaque-guid-b</guid>')
   // NOT our internal UUID (the defect: the origin instance can't dedupe its own item).
   expect(xml).not.toContain(idA)

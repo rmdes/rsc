@@ -570,3 +570,23 @@ test('a RSC conversation is walkable by threadwalker semantics (guid string-comp
   // and never an unresolved author
   expect(outline.join('\n')).not.toContain('?:')
 })
+
+test('comments feed: a remote guid equal to its permalink emits no isPermaLink attribute', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  // Guid === link, the shape a peer RSC/rss.chat instance emits (its own bare
+  // permalink guid). Re-emitting it as isPermaLink="false" would assert the
+  // origin's permalink is not one, leaving a reply nothing to fetch.
+  const PERMA = 'https://peer.example/post/abc-123'
+  await acquireFeed(ctx, {
+    url: 'https://peer.example/users/frank/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Frank</title>`
+      + `<item><guid>${PERMA}</guid><link>${PERMA}</link>`
+      + `<description>peer reply</description><source:inReplyTo>${root.url}</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
+  expect(body).toContain(`<guid>${PERMA}</guid>`)
+  expect(body).not.toContain(`<guid isPermaLink="false">${PERMA}</guid>`)
+})

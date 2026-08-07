@@ -254,7 +254,12 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
           // cross-instance reply resolves onto our local post) — only local
           // items get the permalink-guid treatment; a remote item's guid VALUE
           // must stay p.guid verbatim, never swapped to p.url.
-          guid: p.source === 'local' ? localGuid(p) : { value: p.guid, isPermaLink: false },
+          // Identity, NOT url-shape: acquisition.ts:243 stores the wire guid and
+          // DISCARDS the origin's isPermaLink, so a shape test would promote a
+          // WordPress-style <guid isPermaLink="false">https://x/?p=1</guid> to a
+          // permalink the origin denied. guid === url is provable from stored data.
+          // Omits the attribute rather than emitting isPermaLink="true" (feed.ts:60).
+          guid: p.source === 'local' ? localGuid(p) : { value: p.guid, ...(p.guid === p.url ? {} : { isPermaLink: false }) },
           ...(p.url !== null ? { link: p.url } : {}),
           pubDate: p.publishedAt,
           // RSS core <source>: the reply's author + their feed. Dave's fixed
