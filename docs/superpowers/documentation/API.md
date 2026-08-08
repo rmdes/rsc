@@ -114,6 +114,26 @@ transient — back off and retry.
 
 ## Reading
 
+### Reads that need no key
+
+Alongside the firehose and the feeds, three read endpoints are reachable
+anonymously. They return exactly what a logged-out visitor sees — nothing
+personal, nothing from a source under review:
+
+```
+GET /api/v1/timeline           # the public timeline
+GET /api/v1/post/:id           # a single item
+GET /api/v1/post/:id/thread    # an item with its ancestors and replies
+```
+
+`/post/:id/thread` covers `/post/:id`: for a visible item it carries the same
+record, and for an item hidden from you it either answers `404` identically or
+returns a neutral placeholder connecting replies you *can* see. Prefer the
+thread endpoint unless you specifically want the single-item shape.
+
+These are a **stated contract**, not an accident of the proxy — build against
+them.
+
 ### Your timeline
 
 ```
