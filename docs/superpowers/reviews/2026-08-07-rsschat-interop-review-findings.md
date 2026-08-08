@@ -167,3 +167,32 @@ by the gates before commit.
 tests for assertions that encode assumptions rather than the protocol. #5 covered
 the mechanical signatures (negative-only, absent-value ordering, zero-assertion);
 it did not read every assertion for semantic correctness.
+
+## OPEN — our feeds are not XML-safe (found 2026-08-08, third review)
+
+`safeReplyRef` bounds the reply **ref** only. Remote **title**, **content**, and
+captured **`source:markdown`** are still re-emitted verbatim, and none is checked
+against XML 1.0's `Char` production. Measured on `renderFirehoseRss`:
+
+```
+MALFORMED  fh-content-NUL.xml     MALFORMED  fh-content-FFFE.xml
+MALFORMED  fh-title-NUL.xml       MALFORMED  fh-markdown-NUL.xml
+OK         fh-guid-NUL.xml        (feedsmith handles the guid element itself)
+```
+
+Reachable through `renderCommentsFeed`, which serialises remote replies. One
+poisoned remote item makes the containing feed not-well-formed for every
+conformant reader — our own lenient parser hides it, so it fails silently.
+Pre-existing and not a regression, but it means **"the interop work made our feeds
+XML-safe" is NOT a claim this milestone earns.**
+
+Fix shape: one shared `xmlSafe()` predicate (the same `Char` complement
+`safeReplyRef` now uses) applied to ref + title + content + markdown at the
+emission choke point, rather than four separate guards. Needs its own spec —
+the interesting question is reject-vs-strip, since rejecting a whole item over one
+stray byte loses content, while stripping mutates what a peer byte-matches.
+
+Three rounds of review on the ref gate found a Critical each time, always in the
+previous round's fix. The pattern was consistent: the gate kept being applied at
+call sites rather than the choke point, and once at a paraphrase of a spec rather
+than the spec. Worth remembering when this one is specced.
