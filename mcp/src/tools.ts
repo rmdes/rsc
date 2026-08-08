@@ -108,29 +108,39 @@ function fenced(text: string, lang: string): string {
   return `${fence}${lang}\n${text}\n${fence}`
 }
 
-// displayName is attacker-chosen (it comes from the feed). Collapse all
-// whitespace, including embedded newlines, to single spaces and cap the
-// length — otherwise a feed can embed "\n[local] @victim" and forge what
-// looks like a second entry's header line in the rendered output.
+// Both displayName AND title are attacker-chosen: they travel the identical
+// untrusted path from a remote feed (core/src/logical/acquisition.ts, `str()`
+// on the wire's title/author fields → projector.ts DTO mapping) with no
+// newline stripping and no per-field cap anywhere upstream — only a 1 MB
+// whole-item gate. Collapse all whitespace, including embedded newlines, to
+// single spaces and cap the length — otherwise a feed can embed
+// "\n[local] @victim" in EITHER field and forge what looks like a second
+// entry's header line in the rendered output. One sanitizer, parameterised
+// by max length, so both fields go through the same choke point rather than
+// two independently-maintained copies.
 const MAX_BYLINE_LEN = 80
-function sanitizeByline(name: string): string {
-  const collapsed = name.replace(/\s+/g, ' ').trim()
-  return collapsed.length > MAX_BYLINE_LEN ? `${collapsed.slice(0, MAX_BYLINE_LEN)}…` : collapsed
+const MAX_TITLE_LEN = 300
+function sanitizeHeaderText(text: string, maxLen: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  if (collapsed.length <= maxLen) return collapsed
+  // Truncate on whole code points: slicing UTF-16 code units can split a
+  // surrogate pair (e.g. an emoji) and emit a lone, invalid surrogate.
+  return `${[...collapsed].slice(0, maxLen).join('')}…`
 }
 
 function bylineFor(author: SelectedAuthor | null): string {
   if (!author) return '(unattributed)'
   if (author.kind === 'local') return `@${author.handle}`
-  return sanitizeByline(author.displayName)
+  return sanitizeHeaderText(author.displayName, MAX_BYLINE_LEN)
 }
 
-function isBlank(s: string | null): s is null {
+function isBlank(s: string | null): boolean {
   return s === null || s.trim() === ''
 }
 
 export function renderItem(item: RscItem): string {
   const who = bylineFor(item.selectedAuthor)
-  const titleSuffix = item.title ? ` · ${item.title}` : ''
+  const titleSuffix = item.title ? ` · ${sanitizeHeaderText(item.title, MAX_TITLE_LEN)}` : ''
   const head = `[${item.origin}] ${who} · ${item.publishedAt} · id=${item.id}${titleSuffix}`
 
   // Prefer contentMarkdown; empty/whitespace-only content is treated as
@@ -199,10 +209,22 @@ export async function rscFetch(cfg: Config, path: string, opts: FetchOpts = {}):
       // body on a 307/308, so a rewriting proxy could reissue a POST as a
       // second wire-level request — exactly what "one request, no retries,
       // ever" (above) says cannot happen. 'error' makes fetch reject instead,
-      // which the catch above already turns into a clean ok:false result.
+      // which the catch below already turns into a clean ok:false result.
       redirect: 'error'
     })
   } catch (err) {
+    // Node's fetch (undici) rejects a redirect with a TypeError whose `cause`
+    // is `Error: unexpected redirect` — a distinct failure from a genuine
+    // network error (DNS, refused connection, timeout): the instance WAS
+    // reached, it just answered with a 3xx. Distinguishing this doesn't add
+    // a retry or a second request; it only changes which message the single
+    // failed attempt reports. If a future Node changes that internal
+    // message, this just falls back to the generic wording below — no
+    // functional regression.
+    const cause = err instanceof Error ? err.cause : undefined
+    if (cause instanceof Error && cause.message === 'unexpected redirect') {
+      return { ok: false, message: `${cfg.apiUrl} responded with a redirect instead of a direct answer; this client refuses to follow redirects on write-capable requests.` }
+    }
     return { ok: false, message: `Could not reach ${cfg.apiUrl}: ${err instanceof Error ? err.message : 'network error'}` }
   }
 
