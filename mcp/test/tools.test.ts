@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { loadConfig, resolveKey, renderItem, renderTimeline, renderThread, rscFetch } from '../src/tools.ts'
+import { toolHandlers, buildServer, schemas } from '../src/tools.ts'
 import type { RscItem } from '../src/tools.ts'
 
 describe('loadConfig', () => {
@@ -241,5 +242,164 @@ describe('rscFetch', () => {
     const spy = stubFetch(500, { error: 'boom' })
     await rscFetch(cfg2, '/me/posts', { method: 'POST', body: { content: 'hi' }, key: 'k1' })
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+})
+
+const cfgOne = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1' })
+const cfgTwo = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,claude:k2' })
+
+function textOf(r: { content: Array<{ type: string; text?: string }> }): string {
+  return r.content.map((c) => c.text ?? '').join('')
+}
+
+describe('rsc_timeline', () => {
+  it('sends the key and renders entries', async () => {
+    const spy = stubFetch(200, { timeline: [localItem], nextCursor: null })
+    const r = await toolHandlers.timeline({}, cfgOne)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('/api/v1/me/timeline')
+    expect(new Headers(init.headers).get('x-api-key')).toBe('k1')
+    expect(textOf(r)).toContain('@rmdes')
+    expect(r.isError).toBeUndefined()
+  })
+
+  it('passes limit and before through as query params', async () => {
+    const spy = stubFetch(200, { timeline: [], nextCursor: null })
+    await toolHandlers.timeline({ limit: 10, before: 'cur_1' }, cfgOne)
+    const [url] = spy.mock.calls[0] as unknown as [string]
+    expect(url).toContain('limit=10')
+    expect(url).toContain('before=cur_1')
+  })
+
+  it('reports an error result rather than throwing', async () => {
+    stubFetch(401, { error: 'unauthorized' })
+    const r = await toolHandlers.timeline({}, cfgOne)
+    expect(r.isError).toBe(true)
+  })
+
+  it('requires as when several identities are configured', async () => {
+    const spy = stubFetch(200, { timeline: [], nextCursor: null })
+    const r = await toolHandlers.timeline({}, cfgTwo)
+    expect(r.isError).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('reads the named identity timeline', async () => {
+    const spy = stubFetch(200, { timeline: [], nextCursor: null })
+    await toolHandlers.timeline({ as: 'claude' }, cfgTwo)
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new Headers(init.headers).get('x-api-key')).toBe('k2')
+  })
+})
+
+describe('rsc_thread', () => {
+  it('sends NO key', async () => {
+    const spy = stubFetch(200, { requestedLogicalItemId: 'li_1', rootId: 'li_1', nodes: [{ kind: 'item', item: localItem }], truncated: { depth: false, nodes: false, cycle: false } })
+    await toolHandlers.thread({ postId: 'li_1' }, cfgOne)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://rsc.example/api/v1/post/li_1/thread')
+    expect(new Headers(init.headers).has('x-api-key')).toBe(false)
+  })
+
+  it('percent-encodes the post id', async () => {
+    const spy = stubFetch(200, { requestedLogicalItemId: 'a/b', rootId: null, nodes: [], truncated: { depth: false, nodes: false, cycle: false } })
+    await toolHandlers.thread({ postId: 'a/b' }, cfgOne)
+    const [url] = spy.mock.calls[0] as unknown as [string]
+    expect(url).toContain('a%2Fb')
+  })
+
+  it('surfaces a 404 as a recoverable error', async () => {
+    stubFetch(404, { error: 'not found' })
+    const r = await toolHandlers.thread({ postId: 'nope' }, cfgOne)
+    expect(r.isError).toBe(true)
+  })
+})
+
+describe('rsc_post', () => {
+  it('posts as the only identity and reports the new id', async () => {
+    const spy = stubFetch(201, { post: { id: 'p_1', url: 'https://rsc.example/post/p_1' } })
+    const r = await toolHandlers.post({ content: 'hello' }, cfgOne)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://rsc.example/api/v1/me/posts')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ content: 'hello' })
+    expect(new Headers(init.headers).get('x-api-key')).toBe('k1')
+    expect(textOf(r)).toContain('p_1')
+    expect(r.isError).toBeUndefined()
+  })
+
+  it('includes inReplyTo when replying', async () => {
+    const spy = stubFetch(201, { post: { id: 'p_2', url: null } })
+    await toolHandlers.post({ content: 'a reply', inReplyTo: 'li_1' }, cfgOne)
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ content: 'a reply', inReplyTo: 'li_1' })
+  })
+
+  it('refuses to guess an identity when several are configured', async () => {
+    const spy = stubFetch(201, { post: { id: 'p_3', url: null } })
+    const r = await toolHandlers.post({ content: 'hi' }, cfgTwo)
+    expect(r.isError).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('uses the named identity', async () => {
+    const spy = stubFetch(201, { post: { id: 'p_4', url: null } })
+    await toolHandlers.post({ content: 'hi', as: 'claude' }, cfgTwo)
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new Headers(init.headers).get('x-api-key')).toBe('k2')
+  })
+
+  it('rejects an unknown identity WITHOUT sending anything', async () => {
+    const spy = stubFetch(201, { post: { id: 'p_5', url: null } })
+    const r = await toolHandlers.post({ content: 'hi', as: 'nobody' }, cfgTwo)
+    expect(r.isError).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('names the reply target when it does not resolve', async () => {
+    stubFetch(404, { error: 'unknown post' })
+    const r = await toolHandlers.post({ content: 'hi', inReplyTo: 'ghost' }, cfgOne)
+    expect(r.isError).toBe(true)
+    expect(textOf(r)).toContain('ghost')
+  })
+})
+
+describe('tool schemas', () => {
+  it('exposes exactly the three tools', () => {
+    expect(Object.keys(schemas).sort()).toEqual(['rsc_post', 'rsc_thread', 'rsc_timeline'])
+  })
+
+  it('builds a server without throwing', () => {
+    expect(() => buildServer(cfgOne)).not.toThrow()
+  })
+
+  // These bounds are transcribed from core/src/api/logical-routes/personal.ts
+  // (:111 content 1..100000, :112 inReplyTo 1..64). Asserting them here means
+  // a drift from core's validator fails locally instead of as a 400 at runtime.
+  it('rejects empty content and accepts a real post', () => {
+    expect(schemas.rsc_post.safeParse({ content: '' }).success).toBe(false)
+    expect(schemas.rsc_post.safeParse({ content: 'hi' }).success).toBe(true)
+  })
+
+  it('rejects content over 100000 chars', () => {
+    expect(schemas.rsc_post.safeParse({ content: 'x'.repeat(100001) }).success).toBe(false)
+    expect(schemas.rsc_post.safeParse({ content: 'x'.repeat(100000) }).success).toBe(true)
+  })
+
+  it('rejects an inReplyTo over 64 chars', () => {
+    expect(schemas.rsc_post.safeParse({ content: 'hi', inReplyTo: 'x'.repeat(65) }).success).toBe(false)
+    expect(schemas.rsc_post.safeParse({ content: 'hi', inReplyTo: 'x'.repeat(64) }).success).toBe(true)
+  })
+
+  it('clamps timeline limit to 1..100', () => {
+    expect(schemas.rsc_timeline.safeParse({ limit: 0 }).success).toBe(false)
+    expect(schemas.rsc_timeline.safeParse({ limit: 101 }).success).toBe(false)
+    expect(schemas.rsc_timeline.safeParse({ limit: 50 }).success).toBe(true)
+    expect(schemas.rsc_timeline.safeParse({}).success).toBe(true)
+  })
+
+  it('requires a postId for thread', () => {
+    expect(schemas.rsc_thread.safeParse({}).success).toBe(false)
+    expect(schemas.rsc_thread.safeParse({ postId: 'li_1' }).success).toBe(true)
   })
 })
