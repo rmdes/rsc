@@ -9,11 +9,10 @@ import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
-import type { Post } from '../src/domain/types.ts'
+import type { Post, CommandEnvelope } from '../src/domain/types.ts'
 import { renderFirehoseRss, injectSourceComments, localGuid } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
 import { randomUUID, createHash } from 'node:crypto'
-import type { CommandEnvelope } from '../src/domain/types.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { convertToStructuralTombstone } from '../src/logical/threading.ts'
 import { projectItem, projectTimeline } from '../src/logical/projector.ts'
@@ -851,7 +850,7 @@ test('a tombstoned parent cited by an OPAQUE guid still yields a reply ref, but 
   expect(evil.item.inReplyToRef).toBeNull() // dangerous scheme dropped, never relayed
 })
 
-test('the identity-key fallback rung fires on its REAL triggers: governance revoked, then source purged', async () => {
+test('the identity-key fallback rung fires on its ONE real trigger (governance revoked); a purge reaches a structural tombstone instead', async () => {
   const ctx = await makeApp(CTX)
   const { repo, app, store } = ctx
   // Parent and child must come from DIFFERENT sources: purging the parent's source
@@ -909,3 +908,60 @@ test('the identity-key fallback rung fires on its REAL triggers: governance revo
   expect(await refOfChild()).toBe('https://elsewhere.example/notes/gov-parent') // the child's own cited ref, via #3
 })
 
+
+test('a reply NEVER emits a dangerous ref, even when the parent guid itself is one (the resolved path)', async () => {
+  const ctx = await makeApp(CTX)
+  const { app } = ctx
+  // The gate used to wrap only the UNRESOLVED fallback, so a remote parent whose
+  // own <guid> is hostile was re-emitted verbatim by parentReplyRef — and that is
+  // the COMMON path (any reply to a remote post), not the rare one.
+  await acquireFeed(ctx, {
+    url: 'https://elsewhere.example/users/hostile/feed.xml',
+    xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>Hostile</title>`
+      + `<item><guid isPermaLink="false">javascript:alert(1)</guid><link>https://elsewhere.example/notes/hostile-parent</link>`
+      + `<description>hostile parent</description></item>`
+      + `<item><guid isPermaLink="false">hostile-child</guid><link>https://elsewhere.example/notes/hostile-child</link>`
+      + `<description>hostile child</description><source:inReplyTo>https://elsewhere.example/notes/hostile-parent</source:inReplyTo></item>`
+      + `</channel></rss>`,
+  })
+  const childId = (ctx.repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = 'hostile-child'`,
+  ).get() as { id: string } | undefined)?.id
+  expect(childId).toBeDefined()
+  const dto = (await (await app.request(`/post/${childId}`)).json()) as { item: { parentResolutionState: string; inReplyToRef: string | null } }
+  expect(dto.item.parentResolutionState).toBe('resolved') // sanity: it took the parentReplyRef branch, not the fallback
+  expect(dto.item.inReplyToRef).toBeNull()
+
+  // …and nothing hostile reaches the wire either.
+  const comments = await (await app.request(`/post/${childId}/comments.xml`)).text()
+  expect(comments).not.toContain('javascript:')
+})
+
+test('reply-ref gate: protocol-relative shapes rejected, inert guid families kept', async () => {
+  const ctx = await makeApp(CTX)
+  const { service, app } = ctx
+  const root = await service.createLocalPostAs('alice', 'Alice', 'root post text')
+  // Each child cites an UNRESOLVABLE ref, so each takes the fallback branch and the
+  // gate is the only thing deciding what is emitted.
+  const cases: Array<[string, string, string | null]> = [
+    ['slashes', '//evil.com/x', null],
+    ['backslashes', '/\\evil.com/x', null], // WHATWG reads \ as / — startsWith('//') misses this
+    ['yt', 'yt:video:dQw4w9WgXcQ', 'yt:video:dQw4w9WgXcQ'], // a two-scheme allow-list dropped these
+    ['data', 'data:text/html,x', null],
+  ]
+  for (const [tag, ref, expected] of cases) {
+    await acquireFeed(ctx, {
+      url: `https://elsewhere.example/users/${tag}/feed.xml`,
+      xml: `<?xml version="1.0"?><rss version="2.0" xmlns:source="http://source.scripting.com/"><channel><title>${tag}</title>`
+        + `<item><guid isPermaLink="false">${tag}-kid</guid><link>https://elsewhere.example/notes/${tag}-kid</link>`
+        + `<description>${tag} body</description><source:inReplyTo>${ref}</source:inReplyTo></item></channel></rss>`,
+    })
+    const id = (ctx.repo.raw.prepare(
+      `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = ?`,
+    ).get(`${tag}-kid`) as { id: string } | undefined)?.id
+    expect(id).toBeDefined()
+    const dto = (await (await app.request(`/post/${id}`)).json()) as { item: { inReplyToRef: string | null } }
+    expect([tag, dto.item.inReplyToRef]).toEqual([tag, expected])
+  }
+  expect(root.id).toBeTruthy()
+})

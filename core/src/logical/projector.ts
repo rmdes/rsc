@@ -260,37 +260,48 @@ function evidenceLevelFor(mode: string): EvidenceLevel {
   return mode === 'aggregate' ? 'aggregate_assertion' : 'bound_single_publisher'
 }
 
-// http(s) only, no credentials, no fragment (spec §3.4 URL bounds). Web escapes.
-// The reply ref to emit when we cannot re-derive the parent's advertised guid —
-// the parent is unresolved, or tombstoned away every identity key. reconcile.ts
-// replyReference treats a NON-URL ref as a first-class publisher-scoped OPAQUE
-// key, and feed.ts replyWireElements emits one with isPermaLink="false", so an
-// opaque id must survive here; safeUrl alone nulled it, dropping the very
-// source:inReplyTo the validator checks for (#replyDoesntPointBack).
+// Gate for EVERY emitted reply ref, whichever branch produced it. The value is
+// attacker-controlled either way: the fallback is the origin's raw claim, and
+// parentReplyRef's own answer for a REMOTE parent is that parent's `<guid>` off a
+// remote feed. An earlier version gated only the fallback, which left the common
+// path (a local user replying to a remote post) emitting whatever the origin put
+// in its guid.
 //
-// The value is attacker-controlled (it comes off a remote feed), so it stays
-// gated. Behaviour below is MEASURED against Node's URL parser, not assumed:
-//   - parses as http(s)      -> safeUrl (rejects credentials, strips fragment)
-//   - parses as another URI  -> only the inert guid schemes real feeds actually
-//     use (Blogger emits `tag:blogger.com,1999:blog-1.post-2`; `urn:uuid:…` is
-//     common). `javascript:`, `data:`, `vbscript:`, `file:` all parse fine and
-//     are rejected — a consuming reader may linkify this ref. Case and leading
-//     whitespace are normalised by the parser, so `JAVASCRIPT:` cannot slip past.
-//   - does not parse         -> an opaque id, kept verbatim. EXCEPT a
-//     protocol-relative `//host/x`, which does NOT parse yet still linkifies as
-//     a navigable URL.
-// Length needs no bound here: inReplyTo is part of canonicalMaterialFor, so it
-// is already capped by the maxItemEvidenceBytes gate at acquisition.
-const OPAQUE_REF_SCHEMES = new Set(['tag:', 'urn:'])
-function opaqueReplyRef(raw: string | null | undefined): string | null {
+// Validates and passes through VERBATIM — it must not normalise, because this
+// string exists to byte-match the parent's advertised <guid>; rewriting it is the
+// #replyDoesntPointBack defect by another route.
+//
+// Measured against Node's URL parser, not assumed:
+//   http(s)                  -> safeUrl decides (rejects embedded credentials)
+//   tag: urn: yt: guid: …    -> inert opaque id families, kept. A two-scheme
+//     ALLOW-list silently dropped `yt:video:…` (YouTube Atom <id>) and friends,
+//     re-creating the very regression this exists to prevent, so it is a
+//     DENY-list of the script-capable schemes instead.
+//   javascript: data: vbscript: file: blob:  -> rejected; a consuming reader may
+//     linkify this ref. Case and leading whitespace are normalised by the parser.
+//   //evil.com  /\evil.com  \\evil.com     -> rejected. A `startsWith('//')` test
+//     is NOT enough: WHATWG treats `\` as `/` for special schemes, so both
+//     backslash spellings resolve to an external host in any conformant resolver.
+//     Detected by resolving against a sentinel base and comparing the host.
+// Length: inReplyTo is inside canonicalMaterialFor, so acquisition's 1 MiB
+// maxItemEvidenceBytes gate bounds it — generous, but bounded.
+const DANGEROUS_REF_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:', 'blob:'])
+const REF_BASE_HOST = 'ref.invalid'
+function safeReplyRef(raw: string | null | undefined): string | null {
   if (!raw) return null
-  const http = safeUrl(raw)
-  if (http) return http
-  if (raw.startsWith('//')) return null
-  try { return OPAQUE_REF_SCHEMES.has(new URL(raw).protocol) ? raw : null } catch { /* not a URI at all — an opaque id */ }
+  let parsed: URL | null = null
+  try { parsed = new URL(raw) } catch { parsed = null }
+  if (parsed) {
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return safeUrl(raw) === null ? null : raw
+    return DANGEROUS_REF_SCHEMES.has(parsed.protocol) ? null : raw
+  }
+  // No scheme: an opaque id, unless it resolves to a DIFFERENT host — i.e. it is
+  // protocol-relative and would navigate off-site.
+  try { if (new URL(raw, `https://${REF_BASE_HOST}/`).host !== REF_BASE_HOST) return null } catch { /* not a relative reference either */ }
   return raw
 }
 
+// http(s) only, no credentials, no fragment (spec §3.4 URL bounds). Web escapes.
 function safeUrl(raw: string | null | undefined): string | null {
   if (!raw) return null
   try {
@@ -666,7 +677,7 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
     // second source relays it, governance flips). Re-deriving heals both with no
     // migration. posts.in_reply_to stays the fallback: a v1-archive or seeded reply
     // whose parent has no identity keys left has nothing to re-derive from.
-    inReplyToRef: (post.in_reply_to_post_id ? parentReplyRef(tx, post.in_reply_to_post_id) : null) ?? post.in_reply_to,
+    inReplyToRef: safeReplyRef((post.in_reply_to_post_id ? parentReplyRef(tx, post.in_reply_to_post_id) : null) ?? post.in_reply_to),
     sourceLink: null,
     replyContext: null,
     enclosures: [],
@@ -680,7 +691,7 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
 }
 
 function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): LogicalItemDto | undefined {
-  const cur = currentPresentation(tx, item) // no ordinary-eligible delivery ⇒ unavailable
+  const cur = currentPresentation(tx, item) // no ordinary-eligible delivery, or no presentation entry ⇒ unavailable
   if (!cur) return undefined
   const { delivery: display, entry: pres } = cur
   const mat = materialOf(tx, pres.observation_version_id)
@@ -722,9 +733,9 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     // (threading.ts convertToStructuralTombstone) strips every identity key off
     // the parent while the child's parent edge survives, so without this fallback
     // a still-resolved reply would emit no source:inReplyTo at all.
-    inReplyToRef: (state === 'resolved' && item.parent_logical_item_id !== null
+    inReplyToRef: safeReplyRef((state === 'resolved' && item.parent_logical_item_id !== null
       ? parentReplyRef(tx, item.parent_logical_item_id)
-      : null) ?? opaqueReplyRef(mat.material.inReplyTo),
+      : null) ?? mat.material.inReplyTo),
     sourceLink: safeUrl(mat.material.link),
     replyContext,
     enclosures: projectEnclosures(mat.normalized.enclosures),

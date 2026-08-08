@@ -74,6 +74,13 @@ test('renderLocalHtml hostile fixtures never survive (drift canary vs web/src/li
   // LIVENESS: without this, a renderLocalHtml that just returned '' would satisfy
   // every negative assertion below. Ordinary markdown must still render.
   expect(renderLocalHtml('plain **bold** text')).toContain('<strong>bold</strong>')
+  // THE SANITIZER-GATE FIXTURES. Every raw-HTML fixture below is dropped by remark
+  // BEFORE the sanitizer ever runs, so on their own they test the parser, not the
+  // XSS gate: deleting sanitizeHtml entirely left this canary green (measured).
+  // These two are markdown-NATIVE — the pipeline itself emits the href, so only
+  // the sanitizer can remove it. They are what makes this a gate test.
+  expect(renderLocalHtml('[x](javascript:alert(1))')).not.toContain('javascript:')
+  expect(renderLocalHtml('[x](//evil.com)')).not.toContain('//evil.com') // allowProtocolRelative: false
   // Measured behaviour (probed 2026-08-07), NOT assumed: a raw-HTML BLOCK is
   // dropped wholesale by remark, so these two legitimately render to '' — the
   // benign text does not survive, and that is stronger, not weaker.
