@@ -192,6 +192,39 @@ Standards-forward, few dependencies, no framework lock-in:
   [Caddy](https://caddyserver.com/) (auto-HTTPS), and
   [Mailpit](https://mailpit.axllent.org/) (dev/self-host mail).
 
+## MCP server
+
+Point a Claude session at your RSC account: read your timeline, follow a
+conversation, and post or reply — over the Model Context Protocol.
+
+```bash
+claude mcp add rsc -- node /path/to/rsc/mcp/src/stdio.ts
+```
+
+Two environment variables:
+
+| Variable | Required | What it is |
+|---|---|---|
+| `RSC_API_URL` | yes | Your instance root, e.g. `https://rsc.example.org` |
+| `RSC_IDENTITIES` | for posting | Comma-separated `name:key` pairs, from `/settings/api-keys` |
+
+Three tools: `rsc_timeline` (needs `timeline:read`), `rsc_thread` (needs no
+key), `rsc_post` (needs `posts:write`; set `inReplyTo` to reply).
+
+`RSC_IDENTITIES` may name several accounts — a personal one and, say, a bot
+account that posts release notes. Both `rsc_timeline` and `rsc_post` then
+**require** their `as` argument: with more than one identity configured there
+is no default, because whose timeline you are reading — and above all whose
+voice a public federated post goes out in — should never be implicit.
+
+Posting is public and federates over RSS. There is no delete tool; retract
+from the web UI.
+
+**Smoke test.** With the dev stack up (`docker compose up`), mint a key, set
+the two variables, add the server, then call `rsc_timeline`, `rsc_post`, and
+`rsc_thread` on the returned id — and confirm the post shows up in
+`/users/<handle>/feed.xml`.
+
 ## Docs
 
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — design documents for
