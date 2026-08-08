@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { loadConfig, resolveKey, renderItem, renderTimeline, renderThread } from '../src/tools.ts'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { loadConfig, resolveKey, renderItem, renderTimeline, renderThread, rscFetch } from '../src/tools.ts'
 import type { RscItem } from '../src/tools.ts'
 
 describe('loadConfig', () => {
@@ -176,5 +176,70 @@ describe('renderThread', () => {
       truncated: { depth: false, nodes: true, cycle: false }
     })
     expect(out).toMatch(/truncated/i)
+  })
+})
+
+const cfg2 = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,claude:k2' })
+
+function stubFetch(status: number, body: unknown) {
+  const spy = vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
+  vi.stubGlobal('fetch', spy)
+  return spy
+}
+
+afterEach(() => vi.unstubAllGlobals())
+
+describe('rscFetch', () => {
+  it('prefixes /api/v1 and sends no key when none is given', async () => {
+    const spy = stubFetch(200, { ok: true })
+    await rscFetch(cfg2, '/post/li_1/thread')
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://rsc.example/api/v1/post/li_1/thread')
+    expect(new Headers(init.headers).has('x-api-key')).toBe(false)
+  })
+
+  it('sends x-api-key when a key is given', async () => {
+    const spy = stubFetch(200, { ok: true })
+    await rscFetch(cfg2, '/me/timeline', { key: 'k2' })
+    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(new Headers(init.headers).get('x-api-key')).toBe('k2')
+  })
+
+  it('passes core error messages through verbatim', async () => {
+    stubFetch(400, { error: 'content invalid' })
+    const r = await rscFetch(cfg2, '/me/posts', { method: 'POST', body: { content: '' }, key: 'k1' })
+    expect(r).toEqual({ ok: false, message: expect.stringContaining('content invalid') })
+  })
+
+  it('names the identity on a 401 without leaking the key', async () => {
+    stubFetch(401, { error: 'unauthorized' })
+    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k2', identityName: 'claude' }) as { ok: false; message: string }
+    expect(r.message).toContain('claude')
+    expect(r.message).toContain('RSC_IDENTITIES')
+    expect(r.message).not.toContain('k2')
+  })
+
+  it('explains a 429 as the per-key hourly limit', async () => {
+    stubFetch(429, { error: 'rate limited' })
+    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' }) as { ok: false; message: string }
+    expect(r.message).toMatch(/300/)
+  })
+
+  it('reports an unreachable instance on 503', async () => {
+    stubFetch(503, {})
+    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' }) as { ok: false; message: string }
+    expect(r.message).toMatch(/unreachable|unavailable/i)
+  })
+
+  it('reports a network failure instead of throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' })
+    expect(r.ok).toBe(false)
+  })
+
+  it('issues exactly ONE request when the server 500s on a write', async () => {
+    const spy = stubFetch(500, { error: 'boom' })
+    await rscFetch(cfg2, '/me/posts', { method: 'POST', body: { content: 'hi' }, key: 'k1' })
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })

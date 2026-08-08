@@ -105,3 +105,62 @@ export function renderThread(env: ThreadEnvelope): string {
     : ''
   return `Thread of ${env.requestedLogicalItemId} (root ${env.rootId ?? 'unknown'}):\n\n${nodes.join('\n\n')}${warn}`
 }
+
+export type FetchResult = { ok: true; data: unknown } | { ok: false; message: string }
+
+export interface FetchOpts {
+  method?: string
+  body?: unknown
+  key?: string
+  identityName?: string
+}
+
+// One request, no retries, ever. POST /me/posts carries no commandId (unlike
+// POST /me/api-subscriptions, which requires one) — post creation is NOT
+// idempotent, and a retried write duplicates a post into every subscriber's
+// RSS feed. Reads share this helper and therefore share the rule; that is a
+// deliberate simplification, not an oversight.
+// ponytail: single no-retry policy for reads and writes alike. If read
+// flakiness ever justifies it, add retry to the READ call sites only — never
+// inside this helper, where the write path would inherit it.
+export async function rscFetch(cfg: Config, path: string, opts: FetchOpts = {}): Promise<FetchResult> {
+  const headers: Record<string, string> = {}
+  if (opts.key) headers['x-api-key'] = opts.key
+  if (opts.body !== undefined) headers['content-type'] = 'application/json'
+
+  let res: Response
+  try {
+    res = await fetch(`${cfg.apiUrl}/api/v1${path}`, {
+      method: opts.method ?? 'GET',
+      headers,
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+    })
+  } catch (err) {
+    return { ok: false, message: `Could not reach ${cfg.apiUrl}: ${err instanceof Error ? err.message : 'network error'}` }
+  }
+
+  let parsed: unknown = null
+  try {
+    parsed = await res.json()
+  } catch {
+    parsed = null
+  }
+
+  if (res.ok) return { ok: true, data: parsed }
+
+  const core = typeof parsed === 'object' && parsed !== null && typeof (parsed as { error?: unknown }).error === 'string'
+    ? (parsed as { error: string }).error
+    : null
+
+  if (res.status === 401 || res.status === 403) {
+    const who = opts.identityName ? `identity "${opts.identityName}"` : 'the configured key'
+    return { ok: false, message: `The key for ${who} was rejected (${res.status}) — check RSC_IDENTITIES and the key's permissions.` }
+  }
+  if (res.status === 429) {
+    return { ok: false, message: 'Rate limited (429). Each API key allows 300 requests per hour; wait rather than retrying.' }
+  }
+  if (res.status === 503) {
+    return { ok: false, message: `The RSC instance at ${cfg.apiUrl} is unreachable (503).` }
+  }
+  return { ok: false, message: core ? `${core} (HTTP ${res.status})` : `Request failed with HTTP ${res.status}.` }
+}
