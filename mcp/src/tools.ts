@@ -69,10 +69,21 @@ export interface ThreadEnvelope {
   truncated: { depth: boolean; nodes: boolean; cycle: boolean }
 }
 
+// A remote item with no contentMarkdown carries raw feed HTML. Tool output is
+// markdown, so it goes in a fence: any renderer then shows it as literal text
+// instead of interpreting third-party markup. The fence is one backtick longer
+// than the longest run inside the content, so feed HTML containing backticks
+// cannot break out of it.
+function fencedHtml(html: string): string {
+  const runs = [...html.matchAll(/`+/g)].map((m) => m[0].length)
+  const fence = '`'.repeat(Math.max(3, ...runs, 2) + 1)
+  return `${fence}html\n${html}\n${fence}`
+}
+
 export function renderItem(item: RscItem): string {
   const who = item.selectedAuthor?.handle ? `@${item.selectedAuthor.handle}` : '(unattributed)'
   const head = `[${item.origin}] ${who} · ${item.publishedAt} · id=${item.id}`
-  const body = item.contentMarkdown ?? item.content ?? '(no content)'
+  const body = item.contentMarkdown ?? (item.content !== null ? fencedHtml(item.content) : '(no content)')
   const tail: string[] = []
   if (item.directReplyCount > 0) tail.push(`${item.directReplyCount} replies`)
   if (item.permalink) tail.push(item.permalink)

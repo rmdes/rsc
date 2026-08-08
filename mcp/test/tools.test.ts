@@ -111,6 +111,28 @@ describe('renderItem', () => {
     expect(() => renderItem(anon)).not.toThrow()
     expect(renderItem(anon)).toContain('[local]')
   })
+
+  it('fences the raw-HTML fallback so it cannot render as markup', () => {
+    const out = renderItem(remoteNoMarkdown)
+    expect(out).toContain('```html')
+    expect(out).toContain('from a feed')
+    // the tag is present as literal text inside the fence, not as loose markup
+    const fenced = out.slice(out.indexOf('```html'))
+    expect(fenced).toContain('<p>from a feed</p>')
+  })
+
+  it('widens the fence when the feed content contains backticks', () => {
+    const tricky = { ...remoteNoMarkdown, content: '<p>```html\nescape attempt\n```</p>' }
+    const out = renderItem(tricky)
+    const opening = out.slice(out.indexOf('`')).match(/^`+/)![0]
+    expect(opening.length).toBeGreaterThan(3)
+    // every backtick run inside the content is shorter than the fence
+    expect(out).toContain('escape attempt')
+  })
+
+  it('still prefers contentMarkdown and never fences it', () => {
+    expect(renderItem(localItem)).not.toContain('```html')
+  })
 })
 
 describe('renderTimeline', () => {
