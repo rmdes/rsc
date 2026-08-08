@@ -10,7 +10,7 @@ import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post, CommandEnvelope } from '../src/domain/types.ts'
-import { renderFirehoseRss, injectSourceComments, localGuid } from '../src/domain/feed.ts'
+import { renderFirehoseRss, injectSourceComments, localGuid, renderRssFeed } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
 import { randomUUID, createHash } from 'node:crypto'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
@@ -932,8 +932,17 @@ test('a reply NEVER emits a dangerous ref, even when the parent guid itself is o
   expect(dto.item.parentResolutionState).toBe('resolved') // sanity: it took the parentReplyRef branch, not the fallback
   expect(dto.item.inReplyToRef).toBeNull()
 
-  // …and nothing hostile reaches the wire either.
-  const comments = await (await app.request(`/post/${childId}/comments.xml`)).text()
+  // …and nothing hostile reaches the wire either. Ask the PARENT's comments feed:
+  // renderCommentsFeed serializes a channel post's REPLIES, never the channel post's
+  // own inReplyTo — so requesting the child's feed yields zero items and the
+  // assertion passes with the gate disabled. Measured; that is the vacuous-assertion
+  // class this very series exists to remove.
+  const parentId = (ctx.repo.raw.prepare(
+    `SELECT logical_item_id AS id FROM logical_identity_keys_v2 WHERE kind LIKE 'opaque:%' AND key = 'javascript:alert(1)'`,
+  ).get() as { id: string } | undefined)?.id
+  expect(parentId).toBeDefined()
+  const comments = await (await app.request(`/post/${parentId}/comments.xml`)).text()
+  expect(comments).toContain('hostile child') // the reply IS serialized — not a vacuous pass
   expect(comments).not.toContain('javascript:')
 })
 
@@ -964,4 +973,33 @@ test('reply-ref gate: protocol-relative shapes rejected, inert guid families kep
     expect([tag, dto.item.inReplyToRef]).toEqual([tag, expected])
   }
   expect(root.id).toBeTruthy()
+})
+
+test('the WebSub fat-ping path is gated too: a hostile stored ref never reaches rendered RSS', () => {
+  // push.ts builds Posts straight from the repository (toPost maps posts.in_reply_to
+  // verbatim) and renders them WITHOUT the projector — RSC_WEBSUB defaults to 'self'
+  // in prod, so this is the live path. Gating only in the projector left it open.
+  const hostile: Post = {
+    id: 'p1', authorId: 'u1', source: 'local', guid: 'g1', title: null,
+    content: 'body', url: 'https://cast.example.com/post/p1',
+    publishedAt: NOW, createdAt: NOW, inReplyTo: 'javascript:alert(1)',
+    inReplyToPostId: null, threadRootId: null, sourceName: null, sourceFeedUrl: null,
+    contentMarkdown: null, editedAt: null, replyContextAuthor: null, replyContextSnippet: null,
+  }
+  const user: Post extends never ? never : Parameters<typeof renderRssFeed>[0] =
+    { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: NOW, authUserId: null }
+  const xml = renderRssFeed(user, [hostile], CTX)
+  expect(xml).toContain('body') // the item really rendered — not a vacuous pass
+  expect(xml).not.toContain('javascript:')
+  // and an inert opaque ref on the same path still survives
+  const ok = renderRssFeed(user, [{ ...hostile, inReplyTo: 'yt:video:dQw4w9WgXcQ' }], CTX)
+  expect(ok).toContain('<source:inReplyTo isPermaLink="false">yt:video:dQw4w9WgXcQ</source:inReplyTo>')
+  // Interior C0 controls are not valid XML 1.0 at all: emitting one makes OUR OWN
+  // public feed not-well-formed for every conformant reader, permanently, from a
+  // single poisoned remote guid. The URL parser trims outer C0 but keeps interior.
+  for (const bad of ['guid\u0000one', 'guid\u0001one', 'guid\u000bone', 'guid\u000cone']) {
+    const out = renderRssFeed(user, [{ ...hostile, inReplyTo: bad }], CTX)
+    expect(out).toContain('body') // rendered, so this is not a vacuous pass
+    expect(out).not.toContain('<source:inReplyTo')
+  }
 })

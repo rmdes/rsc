@@ -4,6 +4,7 @@ import type { Post, User, TimelineEntry } from './types.ts'
 import type { LogicalItemDto } from '../logical/types.ts'
 import { renderLocalHtml } from './markdown.ts'
 import { normalizePermalink } from '../logical/roots.ts'
+import { safeReplyRef } from '../logical/projector.ts'
 
 // Adapt a logical-v2 ordinary DTO to the TimelineEntry shape the existing feed
 // renderers consume (spec §4.6: all public feeds use the central projector). Local
@@ -116,7 +117,12 @@ export function replyWireElements(ref: string) {
 // source; remote posts re-emit as stored (pass-through), incl. any captured
 // source:markdown. Merges with replyWireElements' sourceNs (inReplyTo).
 export function itemContentFields(p: Post) {
-  const reply = p.inReplyTo ? replyWireElements(p.inReplyTo) : undefined
+  // EVERY RSS render path funnels through here — including push.ts's WebSub
+  // fat-ping bodies, which build Posts straight from the repository and never see
+  // the projector. Gating only in the projector left the fat-ping (the prod
+  // default, RSC_WEBSUB=self) emitting whatever an origin put in its <guid>.
+  const ref = safeReplyRef(p.inReplyTo)
+  const reply = ref ? replyWireElements(ref) : undefined
   const markdown = p.source === 'local' ? p.content : p.contentMarkdown ?? undefined
   const sourceNs = { ...(reply?.sourceNs ?? {}), ...(markdown ? { markdown } : {}) }
   return {

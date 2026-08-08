@@ -260,7 +260,12 @@ function evidenceLevelFor(mode: string): EvidenceLevel {
   return mode === 'aggregate' ? 'aggregate_assertion' : 'bound_single_publisher'
 }
 
-// Gate for EVERY emitted reply ref, whichever branch produced it. The value is
+// Gate for a reply ref, wherever it came from. Applied at BOTH ends: here, so
+// the DTO (and the JSON API) is clean, and again in domain/feed.ts
+// itemContentFields, which is the choke point every RSS render path shares —
+// including the WebSub fat-ping bodies, which never touch the projector at all.
+// The function is a pure predicate returning its input verbatim, so double-gating
+// is idempotent. The value is
 // attacker-controlled either way: the fallback is the origin's raw claim, and
 // parentReplyRef's own answer for a REMOTE parent is that parent's `<guid>` off a
 // remote feed. An earlier version gated only the fallback, which left the common
@@ -285,10 +290,15 @@ function evidenceLevelFor(mode: string): EvidenceLevel {
 //     Detected by resolving against a sentinel base and comparing the host.
 // Length: inReplyTo is inside canonicalMaterialFor, so acquisition's 1 MiB
 // maxItemEvidenceBytes gate bounds it — generous, but bounded.
-const DANGEROUS_REF_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:', 'blob:'])
+const DANGEROUS_REF_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:', 'blob:', 'view-source:', 'filesystem:', 'jar:'])
 const REF_BASE_HOST = 'ref.invalid'
-function safeReplyRef(raw: string | null | undefined): string | null {
+export function safeReplyRef(raw: string | null | undefined): string | null {
   if (!raw) return null
+  // XML 1.0 permits only #x9/#xA/#xD and #x20+. The URL parser strips tab/LF/CR and
+  // TRIMS outer C0, but interior C0 survives — and feedsmith emits it raw, which makes
+  // our OWN public feed not-well-formed for any conformant reader (measured with
+  // expat). One poisoned remote guid would break that author's feed permanently.
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(raw)) return null
   let parsed: URL | null = null
   try { parsed = new URL(raw) } catch { parsed = null }
   if (parsed) {
@@ -297,7 +307,11 @@ function safeReplyRef(raw: string | null | undefined): string | null {
   }
   // No scheme: an opaque id, unless it resolves to a DIFFERENT host — i.e. it is
   // protocol-relative and would navigate off-site.
-  try { if (new URL(raw, `https://${REF_BASE_HOST}/`).host !== REF_BASE_HOST) return null } catch { /* not a relative reference either */ }
+  // FAIL CLOSED. A throw is the UNCERTAIN case, not the safe one: `//evil.com /x`
+  // and `//evil.com%2f..` both throw here, and a consumer that strips whitespace
+  // before resolving navigates off-site. A ref that parses neither standalone nor
+  // relatively is not a usable reference.
+  try { if (new URL(raw, `https://${REF_BASE_HOST}/`).host !== REF_BASE_HOST) return null } catch { return null }
   return raw
 }
 
