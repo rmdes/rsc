@@ -8,11 +8,11 @@ perimeter invariant), so the base URL is just your instance:
 https://rsc.example.org/api/v1
 ```
 
-Two things need no key at all: the **public firehose** below, and every RSS /
-JSON feed the instance already publishes. Feeds remain the primary integration
-surface — this API exists for the things a feed can't express (writing, and
-reading your own personal timeline). If a feed reader can do the job, use a
-feed.
+Several surfaces need no key at all: the **public firehose** below, every RSS /
+JSON feed the instance already publishes, and anonymous read endpoints listed
+in [Reading](#reading). Feeds remain the primary integration surface — this API
+exists for the things a feed can't express (writing, and reading your own
+personal timeline). If a feed reader can do the job, use a feed.
 
 ---
 
