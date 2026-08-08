@@ -115,15 +115,55 @@ reddit `urlAnsweredWithAnError` deliberately remaining; `markupWithoutMarkdown`
 clearing on its own schedule (immediately for v1-converted items, on next poll for
 post-cutover ones).
 
-## Open follow-ups
+## Follow-ups — ALL CLOSED 2026-08-08
 
-- `remoteOriginGuid` re-queries a presentation entry `projectRemote` already holds
-  (deliberate duplication, twin-pointer docblock, can drift).
-- The identity-key fallback rung's real production trigger (governance revoked
-  after a reply resolved) is only synthetically tested.
-- A tombstoned parent whose child cited a **bare non-URL** guid still yields a null
-  ref (`safeUrl` rejects non-URLs).
-- `read.ts`'s comparator tie-break runs descending while `threading.ts` `byOrder`
-  runs ascending — deterministic either way.
-- Worth its own pass: audit the feed/threading tests for assertions that encode
-  assumptions rather than the protocol.
+Worked in the order 5 → 4 → 3 → 2 → 1, auditing before each. Three of the five
+audits corrected the finding as written, which is recorded below because the
+corrections are the useful part.
+
+**#5 — test assertions that cannot fail. `b9eaa1a`.**
+Swept the suite for structurally-vacuous assertions. **The XSS drift canary was
+vacuous on BOTH twins**: every assertion in "hostile fixtures never survive" was
+negative, so all of them passed if the renderer returned `''` — mutation-proven by
+stubbing `renderLocalHtml`. Both now bite. *The audit corrected the fix mid-flight:*
+`renderLocalHtml('<script>…</script>ok')` legitimately returns `''` (remark drops a
+raw-HTML block wholesale), so "benign text survives" is false for block-level
+fixtures — the liveness proof uses ordinary markdown instead. Also documented that
+**the twins are not behaviourally identical**: they share `SANITIZE_CONFIG`, not a
+pipeline. Separately, three ops-token leak tests could pass on a 404; two now pin
+measured status arrays, the third proves its reads returned data.
+
+**#4 — comparator shape. `03ca414`.**
+Tie-broke on id *descending* where `threading.ts:447 byOrder` does ascending, and
+**never returned 0** (returned `-1` for equal ids — not a valid comparator).
+Unreachable in practice; it simply read as house style without being it.
+
+**#3 — opaque reply refs. `783f68c`.** *Audit widened this one.*
+`reconcile.ts replyReference` treats a non-URL `inReplyTo` as a first-class
+publisher-scoped OPAQUE key, and `replyWireElements` emits one with
+`isPermaLink="false"` — so opaque refs are supported end to end, and the fallback
+nulled them via `safeUrl`. That fires on **any unresolved ref**, not only the logged
+tombstone case. `safeUrl` is a security gate, not a shape check, so the fix keeps
+one: measured against Node's parser, `tag:`/`urn:` guids are kept, `javascript:`/
+`data:`/`vbscript:`/`file:` rejected, and `//evil.com` rejected *despite not
+parsing*, because it still linkifies. Both naive fixes fail.
+
+**#2 — the identity-key fallback rung. `742fbc9`.** *Audit corrected itself twice.*
+It first appeared to have a second trigger: `tombstones.ts` deletes only
+`kind='delivery'` keys, so a purge looks like it leaves the opaque key to answer.
+It does not — purging the last delivery leaves the parent with none, which converts
+it to a structural tombstone, and `threading.ts:294` deletes **every** key. Two true
+facts composing into a false third; only running it surfaced that. The rung has
+exactly **one** reachable trigger: governance revoked. Now covered through the real
+path (the parent 404s, proving the rung is what answers), mutation-checked.
+
+**#1 — duplicated presentation derivation. `298923f`.**
+Extracted `currentPresentation()`; `selectedDeliveryFor` now has one caller, so the
+rule is expressed once and drift is unrepresentable rather than documented. The
+first attempt dropped a binding `projectRemote` still needed — 77 failures, caught
+by the gates before commit.
+
+**Still open, unchanged:** the standing suggestion to keep auditing feed/threading
+tests for assertions that encode assumptions rather than the protocol. #5 covered
+the mechanical signatures (negative-only, absent-value ordering, zero-assertion);
+it did not read every assertion for semantic correctness.
