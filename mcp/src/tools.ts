@@ -38,3 +38,59 @@ export function resolveKey(cfg: Config, as: string | undefined): { key: string }
   if (!key) return { error: `Unknown identity "${as}". Configured: ${names.join(', ')}.` }
   return { key }
 }
+
+// Hand-declared narrow view of core's LogicalItemDto — only the fields this
+// server renders. Never imported from core/src: web/src/lib/types.ts sets the
+// precedent (it hand-declares TimelineEntry and imports nothing from core).
+export interface RscItem {
+  id: string
+  origin: 'local' | 'remote'
+  selectedAuthor: { handle?: string | null; displayName?: string | null } | null
+  content: string | null
+  contentMarkdown: string | null
+  permalink: string | null
+  publishedAt: string
+  directReplyCount: number
+}
+
+export interface TimelineEnvelope {
+  timeline: RscItem[]
+  nextCursor: string | null
+}
+
+export type ThreadNode =
+  | { kind: 'item'; item: RscItem }
+  | { kind: 'placeholder'; logicalItemId: string; parentLogicalItemId: string | null; timelineSortAt: string; placeholderKind: string }
+
+export interface ThreadEnvelope {
+  requestedLogicalItemId: string
+  rootId: string | null
+  nodes: ThreadNode[]
+  truncated: { depth: boolean; nodes: boolean; cycle: boolean }
+}
+
+export function renderItem(item: RscItem): string {
+  const who = item.selectedAuthor?.handle ? `@${item.selectedAuthor.handle}` : '(unattributed)'
+  const head = `[${item.origin}] ${who} · ${item.publishedAt} · id=${item.id}`
+  const body = item.contentMarkdown ?? item.content ?? '(no content)'
+  const tail: string[] = []
+  if (item.directReplyCount > 0) tail.push(`${item.directReplyCount} replies`)
+  if (item.permalink) tail.push(item.permalink)
+  return tail.length ? `${head}\n${body}\n↳ ${tail.join(' · ')}` : `${head}\n${body}`
+}
+
+export function renderTimeline(env: TimelineEnvelope): string {
+  if (env.timeline.length === 0) return 'No entries.'
+  const items = env.timeline.map(renderItem).join('\n\n')
+  return env.nextCursor ? `${items}\n\nMore: pass before=${env.nextCursor}` : items
+}
+
+export function renderThread(env: ThreadEnvelope): string {
+  const nodes = env.nodes.map((n) =>
+    n.kind === 'item' ? renderItem(n.item) : `[${n.placeholderKind}] id=${n.logicalItemId} · ${n.timelineSortAt}`
+  )
+  const warn = env.truncated.depth || env.truncated.nodes || env.truncated.cycle
+    ? '\n\n(thread truncated — not every reply is shown)'
+    : ''
+  return `Thread of ${env.requestedLogicalItemId} (root ${env.rootId ?? 'unknown'}):\n\n${nodes.join('\n\n')}${warn}`
+}
