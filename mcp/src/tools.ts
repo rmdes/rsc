@@ -5,48 +5,81 @@ import * as z from 'zod/v4'
 // tool registrations. Imports NO transport — src/stdio.ts is the only file
 // that knows how bytes move, and phase 2's HTTP entry will sit beside it.
 
+// An identity is an instance AND a credential, never one without the other:
+// an API key is instance-scoped, so a key minted on rsc.rmdes.be means
+// nothing on rsc.rmendes.net. An earlier shape had one RSC_API_URL plus
+// name:key pairs, which could not express an account on each of two
+// instances at all — the url belongs to the identity, not beside it.
+export interface Identity {
+  url: string
+  key: string
+}
+
 export interface Config {
-  apiUrl: string
-  identities: Map<string, string>
+  identities: Map<string, Identity>
 }
 
-// Two variables, no defaults. RSC_DEFAULT_IDENTITY and an RSC_API_KEY
-// shorthand were both deliberately cut (spec rev 2): a default identity is
-// inert with one key and silently picks a voice with several, which is
-// exactly the case the design requires to be explicit.
+// ONE variable, JSON:
+//   RSC_IDENTITIES='{"be":{"url":"https://rsc.rmdes.be","key":"rsc_…"},
+//                    "net":{"url":"https://rsc.rmendes.net","key":"rsc_…"}}'
+// JSON rather than an invented separator because both URLs and keys contain
+// colons, and JSON.parse is stdlib. No second "simple" form: this session
+// removed two convenience shorthands (RSC_DEFAULT_IDENTITY, RSC_API_KEY)
+// precisely because a second config path is where the ambiguity lives.
 export function loadConfig(env: Record<string, string | undefined>): Config {
-  const apiUrl = env.RSC_API_URL?.trim()
-  if (!apiUrl) throw new Error('RSC_API_URL is required (e.g. https://rsc.example.org)')
-  const identities = new Map<string, string>()
-  for (const pair of (env.RSC_IDENTITIES ?? '').split(',')) {
-    const entry = pair.trim()
-    if (!entry) continue
-    const sep = entry.indexOf(':')
-    if (sep <= 0 || sep === entry.length - 1) {
-      throw new Error('RSC_IDENTITIES must be a comma-separated list of name:key pairs')
-    }
-    const name = entry.slice(0, sep).trim()
-    // A duplicate used to last-win silently. `as` chooses whose voice a
-    // public, federated post goes out in, so an ambiguous name is a startup
-    // error, not a coin flip. The message names the identity, never the keys.
-    if (identities.has(name)) {
-      throw new Error(`RSC_IDENTITIES contains a duplicate identity name: "${name}"`)
-    }
-    identities.set(name, entry.slice(sep + 1).trim())
+  const raw = env.RSC_IDENTITIES?.trim()
+  if (!raw) {
+    throw new Error('RSC_IDENTITIES is required, e.g. \'{"me":{"url":"https://rsc.example.org","key":"rsc_…"}}\'')
   }
-  return { apiUrl: apiUrl.replace(/\/+$/, ''), identities }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error('RSC_IDENTITIES must be a JSON object of name -> {url, key}')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('RSC_IDENTITIES must be a JSON object of name -> {url, key}')
+  }
+  const identities = new Map<string, Identity>()
+  // Object.entries, so a name like "__proto__" is an ordinary key rather than
+  // a prototype write — same reasoning as core's ALLOWED_KEY_PERMISSIONS guard.
+  for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const v = value as { url?: unknown; key?: unknown } | null
+    if (typeof v !== 'object' || v === null) {
+      throw new Error(`RSC_IDENTITIES entry "${name}" must be an object with url and key`)
+    }
+    if (typeof v.url !== 'string' || !v.url.trim()) throw new Error(`RSC_IDENTITIES entry "${name}" is missing a url`)
+    if (typeof v.key !== 'string' || !v.key.trim()) throw new Error(`RSC_IDENTITIES entry "${name}" is missing a key`)
+    // Reject anything that isn't http(s) before a key is ever attached to it:
+    // a file:// or other scheme here would be a credential pointed somewhere
+    // it can't belong. The message names the identity, never the key.
+    let url: URL
+    try {
+      url = new URL(v.url.trim())
+    } catch {
+      throw new Error(`RSC_IDENTITIES entry "${name}" has an invalid url`)
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error(`RSC_IDENTITIES entry "${name}" must use an http or https url`)
+    }
+    identities.set(name, { url: v.url.trim().replace(/\/+$/, ''), key: v.key.trim() })
+  }
+  if (identities.size === 0) throw new Error('RSC_IDENTITIES must configure at least one identity')
+  return { identities }
 }
 
-export function resolveKey(cfg: Config, as: string | undefined): { key: string } | { error: string } {
+// Resolves to an instance AND its key together. With several configured, an
+// omitted `as` is ambiguous about which INSTANCE as well as whose voice — so
+// it is an error for reads too, not only for posting.
+export function resolveIdentity(cfg: Config, as: string | undefined): Identity | { error: string } {
   const names = [...cfg.identities.keys()]
-  if (names.length === 0) return { error: 'No identity configured. Set RSC_IDENTITIES=name:key to post.' }
   if (as === undefined) {
-    if (names.length === 1) return { key: cfg.identities.get(names[0])! }
+    if (names.length === 1) return cfg.identities.get(names[0])!
     return { error: `Several identities are configured (${names.join(', ')}); pass "as" to choose one.` }
   }
-  const key = cfg.identities.get(as)
-  if (!key) return { error: `Unknown identity "${as}". Configured: ${names.join(', ')}.` }
-  return { key }
+  const found = cfg.identities.get(as)
+  if (!found) return { error: `Unknown identity "${as}". Configured: ${names.join(', ')}.` }
+  return found
 }
 
 // Hand-declared narrow view of core's LogicalItemDto — only the fields this
@@ -210,14 +243,14 @@ export interface FetchOpts {
 // ponytail: single no-retry policy for reads and writes alike. If read
 // flakiness ever justifies it, add retry to the READ call sites only — never
 // inside this helper, where the write path would inherit it.
-export async function rscFetch(cfg: Config, path: string, opts: FetchOpts = {}): Promise<FetchResult> {
+export async function rscFetch(baseUrl: string, path: string, opts: FetchOpts = {}): Promise<FetchResult> {
   const headers: Record<string, string> = {}
   if (opts.key) headers['x-api-key'] = opts.key
   if (opts.body !== undefined) headers['content-type'] = 'application/json'
 
   let res: Response
   try {
-    res = await fetch(`${cfg.apiUrl}/api/v1${path}`, {
+    res = await fetch(`${baseUrl}/api/v1${path}`, {
       method: opts.method ?? 'GET',
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
@@ -239,9 +272,9 @@ export async function rscFetch(cfg: Config, path: string, opts: FetchOpts = {}):
     // functional regression.
     const cause = err instanceof Error ? err.cause : undefined
     if (cause instanceof Error && cause.message === 'unexpected redirect') {
-      return { ok: false, message: `${cfg.apiUrl} responded with a redirect instead of a direct answer; this client refuses to follow redirects on write-capable requests.` }
+      return { ok: false, message: `${baseUrl} responded with a redirect instead of a direct answer; this client refuses to follow redirects on write-capable requests.` }
     }
-    return { ok: false, message: `Could not reach ${cfg.apiUrl}: ${err instanceof Error ? err.message : 'network error'}` }
+    return { ok: false, message: `Could not reach ${baseUrl}: ${err instanceof Error ? err.message : 'network error'}` }
   }
 
   let parsed: unknown
@@ -258,7 +291,7 @@ export async function rscFetch(cfg: Config, path: string, opts: FetchOpts = {}):
   if (res.ok) {
     return parseOk
       ? { ok: true, data: parsed }
-      : { ok: false, message: `${cfg.apiUrl} returned a response that was not valid JSON (HTTP ${res.status}).` }
+      : { ok: false, message: `${baseUrl} returned a response that was not valid JSON (HTTP ${res.status}).` }
   }
 
   const core = typeof parsed === 'object' && parsed !== null && typeof (parsed as { error?: unknown }).error === 'string'
@@ -273,7 +306,7 @@ export async function rscFetch(cfg: Config, path: string, opts: FetchOpts = {}):
     return { ok: false, message: 'Rate limited (429). Each API key allows 300 requests per hour; wait rather than retrying.' }
   }
   if (res.status === 503) {
-    return { ok: false, message: `The RSC instance at ${cfg.apiUrl} is unreachable (503).` }
+    return { ok: false, message: `The RSC instance at ${baseUrl} is unreachable (503).` }
   }
   return { ok: false, message: core ? `${core} (HTTP ${res.status})` : `Request failed with HTTP ${res.status}.` }
 }
@@ -290,33 +323,38 @@ function fail(text: string): ToolResult {
 // Exported so the suite can exercise them directly, with no transport in the
 // way — the same reason buildServer takes Config rather than reading env.
 export const toolHandlers = {
-  // `as` is here for the same reason it is on post(): /me/timeline is
-  // identity-scoped, so with several identities configured "your timeline"
-  // is ambiguous and resolveKey refuses to guess.
+  // `as` selects the instance AND the credential together. /me/timeline is
+  // identity-scoped, so with several configured "your timeline" is ambiguous
+  // about whose AND where, and resolveIdentity refuses to guess either.
   async timeline(args: { limit?: number; before?: string; as?: string }, cfg: Config): Promise<ToolResult> {
-    const picked = resolveKey(cfg, args.as)
+    const picked = resolveIdentity(cfg, args.as)
     if ('error' in picked) return fail(picked.error)
     const q = new URLSearchParams()
     if (args.limit !== undefined) q.set('limit', String(args.limit))
     if (args.before !== undefined) q.set('before', args.before)
     const suffix = q.size ? `?${q.toString()}` : ''
-    const res = await rscFetch(cfg, `/me/timeline${suffix}`, { key: picked.key, identityName: args.as })
+    const res = await rscFetch(picked.url, `/me/timeline${suffix}`, { key: picked.key, identityName: args.as })
     if (!res.ok) return fail(res.message)
     return ok(renderTimeline(res.data as TimelineEnvelope))
   },
 
-  async thread(args: { postId: string }, cfg: Config): Promise<ToolResult> {
-    const res = await rscFetch(cfg, `/post/${encodeURIComponent(args.postId)}/thread`)
+  // Keyless, but NOT instance-free: a thread id only means something on one
+  // instance, so `as` still selects WHICH — it just contributes the url and
+  // never the key.
+  async thread(args: { postId: string; as?: string }, cfg: Config): Promise<ToolResult> {
+    const picked = resolveIdentity(cfg, args.as)
+    if ('error' in picked) return fail(picked.error)
+    const res = await rscFetch(picked.url, `/post/${encodeURIComponent(args.postId)}/thread`)
     if (!res.ok) return fail(res.message)
     return ok(renderThread(res.data as ThreadEnvelope))
   },
 
   async post(args: { content: string; inReplyTo?: string; as?: string }, cfg: Config): Promise<ToolResult> {
-    const picked = resolveKey(cfg, args.as)
+    const picked = resolveIdentity(cfg, args.as)
     if ('error' in picked) return fail(picked.error)
     const body: { content: string; inReplyTo?: string } = { content: args.content }
     if (args.inReplyTo !== undefined) body.inReplyTo = args.inReplyTo
-    const res = await rscFetch(cfg, '/me/posts', { method: 'POST', body, key: picked.key, identityName: args.as })
+    const res = await rscFetch(picked.url, '/me/posts', { method: 'POST', body, key: picked.key, identityName: args.as })
     if (!res.ok) {
       return fail(args.inReplyTo ? `${res.message} (reply target: ${args.inReplyTo})` : res.message)
     }
@@ -351,7 +389,8 @@ export const schemas = {
     as: z.string().optional().describe('Whose timeline to read; required when several identities are configured')
   }),
   rsc_thread: z.object({
-    postId: z.string().min(1).describe('The logical item id of any post in the conversation')
+    postId: z.string().min(1).describe('The logical item id of any post in the conversation'),
+    as: z.string().optional().describe('Which configured instance to read from; required when several are configured')
   }),
   rsc_post: z.object({
     content: z.string().min(1).max(100000).describe('The post body, in markdown'),

@@ -201,36 +201,51 @@ Run `npm install` at the repo root first — `mcp/src/stdio.ts` resolves
 `@modelcontextprotocol/server` from the hoisted root `node_modules`, and a
 fresh clone has none.
 
+One environment variable, `RSC_IDENTITIES`: a JSON object mapping a name you
+choose to the instance and the key it belongs to.
+
 ```bash
-claude mcp add rsc -e RSC_API_URL=https://rsc.example.org -e RSC_IDENTITIES=me:rsc_live_xxx -- node /path/to/rsc/mcp/src/stdio.ts
+claude mcp add rsc \
+  -e RSC_IDENTITIES='{"me":{"url":"https://rsc.example.org","key":"rsc_live_xxx"}}' \
+  -- node /path/to/rsc/mcp/src/stdio.ts
 ```
 
 `claude mcp add` passes no environment by default; without `-e` the server
-starts with `RSC_API_URL` unset and exits 1 immediately.
+starts unconfigured and exits 1 immediately.
 
-Two environment variables:
+An **API key is instance-scoped**, so the url and the key travel together as
+one identity. That is what lets you work across instances — a personal
+account on one, a bot account on another:
 
-| Variable | Required | What it is |
-|---|---|---|
-| `RSC_API_URL` | yes | Your instance root, e.g. `https://rsc.example.org` |
-| `RSC_IDENTITIES` | for posting | Comma-separated `name:key` pairs, from `/settings/api-keys` |
+```bash
+-e RSC_IDENTITIES='{
+  "me":     {"url":"https://rsc.example.org", "key":"rsc_live_xxx"},
+  "claude": {"url":"https://other.example",   "key":"rsc_live_yyy"}
+}'
+```
+
+Get each key from that instance's **Settings → API keys**
+(`/settings/api-keys`). Scope it to `timeline:read` for reading and
+`posts:write` for posting.
 
 Three tools: `rsc_timeline` (needs `timeline:read`), `rsc_thread` (needs no
 key), `rsc_post` (needs `posts:write`; set `inReplyTo` to reply).
 
-`RSC_IDENTITIES` may name several accounts — a personal one and, say, a bot
-account that posts release notes. Both `rsc_timeline` and `rsc_post` then
-**require** their `as` argument: with more than one identity configured there
-is no default, because whose timeline you are reading — and above all whose
-voice a public federated post goes out in — should never be implicit.
+With **more than one identity configured, all three tools require their `as`
+argument** — including `rsc_thread`, which sends no key but still has to know
+which instance to ask. There is no default: whose timeline you are reading,
+which instance you are reading it from, and above all whose voice a public
+federated post goes out in should never be implicit. An unknown name is an
+error listing the configured ones, never a fall back.
 
 Posting is public and federates over RSS. There is no delete tool; retract
 from the web UI.
 
 **Smoke test.** With the dev stack up (`docker compose up`), mint a key, set
-the two variables, add the server, then call `rsc_timeline`, `rsc_post`, and
-`rsc_thread` on the returned id — and confirm the post shows up in
-`/users/<handle>/feed.xml`.
+`RSC_IDENTITIES`, add the server, then call `rsc_timeline`, `rsc_post`, and
+`rsc_thread` on the returned id — and confirm the post shows up in the
+author's feed. Note feeds are served by **core** directly, not through web:
+in dev that is `http://localhost:8787/users/<handle>/feed.xml`.
 
 ## Docs
 

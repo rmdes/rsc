@@ -1,46 +1,60 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { loadConfig, resolveKey, renderItem, renderTimeline, renderThread, rscFetch } from '../src/tools.ts'
+import { loadConfig, resolveIdentity, renderItem, renderTimeline, renderThread, rscFetch } from '../src/tools.ts'
 import { toolHandlers, buildServer, schemas, toolDescriptions, UNTRUSTED } from '../src/tools.ts'
 import type { RscItem } from '../src/tools.ts'
 
+// An API key is instance-scoped: a key minted on rsc.rmdes.be means nothing
+// on rsc.rmendes.net. So an identity is a {url, key} PAIR, and one JSON
+// variable carries them together. The earlier shape (one RSC_API_URL plus
+// name:key pairs) could not express an account on each of two instances at
+// all. JSON rather than an invented separator because both URLs and keys
+// contain colons.
+const TWO = JSON.stringify({
+  be: { url: 'https://rsc.rmdes.be', key: 'k-be' },
+  net: { url: 'https://rsc.rmendes.net', key: 'k-net' }
+})
+const ONE = JSON.stringify({ me: { url: 'https://rsc.example', key: 'k1' } })
+
 describe('loadConfig', () => {
-  it('parses url and identities', () => {
-    const cfg = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,claude:k2' })
-    expect(cfg.apiUrl).toBe('https://rsc.example')
-    expect([...cfg.identities.entries()]).toEqual([['me', 'k1'], ['claude', 'k2']])
+  it('parses an identity per instance', () => {
+    const cfg = loadConfig({ RSC_IDENTITIES: TWO })
+    expect(cfg.identities.get('be')).toEqual({ url: 'https://rsc.rmdes.be', key: 'k-be' })
+    expect(cfg.identities.get('net')).toEqual({ url: 'https://rsc.rmendes.net', key: 'k-net' })
   })
 
-  it('strips a trailing slash from the url', () => {
-    expect(loadConfig({ RSC_API_URL: 'https://rsc.example/', RSC_IDENTITIES: 'me:k1' }).apiUrl).toBe('https://rsc.example')
+  it('strips a trailing slash from each url', () => {
+    const cfg = loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'https://rsc.example/', key: 'k1' } }) })
+    expect(cfg.identities.get('me')!.url).toBe('https://rsc.example')
   })
 
-  it('throws when RSC_API_URL is missing', () => {
-    expect(() => loadConfig({ RSC_IDENTITIES: 'me:k1' })).toThrow(/RSC_API_URL/)
+  it('throws when RSC_IDENTITIES is missing', () => {
+    expect(() => loadConfig({})).toThrow(/RSC_IDENTITIES/)
   })
 
-  it('allows no identities at all (keyless reads still work)', () => {
-    expect(loadConfig({ RSC_API_URL: 'https://rsc.example' }).identities.size).toBe(0)
+  it('throws on invalid JSON rather than starting a useless server', () => {
+    expect(() => loadConfig({ RSC_IDENTITIES: 'me:k1' })).toThrow(/RSC_IDENTITIES/)
   })
 
-  it('throws on a malformed identity pair', () => {
-    expect(() => loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'oops' })).toThrow(/RSC_IDENTITIES/)
+  it('throws when an identity is missing its url or key', () => {
+    expect(() => loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { key: 'k1' } }) })).toThrow(/url/i)
+    expect(() => loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'https://x' } }) })).toThrow(/key/i)
   })
 
-  // A duplicate name used to last-win silently: you would configure
-  // "me:personal-key,me:bot-key" and post from whichever one happened to be
-  // last. Since `as` picks the voice a public federated post goes out in,
-  // an ambiguous name must be a startup error, not a coin flip.
-  it('throws on a duplicate identity name rather than silently last-winning', () => {
+  it('throws on an empty identity set', () => {
+    expect(() => loadConfig({ RSC_IDENTITIES: '{}' })).toThrow(/RSC_IDENTITIES/)
+  })
+
+  it('rejects a non-http url', () => {
     expect(() =>
-      loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,me:k2' })
-    ).toThrow(/duplicate/i)
+      loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'file:///etc/passwd', key: 'k' } }) })
+    ).toThrow(/http/i)
   })
 
-  it('never names a key in the duplicate error', () => {
+  it('never names a key in a validation error', () => {
     let msg = ''
     expect(() => {
       try {
-        loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:secret1,me:secret2' })
+        loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'file:///nope', key: 'secret1' } }) })
       } catch (err) {
         msg = (err as Error).message
         throw err
@@ -52,40 +66,37 @@ describe('loadConfig', () => {
   })
 })
 
-describe('resolveKey', () => {
-  const one = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1' })
-  const two = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,claude:k2' })
+describe('resolveIdentity', () => {
+  const one = loadConfig({ RSC_IDENTITIES: ONE })
+  const two = loadConfig({ RSC_IDENTITIES: TWO })
 
   it('uses the only identity when as is omitted', () => {
-    expect(resolveKey(one, undefined)).toEqual({ key: 'k1' })
+    expect(resolveIdentity(one, undefined)).toEqual({ url: 'https://rsc.example', key: 'k1' })
   })
 
+  // With two instances configured, an omitted `as` is ambiguous about WHICH
+  // INSTANCE as well as whose voice — so it stays an error, for reads too.
   it('requires as when several are configured', () => {
-    const r = resolveKey(two, undefined)
+    const r = resolveIdentity(two, undefined)
     expect(r).toHaveProperty('error')
-    expect((r as { error: string }).error).toMatch(/me, claude/)
+    expect((r as { error: string }).error).toMatch(/be, net/)
   })
 
-  it('resolves a named identity', () => {
-    expect(resolveKey(two, 'claude')).toEqual({ key: 'k2' })
+  it('resolves a named identity to its own instance and key', () => {
+    expect(resolveIdentity(two, 'net')).toEqual({ url: 'https://rsc.rmendes.net', key: 'k-net' })
   })
 
   it('errors on an unknown name and does NOT fall back', () => {
-    const r = resolveKey(two, 'nobody')
+    const r = resolveIdentity(two, 'nobody')
     expect(r).toHaveProperty('error')
     expect(r).not.toHaveProperty('key')
-    expect((r as { error: string }).error).toMatch(/me, claude/)
+    expect((r as { error: string }).error).toMatch(/be, net/)
   })
 
   it('never leaks a key in an error message', () => {
-    const r = resolveKey(two, 'nobody') as { error: string }
-    expect(r.error).not.toContain('k1')
-    expect(r.error).not.toContain('k2')
-  })
-
-  it('errors when no identity is configured', () => {
-    const none = loadConfig({ RSC_API_URL: 'https://rsc.example' })
-    expect(resolveKey(none, undefined)).toHaveProperty('error')
+    const r = resolveIdentity(two, 'nobody') as { error: string }
+    expect(r.error).not.toContain('k-be')
+    expect(r.error).not.toContain('k-net')
   })
 })
 
@@ -442,7 +453,9 @@ describe('renderThread', () => {
   })
 })
 
-const cfg2 = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,claude:k2' })
+// rscFetch takes the resolved instance URL, not a Config: which instance a
+// call goes to is now decided upstream by resolveIdentity.
+const BASE = 'https://rsc.example'
 
 function stubFetch(status: number, body: unknown) {
   const spy = vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
@@ -455,7 +468,7 @@ afterEach(() => vi.unstubAllGlobals())
 describe('rscFetch', () => {
   it('prefixes /api/v1 and sends no key when none is given', async () => {
     const spy = stubFetch(200, { ok: true })
-    await rscFetch(cfg2, '/post/li_1/thread')
+    await rscFetch(BASE,'/post/li_1/thread')
     const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://rsc.example/api/v1/post/li_1/thread')
     expect(new Headers(init.headers).has('x-api-key')).toBe(false)
@@ -463,20 +476,20 @@ describe('rscFetch', () => {
 
   it('sends x-api-key when a key is given', async () => {
     const spy = stubFetch(200, { ok: true })
-    await rscFetch(cfg2, '/me/timeline', { key: 'k2' })
+    await rscFetch(BASE,'/me/timeline', { key: 'k2' })
     const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
     expect(new Headers(init.headers).get('x-api-key')).toBe('k2')
   })
 
   it('passes core error messages through verbatim', async () => {
     stubFetch(400, { error: 'content invalid' })
-    const r = await rscFetch(cfg2, '/me/posts', { method: 'POST', body: { content: '' }, key: 'k1' })
+    const r = await rscFetch(BASE,'/me/posts', { method: 'POST', body: { content: '' }, key: 'k1' })
     expect(r).toEqual({ ok: false, message: expect.stringContaining('content invalid') })
   })
 
   it('names the identity on a 401 without leaking the key', async () => {
     stubFetch(401, { error: 'unauthorized' })
-    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k2', identityName: 'claude' }) as { ok: false; message: string }
+    const r = await rscFetch(BASE,'/me/timeline', { key: 'k2', identityName: 'claude' }) as { ok: false; message: string }
     expect(r.message).toContain('claude')
     expect(r.message).toContain('RSC_IDENTITIES')
     expect(r.message).not.toContain('k2')
@@ -484,20 +497,20 @@ describe('rscFetch', () => {
 
   it('explains a 429 as the per-key hourly limit', async () => {
     stubFetch(429, { error: 'rate limited' })
-    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' }) as { ok: false; message: string }
+    const r = await rscFetch(BASE,'/me/timeline', { key: 'k1' }) as { ok: false; message: string }
     expect(r.message).toMatch(/300/)
   })
 
   it('reports an unreachable instance on 503', async () => {
     stubFetch(503, {})
-    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' }) as { ok: false; message: string }
+    const r = await rscFetch(BASE,'/me/timeline', { key: 'k1' }) as { ok: false; message: string }
     expect(r.message).toMatch(/unreachable|unavailable/i)
   })
 
   it('reports a network failure instead of throwing, with exactly ONE call', async () => {
     const spy = vi.fn(async () => { throw new TypeError('fetch failed') })
     vi.stubGlobal('fetch', spy)
-    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' })
+    const r = await rscFetch(BASE,'/me/timeline', { key: 'k1' })
     expect(r.ok).toBe(false)
     // matches the 500-on-write sibling below: a retry-once regression on the
     // read path would otherwise still pass every other test in this file.
@@ -506,7 +519,7 @@ describe('rscFetch', () => {
 
   it('issues exactly ONE request when the server 500s on a write', async () => {
     const spy = stubFetch(500, { error: 'boom' })
-    await rscFetch(cfg2, '/me/posts', { method: 'POST', body: { content: 'hi' }, key: 'k1' })
+    await rscFetch(BASE,'/me/posts', { method: 'POST', body: { content: 'hi' }, key: 'k1' })
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
@@ -516,7 +529,7 @@ describe('rscFetch', () => {
   it('treats a 2xx with a non-JSON body as failure instead of a null payload', async () => {
     const spy = vi.fn(async () => new Response('', { status: 200 }))
     vi.stubGlobal('fetch', spy)
-    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' })
+    const r = await rscFetch(BASE,'/me/timeline', { key: 'k1' })
     expect(r.ok).toBe(false)
     expect((r as { message: string }).message).toMatch(/not valid JSON/i)
   })
@@ -526,7 +539,7 @@ describe('rscFetch', () => {
   // non-idempotent POST as a second wire-level request.
   it('never follows a redirect', async () => {
     const spy = stubFetch(200, { ok: true })
-    await rscFetch(cfg2, '/me/timeline', { key: 'k1' })
+    await rscFetch(BASE,'/me/timeline', { key: 'k1' })
     const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
     expect(init.redirect).toBe('error')
   })
@@ -543,7 +556,7 @@ describe('rscFetch', () => {
       throw err
     })
     vi.stubGlobal('fetch', spy)
-    const r = await rscFetch(cfg2, '/me/timeline', { key: 'k1' }) as { ok: false; message: string }
+    const r = await rscFetch(BASE,'/me/timeline', { key: 'k1' }) as { ok: false; message: string }
     expect(r.ok).toBe(false)
     expect(r.message).toMatch(/redirect/i)
     expect(r.message).not.toMatch(/could not reach/i)
@@ -551,8 +564,15 @@ describe('rscFetch', () => {
   })
 })
 
-const cfgOne = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1' })
-const cfgTwo = loadConfig({ RSC_API_URL: 'https://rsc.example', RSC_IDENTITIES: 'me:k1,claude:k2' })
+const cfgOne = loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'https://rsc.example', key: 'k1' } }) })
+// Two identities on TWO DIFFERENT instances — the case the old single-URL
+// config could not express at all.
+const cfgTwo = loadConfig({
+  RSC_IDENTITIES: JSON.stringify({
+    me: { url: 'https://rsc.example', key: 'k1' },
+    claude: { url: 'https://other.example', key: 'k2' }
+  })
+})
 
 function textOf(r: { content: Array<{ type: string; text?: string }> }): string {
   return r.content.map((c) => c.text ?? '').join('')
@@ -590,15 +610,46 @@ describe('rsc_timeline', () => {
     expect(spy).not.toHaveBeenCalled()
   })
 
-  it('reads the named identity timeline', async () => {
+  // The point of binding url to identity: `as` must route to that identity's
+  // OWN instance, with that instance's own key. Sending rsc.rmdes.be's key to
+  // rsc.rmendes.net would just 401 — and worse, reading the wrong account's
+  // timeline would look like it worked.
+  it('reads the named identity timeline from ITS OWN instance', async () => {
     const spy = stubFetch(200, { timeline: [], nextCursor: null })
     await toolHandlers.timeline({ as: 'claude' }, cfgTwo)
-    const [, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('https://other.example/api/v1/me/timeline')
     expect(new Headers(init.headers).get('x-api-key')).toBe('k2')
+  })
+
+  it('never sends one instance key to another instance', async () => {
+    const spy = stubFetch(200, { timeline: [], nextCursor: null })
+    await toolHandlers.timeline({ as: 'me' }, cfgTwo)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toContain('https://rsc.example/')
+    expect(new Headers(init.headers).get('x-api-key')).toBe('k1')
   })
 })
 
 describe('rsc_thread', () => {
+  // Keyless, but NOT instance-free: with two instances configured, "read
+  // thread X" is ambiguous about which one, so `as` selects the instance and
+  // contributes only its url — never its key.
+  it('requires as when several instances are configured', async () => {
+    const spy = stubFetch(200, { requestedLogicalItemId: 'li_1', rootId: null, nodes: [], truncated: { depth: false, nodes: false, cycle: false } })
+    const r = await toolHandlers.thread({ postId: 'li_1' }, cfgTwo)
+    expect(r.isError).toBe(true)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('reads from the named identity instance, still with no key', async () => {
+    const spy = stubFetch(200, { requestedLogicalItemId: 'li_1', rootId: null, nodes: [], truncated: { depth: false, nodes: false, cycle: false } })
+    await toolHandlers.thread({ postId: 'li_1', as: 'claude' }, cfgTwo)
+    const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://other.example/api/v1/post/li_1/thread')
+    expect(new Headers(init.headers).has('x-api-key')).toBe(false)
+  })
+
   it('sends NO key', async () => {
     const spy = stubFetch(200, { requestedLogicalItemId: 'li_1', rootId: 'li_1', nodes: [{ kind: 'item', item: localItem }], truncated: { depth: false, nodes: false, cycle: false } })
     await toolHandlers.thread({ postId: 'li_1' }, cfgOne)

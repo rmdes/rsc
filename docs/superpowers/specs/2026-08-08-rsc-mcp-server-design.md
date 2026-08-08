@@ -1,7 +1,7 @@
 # RSC MCP server — Design
 
-**Status:** rev 4 (2026-08-08) — built, reviewed, and verified end to end
-against a running instance.
+**Status:** rev 5 (2026-08-08) — built, reviewed, verified end to end against
+a running instance, and merged to `main`.
 
 **Goal:** Let a Claude session read an RSC timeline and post/reply to it,
 through a Model Context Protocol server that is a thin client over RSC's
@@ -150,30 +150,41 @@ CLAUDE.md requires justifying any new package. Both are confined to `mcp/`;
 Configuration is environment-only. No config file, no runtime key management.
 
 ```
-RSC_API_URL=https://rsc.rmdes.be
-RSC_IDENTITIES=me:rsc_live_xxx,claude:rsc_live_yyy
+RSC_IDENTITIES='{
+  "be":  {"url": "https://rsc.rmdes.be",   "key": "rsc_live_xxx"},
+  "net": {"url": "https://rsc.rmendes.net", "key": "rsc_live_yyy"}
+}'
 ```
 
-Two variables. That is the whole configuration surface.
+**One variable. That is the whole configuration surface.**
 
-- `RSC_API_URL` is required. Startup fails loudly (stderr + non-zero exit) if
-  it is missing, rather than producing tools that all fail at call time.
-- `RSC_IDENTITIES` is a comma-separated list of `name:key` pairs. A key
-  containing a comma or colon is not supported; keys are opaque tokens from
-  better-auth's api-key plugin and contain neither.
+An identity is an instance **and** a credential, never one without the other,
+because **an API key is instance-scoped** — a key minted on rsc.rmdes.be means
+nothing on rsc.rmendes.net. rev 5 corrected this: the original shape had a
+single `RSC_API_URL` beside `name:key` pairs, which could not express an
+account on each of two instances at all. The url belongs *to* the identity.
 
-`rsc_post` takes `as?: string`, resolved by exactly two rules:
+JSON rather than an invented separator: both urls and keys contain colons, so
+any `a:b:c` scheme needs escaping rules, and `JSON.parse` is stdlib. There is
+deliberately **no second "simple" form** — this design removed two convenience
+shorthands already (`RSC_DEFAULT_IDENTITY`, `RSC_API_KEY`) on the grounds that
+a second config path is where ambiguity lives; adding one back here would
+repeat the mistake.
+
+`loadConfig` fails loudly (stderr + non-zero exit) rather than producing tools
+that all fail at call time, on: a missing or unparseable variable, an entry
+missing its url or key, an empty object, or a non-http(s) url — the last so a
+credential is never attached to a scheme it cannot belong to. Every message
+names the identity and never the key.
+
+All three tools take `as?: string`, resolved by exactly two rules:
 
 - **One identity configured** → it is used; `as` is optional and, if given,
   must match its name.
 - **Two or more configured** → `as` is **required**. There is no default.
 
-No `RSC_DEFAULT_IDENTITY`, and no separate `RSC_API_KEY` shorthand. Both were
-cut in rev 2 (see Revision history). The default-identity variable only ever
-mattered with several identities configured — which is precisely the case
-where this design says the choice must be explicit; keeping it would have let
-an agent post in a voice it never named. `RSC_API_KEY` said nothing
-`RSC_IDENTITIES=me:key` doesn't.
+`rsc_thread` takes it too, even though it sends no key: a thread id only means
+something on one instance, so `as` selects *which*, contributing the url alone.
 
 An unknown `as` name is an **error naming the configured identities** — never
 a silent fall back. Choosing whose voice a public federated post goes out in
@@ -260,7 +271,7 @@ itself — fix a bad `inReplyTo`, pick a real identity.
 | Condition | Origin | Tool result |
 |---|---|---|
 | unknown `as` value | client, pre-flight | error listing the configured identity names; no fallback |
-| `RSC_API_URL` unset | startup | stderr message, non-zero exit |
+| `RSC_IDENTITIES` unset, unparseable, empty, or an entry missing url/key or using a non-http scheme | startup | stderr message naming the identity (never the key), non-zero exit |
 | 400 `content invalid` | `personal.ts:111` | core's message passed through verbatim |
 | 400 `inReplyTo invalid` | `personal.ts:112` | verbatim |
 | 404 `unknown post` | `personal.ts:116` | "reply target not found" plus the ref that failed |
@@ -332,7 +343,7 @@ Documented in the README, no implementation task:
    `timeline:read` if that account should read too).
 3. Mint your own key with `timeline:read` + `posts:write`.
 4. `claude mcp add rsc -- node ~/textcaster/mcp/src/stdio.ts`, with
-   `RSC_API_URL` and `RSC_IDENTITIES` in the env.
+   `RSC_IDENTITIES` in the env.
 
 ## Phase 2 — named, not specced
 
@@ -433,3 +444,22 @@ exists; none is in v1.
   formula and watching them fail. The third deferred item from rev 3's list
   — the `redirect` path — needed no work: it was already fully closed in rev
   3, and had been carried forward in error.
+- **rev 5** (2026-08-08) — **the identity model was wrong, and configuring the
+  real deployment exposed it.** rmdes wanted to work across two instances
+  (rsc.rmdes.be and rsc.rmendes.net) with a different account and key on each.
+  The old shape — one `RSC_API_URL` beside a list of `name:key` pairs — could
+  not express that at all, because it assumed every identity shares one
+  instance. But an API key *is* instance-scoped: a key from one instance is
+  meaningless on another. So this was not a missing feature; the url had
+  simply been put in the wrong place from rev 1, and no single-instance test
+  could have caught it.
+
+  Now: one `RSC_IDENTITIES` JSON variable mapping a name to `{url, key}`;
+  `RSC_API_URL` is gone; `resolveKey` became `resolveIdentity`, returning the
+  pair; `rscFetch` takes the resolved base url rather than the whole config.
+  **`rsc_thread` gained `as` as a consequence** — it sends no key, but a
+  thread id only means something on one instance, so with several configured
+  "read thread X" is ambiguous about *where*. Startup validation also rejects
+  a non-http(s) url now, so a credential is never attached to a scheme it
+  cannot belong to. Tests pin that `as` routes to that identity's own
+  instance and that one instance's key is never sent to another. 74/74, tsc 0.
