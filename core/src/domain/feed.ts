@@ -144,8 +144,32 @@ export function itemContentFields(p: Post) {
 // changing what we EMIT cannot break ingesting peers who still declare http.
 // Replaces the FIRST occurrence only, which is always the <rss> root tag: it
 // precedes every item, so a CDATA body containing this literal can never be hit.
-function httpsSourceNs(xml: string): string {
-  return xml.replace('xmlns:source="http://source.scripting.com/"', 'xmlns:source="https://source.scripting.com/"')
+// XML 1.0's Char production — the ONLY characters a well-formed document may contain:
+//   Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+// Our INGEST is more permissive than that. Measured 2026-08-08: a remote feed can
+// land a raw NUL or U+FFFE — via plain RSS (raw bytes), via `&#xFFFE;`, or via JSON
+// Feed — into content, title, source:markdown or an author name, and it survives
+// into storage. Re-emitting it makes OUR OWN feed not-well-formed for every
+// conformant reader, and silently, because our parser is lenient enough not to
+// notice. One poisoned remote item otherwise breaks a whole feed — including the
+// comments feed's CHANNEL title, which is built from the post body.
+//
+// Stripped rather than escaped: these are invisible control characters and
+// noncharacters, so nothing a human reads is lost. Applied to the finished
+// document because they can only ever come from DATA — feedsmith never emits one
+// as markup — so removing them here is exactly equivalent to removing them from
+// every input field, in one place instead of a dozen.
+//
+// This includes <guid>. Deterministic, so an advertised guid stays stable across
+// renders; it may differ from what the ORIGIN advertised, but only for an item
+// whose guid was already unusable — better than the feed failing to parse.
+const XML_ILLEGAL = /[^\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu
+
+// The single finishing step every RSS render path shares.
+function finalizeRss(xml: string): string {
+  return xml
+    .replace('xmlns:source="http://source.scripting.com/"', 'xmlns:source="https://source.scripting.com/"')
+    .replace(XML_ILLEGAL, '')
 }
 
 export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): string {
@@ -165,7 +189,7 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
       }
     }
   }
-  return httpsSourceNs(generateRssFeed(
+  return finalizeRss(generateRssFeed(
     {
       title: user.displayName,
       link: channelLink(ctx, user.handle),
@@ -204,7 +228,7 @@ export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): s
       cloud = { domain: u.hostname, port: urlPort(u), path: '/rsscloud/pleaseNotify', registerProcedure: '', protocol: 'http-post' }
     }
   }
-  return httpsSourceNs(generateRssFeed(
+  return finalizeRss(generateRssFeed(
     {
       title: `${host}: all posts`,
       link: ctx.publicUrl ?? 'https://rsc.invalid',
@@ -292,7 +316,7 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
   const chars = Array.from(post.content) // code-point safe: .length/.slice on a string split surrogate pairs
   const label = post.title ?? (chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : post.content)
   const self = ctx.publicUrl ? commentsFeedUrl(ctx.publicUrl, post.id) : null
-  return httpsSourceNs(generateRssFeed(
+  return finalizeRss(generateRssFeed(
     {
       title: `Comments on "${label}"`,
       link: post.url ?? ctx.publicUrl ?? 'https://rsc.invalid',
