@@ -282,23 +282,41 @@ function evidenceLevelFor(mode: string): EvidenceLevel {
 //     ALLOW-list silently dropped `yt:video:…` (YouTube Atom <id>) and friends,
 //     re-creating the very regression this exists to prevent, so it is a
 //     DENY-list of the script-capable schemes instead.
-//   javascript: data: vbscript: file: blob:  -> rejected; a consuming reader may
-//     linkify this ref. Case and leading whitespace are normalised by the parser.
+//   the DANGEROUS_REF_SCHEMES set          -> rejected; a consuming reader may
+//     linkify this ref. Case is normalised by the parser. (The set is the list —
+//     do not re-enumerate it here, it drifted once already.)
 //   //evil.com  /\evil.com  \\evil.com     -> rejected. A `startsWith('//')` test
 //     is NOT enough: WHATWG treats `\` as `/` for special schemes, so both
 //     backslash spellings resolve to an external host in any conformant resolver.
-//     Detected by resolving against a sentinel base and comparing the host.
+//     Detected by resolving against a sentinel base and comparing the host — EXCEPT
+//     the shapes that throw instead (`//evil.com /x`, `//evil.com%2f..`), which the
+//     fail-closed catch below is what actually stops.
+//   KNOWN ACCEPTED LOSS: `at://did:plc:…` (AT Protocol) throws both standalone and
+//     relatively, so fail-closed drops it. Every other generator family probed
+//     survives (WordPress, Blogger tag:, Atom urn:uuid:, yt:, Mastodon, podcast
+//     plaintext guids, IDN, fragments, IPv6, 4 KB URLs).
 // Length: inReplyTo is inside canonicalMaterialFor, so acquisition's 1 MiB
 // maxItemEvidenceBytes gate bounds it — generous, but bounded.
-const DANGEROUS_REF_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:', 'blob:', 'view-source:', 'filesystem:', 'jar:'])
+// Deny-list, not an allow-list: an allow-list silently dropped whole guid families
+// (yt:, guid:, reddit:). intent:/ms-msdt:/search-ms:/smb: fire on ShellExecute in
+// native and Electron readers (the Follina / UNC-credential-leak class).
+const DANGEROUS_REF_SCHEMES = new Set(['javascript:', 'data:', 'vbscript:', 'file:', 'blob:', 'view-source:', 'filesystem:', 'jar:', 'intent:', 'ms-msdt:', 'search-ms:', 'smb:'])
 const REF_BASE_HOST = 'ref.invalid'
 export function safeReplyRef(raw: string | null | undefined): string | null {
   if (!raw) return null
-  // XML 1.0 permits only #x9/#xA/#xD and #x20+. The URL parser strips tab/LF/CR and
-  // TRIMS outer C0, but interior C0 survives — and feedsmith emits it raw, which makes
-  // our OWN public feed not-well-formed for any conformant reader (measured with
-  // expat). One poisoned remote guid would break that author's feed permanently.
-  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(raw)) return null
+  // Reject anything outside XML 1.0's Char production, quoted exactly because an
+  // earlier paraphrase of it ("only #x9/#xA/#xD and #x20+") was WRONG and the guard
+  // implemented the paraphrase, missing U+FFFE/U+FFFF:
+  //   Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+  // So interior C0 AND U+FFFE/U+FFFF are illegal; U+FDD0..U+FDEF are noncharacters
+  // but ARE legal Chars and are deliberately kept (verified against expat). Lone
+  // surrogates need no clause — SQLite coerces them to U+FFFD on round-trip.
+  // feedsmith emits these raw, so one poisoned remote guid makes our OWN public feed
+  // not-well-formed for every conformant reader — and via parentReplyRef it is stored
+  // into a local reply, reaching that author's feed, the instance firehose, and every
+  // signed WebSub body. This guard bounds the REF only; remote title/content/markdown
+  // are still re-emitted unsanitised (separate, pre-existing).
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/.test(raw)) return null
   let parsed: URL | null = null
   try { parsed = new URL(raw) } catch { parsed = null }
   if (parsed) {

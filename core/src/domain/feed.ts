@@ -106,7 +106,10 @@ function channelLink(ctx: FeedContext, handle: string): string {
 // Dual-emit reply metadata: source:inReplyTo (Textcasting; isPermaLink=false for
 // non-permalink refs, per source-namespace docs) + thr:in-reply-to (RFC 4685).
 export function replyWireElements(ref: string) {
-  const isUrl = ref.startsWith('http://') || ref.startsWith('https://')
+  // Case-insensitive: a byte test called `HTTPS://…` a non-permalink and dropped the
+  // href a threadwalker follows — re-creating #replyDoesntPointBack for a real URL.
+  // Same idiom as ingest.ts httpOnly / acquisition.ts.
+  const isUrl = /^https?:\/\//i.test(ref)
   return {
     sourceNs: { inReplyTo: { value: ref, ...(isUrl ? {} : { isPermaLink: false }) } },
     thr: { inReplyTos: [{ ref, ...(isUrl ? { href: ref } : {}) }] },

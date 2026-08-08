@@ -957,6 +957,15 @@ test('reply-ref gate: protocol-relative shapes rejected, inert guid families kep
     ['backslashes', '/\\evil.com/x', null], // WHATWG reads \ as / — startsWith('//') misses this
     ['yt', 'yt:video:dQw4w9WgXcQ', 'yt:video:dQw4w9WgXcQ'], // a two-scheme allow-list dropped these
     ['data', 'data:text/html,x', null],
+    // These two THROW in the URL parser rather than resolving, so only the
+    // fail-closed catch stops them. Reverting that catch to fail-open left the whole
+    // suite green (mutation-measured) — the round-2 Critical had no guard at all.
+    // A consumer that strips whitespace before resolving navigates to evil.com.
+    ['space', '//evil.com /x', null],
+    ['encoded', '//evil.com%2f..', null],
+    // Outside XML 1.0's Char production: emitting it makes our own feed
+    // not-well-formed. U+FFFE specifically slipped the first C0-only guard.
+    ['noncharacter', 'guid-\ufffe-one', null],
   ]
   for (const [tag, ref, expected] of cases) {
     await acquireFeed(ctx, {
