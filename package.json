@@ -2,6 +2,6 @@
   "name": "rsc",
   "private": true,
   "type": "module",
-  "workspaces": ["core", "web"],
+  "workspaces": ["core", "web", "mcp"],
   "engines": { "node": ">=22.18" }
 }
