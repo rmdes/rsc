@@ -525,6 +525,21 @@ function normalizedKeyOf(tx: ReadTx, versionId: string): string | null {
   return (JSON.parse(v.normalized_json) as { key: string }).key
 }
 
+// The presentation entry an item is CURRENTLY emitted from: its ordinary-eligible
+// display delivery, then that delivery's latest entry. ONE definition, shared by
+// projectRemote (which goes on to read the full material) and remoteOriginGuid
+// (which needs only the delivery key) — if those two ever disagreed about which
+// entry is "current", a reply would point at a guid its parent no longer emits,
+// which is the #replyDoesntPointBack defect. Sharing it makes that unrepresentable
+// rather than a hand-maintained invariant.
+type PresentationRow = { observation_version_id: string; effective_updated_at: string | null; provenance: 'explicit' | 'arrival' | null }
+function currentPresentation(tx: ReadTx, item: Pick<ItemRow, 'id' | 'selected_delivery_id'>): { delivery: EligibleDelivery; entry: PresentationRow } | null {
+  const delivery = selectedDeliveryFor(tx, item)
+  if (!delivery) return null // no ordinary-eligible delivery ⇒ the item is not emitted at all
+  const entry = tx.prepare(`SELECT observation_version_id, effective_updated_at, provenance FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(delivery.deliveryId) as PresentationRow | undefined
+  return entry ? { delivery, entry } : null
+}
+
 // The guid an item's outbound feed advertises — projectRemote's `originGuid`,
 // re-derived by the SAME path (selected delivery → its latest presentation entry →
 // that version's normalized.key), because "what we emit" is the only definition a
@@ -532,11 +547,9 @@ function normalizedKeyOf(tx: ReadTx, versionId: string): string | null {
 function remoteOriginGuid(tx: ReadTx, itemId: string): string | null {
   const row = tx.prepare(`SELECT id, selected_delivery_id FROM logical_items_v2 WHERE id = ? AND origin = 'remote'`).get(itemId) as Pick<ItemRow, 'id' | 'selected_delivery_id'> | undefined
   if (!row) return null
-  const display = selectedDeliveryFor(tx, row)
-  if (!display) return null // no ordinary-eligible delivery ⇒ the item is never emitted
-  const pres = tx.prepare(`SELECT observation_version_id FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(display.deliveryId) as { observation_version_id: string } | undefined
-  if (!pres) return null
-  return normalizedKeyOf(tx, pres.observation_version_id)
+  const cur = currentPresentation(tx, row)
+  if (!cur) return null
+  return normalizedKeyOf(tx, cur.entry.observation_version_id)
 }
 
 // The parent's on-the-wire reply reference (v1 parity, service.ts): the string the
@@ -667,10 +680,9 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
 }
 
 function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): LogicalItemDto | undefined {
-  const display = selectedDeliveryFor(tx, item)
-  if (!display) return undefined // no ordinary-eligible delivery ⇒ unavailable
-  const pres = tx.prepare(`SELECT observation_version_id, effective_updated_at, provenance FROM presentation_entries_v2 WHERE delivery_id = ? ORDER BY sequence DESC LIMIT 1`).get(display.deliveryId) as { observation_version_id: string; effective_updated_at: string | null; provenance: 'explicit' | 'arrival' | null } | undefined
-  if (!pres) return undefined
+  const cur = currentPresentation(tx, item) // no ordinary-eligible delivery ⇒ unavailable
+  if (!cur) return undefined
+  const { delivery: display, entry: pres } = cur
   const mat = materialOf(tx, pres.observation_version_id)
   if (!mat) return undefined
   const counts = replyCounts(tx, item.id)
