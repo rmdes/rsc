@@ -1,6 +1,7 @@
 # RSC MCP server — Design
 
-**Status:** rev 3 (2026-08-08).
+**Status:** rev 4 (2026-08-08) — built, reviewed, and verified end to end
+against a running instance.
 
 **Goal:** Let a Claude session read an RSC timeline and post/reply to it,
 through a Model Context Protocol server that is a thin client over RSC's
@@ -409,3 +410,26 @@ exists; none is in v1.
   above is corrected to match the implementation (see that section). README
   and `CLAUDE.md` doc drift (the `claude mcp add` command missing its env
   vars; the workspace count) fixed alongside, outside this doc.
+- **rev 4** (2026-08-08) — closed the last two open items after the live
+  end-to-end smoke passed.
+
+  1. **All item content is now fenced, regardless of origin.** rev 3 fenced
+     remote content only, leaving local `contentMarkdown` to render as active
+     markdown — which let any registered account on a multi-user instance
+     forge what reads as another entry's header line in a reader's tool
+     output. "Local" is not the same trust domain as "the reader", so the
+     asymmetry was not defensible; one unconditional rule replaces a table of
+     exceptions. Fencing neutralizes rather than deletes: the text survives
+     verbatim inside the fence, so nothing is lost, and the test asserts the
+     forged line lands *between* the fence markers with only the real header
+     above them.
+  2. **A duplicate name in `RSC_IDENTITIES` is now a startup error**, not a
+     silent last-wins. `as` chooses whose voice a public federated post goes
+     out in; an ambiguous name must not resolve by declaration order. The
+     error names the identity and never a key.
+
+  Also backfilled the fence-width coverage gap (a run of six backticks), and
+  proved both fence tests actually bite by mutating the `+ 1` out of the
+  formula and watching them fail. The third deferred item from rev 3's list
+  — the `redirect` path — needed no work: it was already fully closed in rev
+  3, and had been carried forward in error.

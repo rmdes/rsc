@@ -25,7 +25,14 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     if (sep <= 0 || sep === entry.length - 1) {
       throw new Error('RSC_IDENTITIES must be a comma-separated list of name:key pairs')
     }
-    identities.set(entry.slice(0, sep).trim(), entry.slice(sep + 1).trim())
+    const name = entry.slice(0, sep).trim()
+    // A duplicate used to last-win silently. `as` chooses whose voice a
+    // public, federated post goes out in, so an ambiguous name is a startup
+    // error, not a coin flip. The message names the identity, never the keys.
+    if (identities.has(name)) {
+      throw new Error(`RSC_IDENTITIES contains a duplicate identity name: "${name}"`)
+    }
+    identities.set(name, entry.slice(sep + 1).trim())
   }
   return { apiUrl: apiUrl.replace(/\/+$/, ''), identities }
 }
@@ -91,12 +98,14 @@ export interface ThreadEnvelope {
   truncated: { depth: boolean; nodes: boolean; cycle: boolean }
 }
 
-// Remote content — whichever field it came from — goes in a fence: tool
-// output is markdown, and a remote peer's contentMarkdown is just as
-// attacker-controlled as its raw content (core sets it from any peer's
-// <source:markdown>, core/src/logical/acquisition.ts:265). Fencing it as
-// literal text keeps it from rendering as active markdown (a real link, a
-// real blockquote). The fence is one backtick longer than the longest run
+// ALL item content goes in a fence, whatever field it came from and whatever
+// its origin: tool output is markdown, and a remote peer's contentMarkdown is
+// just as attacker-controlled as its raw content (core sets it from any
+// peer's <source:markdown>, core/src/logical/acquisition.ts:265) while a
+// local item is authored by some registered account that, on a multi-user
+// instance, need not be the reader. Fencing keeps a body from rendering as
+// active markdown (a real link, a real blockquote) or forging a header line.
+// The fence is one backtick longer than the longest run
 // inside the text, so content containing backticks cannot break out of it.
 // `runs.reduce` (not `Math.max(3, ...runs, 2)`) avoids RangeError: spreading
 // a large match array into Math.max blows the call stack (measured: fine at
@@ -148,12 +157,19 @@ export function renderItem(item: RscItem): string {
   const usingMarkdown = !isBlank(item.contentMarkdown)
   const raw = usingMarkdown ? item.contentMarkdown : (!isBlank(item.content) ? item.content : null)
 
-  const body =
-    raw === null
-      ? '(no content)'
-      : item.origin === 'remote'
-        ? fenced(raw, usingMarkdown ? '' : 'html')
-        : raw
+  // Fenced regardless of origin. Remote content is attacker-supplied, and a
+  // LOCAL item is authored by some registered account on this instance —
+  // which, on a multi-user instance, is not necessarily the reader. Neither
+  // is "trusted enough to render as active markdown into a model's context",
+  // and an unfenced body of either kind can forge what looks like another
+  // entry's header line. One unconditional rule beats a table of exceptions.
+  // The `html` hint is only honest for a REMOTE item that fell back to
+  // `content`. A local item's `content` is the markdown SOURCE the author
+  // typed — core inserts content_markdown as NULL for local posts
+  // (core/src/logical/local.ts:162) and generates HTML at render time — so
+  // labelling it html would misdescribe it to the reader.
+  const isHtml = !usingMarkdown && item.origin === 'remote'
+  const body = raw === null ? '(no content)' : fenced(raw, isHtml ? 'html' : '')
 
   const tail: string[] = []
   if (item.directReplyCount > 0) tail.push(`${item.directReplyCount} replies`)
