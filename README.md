@@ -197,9 +197,16 @@ Standards-forward, few dependencies, no framework lock-in:
 Point a Claude session at your RSC account: read your timeline, follow a
 conversation, and post or reply — over the Model Context Protocol.
 
+Run `npm install` at the repo root first — `mcp/src/stdio.ts` resolves
+`@modelcontextprotocol/server` from the hoisted root `node_modules`, and a
+fresh clone has none.
+
 ```bash
-claude mcp add rsc -- node /path/to/rsc/mcp/src/stdio.ts
+claude mcp add rsc -e RSC_API_URL=https://rsc.example.org -e RSC_IDENTITIES=me:rsc_live_xxx -- node /path/to/rsc/mcp/src/stdio.ts
 ```
+
+`claude mcp add` passes no environment by default; without `-e` the server
+starts with `RSC_API_URL` unset and exits 1 immediately.
 
 Two environment variables:
 

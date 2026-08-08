@@ -6,7 +6,7 @@ citizens; posts/replies/conversations travel as RSS. Full picture in
 
 ## Architecture
 
-Two npm workspaces in one repo:
+Three npm workspaces in one repo:
 
 - **`core/`** — headless Hono/Node service, SQLite (better-sqlite3 + Kysely),
   `better-auth` for identity. Owns feeds, federation (WebSub/rssCloud),
@@ -16,6 +16,10 @@ Two npm workspaces in one repo:
 - **`web/`** — SvelteKit (Svelte 5 runes, `adapter-node`). The whole UI and
   the only thing browsers talk to; proxies auth + the SSE stream to core
   server-side via `CORE_API_URL`.
+- **`mcp/`** — a Model Context Protocol server, a thin stdio client over
+  core's `/api/v1`: read a timeline/thread, post/reply. Same native-type-
+  stripping, no-build-step convention as `core/`. Not deployed — run from
+  source via `claude mcp add`, see README.
 
 Load-bearing invariants — don't break these without understanding why:
 

@@ -1,6 +1,6 @@
 # RSC MCP server — Design
 
-**Status:** rev 1 (2026-08-08).
+**Status:** rev 3 (2026-08-08).
 
 **Goal:** Let a Claude session read an RSC timeline and post/reply to it,
 through a Model Context Protocol server that is a thin client over RSC's
@@ -275,8 +275,12 @@ Two rules that are not obvious and are the reason this section exists:
    because subscribing is retry-prone. That asymmetry is a deliberate
    statement in the existing code: post creation is **not idempotent**. A
    retry after a timeout duplicates a post into the outbound RSS feed and out
-   to every subscriber. The client retries nothing on the write path. Reads
-   may retry once on a network-level error.
+   to every subscriber. The client retries nothing — not on the write path,
+   not on reads, not anywhere: `rscFetch` (`mcp/src/tools.ts`) makes exactly
+   one request, full stop. (This line originally said reads may retry once on
+   a network-level error; the implementation never did that, and it's the
+   better behavior, so rev 3 amends the line to match rather than "restore"
+   a retry that was never built and isn't wanted — see revision history.)
 2. **Nothing is ever written to stdout except JSON-RPC frames.** On a stdio
    transport stdout *is* the protocol channel; one stray `console.log`
    corrupts the stream and the host drops the connection. All diagnostics go
@@ -386,3 +390,22 @@ exists; none is in v1.
   independently checkable factual claims (the npm package version, the
   keyless-read line numbers, the API.md gap) were each confirmed against the
   source.
+- **rev 3** (2026-08-08) — folded a whole-branch code review's findings, all
+  applied. The headline bug: `RscItem.selectedAuthor` was hand-declared from
+  this design's own example output rather than from core's real
+  `SelectedAuthor` union — the `remote_publisher` arm has no `handle` field,
+  so every remote item rendered `(unattributed)`. Fixed by copying core's
+  union shape verbatim instead of re-deriving a narrow view, with the
+  remote-item fixtures rebuilt from the live `/api/v1/timeline` payload
+  rather than invented. Also: `title` is now rendered; blank content (not
+  just `null`) is treated as absent so it never emits an empty fence;
+  fencing now follows item **origin**, not which field the text came from
+  (a remote peer's `contentMarkdown` is attacker-controlled too); remote
+  `displayName` is sanitized against embedded newlines before rendering;
+  `rscFetch` treats a 2xx with an unparseable body as failure at the source
+  instead of three blind casts downstream; `redirect: 'error'` closes a
+  redirect-preserves-POST gap; the untrusted-content tool descriptions are
+  now pinned by a test; and the Error-handling "reads may retry once" line
+  above is corrected to match the implementation (see that section). README
+  and `CLAUDE.md` doc drift (the `claude mcp add` command missing its env
+  vars; the workspace count) fixed alongside, outside this doc.
