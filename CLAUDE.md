@@ -4,57 +4,30 @@ A feeds-native social timeline: local posts and remote feed items are equal
 citizens; posts/replies/conversations travel as RSS. Full picture in
 `README.md`; founding design in `docs/superpowers/specs/2026-07-15-textcaster-design.md`.
 
-## Verified hard facts — read before designing anything
+## Establishing facts about this code
 
-Non-obvious truths about this codebase, each with the source that proves it.
-Every one of these was missed by someone confident they understood the code, and
-each cost real rework. **Line numbers drift — the claim is the fact, not the
-number. Re-open the file before you rely on one.**
+This file holds **conventions and invariants**, never point-in-time findings —
+a bug recorded here becomes a lie the moment it is fixed. Dated observations
+about current behaviour go in `docs/superpowers/reviews/`.
 
-- **`replyCounts` and the renderer use different visibility predicates.**
-  Rendering gates on `ORDINARY_ITEM_VISIBLE_SQL` = `hidden_at IS NULL AND
-  structural_tombstone = 0` (`core/src/logical/projector.ts:368`). Counting uses
-  `nodeVisible` → `remoteVisible` = `eligibleDeliveries(...).length > 0`
-  (`:456-458`), which **never checks `hidden_at`**. Worse, `replyCounts`
-  (`:486-505`) does `if (!nodeVisible(...)) continue` *before* pushing children,
-  so an invisible node drops its whole subtree. Counts are wrong in **both**
-  directions today, with no federation involved: a deleted local post
-  under-counts and swallows live replies; a hidden remote item over-counts.
-- **`itemOrdinaryVisible` ignores `hidden_at`.** It is `nodeVisible`
-  (`core/src/logical/projector.ts:464-466`) and is exported as *the reply-target
-  gate*, so **hidden items still accept replies**.
-- **Ordinary users cannot delete their own posts from the web UI.** Both delete
-  surfaces are gated on `data.me?.isAdmin` (`web/src/routes/+page.svelte:231`,
-  `web/src/routes/post/[id]/+page.svelte:104`), and the self-serve
-  `DELETE /me/posts/:id` is `apiKeyAuth`-only
-  (`core/src/api/logical-routes/personal.ts:137`) with **zero callers in
-  `web/`**. Deletion is an admin or API-key action, not a user action.
-- **Handle reservation already exists and already covers rename.**
-  `assertHandleUnreserved` (`core/src/logical/schema.ts:417-420`) is called by
-  both handle-claiming paths — user insert (`core/src/storage/sqlite.ts:218`)
-  and `PATCH /me` handle change (`core/src/logical/store.ts:394`). Any new
-  handle rule extends **this guard**; a registration-only check misses rename.
+**A claim about what the code does needs a `file:line` you opened in the current
+session.** Not a memory, not a subagent's report, not a spec's own description
+of the code. Line numbers drift, so re-open before relying on one.
 
-**How a fact earns a place here:** you opened the file in the current session
-and the cited line says what you claim. Not "I remember", not "a subagent
-reported it", not "the spec says so". Add one whenever you burn time proving
-something non-obvious — especially if you first got it wrong.
+**Traps this repo sets** — each has cost a session:
 
-**Traps this repo sets.** Each of these has cost a session:
-
-- **Subsystems are often derivations, not tables.** Membership is not a members
-  table — it is a URL-prefix range query (`core/src/logical/membership.ts`,
-  `instancePrefix`/`prefixUpperBound`/`approvedInstanceFor`). Grepping for
-  `CREATE TABLE .*member` finds nothing and "there is no membership" is the
-  wrong conclusion. Search for the **behaviour**, not for a table name.
-- **A function you are about to write is not existing behaviour.** Never
-  describe something a design proposes as something the code already does.
-- **A route existing is not a route being used.** `GET /post/:id` has no
-  consumer — `web/` and `mcp/` both use `/post/:id/thread`. Check callers before
-  "fixing" a route.
-- **The same concept can have two implementations that disagree** (see the
-  visibility predicates above). Finding one does not mean you found the one that
-  runs on the path you care about.
+- **Subsystems are often derivations, not tables.** Membership is a URL-prefix
+  range query (`core/src/logical/membership.ts` —
+  `instancePrefix`/`prefixUpperBound`/`approvedInstanceFor`), so
+  `grep 'CREATE TABLE .*member'` finds nothing and "there is no membership" is
+  the wrong conclusion. Search for the **behaviour**, not a table name.
+- **A function a design proposes is not existing behaviour.** Never write "the
+  code already handles X" about something you are about to build.
+- **A route existing is not a route being used.** Check callers in `web/` and
+  `mcp/` before "fixing" one.
+- **The same concept can have two implementations that disagree.** Finding one
+  predicate does not mean you found the one that runs on your path — verify
+  which is reached from the surface you care about.
 
 ## Architecture
 
