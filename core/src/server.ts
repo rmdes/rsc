@@ -108,6 +108,9 @@ bus.onNewPost(() => { bus.emitSequenceHint(logicalStore.snapshot((tx) => tx.getJ
 // A local post's after-commit notification drives outbound WebSub/rssCloud
 // publishing. H4 seam: onLocalPost never rejects; void is safe here by contract.
 bus.onNewPost((e) => { void push.onLocalPost(e) })
+// Same H4 seam: a deletion pings the author's topic and the firehose so
+// subscribed peers re-fetch sooner than their next scheduled poll.
+bus.onPostDeleted((e) => { void push.onPostDeleted(e) })
 
 let sweepTimer: NodeJS.Timeout
 async function sweepLoop() {

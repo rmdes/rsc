@@ -11,6 +11,7 @@ const PUSH_TIMEOUT_MS = 10_000
 
 export interface Push {
   onLocalPost(entry: TimelineEntry): Promise<void>
+  onPostDeleted(e: { handle: string }): Promise<void>
 }
 
 export interface PushDeps {
@@ -175,6 +176,19 @@ async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string
   }
 }
 
+// Deletion has no body to deliver (no TimelineEntry; for an account deletion
+// the users row is already gone), so both self-mode websub subscribers and
+// rssCloud subscribers get the same thin "go re-fetch this topic" nudge.
+async function thinPing(repo: Repository, fetchFn: typeof fetch, protocol: 'websub' | 'rsscloud', topics: string[]): Promise<void> {
+  const now = new Date().toISOString()
+  for (const topic of topics) {
+    const subs = (await repo.listActiveSubscriptions(topic, now)).filter((s) => s.protocol === protocol)
+    for (const sub of subs) {
+      await deliverOnce(fetchFn, sub.callback, new URLSearchParams({ url: topic }).toString(), { 'content-type': 'application/x-www-form-urlencoded' })
+    }
+  }
+}
+
 async function publishPing(hubUrl: string, topic: string, fetchFn: typeof fetch): Promise<void> {
   // Intentionally allows default redirect: 'follow' — hubUrl is operator-configured,
   // not attacker-controlled like callback URLs in verification/delivery paths.
@@ -282,6 +296,34 @@ export function createPush(deps: PushDeps): Push {
         }
       } catch (err) {
         console.error('push dispatch failed:', err instanceof Error ? err.message : err)
+      }
+    },
+
+    // Same never-rejects contract as onLocalPost (H4): dispatched synchronously
+    // off the bus, no global rejection handler. Thin only: there is no
+    // TimelineEntry to regenerate a fat body from, and for an account
+    // deletion the users row is already gone — just tell peers to re-fetch.
+    async onPostDeleted(e: { handle: string }): Promise<void> {
+      try {
+        if (!config.publicUrl) return
+        const pushEnabled = config.websub.mode !== 'off' || config.rssCloud
+        if (!pushEnabled) return
+        const topics = [feedUrls(config.publicUrl, e.handle).xml, firehoseUrl(config.publicUrl)]
+
+        if (config.websub.mode === 'external') {
+          for (const topic of topics) {
+            try {
+              await publishPing(config.websub.hubUrl, topic, fetchFn)
+            } catch (err) {
+              console.error(`websub publish ping failed for ${topic}:`, err instanceof Error ? err.message : err)
+            }
+          }
+        }
+
+        if (config.websub.mode === 'self') await thinPing(repo, fetchFn, 'websub', topics)
+        if (config.rssCloud) await thinPing(repo, fetchFn, 'rsscloud', topics)
+      } catch (err) {
+        console.error('push dispatch failed (deletion):', err instanceof Error ? err.message : err)
       }
     },
   }

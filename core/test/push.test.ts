@@ -351,6 +351,67 @@ test('onLocalPost rssCloud thin-pings the firehose topic too', async () => {
   expect(new URLSearchParams(String((fhCall![1] as RequestInit).body)).get('url')).toBe(fhTopic)
 })
 
+test('onPostDeleted (external mode): pings the author topic and the firehose only (no json), and never rejects', async () => {
+  const { repo, config } = await setup(EXT_ENV)
+  const fetchFn = vi.fn(async () => new Response('ok', { status: 204 }))
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await expect(push.onPostDeleted({ handle: 'rick' })).resolves.toBeUndefined()
+  expect(fetchFn).toHaveBeenCalledTimes(2) // author xml + firehose; no json topic for a deletion
+  const topics = (fetchFn.mock.calls as unknown as Array<[string, RequestInit]>).map(([, i]) => new URLSearchParams(i.body as string).get('hub.topic'))
+  expect(topics).toContain('https://cast.example.com/users/rick/feed.xml')
+  expect(topics).toContain('https://cast.example.com/users/rss.xml')
+})
+
+test('onPostDeleted (external mode) swallows a hub failure', async () => {
+  const { repo, config } = await setup(EXT_ENV)
+  const push = createPush({ repo, config, fetchFn: (async () => { throw new Error('hub down') }) as unknown as typeof fetch })
+  await expect(push.onPostDeleted({ handle: 'rick' })).resolves.toBeUndefined()
+})
+
+test('onPostDeleted (self mode) thin-pings websub subscribers of the author topic and the firehose', async () => {
+  const { repo, config } = await setup(SELF_ENV)
+  const authorTopic = 'https://cast.example.com/users/rick/feed.xml'
+  const fhTopic = 'https://cast.example.com/users/rss.xml'
+  await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic: authorTopic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  await repo.upsertSubscription({ id: 's2', protocol: 'websub', topic: fhTopic, callback: 'https://cb2.example.com/receive', callbackHost: 'cb2.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const calls: Array<{ url: string; body: string }> = []
+  const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { calls.push({ url: String(url), body: String(init?.body) }); return new Response('', { status: 200 }) })
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onPostDeleted({ handle: 'rick' })
+  const authorCall = calls.find((c) => c.url === 'https://cb.example.com/receive')
+  const fhCall = calls.find((c) => c.url === 'https://cb2.example.com/receive')
+  expect(authorCall).toBeTruthy()
+  expect(fhCall).toBeTruthy()
+  expect(new URLSearchParams(authorCall!.body).get('url')).toBe(authorTopic)
+  expect(new URLSearchParams(fhCall!.body).get('url')).toBe(fhTopic)
+})
+
+test('onPostDeleted (rssCloud) thin-pings rsscloud subscribers of the author topic and the firehose', async () => {
+  const { repo, config } = await setup(CLOUD_ENV)
+  const authorTopic = 'https://cast.example.com/users/rick/feed.xml'
+  const fhTopic = 'https://cast.example.com/users/rss.xml'
+  await repo.upsertSubscription({ id: 'rc1', protocol: 'rsscloud', topic: authorTopic, callback: 'http://cb.example.com:5337/rsscloud/notify', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  await repo.upsertSubscription({ id: 'rc2', protocol: 'rsscloud', topic: fhTopic, callback: 'http://cb2.example.com:5337/rsscloud/notify', callbackHost: 'cb2.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const fetchFn = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('', { status: 200 }))
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onPostDeleted({ handle: 'rick' })
+  const authorCall = fetchFn.mock.calls.find((c) => String(c[0]) === 'http://cb.example.com:5337/rsscloud/notify')
+  const fhCall = fetchFn.mock.calls.find((c) => String(c[0]) === 'http://cb2.example.com:5337/rsscloud/notify')
+  expect(authorCall).toBeTruthy()
+  expect(fhCall).toBeTruthy()
+  expect(new URLSearchParams(String((authorCall![1] as RequestInit).body)).get('url')).toBe(authorTopic)
+  expect(new URLSearchParams(String((fhCall![1] as RequestInit).body)).get('url')).toBe(fhTopic)
+})
+
+test('onPostDeleted is a no-op when publicUrl is not configured', async () => {
+  const { repo } = await setup({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' })
+  const config = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' })
+  const fetchFn = vi.fn(async () => new Response('ok'))
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onPostDeleted({ handle: 'rick' })
+  expect(fetchFn).not.toHaveBeenCalled()
+})
+
 test('all callback-bound fetches opt out of redirect following (SSRF bypass guard)', async () => {
   const seen: Array<{ url: string; redirect: RequestRedirect | undefined }> = []
   const recorder = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
