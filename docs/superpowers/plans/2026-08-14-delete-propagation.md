@@ -696,38 +696,29 @@ developed with the help of AI tools"
 - `ref` must be normalized the same way identity keys are
   (`normalizePermalink`, `core/src/logical/roots.ts:34-44`), or the consumer's
   lookup silently misses.
-- **Gated to approved federated peers** — unauthenticated it is a permanent
-  public list of every permalink the instance ever deleted, including every post
-  of anyone who used delete-my-account.
+- **Public**, like the feeds it sits beside. No auth, no gate.
 
 - [ ] **Step 1: Write the failing tests**
 
+Two tests. Build the fixtures with whatever the core test files already use —
+the helper names below are illustrative, not real.
+
 ```ts
 test('deletions page ascending and drain across a shared timestamp', async () => {
-  const { app, peerAuth } = await makeAppWithApprovedPeer()
-  await seedMarkers(5, { deletedAt: '2026-08-14T00:00:00.000Z' })  // all identical
-  const first = await app.request('/deletions.json', { headers: peerAuth })
+  // 5 markers all sharing one deleted_at, as an account deletion produces
+  const first = await app.request('/deletions.json')
   const a = await first.json()
-  expect(a.deletions.length).toBeGreaterThan(0)
   expect(a.hasMore).toBe(true)
-  const second = await app.request(`/deletions.json?cursor=${encodeURIComponent(a.nextCursor)}`, { headers: peerAuth })
+  const second = await app.request(`/deletions.json?cursor=${encodeURIComponent(a.nextCursor)}`)
   const b = await second.json()
   const refs = [...a.deletions, ...b.deletions].map((d) => d.ref)
   expect(new Set(refs).size).toBe(5)   // nothing skipped, nothing repeated
 })
 
 test('deletions omit relative and foreign-host permalinks', async () => {
-  const { app, peerAuth } = await makeAppWithApprovedPeer()
-  await seedMarkerRaw('/post/legacy', '2026-08-14T00:00:00.000Z')
-  await seedMarkerRaw('https://old-domain.example/post/x', '2026-08-14T00:00:01.000Z')
-  const res = await app.request('/deletions.json', { headers: peerAuth })
-  expect((await res.json()).deletions).toEqual([])
-})
-
-test('deletions.json is refused without an approved federation relationship', async () => {
-  const { app } = await makeApp()
+  // seed one marker with '/post/legacy' and one with another domain
   const res = await app.request('/deletions.json')
-  expect(res.status).toBe(403)
+  expect((await res.json()).deletions).toEqual([])
 })
 ```
 
@@ -773,22 +764,20 @@ if it is older, expand to
 
 - [ ] **Step 5: Add the route**
 
-In `read.ts`, beside the feed routes. Fetch `limit + 1` to compute `hasMore`.
-Gate on an approved federation relationship — read how `membership.ts`'s
-`approvedInstanceFor` resolves a caller and follow it; if the caller cannot be
-resolved to an approved peer, `return c.json({ error: 'not found' }, 403)`.
-Normalize each `ref` with `normalizePermalink` before returning it.
+In `read.ts`, beside the feed routes, public like they are. Fetch `limit + 1` to
+compute `hasMore`. Normalize each `ref` with `normalizePermalink` before
+returning it.
 
 - [ ] **Step 6: Tests, typecheck, commit**
 
 ```bash
 npm test -w core && npm run typecheck -w core
 git add core/src/api/logical-routes/read.ts core/src/logical/store.ts core/src/logical/schema.ts core/test/logical-read.test.ts
-git commit -m "feat(deletions): serve GET /deletions.json to approved peers
+git commit -m "feat(deletions): serve GET /deletions.json
 
-Ascending tuple-cursor paging over the permanent deletion markers,
-filtered to this instance's own absolute permalinks. Gated: unauthed it
-would be a permanent public list of everything ever deleted here.
+Public, like the feeds beside it. Ascending tuple-cursor paging over the
+permanent deletion markers, filtered to this instance's own absolute
+permalinks.
 
 developed with the help of AI tools"
 ```
@@ -823,7 +812,7 @@ Beside the `/users/rss.xml` location:
 - [ ] **Step 3: Verify locally**
 
 Run: `docker compose up -d && curl -s -o /dev/null -w '%{http_code}\n' http://localhost/deletions.json`
-Expected: `403` (reached core and was refused for lack of an approved peer), **not** 404 from the web app.
+Expected: `200` with a JSON body from core, **not** a 404 from the web app.
 
 - [ ] **Step 4: Commit**
 

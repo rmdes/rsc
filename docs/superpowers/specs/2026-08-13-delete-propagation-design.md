@@ -166,10 +166,9 @@ would block purge and orphan reap (`PURGE_INVENTORY`,
 protection exactly when a source can be re-added. Store the source URL as plain
 text.
 
-**D13 — `/deletions.json` is gated to approved federated peers.** It would
-otherwise be a permanent, public, machine-readable list of every permalink the
-instance ever deleted — including every post of an account that used
-delete-my-account, which contradicts what that path promises.
+**D13 — `/deletions.json` is public, like the feeds it sits beside.** RSS is
+public; peers pull anonymously; the file lists post UUIDs and dates and nothing
+else. No gate.
 
 **D14 — Host-level is the accepted retraction granularity**, stated rather than
 inherited: any approved federated source on a host may retract any permalink on
@@ -180,7 +179,7 @@ path-multiplexed peer is ever federated.
 
 ## 3. What we build — all PROPOSED
 
-**Origin.** `GET /deletions.json`, gated to approved peers (D13), paging
+**Origin.** `GET /deletions.json`, public (D13), paging
 ascending with the existing cursor codec, in `api/logical-routes/read.ts` beside
 the feeds. Entries are `{ ref, deletedAt }`; `ref` must be **normalized the same
 way identity keys are**, and only this instance's own absolute permalinks are
