@@ -298,6 +298,19 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ post: entry }, 200)
   })
 
+  // Cookie-authed twin of personal.ts's key-authed DELETE /me/posts/:id, same
+  // ownership rule. Admins remove OTHERS' posts via DELETE /admin/posts/:id;
+  // this route is only ever the author acting on their own post.
+  app.delete('/posts/:id', authed, async (c) => {
+    const me = c.get('coreUser')
+    const post = await service.getPost(c.req.param('id'))
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not deletable' }, 403)
+    const result = await service.deletePost(post.id)
+    if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
+    return c.json({ ok: true }, 200)
+  })
+
   async function resolveUser(handleRaw: string): Promise<import('../domain/types.ts').User | undefined> {
     return service.getUserByHandle(handleRaw.toLowerCase())
   }

@@ -68,3 +68,28 @@ test('editing without a session → 401', async () => {
   const pid = await createPost(app, cookie, 'mine')
   expect((await app.request(`/posts/${pid}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content: 'x' }) })).status).toBe(401)
 })
+
+test('an author deletes their own post → 200', async () => {
+  const { app } = await makeApp()
+  const cookie = await anonSession(app)
+  const pid = await createPost(app, cookie, 'gone soon')
+  const res = await app.request(`/posts/${pid}`, { method: 'DELETE', headers: { cookie } })
+  expect(res.status).toBe(200)
+  expect(await res.json()).toEqual({ ok: true })
+})
+
+test('a non-author cannot delete someone else post → 403', async () => {
+  const { app } = await makeApp()
+  const owner = await anonSession(app)
+  const pid = await createPost(app, owner, 'mine')
+  const other = await anonSession(app)
+  const res = await app.request(`/posts/${pid}`, { method: 'DELETE', headers: { cookie: other } })
+  expect(res.status).toBe(403)
+})
+
+test('deleting an unknown post → 404', async () => {
+  const { app } = await makeApp()
+  const cookie = await anonSession(app)
+  const res = await app.request('/posts/does-not-exist', { method: 'DELETE', headers: { cookie } })
+  expect(res.status).toBe(404)
+})
