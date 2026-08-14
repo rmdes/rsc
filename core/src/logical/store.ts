@@ -614,6 +614,39 @@ export function createLogicalStore(db: DatabaseContext) {
       })
     },
 
+    // --- deletion propagation read (Task 7) -------------------------------
+    // Ascending, unlike every other cursor in this file — consumers drain
+    // forward. Tuple comparison (deleted_at, logical_item_id), never
+    // deleted_at alone: deleteLocalAccount (local.ts) passes one shared `now`
+    // to every post it deletes, so an account deletion writes many markers
+    // with an identical deleted_at — a timestamp-only cursor would skip the
+    // rest of that group or loop. The expanded OR form (not SQLite's native
+    // row-value `(a,b) > (?,?)` syntax, available since 3.15 and confirmed
+    // present in the bundled 3.53.2) matches every other ASC-paged query in
+    // this file (listJobs, listItemAudit) — one comparison idiom, not two.
+    // publicUrlPrefix filters server-side to THIS instance's own absolute
+    // permalinks: markers store `cur.url ?? permalinkFor(id)` (local.ts), and
+    // permalinkFor is the relative `/post/<id>` form, so historical rows can
+    // be relative or carry a previous domain — neither belongs on this feed.
+    listDeletionsAfter(cursor: { deletedAt: string; id: string } | null, limit: number, publicUrlPrefix: string): { id: string; ref: string; deletedAt: string }[] {
+      return db.read((tx) => {
+        const like = `${publicUrlPrefix}/post/%`
+        return (cursor
+          ? tx.prepare(
+              `SELECT logical_item_id AS id, canonical_permalink AS ref, deleted_at AS deletedAt
+               FROM logical_deleted_local_v2
+               WHERE canonical_permalink LIKE ? AND (deleted_at > ? OR (deleted_at = ? AND logical_item_id > ?))
+               ORDER BY deleted_at ASC, logical_item_id ASC LIMIT ?`,
+            ).all(like, cursor.deletedAt, cursor.deletedAt, cursor.id, limit)
+          : tx.prepare(
+              `SELECT logical_item_id AS id, canonical_permalink AS ref, deleted_at AS deletedAt
+               FROM logical_deleted_local_v2
+               WHERE canonical_permalink LIKE ?
+               ORDER BY deleted_at ASC, logical_item_id ASC LIMIT ?`,
+            ).all(like, limit)) as { id: string; ref: string; deletedAt: string }[]
+      })
+    },
+
     // --- refresh command ledger (spec §6.2) -------------------------------
     checkAcquisitionCommand(command: CommandEnvelope): RefreshLedgerCheck {
       return db.read((tx) => {

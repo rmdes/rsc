@@ -419,3 +419,17 @@ export function assertHandleUnreserved(tx: ReadTx, handle: string): void {
     throw new HandleTakenError('handle already taken')
   }
 }
+
+// Deletion-propagation paging index (Task 7). ONE migration entry, appended
+// strictly at the TAIL of MIGRATIONS in sqlite.ts, AFTER migration #23 —
+// mid-array insertion renumbers applied migrations and corrupts user_version
+// on live databases. Pure additive: CREATE INDEX only, no table rebuilt.
+//
+// GET /deletions.json pages ASC over (deleted_at, logical_item_id) — the
+// opposite direction from every other cursor in this file — because an
+// account deletion (deleteLocalAccount, local.ts) writes every one of its
+// posts' markers with one shared `now`, so the tuple, not deleted_at alone,
+// is what keeps paging from skipping or looping within that group.
+export const LOGICAL_DELETIONS_PAGING_INDEX: string[] = [
+  `CREATE INDEX logical_deleted_local_v2_paging ON logical_deleted_local_v2(deleted_at, logical_item_id)`,
+]
