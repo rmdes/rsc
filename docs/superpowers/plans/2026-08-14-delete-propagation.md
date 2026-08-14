@@ -14,8 +14,19 @@
 
 - **No TypeScript parameter properties** in `core/src` — Node native type-stripping. Constructors assign fields plainly.
 - **Hono house style** (`.claude/skills/hono/SKILL.md`): `return c.json({error}, status)` never `HTTPException`; hand-rolled validators never `zValidator`; middleware factories; `app.request()` in tests.
-- **Tests run in the container** when the dev stack is up: `docker compose exec core npm test -w core`. Host runs die EACCES.
-- **Type-stripping means vitest passes on type errors** — every task ends with `npm run typecheck` as well as tests.
+- **Tests: always go through the workspace script**, never a bare `vitest` /
+  `npx vitest` (`docs/superpowers/documentation/TESTING.md`, Gotcha 3 — a direct
+  invocation resolves the wrong config and silently drops web's `$lib` aliases).
+  Filtered form: `npm test -w core -- test/foo.test.ts`.
+- **Where to run them:** this branch is developed in a git worktree, which the
+  dev compose stack does **not** bind-mount — so run on the **host, from the
+  worktree root**. The "run inside the container" guidance in TESTING.md applies
+  to the main checkout while the stack is up (it bind-mounts it as root, which
+  breaks host writes to `web/node_modules/.vite-temp`). Neither gotcha applies
+  in a worktree with its own `npm ci`.
+- **Type-stripping means vitest passes on type errors** — every task ends with
+  `npm run typecheck -w core` (and `npm run check -w web` for web tasks) as well
+  as tests.
 - **Never `git add -A`** — shared checkout, a parallel session commits on `main`. Stage explicit paths.
 - **Commit messages end with** `developed with the help of AI tools`.
 - **Sanitizer twins**: `core/src/domain/markdown.ts` and `web/src/lib/server/render.ts` must change together or not at all. No task here touches them.
@@ -104,7 +115,7 @@ helper — if the file opens its database inline per test, do that.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `docker compose exec core npx vitest run test/logical-projector.test.ts -t 'descend past an invisible node'`
+Run: `npm test -w core -- test/logical-projector.test.ts -t 'descend past an invisible node'`
 Expected: FAIL, `expected 0 to be 1` — C's subtree is pruned today.
 
 - [ ] **Step 3: Make the minimal change**
@@ -130,7 +141,7 @@ child enqueue above the visibility test so it always runs:
 
 - [ ] **Step 4: Run tests**
 
-Run: `docker compose exec core npx vitest run test/logical-projector.test.ts`
+Run: `npm test -w core -- test/logical-projector.test.ts`
 Expected: PASS, and every existing test in the file still passes.
 
 - [ ] **Step 5: Add the two consequence tests**
@@ -160,7 +171,7 @@ test('the node bound still caps the walk when the invisible subtree is large', (
 
 - [ ] **Step 6: Run the full core suite and typecheck**
 
-Run: `docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: all pass. If any existing test asserted the old pruning behaviour, it
 encoded the bug — update it and note that in the commit message.
 
@@ -208,7 +219,7 @@ test('the firehose honours feed_item_limit', async () => {
 
 - [ ] **Step 2: Run it and verify failure**
 
-Run: `docker compose exec core npx vitest run test/logical-read.test.ts -t 'honours feed_item_limit'`
+Run: `npm test -w core -- test/logical-read.test.ts -t 'honours feed_item_limit'`
 Expected: FAIL — 3 items, the setting is ignored.
 
 - [ ] **Step 3: Read the setting in the three feed handlers**
@@ -235,7 +246,7 @@ Apply the same `await feedLimit()` in the two per-user feed handlers
 
 - [ ] **Step 4: Run the test**
 
-Run: `docker compose exec core npx vitest run test/logical-read.test.ts`
+Run: `npm test -w core -- test/logical-read.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Add the setting to the admin API**
@@ -289,7 +300,7 @@ test('admin settings reject feedItemLimit below 1', async () => {
 - [ ] **Step 7: Full suite, typecheck, commit**
 
 ```bash
-docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core
+npm test -w core && npm run typecheck -w core
 git add core/src/api/logical-routes/read.ts core/src/api/app.ts core/test/logical-read.test.ts
 git commit -m "feat(feeds): make the feed item limit an admin setting
 
@@ -344,7 +355,7 @@ test('save action rejects a feedItemLimit below 1', async () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec web npx vitest run src/routes/admin-settings.actions.test.ts`
+Run: `npm test -w web -- src/routes/admin-settings.actions.test.ts`
 Expected: FAIL — the field is not forwarded.
 
 - [ ] **Step 3: Parse and forward it**
@@ -375,7 +386,7 @@ block exactly:
 
 - [ ] **Step 5: Run web tests and typecheck**
 
-Run: `docker compose exec web npm test -w web && docker compose exec web npm run check -w web`
+Run: `npm test -w web && npm run check -w web`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -428,7 +439,7 @@ test('deleting an unknown post is 404', async () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/service.test.ts -t 'deletes their own post'`
+Run: `npm test -w core -- test/service.test.ts -t 'deletes their own post'`
 Expected: FAIL — 404 from Hono, the route does not exist.
 
 - [ ] **Step 3: Add the route**
@@ -453,7 +464,7 @@ and its ownership check:
 
 - [ ] **Step 4: Run tests, full suite, typecheck**
 
-Run: `docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -510,7 +521,7 @@ test('an admin delete hits the admin route', async () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec web npx vitest run src/routes/page.actions.test.ts -t 'self-serve route'`
+Run: `npm test -w web -- src/routes/page.actions.test.ts -t 'self-serve route'`
 Expected: FAIL — the signature takes no options.
 
 - [ ] **Step 3: Branch the helper**
@@ -546,7 +557,7 @@ do not assume `data.me.id` exists with that name.
 - [ ] **Step 6: Web tests, check, commit**
 
 ```bash
-docker compose exec web npm test -w web && docker compose exec web npm run check -w web
+npm test -w web && npm run check -w web
 git add web/src/lib/api.ts web/src/routes/+page.svelte web/src/routes/+page.server.ts web/src/routes/post/[id]/+page.svelte web/src/routes/post/[id]/+page.server.ts web/src/routes/page.actions.test.ts
 git commit -m "feat(web): let authors delete their own posts
 
@@ -601,7 +612,7 @@ test('deleting an account emits exactly one post-deleted event', async () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/service.test.ts -t 'post-deleted'`
+Run: `npm test -w core -- test/service.test.ts -t 'post-deleted'`
 Expected: FAIL — `bus.onPostDeleted is not a function`.
 
 - [ ] **Step 3: Add the event**
@@ -647,7 +658,7 @@ after `deleteAuthRows`.
 - [ ] **Step 5: Tests, typecheck, commit**
 
 ```bash
-docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core
+npm test -w core && npm run typecheck -w core
 git add core/src/domain/bus.ts core/src/domain/service.ts core/test/service.test.ts
 git commit -m "feat(bus): add a post-deleted event
 
@@ -722,7 +733,7 @@ test('deletions.json is refused without an approved federation relationship', as
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/logical-read.test.ts -t 'deletions'`
+Run: `npm test -w core -- test/logical-read.test.ts -t 'deletions'`
 Expected: FAIL — route missing.
 
 - [ ] **Step 3: Add the index**
@@ -756,7 +767,7 @@ In `core/src/logical/store.ts`, beside the other read methods:
 
 SQLite supports row-value comparison from 3.15. Verify the bundled
 better-sqlite3's SQLite version at the REPL before relying on it
-(`docker compose exec core node -e "console.log(require('better-sqlite3')(':memory:').prepare('select sqlite_version() v').get())"`);
+(`node -e "console.log(require('better-sqlite3')(':memory:').prepare('select sqlite_version() v').get())"`);
 if it is older, expand to
 `(deleted_at > ?) OR (deleted_at = ? AND logical_item_id > ?)`.
 
@@ -771,7 +782,7 @@ Normalize each `ref` with `normalizePermalink` before returning it.
 - [ ] **Step 6: Tests, typecheck, commit**
 
 ```bash
-docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core
+npm test -w core && npm run typecheck -w core
 git add core/src/api/logical-routes/read.ts core/src/logical/store.ts core/src/logical/schema.ts core/test/logical-read.test.ts
 git commit -m "feat(deletions): serve GET /deletions.json to approved peers
 
@@ -861,7 +872,7 @@ test('onPostDeleted swallows a hub failure', async () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/push.test.ts -t 'deletion pings'`
+Run: `npm test -w core -- test/push.test.ts -t 'deletion pings'`
 Expected: FAIL — `push.onPostDeleted is not a function`.
 
 - [ ] **Step 3: Implement**
@@ -889,7 +900,7 @@ bus.onPostDeleted((e) => { void push.onPostDeleted(e) })
 - [ ] **Step 5: Tests, typecheck, commit**
 
 ```bash
-docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core
+npm test -w core && npm run typecheck -w core
 git add core/src/domain/push.ts core/src/server.ts core/test/push.test.ts
 git commit -m "feat(push): notify peers on deletion
 
@@ -944,7 +955,7 @@ test('a retracted permalink is never re-owned by a new delivery', () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/logical-reconcile.test.ts -t 'retracted permalink'`
+Run: `npm test -w core -- test/logical-reconcile.test.ts -t 'retracted permalink'`
 Expected: FAIL — no such table.
 
 - [ ] **Step 3: Add the table and the predicate**
@@ -989,7 +1000,7 @@ test('a delivery arriving after retraction mints nothing', () => {
 
 - [ ] **Step 6: Full suite (purge tests included), typecheck, commit**
 
-Run: `docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: PASS — in particular `logical-purge.test.ts`, which walks
 `PURGE_INVENTORY`. If it fails, the new table gained an FK it must not have.
 
@@ -1054,7 +1065,7 @@ test('holds when the federation relationship is not yet approved', () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/logical-deletions.test.ts`
+Run: `npm test -w core -- test/logical-deletions.test.ts`
 Expected: FAIL — module does not exist.
 
 - [ ] **Step 3: Implement the gate**
@@ -1083,7 +1094,7 @@ on any failure return `{ error }` — never throw into the acquisition pass.
 - [ ] **Step 5: Tests, typecheck, commit**
 
 ```bash
-docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core
+npm test -w core && npm run typecheck -w core
 git add core/src/logical/deletions.ts core/test/logical-deletions.test.ts
 git commit -m "feat(deletions): fetch and gate a peer's deletion document
 
@@ -1174,7 +1185,7 @@ test('applying twice is idempotent', () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/logical-deletions.test.ts -t 'destroys the evidence'`
+Run: `npm test -w core -- test/logical-deletions.test.ts -t 'destroys the evidence'`
 Expected: FAIL — `applyDeletion` not exported.
 
 - [ ] **Step 3: Implement, in the stated order**
@@ -1184,7 +1195,7 @@ ids, then run steps 1-5 above in one write transaction.
 
 - [ ] **Step 4: Run tests, full suite, typecheck**
 
-Run: `docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core`
+Run: `npm test -w core && npm run typecheck -w core`
 Expected: PASS. A `FOREIGN KEY constraint failed` here means the deletion order
 was hand-rolled instead of using `deleteObservationVersions`.
 
@@ -1259,7 +1270,7 @@ test('an in-flight pending run does not shadow the stored cursor', async () => {
 
 - [ ] **Step 2: Run and verify failure**
 
-Run: `docker compose exec core npx vitest run test/logical-deletions.test.ts -t 'cursor'`
+Run: `npm test -w core -- test/logical-deletions.test.ts -t 'cursor'`
 Expected: FAIL.
 
 - [ ] **Step 3: Add the column**
@@ -1275,7 +1286,7 @@ Persist the resulting cursor on the run's UPDATE at commit (`:529`).
 - [ ] **Step 5: Tests, full suite, typecheck, commit**
 
 ```bash
-docker compose exec core npm test -w core && docker compose exec core npm run typecheck -w core
+npm test -w core && npm run typecheck -w core
 git add core/src/logical/acquisition.ts core/src/logical/schema.ts core/test/logical-deletions.test.ts
 git commit -m "feat(deletions): drive the deletion pass from acquisition
 
@@ -1296,9 +1307,9 @@ rsc.rmendes.net and skyfleet.blue.
 
 ## Verification before each deploy
 
-- `docker compose exec core npm test -w core` — all pass
-- `docker compose exec core npm run typecheck -w core` — clean
-- `docker compose exec web npm test -w web && docker compose exec web npm run check -w web`
+- `npm test -w core` — all pass
+- `npm run typecheck -w core` — clean
+- `npm test -w web && npm run check -w web`
 - Feed bytes unchanged (golden files) — nothing in this milestone alters a feed
   document, and the rollout depends on that
 - valid.rss.chat on the firehose after tasks 7-9, since a passing unit suite is
