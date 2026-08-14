@@ -176,9 +176,12 @@ async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string
   }
 }
 
-// Deletion has no body to deliver (no TimelineEntry; for an account deletion
-// the users row is already gone), so both self-mode websub subscribers and
-// rssCloud subscribers get the same thin "go re-fetch this topic" nudge.
+// Thin "go re-fetch this topic" nudge. Only valid where the receiver accepts
+// an unsigned/no-body ping: rssCloud (no signature scheme) and websub
+// external mode (the operator's hub re-fetches itself). Self-mode websub is
+// NOT one of these — our own receiver (websubDeliver) discards any delivery
+// that doesn't verify against the subscription's HMAC secret, and every
+// self-mode subscription has one, so a thin ping there is a silent no-op.
 async function thinPing(repo: Repository, fetchFn: typeof fetch, protocol: 'websub' | 'rsscloud', topics: string[]): Promise<void> {
   const now = new Date().toISOString()
   for (const topic of topics) {
@@ -300,18 +303,19 @@ export function createPush(deps: PushDeps): Push {
     },
 
     // Same never-rejects contract as onLocalPost (H4): dispatched synchronously
-    // off the bus, no global rejection handler. Thin only: there is no
-    // TimelineEntry to regenerate a fat body from, and for an account
-    // deletion the users row is already gone — just tell peers to re-fetch.
+    // off the bus, no global rejection handler.
     async onPostDeleted(e: { handle: string }): Promise<void> {
       try {
         if (!config.publicUrl) return
         const pushEnabled = config.websub.mode !== 'off' || config.rssCloud
         if (!pushEnabled) return
-        const topics = [feedUrls(config.publicUrl, e.handle).xml, firehoseUrl(config.publicUrl)]
+        const authorTopics = feedUrls(config.publicUrl, e.handle)
+        const fhTopic = firehoseUrl(config.publicUrl)
 
         if (config.websub.mode === 'external') {
-          for (const topic of topics) {
+          // Format-agnostic thin ping (the hub re-fetches) — both author
+          // formats plus the firehose, mirroring onLocalPost's external loop.
+          for (const topic of [authorTopics.xml, authorTopics.json, fhTopic]) {
             try {
               await publishPing(config.websub.hubUrl, topic, fetchFn)
             } catch (err) {
@@ -320,8 +324,38 @@ export function createPush(deps: PushDeps): Push {
           }
         }
 
-        if (config.websub.mode === 'self') await thinPing(repo, fetchFn, 'websub', topics)
-        if (config.rssCloud) await thinPing(repo, fetchFn, 'rsscloud', topics)
+        if (config.websub.mode === 'self') {
+          // A thin ping is silently discarded by our own receiver (unsigned,
+          // fails HMAC verification), and no per-author fat body is possible
+          // here — for an account deletion the users row is already gone. The
+          // firehose IS regenerable (deletion just drops the post from it),
+          // so mirror onLocalPost's self-mode firehose block exactly: fat
+          // body, signed per subscriber. Author-topic self-mode subscribers
+          // get nothing on a deletion — there is no correct body to sign for
+          // them.
+          const now = new Date().toISOString()
+          const ctx = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
+          const fhSubs = (await repo.listActiveSubscriptions(fhTopic, now)).filter((s) => s.protocol === 'websub')
+          if (fhSubs.length > 0) {
+            const recent = await repo.getRecentLocalPosts(50)
+            let body = renderFirehoseRss(recent, ctx)
+            const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
+            body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
+              .map((p) => ({ guid: emittedGuid(p), count: fhCounts.get(p.id)!, feedUrl: commentsFeedUrl(ctx.publicUrl, p.id) })))
+            for (const sub of fhSubs) {
+              const headers: Record<string, string> = {
+                'content-type': 'application/rss+xml; charset=utf-8',
+                link: `<${fhTopic}>; rel="self", <${ctx.hubUrl}>; rel="hub"`,
+              }
+              if (sub.secret) headers['x-hub-signature'] = 'sha256=' + createHmac('sha256', sub.secret).update(body).digest('hex')
+              await deliverOnce(fetchFn, sub.callback, body, headers)
+            }
+          }
+        }
+
+        // rssCloud is RSS-only by construction (registration rejects non-xml
+        // topics), so no json counterpart exists to notify.
+        if (config.rssCloud) await thinPing(repo, fetchFn, 'rsscloud', [authorTopics.xml, fhTopic])
       } catch (err) {
         console.error('push dispatch failed (deletion):', err instanceof Error ? err.message : err)
       }

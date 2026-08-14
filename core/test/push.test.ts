@@ -351,14 +351,15 @@ test('onLocalPost rssCloud thin-pings the firehose topic too', async () => {
   expect(new URLSearchParams(String((fhCall![1] as RequestInit).body)).get('url')).toBe(fhTopic)
 })
 
-test('onPostDeleted (external mode): pings the author topic and the firehose only (no json), and never rejects', async () => {
+test('onPostDeleted (external mode): pings author xml, author json, and the firehose, and never rejects', async () => {
   const { repo, config } = await setup(EXT_ENV)
   const fetchFn = vi.fn(async () => new Response('ok', { status: 204 }))
   const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
   await expect(push.onPostDeleted({ handle: 'rick' })).resolves.toBeUndefined()
-  expect(fetchFn).toHaveBeenCalledTimes(2) // author xml + firehose; no json topic for a deletion
+  expect(fetchFn).toHaveBeenCalledTimes(3) // author xml + author json + firehose
   const topics = (fetchFn.mock.calls as unknown as Array<[string, RequestInit]>).map(([, i]) => new URLSearchParams(i.body as string).get('hub.topic'))
   expect(topics).toContain('https://cast.example.com/users/rick/feed.xml')
+  expect(topics).toContain('https://cast.example.com/users/rick/feed.json')
   expect(topics).toContain('https://cast.example.com/users/rss.xml')
 })
 
@@ -368,22 +369,45 @@ test('onPostDeleted (external mode) swallows a hub failure', async () => {
   await expect(push.onPostDeleted({ handle: 'rick' })).resolves.toBeUndefined()
 })
 
-test('onPostDeleted (self mode) thin-pings websub subscribers of the author topic and the firehose', async () => {
-  const { repo, config } = await setup(SELF_ENV)
+test('onPostDeleted (self mode) fat-pings firehose subscribers with a signed, regenerated firehose body; author-topic subscribers get nothing', async () => {
+  const { repo, service, config } = await setup(SELF_ENV)
+  await service.createLocalPostAs('alice', 'Alice', 'still standing after the delete')
   const authorTopic = 'https://cast.example.com/users/rick/feed.xml'
   const fhTopic = 'https://cast.example.com/users/rss.xml'
-  await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic: authorTopic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-  await repo.upsertSubscription({ id: 's2', protocol: 'websub', topic: fhTopic, callback: 'https://cb2.example.com/receive', callbackHost: 'cb2.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-  const calls: Array<{ url: string; body: string }> = []
-  const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => { calls.push({ url: String(url), body: String(init?.body) }); return new Response('', { status: 200 }) })
+  // Every real self-mode subscription carries a secret (push.ts mints one with
+  // randomBytes(16)); a thin `url=` body would fail this HMAC check on the
+  // receiver, and a `url=` body is not a feed acquisition can parse either
+  // (core/src/logical/push.ts + acquisition.ts) — this is the exact bug this
+  // fix closes: assert BOTH that the body is a real feed and that it's signed.
+  await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic: authorTopic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: 'author-secret', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  await repo.upsertSubscription({ id: 's2', protocol: 'websub', topic: fhTopic, callback: 'https://cb2.example.com/receive', callbackHost: 'cb2.example.com', secret: 'fh-secret', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const calls: Array<{ url: string; body: string; sig: string | null; ct: string | null }> = []
+  const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), body: String(init?.body), sig: new Headers(init?.headers).get('x-hub-signature'), ct: new Headers(init?.headers).get('content-type') })
+    return new Response('', { status: 200 })
+  })
   const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
   await push.onPostDeleted({ handle: 'rick' })
-  const authorCall = calls.find((c) => c.url === 'https://cb.example.com/receive')
+
+  // Author-topic self-mode subscriber: no correct fat body is possible
+  // post-deletion, so they get nothing (not a broken thin ping either).
+  expect(calls.some((c) => c.url === 'https://cb.example.com/receive')).toBe(false)
+
   const fhCall = calls.find((c) => c.url === 'https://cb2.example.com/receive')
-  expect(authorCall).toBeTruthy()
   expect(fhCall).toBeTruthy()
-  expect(new URLSearchParams(authorCall!.body).get('url')).toBe(authorTopic)
-  expect(new URLSearchParams(fhCall!.body).get('url')).toBe(fhTopic)
+  expect(fhCall!.ct).toContain('application/rss+xml')
+  expect(fhCall!.body).not.toBe('url=' + encodeURIComponent(fhTopic)) // not the old thin body
+  expect(fhCall!.body).toContain('still standing after the delete') // a real, regenerated firehose feed
+  const { createHmac } = await import('node:crypto')
+  expect(fhCall!.sig).toBe('sha256=' + createHmac('sha256', 'fh-secret').update(fhCall!.body).digest('hex'))
+})
+
+test('onPostDeleted (self mode) never rejects even when fetch throws', async () => {
+  const { repo, config } = await setup(SELF_ENV)
+  const fhTopic = 'https://cast.example.com/users/rss.xml'
+  await repo.upsertSubscription({ id: 's3', protocol: 'websub', topic: fhTopic, callback: 'https://cb3.example.com/receive', callbackHost: 'cb3.example.com', secret: 'fh-secret', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  const push = createPush({ repo, config, fetchFn: (async () => { throw new Error('conn refused') }) as unknown as typeof fetch })
+  await expect(push.onPostDeleted({ handle: 'rick' })).resolves.toBeUndefined()
 })
 
 test('onPostDeleted (rssCloud) thin-pings rsscloud subscribers of the author topic and the firehose', async () => {
