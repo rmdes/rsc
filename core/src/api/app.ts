@@ -579,13 +579,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       // 0 here means "unlimited" -- a different meaning of 0 than maxSubsPerUser above (0 = disabled).
       maxRemoteItemsPerSource: Number(await service.getSetting('max_remote_items_per_source') ?? '0'),
       maxRemoteItemAgeDays: Number(await service.getSetting('max_remote_item_age_days') ?? '0'),
+      feedItemLimit: Number(await service.getSetting('feed_item_limit') ?? '50'),
       ...(await readTabOverrides((k) => service.getSetting(k))),
     }))
 
   app.patch('/admin/settings', jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
-    const { maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays } = body
+    const { maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays, feedItemLimit } = body
     // maxSubsPerUser: 0 disables subscribing entirely (existing convention).
     if (!(typeof maxSubsPerUser === 'number' && Number.isInteger(maxSubsPerUser) && maxSubsPerUser >= 0)) {
       return c.json({ error: 'maxSubsPerUser invalid' }, 400)
@@ -598,6 +599,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!(typeof maxRemoteItemAgeDays === 'number' && Number.isInteger(maxRemoteItemAgeDays) && maxRemoteItemAgeDays >= 0)) {
       return c.json({ error: 'maxRemoteItemAgeDays invalid' }, 400)
     }
+    // feedItemLimit: how many items each RSS/JSON feed renders. Minimum 1 --
+    // unlike the settings above, 0 has no useful meaning for a feed.
+    if (!(typeof feedItemLimit === 'number' && Number.isInteger(feedItemLimit) && feedItemLimit >= 1)) {
+      return c.json({ error: 'feedItemLimit invalid' }, 400)
+    }
     const labelResult = validateTabCopy(body.tabLabels, 'tab_label_', 24)
     if ('error' in labelResult) return c.json({ error: labelResult.error }, 400)
     const subtitleResult = validateTabCopy(body.tabSubtitles, 'tab_subtitle_', 120)
@@ -605,8 +611,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     await service.setSetting('max_subs_per_user', String(maxSubsPerUser))
     await service.setSetting('max_remote_items_per_source', String(maxRemoteItemsPerSource))
     await service.setSetting('max_remote_item_age_days', String(maxRemoteItemAgeDays))
+    await service.setSetting('feed_item_limit', String(feedItemLimit))
     for (const [k, v] of [...labelResult.ok, ...subtitleResult.ok]) await service.setSetting(k, v)
-    return c.json({ maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays }, 200)
+    return c.json({ maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays, feedItemLimit }, 200)
   })
 
   app.delete('/admin/users/:handle', async (c) => {

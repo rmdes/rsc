@@ -311,6 +311,17 @@ test('GET /users/rss.xml serves the firehose; a user literally named rss keeps t
   expect(await perUser.text()).not.toContain(': all posts</title>')
 })
 
+test('the firehose honours feed_item_limit', async () => {
+  const { service, app } = await makeFirehoseApp()
+  await service.setSetting('feed_item_limit', '2')
+  await service.createLocalPostAs('alice', 'Alice', 'post one')
+  await service.createLocalPostAs('alice', 'Alice', 'post two')
+  await service.createLocalPostAs('alice', 'Alice', 'post three')
+  const res = await app.request('/users/rss.xml')
+  const xml = await res.text()
+  expect(xml.match(/<item>/g)?.length).toBe(2)
+})
+
 // The dogfood loop, re-pointed onto the v2 acquisition engine (v1's ingestItems
 // is gone). Attribution/presentation selection itself is unit-pinned in
 // logical-presentation/logical-projector; what only THIS test can prove is that

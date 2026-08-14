@@ -6,7 +6,7 @@ import type { UserDirectory } from '../auth.ts'
 import type { Service } from '../../domain/service.ts'
 import type { FeedContext } from '../../domain/feed.ts'
 import type { TimelineLens, ProjectionViewer, LogicalItemDto } from '../../logical/types.ts'
-import { FEED_LIMIT, clampLimit, decodeBeforeCursor } from './shared.ts'
+import { clampLimit, decodeBeforeCursor } from './shared.ts'
 
 // =============================================================================
 // v2 ordinary read + feed surface (spec §3.4-3.6, §4.3, §4.5, §4.6) — Task 8
@@ -129,6 +129,14 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
 
   // --- feeds (spec §4.6): central projector, no placeholders ---------------
 
+  // Operator-tunable feed rendering size (setting `feed_item_limit`, default
+  // 50). Distinct from clampLimit (API pagination, hard-capped at 100) —
+  // that constant is deliberately untouched by this setting.
+  async function feedLimit(): Promise<number> {
+    const n = Number(await service.getSetting('feed_item_limit') ?? '50')
+    return Number.isInteger(n) && n >= 1 ? n : 50
+  }
+
   function injectComments(xml: string, items: LogicalItemDto[]): string {
     if (!feeds.publicUrl) return xml
     const pub = feeds.publicUrl
@@ -138,8 +146,9 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
 
   // The all-users firehose: origin=local WITHOUT the river predicate (transports
   // local replies). Static route — wins over /users/:handle/feed.xml.
-  app.get('/users/rss.xml', (c) => {
-    const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit: FEED_LIMIT }))
+  app.get('/users/rss.xml', async (c) => {
+    const limit = await feedLimit()
+    const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit }))
     const xml = injectComments(renderFirehoseRss(items.map(logicalToFeedEntry), feeds), items)
     return c.body(xml, 200, XML)
   })
@@ -160,7 +169,8 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
   app.get('/users/:handle/feed.xml', async (c) => {
     const r = await feedAccount(c)
     if (r instanceof Response) return r
-    const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit: FEED_LIMIT }))
+    const limit = await feedLimit()
+    const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit }))
     const author = items[0]?.selectedAuthor
     const user = { id: r.id, kind: 'local' as const, handle: (c.req.param('handle') ?? '').toLowerCase(), displayName: author && author.kind === 'local' ? author.displayName : (c.req.param('handle') ?? ''), feedUrl: null, createdAt: '', authUserId: null }
     const xml = injectComments(renderRssFeed(user, items.map(logicalToFeedEntry), feeds), items)
@@ -170,7 +180,8 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
   app.get('/users/:handle/feed.json', async (c) => {
     const r = await feedAccount(c)
     if (r instanceof Response) return r
-    const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit: FEED_LIMIT }))
+    const limit = await feedLimit()
+    const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit }))
     const author = items[0]?.selectedAuthor
     const user = { id: r.id, kind: 'local' as const, handle: (c.req.param('handle') ?? '').toLowerCase(), displayName: author && author.kind === 'local' ? author.displayName : (c.req.param('handle') ?? ''), feedUrl: null, createdAt: '', authUserId: null }
     return c.body(renderJsonFeed(user, items.map(logicalToFeedEntry), feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
