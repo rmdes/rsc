@@ -20,6 +20,33 @@ async function setup() {
   return { repo, bus, svc: createService(repo, bus, null, store) }
 }
 
+// ── post-deleted event (Task 6) ────────────────────────────────────────────
+// Deletion published no signal at all. bus emits it at the service layer,
+// after the write, with the handle captured before the delete (the account
+// case removes the users row).
+
+test('deleting a post emits a post-deleted event carrying the handle', async () => {
+  const { repo, bus, svc } = await setup()
+  const author = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+  const post = await svc.createLocalPostAs('alice', 'Alice', 'hello world')
+  const seen: { handle: string }[] = []
+  bus.onPostDeleted((e) => seen.push(e))
+  await svc.deletePost(post.id)
+  expect(seen).toEqual([{ handle: author.handle }])
+})
+
+test('deleting an account emits exactly one post-deleted event', async () => {
+  const { repo, bus, svc } = await setup()
+  await svc.createLocalPostAs('bob', 'Bob', 'one')
+  await svc.createLocalPostAs('bob', 'Bob', 'two')
+  await svc.createLocalPostAs('bob', 'Bob', 'three')
+  const bob = await repo.getUserByHandle('bob')
+  const seen: { handle: string }[] = []
+  bus.onPostDeleted((e) => seen.push(e))
+  await svc.deleteLocalAccount(bob!.handle)
+  expect(seen).toHaveLength(1)
+})
+
 test('createLocalPost stores, emits, and reads back', async () => {
   const { repo, bus, svc } = await setup()
   const seen = vi.fn()
