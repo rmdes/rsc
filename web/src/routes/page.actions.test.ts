@@ -1,6 +1,7 @@
 import { test, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { actions } from './+page.server.ts'
+import { deletePost } from '$lib/api'
 
 function formRequest(action: string, fields: Record<string, string>): Request {
 	const body = new URLSearchParams(fields)
@@ -116,4 +117,21 @@ test('a v2 subscribe that resolves to a local account still lands on the persona
 	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ follow: { kind: 'local', id: 'u1', handle: 'bob', displayName: 'Bob' } }), { status: 201 }))
 	const event = sessionedEvent(formRequest('subscribe', { url: 'https://x/users/bob/feed.xml', commandId: 'cmd-3' }), fetch)
 	await expect(actions.subscribe(event as never)).rejects.toMatchObject({ status: 303, location: '/?tab=personal&feed=bob' })
+})
+
+// --- deletePost routing (Task 5) ----------------------------------------------
+
+test('an author delete hits the self-serve route', async () => {
+	const calls: string[] = []
+	const f = ((url: string) => { calls.push(url); return new Response('{}', { status: 200 }) }) as unknown as typeof fetch
+	await deletePost(f, 'abc', { asAdmin: false })
+	expect(calls[0]).toContain('/posts/abc')
+	expect(calls[0]).not.toContain('/admin/')
+})
+
+test('an admin delete hits the admin route', async () => {
+	const calls: string[] = []
+	const f = ((url: string) => { calls.push(url); return new Response('{}', { status: 200 }) }) as unknown as typeof fetch
+	await deletePost(f, 'abc', { asAdmin: true })
+	expect(calls[0]).toContain('/admin/posts/abc')
 })

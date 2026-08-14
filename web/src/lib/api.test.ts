@@ -96,14 +96,19 @@ test('deleteLocalAccount surfaces the core error', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local account' }), { status: 409 }))
 	await expect(deleteLocalAccount(f as unknown as typeof fetch, 'x')).rejects.toThrow('not a local account')
 })
-test('deletePost DELETEs /admin/posts/:id', async () => {
+test('deletePost DELETEs /admin/posts/:id when asAdmin', async () => {
 	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
-	await deletePost(f as unknown as typeof fetch, 'p1')
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true })
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/posts/p1', { method: 'DELETE' })
+})
+test('deletePost DELETEs /posts/:id when not asAdmin', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: false })
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/posts/p1', { method: 'DELETE' })
 })
 test('deletePost surfaces the core error', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local post' }), { status: 409 }))
-	await expect(deletePost(f as unknown as typeof fetch, 'p1')).rejects.toThrow('not a local post')
+	await expect(deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true })).rejects.toThrow('not a local post')
 })
 
 test('listDeviceSessions GETs the multi-session list endpoint', async () => {

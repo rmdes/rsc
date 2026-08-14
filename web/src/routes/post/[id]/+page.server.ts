@@ -36,9 +36,12 @@ export const actions = {
 		const form = await event.request.formData()
 		const id = String(form.get('id') ?? '').trim()
 		if (!id) return fail(400, { error: 'id required' })
+		// asAdmin picks which core endpoint to call; core independently re-checks
+		// ownership/admin-ness on both, so this is a routing hint, not a trust boundary.
+		const asAdmin = form.get('asAdmin') === '1'
 		try {
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
-			await deletePost(f, id)
+			await deletePost(f, id, { asAdmin })
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'remove failed' })
 		}

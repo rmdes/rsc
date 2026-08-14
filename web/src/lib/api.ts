@@ -148,8 +148,9 @@ export async function deleteLocalAccount(f: typeof fetch, handle: string): Promi
 	if (!res.ok) throw new Error(await errorMessage(res, 'deleteLocalAccount failed'))
 }
 
-export async function deletePost(f: typeof fetch, id: string): Promise<void> {
-	const res = await f(`${base()}/admin/posts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+export async function deletePost(f: typeof fetch, id: string, opts: { asAdmin: boolean }): Promise<void> {
+	const path = opts.asAdmin ? `/admin/posts/${encodeURIComponent(id)}` : `/posts/${encodeURIComponent(id)}`
+	const res = await f(`${base()}${path}`, { method: 'DELETE' })
 	if (!res.ok) throw new Error(await errorMessage(res, 'deletePost failed'))
 }
 

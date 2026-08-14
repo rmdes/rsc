@@ -228,9 +228,10 @@
 						{#if post.source === 'local' && data.me?.user.id === post.author.id}
 							<a class="edit" href="/post/{post.id}/edit">Edit</a>
 						{/if}
-						{#if data.me?.isAdmin && post.source === 'local'}
+						{#if (data.me?.isAdmin || post.author?.id === data.me?.user.id) && post.source === 'local'}
 							<form method="POST" action="?tab={data.tab}&/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
 								<input type="hidden" name="id" value={post.id} />
+								<input type="hidden" name="asAdmin" value={data.me?.isAdmin && post.author?.id !== data.me?.user.id ? '1' : ''} />
 								<button class="danger-link" type="submit">Remove</button>
 							</form>
 						{/if}
