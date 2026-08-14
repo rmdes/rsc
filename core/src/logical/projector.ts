@@ -494,10 +494,13 @@ function replyCounts(tx: ReadTx, id: string): { direct: number; conversation: nu
     for (const cid of level) {
       if (seen.has(cid)) continue
       seen.add(cid)
+      // Always descend: an invisible node (tombstoned, admin-hidden, or from a
+      // non-allowed source) must not remove its visible descendants from the
+      // count — the thread page renders them, so the card must count them.
+      for (const gc of childIds(tx, cid)) next.push(gc)
       if (!nodeVisible(tx, cid)) continue
       if (depth === 0) direct++
       conversation++
-      for (const gc of childIds(tx, cid)) next.push(gc)
     }
     level = next
     depth++
