@@ -1,7 +1,6 @@
 import { test, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { actions } from './+page.server.ts'
-import { deletePost } from '$lib/api'
 
 function formRequest(action: string, fields: Record<string, string>): Request {
 	const body = new URLSearchParams(fields)
@@ -120,18 +119,28 @@ test('a v2 subscribe that resolves to a local account still lands on the persona
 })
 
 // --- deletePost routing (Task 5) ----------------------------------------------
+// Drives the real actions.deletePost, not $lib/api's deletePost directly, so a
+// field-name typo in the action's `form.get('asAdmin')` parse (e.g. 'isAdmin',
+// 'asadmin') would fail these — unlike a test that calls deletePost() itself.
 
-test('an author delete hits the self-serve route', async () => {
-	const calls: string[] = []
-	const f = ((url: string) => { calls.push(url); return new Response('{}', { status: 200 }) }) as unknown as typeof fetch
-	await deletePost(f, 'abc', { asAdmin: false })
-	expect(calls[0]).toContain('/posts/abc')
-	expect(calls[0]).not.toContain('/admin/')
+test('actions.deletePost: asAdmin=1 hits the admin route', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response('{}', { status: 200 }))
+	const event = sessionedEvent(formRequest('deletePost', { id: 'p1', asAdmin: '1' }), fetch)
+	await actions.deletePost(event as never)
+	expect(fetch.mock.calls[0][0]).toContain('/admin/posts/p1')
 })
 
-test('an admin delete hits the admin route', async () => {
-	const calls: string[] = []
-	const f = ((url: string) => { calls.push(url); return new Response('{}', { status: 200 }) }) as unknown as typeof fetch
-	await deletePost(f, 'abc', { asAdmin: true })
-	expect(calls[0]).toContain('/admin/posts/abc')
+test('actions.deletePost: asAdmin="" hits the self-serve route', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response('{}', { status: 200 }))
+	const event = sessionedEvent(formRequest('deletePost', { id: 'p1', asAdmin: '' }), fetch)
+	await actions.deletePost(event as never)
+	expect(fetch.mock.calls[0][0]).toContain('/posts/p1')
+	expect(fetch.mock.calls[0][0]).not.toContain('/admin/')
+})
+
+test('actions.deletePost: asAdmin field absent falls back to the self-serve route', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response('{}', { status: 200 }))
+	const event = sessionedEvent(formRequest('deletePost', { id: 'p1' }), fetch)
+	await actions.deletePost(event as never)
+	expect(fetch.mock.calls[0][0]).not.toContain('/admin/')
 })
