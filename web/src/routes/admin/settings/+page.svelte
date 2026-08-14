@@ -32,6 +32,11 @@
 		<input id="max-remote-age" name="maxRemoteItemAgeDays" type="number" min="0" required value={data.settings.maxRemoteItemAgeDays} />
 		<p class="field-hint">Trims remote items older than this many days after each poll. 0 means unlimited (default) — local posts are never affected.</p>
 	</div>
+	<div class="field">
+		<label for="feed-item-limit">Items per feed</label>
+		<input id="feed-item-limit" name="feedItemLimit" type="number" min="1" required value={data.settings.feedItemLimit} />
+		<p class="field-hint">How many items each RSS/JSON feed renders. Default 50.</p>
+	</div>
 	<h3>Timeline tabs</h3>
 	<p class="field-hint">Override the label and subtitle shown on each home-timeline tab. Leave a field blank to use the default (shown as placeholder).</p>
 	{#each TABS as key (key)}

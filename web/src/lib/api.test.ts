@@ -149,26 +149,29 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 	const f = vi.fn(
 		async () =>
 			new Response(
-				JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30 }),
+				JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30, feedItemLimit: 50 }),
 				{ status: 200 }
 			)
 	)
 	expect(await getAdminSettings(f as unknown as typeof fetch)).toEqual({
 		maxSubsPerUser: 500,
 		maxRemoteItemsPerSource: 100,
-		maxRemoteItemAgeDays: 30
+		maxRemoteItemAgeDays: 30,
+		feedItemLimit: 50
 	})
 	await patchAdminSettings(f as unknown as typeof fetch, {
 		maxSubsPerUser: 250,
 		maxRemoteItemsPerSource: 0,
-		maxRemoteItemAgeDays: 0
+		maxRemoteItemAgeDays: 0,
+		feedItemLimit: 25
 	})
 	const [, patchInit] = f.mock.calls[1] as unknown as [string, RequestInit]
 	expect(patchInit.method).toBe('PATCH')
 	expect(JSON.parse(String(patchInit.body))).toEqual({
 		maxSubsPerUser: 250,
 		maxRemoteItemsPerSource: 0,
-		maxRemoteItemAgeDays: 0
+		maxRemoteItemAgeDays: 0,
+		feedItemLimit: 25
 	})
 })
 

@@ -194,22 +194,19 @@ export async function revokeSession(f: typeof fetch, sessionToken: string): Prom
 	return res
 }
 
-export async function getAdminSettings(f: typeof fetch): Promise<{
+export interface AdminSettings {
 	maxSubsPerUser: number
 	maxRemoteItemsPerSource: number
 	maxRemoteItemAgeDays: number
+	feedItemLimit: number
 	tabLabels: Record<string, string | null>
 	tabSubtitles: Record<string, string | null>
-}> {
+}
+
+export async function getAdminSettings(f: typeof fetch): Promise<AdminSettings> {
 	const res = await f(`${base()}/admin/settings`)
 	if (!res.ok) throw new Error(await errorMessage(res, 'getAdminSettings failed'))
-	return (await res.json()) as {
-		maxSubsPerUser: number
-		maxRemoteItemsPerSource: number
-		maxRemoteItemAgeDays: number
-		tabLabels: Record<string, string | null>
-		tabSubtitles: Record<string, string | null>
-	}
+	return (await res.json()) as AdminSettings
 }
 
 export async function patchAdminSettings(
@@ -218,6 +215,7 @@ export async function patchAdminSettings(
 		maxSubsPerUser: number
 		maxRemoteItemsPerSource: number
 		maxRemoteItemAgeDays: number
+		feedItemLimit: number
 		tabLabels?: Record<string, string>
 		tabSubtitles?: Record<string, string>
 	}

@@ -12,7 +12,7 @@ function saveEvent(fields: Record<string, string>, fetch: ReturnType<typeof vi.f
 	}
 }
 
-const numeric = { maxSubsPerUser: '500', maxRemoteItemsPerSource: '0', maxRemoteItemAgeDays: '0' }
+const numeric = { maxSubsPerUser: '500', maxRemoteItemsPerSource: '0', maxRemoteItemAgeDays: '0', feedItemLimit: '50' }
 
 test('save forwards only the tab fields present on the form as tabLabels/tabSubtitles partials', async () => {
 	const fetch = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }))
