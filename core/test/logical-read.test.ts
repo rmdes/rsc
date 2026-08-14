@@ -35,7 +35,7 @@ function seedDeletedMarker(raw: Raw, id: string, permalink: string, deletedAt: s
   raw.prepare(`INSERT INTO logical_deleted_local_v2 (logical_item_id, canonical_permalink, deleted_at) VALUES (?, ?, ?)`).run(id, permalink, deletedAt)
 }
 
-async function makeApp() {
+async function makeApp(publicUrl: string | null = PUBLIC_URL) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const db = createDatabaseContext(repo.raw)
@@ -44,7 +44,7 @@ async function makeApp() {
   const acquisition = createAcquisition({ db, fetchFn: (async () => new Response('', { status: 200 })) as unknown as typeof fetch, lookupFn: publicLookup, now: () => NOW })
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
-    feeds: { publicUrl: PUBLIC_URL, hubUrl: null, rssCloud: false },
+    feeds: { publicUrl, hubUrl: null, rssCloud: false },
     sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW },
   })
   return { app, repo: repo as typeof repo & { raw: Raw }, store, db }
@@ -60,6 +60,7 @@ test('deletions page ascending and drain across a shared timestamp (account dele
   db.write((tx) => deleteLocalAccount({ tx, accountId: 'u1', actorId: 'admin', now: NOW }))
 
   const seenRefs = new Set<string>()
+  let totalReceived = 0
   let cursor: string | null = null
   let pages = 0
   for (;;) {
@@ -67,13 +68,19 @@ test('deletions page ascending and drain across a shared timestamp (account dele
     expect(res.status).toBe(200)
     const body = await res.json() as { deletions: { ref: string; deletedAt: string }[]; nextCursor: string | null; hasMore: boolean }
     pages++
+    totalReceived += body.deletions.length
     for (const d of body.deletions) seenRefs.add(d.ref)
     expect(body.hasMore).toBe(body.nextCursor !== null)
     if (!body.hasMore) break
     cursor = body.nextCursor
     expect(pages).toBeLessThan(10) // guard against an infinite loop if paging breaks
   }
-  expect(seenRefs.size).toBe(5) // nothing skipped, nothing repeated
+  // Both assertions matter: a boundary-repeat bug (e.g. `>=` instead of `>`
+  // on the tuple cursor) re-emits the last row of one page as the first row
+  // of the next — seenRefs.size alone dedupes that away via the Set, so the
+  // total-count check is what actually catches it.
+  expect(totalReceived).toBe(5) // nothing skipped, nothing repeated (incl. across-page duplicates)
+  expect(seenRefs.size).toBe(5) // and all 5 are distinct
   for (const id of ids) expect(seenRefs.has(`${PUBLIC_URL}/post/${id}`)).toBe(true)
   expect(pages).toBeGreaterThan(1) // actually exercised pagination
 })
@@ -94,6 +101,18 @@ test('a normal page returns normalized absolute refs for this instance and a nul
   const res = await app.request('/deletions.json')
   const body = await res.json() as { deletions: { ref: string; deletedAt: string }[]; nextCursor: string | null; hasMore: boolean }
   expect(body.deletions).toEqual([{ ref: `${PUBLIC_URL}/post/own`, deletedAt: NOW }]) // fragment stripped by normalizePermalink
+  expect(body.hasMore).toBe(false)
+  expect(body.nextCursor).toBeNull()
+})
+
+test('no configured publicUrl serves an empty page, not an unfiltered list', async () => {
+  const { app, repo } = await makeApp(null)
+  seedDeletedMarker(repo.raw, 'own', `${PUBLIC_URL}/post/own`, NOW)
+  seedDeletedMarker(repo.raw, 'legacy', '/post/legacy', NOW)
+  const res = await app.request('/deletions.json')
+  expect(res.status).toBe(200)
+  const body = await res.json() as { deletions: unknown[]; nextCursor: string | null; hasMore: boolean }
+  expect(body.deletions).toEqual([])
   expect(body.hasMore).toBe(false)
   expect(body.nextCursor).toBeNull()
 })

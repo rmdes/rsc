@@ -630,18 +630,20 @@ export function createLogicalStore(db: DatabaseContext) {
     // be relative or carry a previous domain — neither belongs on this feed.
     listDeletionsAfter(cursor: { deletedAt: string; id: string } | null, limit: number, publicUrlPrefix: string): { id: string; ref: string; deletedAt: string }[] {
       return db.read((tx) => {
-        const like = `${publicUrlPrefix}/post/%`
+        // Escape LIKE's own wildcards in the admin-configured publicUrl —
+        // matches the sqlite.ts source-search idiom (searchRemoteSources).
+        const like = `${publicUrlPrefix.replace(/[\\%_]/g, (m) => `\\${m}`)}/post/%`
         return (cursor
           ? tx.prepare(
               `SELECT logical_item_id AS id, canonical_permalink AS ref, deleted_at AS deletedAt
                FROM logical_deleted_local_v2
-               WHERE canonical_permalink LIKE ? AND (deleted_at > ? OR (deleted_at = ? AND logical_item_id > ?))
+               WHERE canonical_permalink LIKE ? ESCAPE '\\' AND (deleted_at > ? OR (deleted_at = ? AND logical_item_id > ?))
                ORDER BY deleted_at ASC, logical_item_id ASC LIMIT ?`,
             ).all(like, cursor.deletedAt, cursor.deletedAt, cursor.id, limit)
           : tx.prepare(
               `SELECT logical_item_id AS id, canonical_permalink AS ref, deleted_at AS deletedAt
                FROM logical_deleted_local_v2
-               WHERE canonical_permalink LIKE ?
+               WHERE canonical_permalink LIKE ? ESCAPE '\\'
                ORDER BY deleted_at ASC, logical_item_id ASC LIMIT ?`,
             ).all(like, limit)) as { id: string; ref: string; deletedAt: string }[]
       })
