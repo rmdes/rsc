@@ -110,6 +110,12 @@ bus.onNewPost(() => { bus.emitSequenceHint(logicalStore.snapshot((tx) => tx.getJ
 bus.onNewPost((e) => { void push.onLocalPost(e) })
 // Same H4 seam: a deletion pings the author's topic and the firehose so
 // subscribed peers re-fetch sooner than their next scheduled poll.
+//
+// A re-fetch alone does NOT remove the peer's copy: ingest is purely additive
+// (nothing in acquisition/reconcile treats an item's absence from a feed as a
+// retraction), so today this only makes the peer notice the post is missing
+// from the feed body. Acting on it requires the /deletions.json consumer,
+// which is not built yet.
 bus.onPostDeleted((e) => { void push.onPostDeleted(e) })
 
 let sweepTimer: NodeJS.Timeout

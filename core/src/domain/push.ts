@@ -326,13 +326,18 @@ export function createPush(deps: PushDeps): Push {
 
         if (config.websub.mode === 'self') {
           // A thin ping is silently discarded by our own receiver (unsigned,
-          // fails HMAC verification), and no per-author fat body is possible
-          // here — for an account deletion the users row is already gone. The
-          // firehose IS regenerable (deletion just drops the post from it),
-          // so mirror onLocalPost's self-mode firehose block exactly: fat
-          // body, signed per subscriber. Author-topic self-mode subscribers
-          // get nothing on a deletion — there is no correct body to sign for
-          // them.
+          // fails HMAC verification), so self mode must send a fat body. The
+          // firehose one is always regenerable — a deletion just drops the
+          // post from it — so mirror onLocalPost's self-mode firehose block
+          // exactly: fat body, signed per subscriber.
+          //
+          // Author-topic self-mode subscribers get nothing. That is REQUIRED
+          // only for an account deletion, where the users row is already gone
+          // by the time this runs. For a single-post deletion the author is
+          // still present and renderRssFeed would produce a correct body — we
+          // skip it because the event carries only { handle } and cannot tell
+          // the two cases apart. Peers fall back to their next poll. Closing
+          // this means putting a discriminator on the event.
           const now = new Date().toISOString()
           const ctx = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
           const fhSubs = (await repo.listActiveSubscriptions(fhTopic, now)).filter((s) => s.protocol === 'websub')

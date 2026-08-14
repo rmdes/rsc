@@ -622,8 +622,10 @@ export function createLogicalStore(db: DatabaseContext) {
     // with an identical deleted_at — a timestamp-only cursor would skip the
     // rest of that group or loop. The expanded OR form (not SQLite's native
     // row-value `(a,b) > (?,?)` syntax, available since 3.15 and confirmed
-    // present in the bundled 3.53.2) matches every other ASC-paged query in
-    // this file (listJobs, listItemAudit) — one comparison idiom, not two.
+    // present in the bundled 3.53.2) is the same COMPARISON idiom listJobs and
+    // listItemAudit use — one idiom, not two. Note only listJobs also pages
+    // ASC; listItemAudit pages DESC (newest-first). This is the sole ASC
+    // consumer-facing pager, because a peer drains deletions forward.
     // publicUrlPrefix filters server-side to THIS instance's own absolute
     // permalinks: markers store `cur.url ?? permalinkFor(id)` (local.ts), and
     // permalinkFor is the relative `/post/<id>` form, so historical rows can
