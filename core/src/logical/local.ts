@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { WriteTx } from './database.ts'
 import type { LogicalItemDto } from './types.ts'
-import type { User } from '../domain/types.ts'
+import type { User, AuditCategory } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
 import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
 import { reapSourceIfOrphaned } from '../domain/source-repository.ts'
@@ -197,10 +197,79 @@ export function editLocalPost(input: { tx: WriteTx; postId: string; authorId: st
   )
 }
 
+// Who removed a post, and why. An author needs no reason; a moderator picks from
+// the audit vocabulary already used by hide/restore (domain/types.ts AuditCategory)
+// and may add a note. Both end up as PUBLIC content — the notice federates.
+export type RemovalActor =
+  | { kind: 'author' }
+  | { kind: 'administrator'; category: AuditCategory; note: string | null }
+
+// The replacement body. Plain markdown: it is rendered to HTML for the feed's
+// <description> and emitted verbatim as <source:markdown>, so it must read as
+// prose in both. Categories are snake_case in the schema ('illegal_content');
+// the underscore swap is the whole "label" mapping — a lookup table here would
+// have to be kept in step with the CHECK constraint for no gain.
+export function removalNotice(actor: RemovalActor): string {
+  if (actor.kind === 'author') return 'This post was removed by its author.'
+  const head = `This post was removed by a moderator (${actor.category.replace(/_/g, ' ')}).`
+  return actor.note ? `${head}\n\n${actor.note}` : head
+}
+
+// Removal as an EDIT (not a destruction): the post keeps its row, id, permalink,
+// published_at and place in the thread, and its content becomes the notice. That
+// is what lets the removal federate for free — the outgoing feed already carries
+// this item at the same <guid>, so a peer ingests it as an ordinary edit and
+// overwrites its copy in place. No side channel, no consumer to build.
+//
+// The logical_deleted_local_v2 marker is still written, and is now the ONLY way
+// to tell a removed post from an ordinary one (the posts row no longer vanishes).
+// Every path that already keys on that marker — the orphan-adoption guard, the
+// admin item state, the permalink-owner check — keeps working untouched.
+//
+// No sweepStructuralTombstones call, unlike deleteLocalPost: that collapses a
+// parent tombstone left CHILDLESS by a deletion, and this post survives as a
+// child, so the sweep could only ever be a no-op here.
+export function removeLocalPost(input: { tx: WriteTx; postId: string; actor: RemovalActor; now: string }): void {
+  const { tx, postId, actor, now } = input
+  const cur = loadPost(tx, postId)
+  if (!cur) return
+  const permalink = cur.url ?? permalinkFor(postId)
+
+  // History splits on the actor. A moderator removal keeps the superseded text as
+  // an admin-only record of what was actioned; an author removing their own post
+  // takes it with them, matching what deletion has always meant for them.
+  if (actor.kind === 'administrator') {
+    tx.prepare(
+      `INSERT INTO post_revisions (id, post_id, title, content, content_markdown, seen_at) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), postId, cur.title, cur.content, cur.content_markdown, now)
+  } else {
+    tx.prepare(`DELETE FROM post_revisions WHERE post_id = ?`).run(postId)
+  }
+
+  // Title is cleared too. Posts created here never have one, but a migrated v1
+  // post can — and a surviving headline above a removal notice would publish the
+  // very words being removed.
+  tx.prepare(`UPDATE posts SET title = NULL, content = ?, edited_at = ? WHERE id = ?`)
+    .run(removalNotice(actor), now, postId)
+
+  materializeLocalItem(tx, { id: postId, permalink, timelineSortAt: cur.published_at, parentLogicalItemId: cur.in_reply_to_post_id })
+  tx.prepare(
+    `INSERT OR IGNORE INTO logical_deleted_local_v2 (logical_item_id, canonical_permalink, deleted_at) VALUES (?, ?, ?)`,
+  ).run(postId, permalink, now)
+  // upsert, NOT remove: this is an edit. A remove frame would make peers and open
+  // SSE clients drop the item instead of showing the notice.
+  appendJournal(tx, { kind: 'upsert', logicalItemId: postId, changeMask: 'presentation' }, now)
+}
+
 // Terminal deletion (spec §2.6): remove content + revisions, keep the logical
 // item (its descendants may reference it) and a permanent marker holding only the
 // logical id, canonical permalink, deletion time. No content/author/source/remote
 // attribution survives; the marker has no FK on the removed account.
+//
+// Used ONLY by account deletion now. A single-post removal goes through
+// removeLocalPost above; posts.author_id is a RESTRICT reference to users(id),
+// so surviving post rows would make DELETE FROM users fail and roll the whole
+// account deletion back.
 function terminallyDelete(tx: WriteTx, postId: string, now: string): void {
   const cur = loadPost(tx, postId)
   if (!cur) return

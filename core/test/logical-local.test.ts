@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
-import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, synthesizeLocalItem, materializeLocalChain } from '../src/logical/local.ts'
+import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, removeLocalPost, synthesizeLocalItem, materializeLocalChain } from '../src/logical/local.ts'
 import { getJournalMetadata, readJournalBatch } from '../src/logical/journal.ts'
 import type { User } from '../src/domain/types.ts'
 
@@ -122,6 +122,79 @@ test('deleteLocalPost is terminal: content and revisions go, a permanent marker 
   // a remove effect is journalled
   const rows = db.read((tx) => readJournalBatch(tx, 0, 20))
   expect(rows.at(-1)).toMatchObject({ kind: 'remove', logicalItemId: created.id })
+})
+
+test('removeLocalPost keeps the row and replaces the content with a moderator notice', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  // Posts created here never carry a title, but a migrated v1 post can — and a
+  // surviving headline would publish the very words being removed. Set one so the
+  // assertion below can actually fail if the clear is dropped.
+  raw.prepare(`UPDATE posts SET title = 'Buy cheap pills now' WHERE id = ?`).run(created.id)
+  const before = raw.prepare(`SELECT url, published_at FROM posts WHERE id = ?`).get(created.id) as { url: string | null; published_at: string }
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+
+  const post = raw.prepare(`SELECT title, content, url, published_at, edited_at FROM posts WHERE id = ?`).get(created.id) as
+    { title: string | null; content: string; url: string | null; published_at: string; edited_at: string }
+  expect(post.content).toBe('This post was removed by a moderator (spam).')
+  expect(post.title).toBeNull()
+  // identity and position are untouched — this is what lets a peer overwrite in place
+  expect(post.url).toBe(before.url)
+  expect(post.published_at).toBe(before.published_at)
+  expect(post.edited_at).toBe(LATER)
+  // the marker is what every removal-aware path keys on
+  expect(count(raw, 'logical_deleted_local_v2', 'WHERE logical_item_id = ?', created.id)).toBe(1)
+  // an EDIT, not a removal: a remove frame would make peers drop the item
+  const rows = db.read((tx) => readJournalBatch(tx, 0, 20))
+  expect(rows.at(-1)).toMatchObject({ kind: 'upsert', logicalItemId: created.id })
+})
+
+test('removeLocalPost renders an underscored category as prose and appends the note', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'x', replyToId: null, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'illegal_content', note: 'court order 12/3' }, now: LATER }))
+
+  const { content } = raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(created.id) as { content: string }
+  expect(content).toBe('This post was removed by a moderator (illegal content).\n\ncourt order 12/3')
+})
+
+test('an author removing their own post purges its revisions; a moderator keeps them', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+
+  const byAuthor = db.write((tx) => createLocalPost({ tx, author, content: 'v1', replyToId: null, now: NOW }))
+  db.write((tx) => editLocalPost({ tx, postId: byAuthor.id, authorId: author.id, content: 'v2', now: LATER }))
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', byAuthor.id)).toBe(1)
+  db.write((tx) => removeLocalPost({ tx, postId: byAuthor.id, actor: { kind: 'author' }, now: LATER }))
+  // the words go with them — nothing is left for /post/:id/history to serve
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', byAuthor.id)).toBe(0)
+  expect((raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(byAuthor.id) as { content: string }).content)
+    .toBe('This post was removed by its author.')
+
+  const byMod = db.write((tx) => createLocalPost({ tx, author, content: 'evidence', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: byMod.id, actor: { kind: 'administrator', category: 'abuse', note: null }, now: LATER }))
+  // retained as an admin-only record of what was actioned
+  const kept = raw.prepare(`SELECT content FROM post_revisions WHERE post_id = ?`).get(byMod.id) as { content: string }
+  expect(kept.content).toBe('evidence')
+})
+
+test('a removed post keeps its place in the thread and its replies', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const parent = db.write((tx) => createLocalPost({ tx, author, content: 'parent', replyToId: null, now: NOW }))
+  const child = db.write((tx) => createLocalPost({ tx, author, content: 'reply', replyToId: parent.id, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: parent.id, actor: { kind: 'author' }, now: LATER }))
+
+  expect(count(raw, 'posts', 'WHERE id = ?', child.id)).toBe(1)
+  const edge = raw.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`).get(child.id) as { parent_logical_item_id: string | null }
+  expect(edge.parent_logical_item_id).toBe(parent.id)
+  // the local-origin bridge survives too — terminallyDelete releases it, this must not
+  expect(count(raw, 'logical_local_origins_v2', 'WHERE post_id = ?', parent.id)).toBe(1)
 })
 
 test('deleting a parent that still has a child keeps the logical row and the descendant edge intact', async () => {
