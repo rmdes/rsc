@@ -9,6 +9,7 @@
 	// not narrow cleanly across fail vs. success).
 	type ModForm = { done?: string; kind?: string; commandId?: string; error?: string }
 	const f = $derived(form as ModForm | null)
+	const DONE_LABEL: Record<string, string> = { hide: 'Item hidden.', restore: 'Item restored.', remove: 'Item removed.' }
 
 	// Command-id retention (design §11): a re-render after a failed submit reuses the
 	// SUBMITTED id for THAT form, so a resubmit replays the original command.
@@ -30,7 +31,7 @@
 <h2>Item review</h2>
 
 {#if f?.error}<p class="error" role="alert">{f.error}</p>{/if}
-{#if f?.done}<p class="notice confirm" role="status">{f.done === 'hide' ? 'Item hidden.' : 'Item restored.'}</p>{/if}
+{#if f?.done}<p class="notice confirm" role="status">{DONE_LABEL[f.done] ?? 'Done.'}</p>{/if}
 
 <section>
 	<div class="feed-info">
@@ -151,6 +152,25 @@
 			<input id="restore-note" name="note" placeholder="note (optional)" />
 			<button aria-label="Restore item {d.logicalItemId}">Restore</button>
 		</form>
+		{#if d.origin === 'local'}
+			<!-- Removal only applies to a local post (core's deletePost refuses a
+			     remote item with 409 "not a local post") — Hide/Restore above cover
+			     visibility for both origins, this is local-only. No commandId: unlike
+			     hide/restore's idempotency ledger, core's removal body carries only
+			     {category, note?} (shared.ts RemovalBody) — nothing to replay against. -->
+			<form method="POST" action="?/remove" class="source-action" use:enhance>
+				<input type="hidden" name="itemId" value={d.logicalItemId} />
+				<span class="action-name">Remove</span>
+				<p class="consequence">Removing replaces this post's content with a moderator notice; the row survives so the removal still reaches federated peers as an ordinary edit.</p>
+				<label class="visually-hidden" for="remove-cat">Moderation category</label>
+				<select id="remove-cat" name="category" required>
+					{#each data.categories as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+				</select>
+				<label class="visually-hidden" for="remove-note">Note (optional)</label>
+				<input id="remove-note" name="note" placeholder="note (optional)" />
+				<button aria-label="Remove item {d.logicalItemId}">Remove</button>
+			</form>
+		{/if}
 	</div>
 </section>
 

@@ -993,8 +993,28 @@ textarea {
 .post .actions {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: var(--space-lg);
 	margin-top: var(--space-3);
+}
+
+/* Admin's inline Remove form (a timeline card or the thread root): the same
+   required-category + optional-note controls as admin/items/[id]'s Hide/Restore
+   forms, sized to sit inside the label-styled actions row instead of a
+   dedicated moderation section. The author's own one-click Remove has none of
+   this — it stays a bare form+button. */
+.remove-admin {
+	display: inline-flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--space-xs);
+}
+.remove-admin select,
+.remove-admin input:not([type='hidden']) {
+	width: auto;
+}
+.remove-admin input:not([type='hidden']) {
+	max-width: 10rem;
 }
 
 .post .source,

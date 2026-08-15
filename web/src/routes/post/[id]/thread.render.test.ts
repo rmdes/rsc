@@ -72,3 +72,21 @@ test('the reply composer is present for an ordinary (not removed) post', () => {
 	const { body } = render(Page, { props: { data, form: null } } as never)
 	expect(body).toContain('write a reply')
 })
+
+// Finding 3: Edit loads the composer prefilled with the removal notice, then
+// 403s on submit (editLocalPost's PostRemovedError guard) — a dead end that
+// should never be offered in the first place, same reasoning as the composer
+// gate above.
+test('Edit is absent on a removed post, even for its own author', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined, removed: true })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: root.author, isAnonymous: false } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('/post/p1/edit')
+})
+
+test('Edit is present for an ordinary (not removed) post owned by the viewer', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: root.author, isAnonymous: false } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('/post/p1/edit')
+})

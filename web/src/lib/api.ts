@@ -1,5 +1,6 @@
 import { base } from '$lib/server/session'
 import type { OwnerFollowingView, TimelineEntry } from './types.ts'
+import type { AuditCategory } from './logical-types.ts'
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
 	try {
@@ -148,9 +149,26 @@ export async function deleteLocalAccount(f: typeof fetch, handle: string): Promi
 	if (!res.ok) throw new Error(await errorMessage(res, 'deleteLocalAccount failed'))
 }
 
-export async function deletePost(f: typeof fetch, id: string, opts: { asAdmin: boolean }): Promise<void> {
+// The author's own DELETE /posts/:id takes no body. Core's admin route
+// (DELETE /admin/posts/:id) instead REQUIRES {category, note?} — the same
+// removal-audit vocabulary as hide/restore (core/src/api/logical-routes/shared.ts
+// readRemovalBody) — and 400s "category invalid" without it. No idempotency
+// ledger here (unlike hide/restore's commandId): deletePost's only outcomes are
+// the 404/409 guards, nothing to replay against.
+export async function deletePost(
+	f: typeof fetch,
+	id: string,
+	opts: { asAdmin: false } | { asAdmin: true; category: AuditCategory; note?: string }
+): Promise<void> {
 	const path = opts.asAdmin ? `/admin/posts/${encodeURIComponent(id)}` : `/posts/${encodeURIComponent(id)}`
-	const res = await f(`${base()}${path}`, { method: 'DELETE' })
+	const init: RequestInit = opts.asAdmin
+		? {
+				method: 'DELETE',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ category: opts.category, ...(opts.note ? { note: opts.note } : {}) })
+			}
+		: { method: 'DELETE' }
+	const res = await f(`${base()}${path}`, init)
 	if (!res.ok) throw new Error(await errorMessage(res, 'deletePost failed'))
 }
 

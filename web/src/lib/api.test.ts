@@ -96,19 +96,33 @@ test('deleteLocalAccount surfaces the core error', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local account' }), { status: 409 }))
 	await expect(deleteLocalAccount(f as unknown as typeof fetch, 'x')).rejects.toThrow('not a local account')
 })
-test('deletePost DELETEs /admin/posts/:id when asAdmin', async () => {
+// Core's DELETE /admin/posts/:id REQUIRES a JSON body ({category, note?}) —
+// sending none 400s "category invalid" (the Critical this test pins).
+test('deletePost DELETEs /admin/posts/:id WITH the category body when asAdmin', async () => {
 	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
-	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true })
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/posts/p1', { method: 'DELETE' })
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true, category: 'spam' })
+	const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(url).toBe('http://localhost:8787/admin/posts/p1')
+	expect(init.method).toBe('DELETE')
+	expect(new Headers(init.headers).get('content-type')).toBe('application/json')
+	expect(JSON.parse(String(init.body))).toEqual({ category: 'spam' })
 })
-test('deletePost DELETEs /posts/:id when not asAdmin', async () => {
+test('deletePost includes an optional note in the admin body', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true, category: 'spam', note: 'repeat offender' })
+	const [, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(JSON.parse(String(init.body))).toEqual({ category: 'spam', note: 'repeat offender' })
+})
+// The author's own removal (DELETE /posts/:id) takes no body at all — core
+// refuses one on this route the same way it requires one on the admin route.
+test('deletePost DELETEs /posts/:id with NO body when not asAdmin', async () => {
 	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
 	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: false })
 	expect(f).toHaveBeenCalledWith('http://localhost:8787/posts/p1', { method: 'DELETE' })
 })
 test('deletePost surfaces the core error', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local post' }), { status: 409 }))
-	await expect(deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true })).rejects.toThrow('not a local post')
+	await expect(deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true, category: 'spam' })).rejects.toThrow('not a local post')
 })
 
 test('listDeviceSessions GETs the multi-session list endpoint', async () => {

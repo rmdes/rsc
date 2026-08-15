@@ -16,6 +16,7 @@
 	import { invalidateAll } from '$app/navigation'
 	import { confirmSubmit } from '$lib/confirm'
 	import { keepEvent, type Lens } from '$lib/lens'
+	import { AUDIT_CATEGORIES } from '$lib/logical-types'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -225,13 +226,28 @@
 							<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 						{/if}
 						{#if post.source === 'remote' && post.url}<a class="source" href={post.url} rel="noreferrer">{URL.parse(post.url)?.hostname ?? 'source'}</a>{/if}
-						{#if post.source === 'local' && data.me?.user.id === post.author.id}
+						{#if post.source === 'local' && !post.removed && data.me?.user.id === post.author.id}
 							<a class="edit" href="/post/{post.id}/edit">Edit</a>
 						{/if}
-						{#if (data.me?.isAdmin || post.author.id === data.me?.user.id) && post.source === 'local'}
+						{#if post.source === 'local' && post.author.id === data.me?.user.id}
+							<!-- Author's own removal: core's DELETE /posts/:id takes no body. -->
 							<form method="POST" action="?tab={data.tab}&/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
 								<input type="hidden" name="id" value={post.id} />
-								<input type="hidden" name="asAdmin" value={data.me?.isAdmin && post.author.id !== data.me?.user.id ? '1' : ''} />
+								<button class="danger-link" type="submit">Remove</button>
+							</form>
+						{:else if post.source === 'local' && data.me?.isAdmin}
+							<!-- Admin removing someone else's post: core's DELETE /admin/posts/:id
+							     REQUIRES {category, note?} — same moderation-category pattern as
+							     admin/items/[id]'s Hide/Restore forms. -->
+							<form method="POST" action="?tab={data.tab}&/deletePost" class="remove-admin" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
+								<input type="hidden" name="id" value={post.id} />
+								<input type="hidden" name="asAdmin" value="1" />
+								<label class="visually-hidden" for="remove-cat-{post.id}">Moderation category</label>
+								<select id="remove-cat-{post.id}" name="category" required>
+									{#each AUDIT_CATEGORIES as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+								</select>
+								<label class="visually-hidden" for="remove-note-{post.id}">Note (optional)</label>
+								<input id="remove-note-{post.id}" name="note" placeholder="note (optional)" />
 								<button class="danger-link" type="submit">Remove</button>
 							</form>
 						{/if}
