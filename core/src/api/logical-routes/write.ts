@@ -6,7 +6,7 @@ import type { LogicalStore } from '../../logical/store.ts'
 import type { AcquisitionEngine } from '../../logical/acquisition.ts'
 import type { CommandEnvelope, AuditCategory } from '../../domain/types.ts'
 import type { RunCursor, JobCursor, AdminRunProjection, AdminRefreshResult, ItemModerationResult } from '../../logical/types.ts'
-import { MODEL, NEUTRAL_404, isString, readJsonBody } from './shared.ts'
+import { MODEL, NEUTRAL_404, isString, readJsonBody, isAuditCategory } from './shared.ts'
 
 // The v2 administrative acquisition surface (spec §6.2-6.3): manual refresh plus
 // run status/history/job reads. Mounted onto the shared app AFTER the
@@ -38,15 +38,10 @@ const LOCAL_ORIGIN = { model: MODEL, error: 'local origin' }
 const NOT_APPLICABLE = { model: MODEL, error: 'not applicable' }
 const NOT_BLOCKED = { model: MODEL, error: 'source not blocked' }
 
-// The eight administrator-selectable values of the NINE-value TS AuditCategory (V3
-// re-added false_positive/remediated — the moderation categories; V4 added
-// 'migration_review', which conversion writes and no route accepts). Typed as
-// AuditCategory[] so a narrowed member fails typecheck here too. Distinct from
-// app.ts's narrower six-value list.
-const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
-function isAuditCategory(v: unknown): v is AuditCategory {
-  return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
-}
+// isAuditCategory (the eight administrator-selectable values of the NINE-value
+// TS AuditCategory) now lives in shared.ts, reused by DELETE /admin/posts/:id
+// and /admin-api/posts/:id's readRemovalBody — same moderation vocabulary,
+// one list. Distinct from app.ts's narrower six-value source-governance list.
 
 // Every V3 mutation body is {commandId, category, note?}: commandId ONLY as the
 // JSON body field (no header), category required (it enters the route fingerprint),

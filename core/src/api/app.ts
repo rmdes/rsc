@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, bearerAuth } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes, mountAdminApiRoutes } from './logical-routes.ts'
+import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes, mountAdminApiRoutes, readRemovalBody } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { buildFollowingOpml } from '../domain/opml.ts'
@@ -306,7 +306,7 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     const post = await service.getPost(c.req.param('id'))
     if (!post) return c.json({ error: 'unknown post' }, 404)
     if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not deletable' }, 403)
-    const result = await service.deletePost(post.id)
+    const result = await service.deletePost(post.id, { kind: 'author' })
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })
@@ -635,8 +635,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ ok: true }, 200)
   })
 
-  app.delete('/admin/posts/:id', async (c) => {
-    const result = await service.deletePost(c.req.param('id') ?? '')
+  app.delete('/admin/posts/:id', jsonWrite, async (c) => {
+    const b = await readRemovalBody(c)
+    if (b instanceof Response) return b
+    const result = await service.deletePost(c.req.param('id') ?? '', { kind: 'administrator', category: b.category, note: b.note })
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })

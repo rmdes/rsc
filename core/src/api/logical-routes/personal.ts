@@ -98,12 +98,13 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
   // and `PATCH /posts/:id` — same validation, same service calls, same
   // error shapes, transcribed from those exact handlers. DELETE is a
   // genuinely new self-serve capability: until now only an admin could
-  // hard-delete a post (app.ts's `DELETE /admin/posts/:id`); this scopes
-  // that same service.deletePost to the caller's OWN post, gated by the
-  // same ownership check PATCH already uses (post.source !== 'local' ||
-  // post.authorId !== me.id -> 403), checked BEFORE calling deletePost so a
-  // remote post is refused the same way for every caller, not just its
-  // (nonexistent) local owner.
+  // remove a post (app.ts's `DELETE /admin/posts/:id`); this scopes that
+  // same service.deletePost — as { kind: 'author' }, replacing the post's
+  // content with the removal notice, not destroying the row — to the
+  // caller's OWN post, gated by the same ownership check PATCH already uses
+  // (post.source !== 'local' || post.authorId !== me.id -> 403), checked
+  // BEFORE calling deletePost so a remote post is refused the same way for
+  // every caller, not just its (nonexistent) local owner.
   app.post('/me/posts', apiKeyAuth(auth, users, { posts: ['write'] }), jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
@@ -139,7 +140,7 @@ export function mountPersonalApiRoutes(app: Hono, deps: PersonalApiDeps): void {
     const post = await service.getPost(c.req.param('id'))
     if (!post) return c.json({ error: 'unknown post' }, 404)
     if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not editable' }, 403)
-    const result = await service.deletePost(post.id)
+    const result = await service.deletePost(post.id, { kind: 'author' })
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })

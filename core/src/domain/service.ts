@@ -3,6 +3,7 @@ import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
 import type { NewLocalUser, TimelineEntry, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import type { RemovalActor } from '../logical/local.ts'
 import type { Cursor } from './source-repository.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
@@ -144,11 +145,20 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       if (user.authUserId) repo.deleteAuthRows(user.authUserId)
       return { ok: true }
     },
-    async deletePost(id: string): Promise<{ ok: true } | { error: 'unknown' | 'remote' }> {
+    // A removal is an edit (spec: deletion-as-edit), not a destruction — the
+    // post row survives with the removal notice as its content, so this emits
+    // bus.emitNewPost exactly as editLocalPost does above, NOT a deletion
+    // event (there is no emitPostDeleted; it was reverted). That is what
+    // drives outbound WebSub/rssCloud publishing to federated peers.
+    async deletePost(id: string, actor: RemovalActor): Promise<{ ok: true } | { error: 'unknown' | 'remote' }> {
       const post = await repo.getPost(id)
       if (!post) return { error: 'unknown' }
       if (post.source !== 'local') return { error: 'remote' }
-      logical.deleteLocalPost({ postId: id, actorId: post.authorId, now: new Date().toISOString() })
+      logical.removeLocalPost({ postId: id, actor, now: new Date().toISOString() })
+      const stored = await repo.getPost(id)
+      const author = await repo.getUser(post.authorId)
+      const entry: TimelineEntry = { ...(stored as Post), author: author as User }
+      bus.emitNewPost(entry)
       return { ok: true }
     },
     getSetting(key: string) { return repo.getSetting(key) },

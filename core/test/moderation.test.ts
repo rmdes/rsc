@@ -1,4 +1,4 @@
-import { test, expect } from 'vitest'
+import { test, expect, vi } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
@@ -7,6 +7,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
+import { removalNotice } from '../src/logical/local.ts'
 import { makeAuth, anonSession, registeredSession } from './auth-helper.ts'
 
 async function makeApp(adminEmails: string[] = ['boss@x.test']) {
@@ -21,7 +22,7 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
     sources: { service: createSourceService(repo, null), repo },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
-  return { app, repo, service, auth }
+  return { app, repo, service, auth, bus }
 }
 
 // A remote-authored `posts` row — the legacy shape v2 no longer writes but
@@ -85,44 +86,69 @@ test('DELETE /admin/users/:handle gate: non-admin 403, anon 403, no session 401'
   expect((await app.request('/admin/users/x', { method: 'DELETE' })).status).toBe(401)
 })
 
-test('deletePost removes a local post; 409 remote, 404 unknown', async () => {
+test('deletePost (author) replaces content with the removal notice, keeping the row; 409 remote, 404 unknown', async () => {
   const { app, repo, service } = await makeApp()
   const cookie = await registeredSession(app, 'a@x.test', repo)
   await app.request('/me', { headers: { cookie } })
   const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'nuke me' }) })).json()
   const postId = created.post.id
 
-  expect(await service.deletePost(postId)).toEqual({ ok: true })
-  expect(await repo.getPost(postId)).toBeUndefined()
+  expect(await service.deletePost(postId, { kind: 'author' })).toEqual({ ok: true })
+  const stored = await repo.getPost(postId)
+  expect(stored).toBeDefined() // row survives — removal is an edit, not a destruction
+  expect(stored!.content).toBe(removalNotice({ kind: 'author' }))
+  expect(stored!.title).toBeNull()
 
   // a remote post → error remote
   const remote = await repo.createRemoteUser({ handle: 'rf', displayName: 'RF', feedUrl: 'https://e/f.xml' })
   seedRemotePost(repo, 'rp', remote.id)
-  expect(await service.deletePost('rp')).toEqual({ error: 'remote' })
-  expect(await service.deletePost('ghost')).toEqual({ error: 'unknown' })
+  expect(await service.deletePost('rp', { kind: 'author' })).toEqual({ error: 'remote' })
+  expect(await service.deletePost('ghost', { kind: 'author' })).toEqual({ error: 'unknown' })
 })
 
-test('DELETE /admin/posts/:id: 200 local, 409 remote, 404 unknown; gate matrix', async () => {
+test('deletePost emits one new-post bus event, the same channel an edit uses', async () => {
+  const { service, bus } = await makeApp()
+  const entry = await service.createLocalPostAs('emituser', 'Emit User', 'hello')
+  const seen = vi.fn()
+  bus.onNewPost(seen)
+  expect(await service.deletePost(entry.id, { kind: 'author' })).toEqual({ ok: true })
+  expect(seen).toHaveBeenCalledTimes(1)
+})
+
+test('DELETE /admin/posts/:id: 200 local (with category), 409 remote, 404 unknown; gate matrix', async () => {
   const { app, repo } = await makeApp()
   const cookie = await registeredSession(app, 'a@x.test', repo)
   await app.request('/me', { headers: { cookie } })
   const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'p' }) })).json()
   const admin = await registeredSession(app, 'boss@x.test', repo)
-  expect((await app.request(`/admin/posts/${created.post.id}`, { method: 'DELETE', headers: { cookie: admin } })).status).toBe(200)
+  const del = (id: string, sessionCookie: string) =>
+    app.request(`/admin/posts/${id}`, { method: 'DELETE', headers: { 'content-type': 'application/json', cookie: sessionCookie }, body: JSON.stringify({ category: 'spam' }) })
+  expect((await del(created.post.id, admin)).status).toBe(200)
   const remote = await repo.createRemoteUser({ handle: 'rf2', displayName: 'RF', feedUrl: 'https://e/f.xml' })
   seedRemotePost(repo, 'rp2', remote.id)
   const admin2 = await registeredSession(app, 'boss@x.test', repo)
-  expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: admin2 } })).status).toBe(409)
-  expect((await app.request('/admin/posts/ghost', { method: 'DELETE', headers: { cookie: admin2 } })).status).toBe(404)
-  expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: await registeredSession(app, 'peon@x.test', repo) } })).status).toBe(403)
-  expect((await app.request('/admin/posts/rp2', { method: 'DELETE', headers: { cookie: await anonSession(app) } })).status).toBe(403)
+  expect((await del('rp2', admin2)).status).toBe(409)
+  expect((await del('ghost', admin2)).status).toBe(404)
+  expect((await del('rp2', await registeredSession(app, 'peon@x.test', repo))).status).toBe(403)
+  expect((await del('rp2', await anonSession(app))).status).toBe(403)
   expect((await app.request('/admin/posts/rp2', { method: 'DELETE' })).status).toBe(401)
+})
+
+test('DELETE /admin/posts/:id: missing category → 400, post unchanged', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'a@x.test', repo)
+  await app.request('/me', { headers: { cookie } })
+  const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'keep me' }) })).json()
+  const admin = await registeredSession(app, 'boss@x.test', repo)
+  const res = await app.request(`/admin/posts/${created.post.id}`, { method: 'DELETE', headers: { 'content-type': 'application/json', cookie: admin }, body: JSON.stringify({}) })
+  expect(res.status).toBe(400)
+  expect((await repo.getPost(created.post.id))?.content).toBe('keep me')
 })
 
 // Regression: hard removal must clear post_revisions first — post_revisions.post_id is a
 // RESTRICT FK to posts(id) and foreign_keys=ON, so deleting an *edited* post/account
 // without clearing its revisions is refused by SQLite (was a 500 / rolled-back delete).
-test('deletePost removes an edited post (clears its post_revisions)', async () => {
+test('deletePost (author) removes an edited post\'s revisions but keeps the row', async () => {
   const { app, repo, service } = await makeApp()
   const cookie = await registeredSession(app, 'ed@x.test', repo)
   await app.request('/me', { headers: { cookie } })
@@ -131,9 +157,9 @@ test('deletePost removes an edited post (clears its post_revisions)', async () =
   expect((await edit(app, cookie, postId, 'v2')).status).toBe(200)
   expect(revisionCount(repo, postId)).toBeGreaterThan(0) // sanity: a revision exists
 
-  expect(await service.deletePost(postId)).toEqual({ ok: true })
-  expect(await repo.getPost(postId)).toBeUndefined()
-  expect(revisionCount(repo, postId)).toBe(0) // revisions gone too
+  expect(await service.deletePost(postId, { kind: 'author' })).toEqual({ ok: true })
+  expect(await repo.getPost(postId)).toBeDefined() // row survives
+  expect(revisionCount(repo, postId)).toBe(0) // revisions gone too (author removal takes its history with it)
 })
 
 test('deleteLocalAccount removes an account whose post was edited (clears post_revisions)', async () => {

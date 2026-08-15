@@ -8,6 +8,7 @@ import { createService } from '../src/domain/service.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
 import { mountPersonalApiRoutes } from '../src/api/logical-routes.ts'
 import { ensureCoreUser } from '../src/api/auth.ts'
+import { removalNotice } from '../src/logical/local.ts'
 import { makeAuth, registeredSession, anonSession } from './auth-helper.ts'
 
 // Same erasure api-key-plugin.test.ts / api-key-auth-middleware.test.ts hit:
@@ -360,7 +361,9 @@ test("DELETE /me/posts/:id deletes only the key owner's own post, never another 
 
   const ok = await app.request(`/me/posts/${post.id}`, { method: 'DELETE', headers: { 'x-api-key': keyA } })
   expect(ok.status).toBe(200)
-  expect(await service.getPost(post.id)).toBeUndefined() // gone
+  const stored = await service.getPost(post.id)
+  expect(stored).toBeDefined() // row survives — removal is an edit, not a destruction
+  expect(stored!.content).toBe(removalNotice({ kind: 'author' }))
 })
 
 test('DELETE /me/posts/:id 404s for an unknown post id', async () => {

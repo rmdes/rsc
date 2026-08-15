@@ -9,7 +9,7 @@ import { apiKeyAuthAdmin } from '../auth.ts'
 import type { Service } from '../../domain/service.ts'
 import type { SourceService } from '../../domain/source-service.ts'
 import type { FeedContext } from '../../domain/feed.ts'
-import { isString, readJsonBody, MAX_API_KEYS_PER_USER } from './shared.ts'
+import { isString, readJsonBody, MAX_API_KEYS_PER_USER, readRemovalBody } from './shared.ts'
 import type { ApiKeyCreation } from './shared.ts'
 
 // =============================================================================
@@ -229,8 +229,10 @@ export function mountAdminApiRoutes(app: Hono, deps: AdminApiDeps): void {
     return c.json({ ok: true }, 200)
   })
 
-  app.delete('/admin-api/posts/:id', writeAdminModeration, async (c) => {
-    const result = await service.deletePost(c.req.param('id') ?? '')
+  app.delete('/admin-api/posts/:id', writeAdminModeration, jsonWrite, async (c) => {
+    const b = await readRemovalBody(c)
+    if (b instanceof Response) return b
+    const result = await service.deletePost(c.req.param('id') ?? '', { kind: 'administrator', category: b.category, note: b.note })
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })
