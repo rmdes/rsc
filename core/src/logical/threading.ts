@@ -26,7 +26,7 @@ function lookupOwner(tx: WriteTx, kind: string, key: string): string | null {
   return row ? row.logical_item_id : null
 }
 
-function isDeletedMarker(tx: WriteTx, id: string): boolean {
+export function isDeletedMarker(tx: WriteTx, id: string): boolean {
   return tx.prepare(`SELECT 1 FROM logical_deleted_local_v2 WHERE logical_item_id = ?`).get(id) !== undefined
 }
 

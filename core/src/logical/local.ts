@@ -3,7 +3,7 @@ import type { WriteTx } from './database.ts'
 import type { LogicalItemDto } from './types.ts'
 import type { User, AuditCategory } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
-import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
+import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork, isDeletedMarker } from './threading.ts'
 import { reapSourceIfOrphaned } from '../domain/source-repository.ts'
 import { deriveRoot } from './roots.ts'
 // parentReplyRef must mirror what projectRemote emits, so it lives there; local.ts
@@ -234,23 +234,42 @@ export function removeLocalPost(input: { tx: WriteTx; postId: string; actor: Rem
   const cur = loadPost(tx, postId)
   if (!cur) return
   const permalink = cur.url ?? permalinkFor(postId)
+  const notice = removalNotice(actor)
+  const alreadyRemoved = isDeletedMarker(tx, postId)
 
-  // History splits on the actor. A moderator removal keeps the superseded text as
-  // an admin-only record of what was actioned; an author removing their own post
-  // takes it with them, matching what deletion has always meant for them.
-  if (actor.kind === 'administrator') {
-    tx.prepare(
-      `INSERT INTO post_revisions (id, post_id, title, content, content_markdown, seen_at) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(randomUUID(), postId, cur.title, cur.content, cur.content_markdown, now)
-  } else {
-    tx.prepare(`DELETE FROM post_revisions WHERE post_id = ?`).run(postId)
+  // Idempotent repeat (mirrors the PATCH no-op idiom in personal.ts/app.ts,
+  // "no-op: no phantom revision"): a retry that lands on the SAME notice — a
+  // client timeout retry, a double-clicked button — changes nothing, so it
+  // writes nothing: no content write, no revision, no journal entry, and (by
+  // extension, since service.deletePost's outbound emit is journal-driven) no
+  // redundant federation publish.
+  if (alreadyRemoved && cur.content === notice) return
+
+  // History splits on the actor, but ONLY on the transition INTO removal.
+  // cur.content is real user content exclusively on the first call; on any
+  // repeat, cur.content is already a PRIOR NOTICE — snapshotting that as
+  // "superseded content" would fabricate post_revisions history out of the
+  // removal machinery's own output (e.g. a moderator correcting spam→abuse
+  // must still update the notice, but must not manufacture a revision row).
+  if (!alreadyRemoved) {
+    if (actor.kind === 'administrator') {
+      // A moderator removal keeps the superseded text as an admin-only record
+      // of what was actioned.
+      tx.prepare(
+        `INSERT INTO post_revisions (id, post_id, title, content, content_markdown, seen_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(randomUUID(), postId, cur.title, cur.content, cur.content_markdown, now)
+    } else {
+      // An author removing their own post takes it with them, matching what
+      // deletion has always meant for them.
+      tx.prepare(`DELETE FROM post_revisions WHERE post_id = ?`).run(postId)
+    }
   }
 
   // Title is cleared too. Posts created here never have one, but a migrated v1
   // post can — and a surviving headline above a removal notice would publish the
   // very words being removed.
   tx.prepare(`UPDATE posts SET title = NULL, content = ?, edited_at = ? WHERE id = ?`)
-    .run(removalNotice(actor), now, postId)
+    .run(notice, now, postId)
 
   materializeLocalItem(tx, { id: postId, permalink, timelineSortAt: cur.published_at, parentLogicalItemId: cur.in_reply_to_post_id })
   tx.prepare(

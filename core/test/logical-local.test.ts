@@ -182,6 +182,69 @@ test('an author removing their own post purges its revisions; a moderator keeps 
   expect(kept.content).toBe('evidence')
 })
 
+test('a repeat removal by the same actor is a no-op: no revision, no new journal entry', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'evidence', replyToId: null, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1) // the first removal's real-content snapshot
+  const afterFirst = db.read((tx) => getJournalMetadata(tx))
+
+  // Same actor, same category, same note: an identical resulting notice.
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: '2026-07-23T02:00:00.000Z' }))
+
+  // no fabricated revision from the repeat call
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1)
+  // no new journal entry
+  const afterSecond = db.read((tx) => getJournalMetadata(tx))
+  expect(afterSecond.highWaterSeq).toBe(afterFirst.highWaterSeq)
+  // edited_at was NOT bumped by the no-op repeat
+  const post = raw.prepare(`SELECT edited_at FROM posts WHERE id = ?`).get(created.id) as { edited_at: string }
+  expect(post.edited_at).toBe(LATER)
+})
+
+test('a moderator changing the category on an already-removed post updates the notice but adds no revision row', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'evidence', replyToId: null, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1) // the real 'evidence' content
+  const afterFirst = db.read((tx) => getJournalMetadata(tx))
+
+  const recategorized = '2026-07-23T02:00:00.000Z'
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'abuse', note: null }, now: recategorized }))
+
+  // the notice reflects the corrected category
+  const post = raw.prepare(`SELECT content, edited_at FROM posts WHERE id = ?`).get(created.id) as { content: string; edited_at: string }
+  expect(post.content).toBe('This post was removed by a moderator (abuse).')
+  expect(post.edited_at).toBe(recategorized)
+  // still exactly one revision row — the original 'evidence' snapshot, not the superseded 'spam' notice
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1)
+  const kept = raw.prepare(`SELECT content FROM post_revisions WHERE post_id = ?`).get(created.id) as { content: string }
+  expect(kept.content).toBe('evidence')
+  // a legitimate update still journals (it is not a no-op)
+  const afterSecond = db.read((tx) => getJournalMetadata(tx))
+  expect(afterSecond.highWaterSeq).toBe(afterFirst.highWaterSeq + 1)
+})
+
+test('the first removal is unaffected by the idempotency guard', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  const before = db.read((tx) => getJournalMetadata(tx))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+
+  const post = raw.prepare(`SELECT content, edited_at FROM posts WHERE id = ?`).get(created.id) as { content: string; edited_at: string }
+  expect(post.content).toBe('This post was removed by a moderator (spam).')
+  expect(post.edited_at).toBe(LATER)
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1)
+  const after = db.read((tx) => getJournalMetadata(tx))
+  expect(after.highWaterSeq).toBe(before.highWaterSeq + 1)
+})
+
 test('a removed post keeps its place in the thread and its replies', async () => {
   const { raw, db } = await fresh()
   const author = seedUser(raw, 'u1', 'alice')
