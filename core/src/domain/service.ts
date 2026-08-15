@@ -58,11 +58,17 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     // ONLY in logical_items_v2 (posts holds local content only), so the posts
     // lookup alone would 404 every reply to an RSS/instance item. The returned
     // minimal {id} is safe: createLocalPostAs reads ONLY replyTo.id.
+    //
+    // replyTargetVisible is checked FIRST and unconditionally, not just as a
+    // remote fallback: removeLocalPost (Task 11) keeps the local `posts` row
+    // and rewrites its content to a removal notice, so repo.getPost(id) still
+    // finds a removed post. Returning it early — as this used to — would make
+    // a removed post repliable again. replyTargetVisible already refuses it
+    // (the logical_deleted_local_v2 marker gate in projector.ts).
     async resolveReplyTarget(id: string): Promise<Post | null> {
+      if (!logical.replyTargetVisible(id)) return null
       const post = await repo.getPost(id)
-      if (post) return post
-      if (logical.replyTargetVisible(id)) return { id } as Post
-      return null
+      return post ?? ({ id } as Post)
     },
     getPost(id: string) {
       return repo.getPost(id)

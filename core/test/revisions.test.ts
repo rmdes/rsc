@@ -44,3 +44,20 @@ test('returns the local history chain oldest-first with a current marker (public
 test('unknown post → 404', async () => {
   expect((await (await makeApp()).request('/posts/nope/revisions')).status).toBe(404)
 })
+
+// removeLocalPost keeps the row (removal is an edit) and projectItem now
+// succeeds for it, so this route would silently start serving revisions again
+// without an explicit gate on the deletion marker. For a moderator removal the
+// retained revisions are exactly the content that was actioned — an admin
+// record, not a public one.
+test('a removed post 404s on public history, even though its row survives', async () => {
+  const app = await makeApp()
+  const cookie = await anonSession(app)
+  const created = await (await app.request('/posts', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ content: 'v1' }) })).json()
+  const pid = created.post.id
+  await app.request(`/posts/${pid}`, patch(cookie, 'v2'))
+  expect((await app.request(`/posts/${pid}/revisions`)).status).toBe(200)
+
+  await app.request(`/posts/${pid}`, { method: 'DELETE', headers: { cookie } })
+  expect((await app.request(`/posts/${pid}/revisions`)).status).toBe(404)
+})

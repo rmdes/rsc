@@ -273,7 +273,8 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     let replyTarget
     if (typeof inReplyTo === 'string') {
       // Under v2 the target may be a remote logical item with no posts row —
-      // resolveReplyTarget accepts exactly what ordinary reads can show.
+      // resolveReplyTarget accepts what ordinary reads can show, MINUS a
+      // removed post (its row survives as a notice but is not repliable).
       replyTarget = await service.resolveReplyTarget(inReplyTo)
       if (!replyTarget) return c.json({ error: 'unknown post' }, 404)
     }

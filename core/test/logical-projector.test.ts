@@ -6,7 +6,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
-import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolvePublisher } from '../src/logical/projector.ts'
+import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolvePublisher, itemOrdinaryVisible } from '../src/logical/projector.ts'
 import type { ProjectionViewer, TimelineLens, TimelineCursorV2 } from '../src/logical/types.ts'
 import { decodeCursor } from '../src/domain/cursor.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
@@ -472,6 +472,32 @@ test('local history returns the authoritative revision chain with a current mark
   expect(env.entries.map((e) => e.content)).toEqual(['v1', 'v2'])
   expect(env.entries[env.entries.length - 1].current).toBe(true)
   expect(env.currentSequence).toBe(1)
+})
+
+// ---- removal gates (removeLocalPost keeps the row; these must key off the
+// logical_deleted_local_v2 marker, not row absence — Task 2) ------------------
+
+test('itemOrdinaryVisible (the reply-target gate) refuses a removed local post but accepts an ordinary one', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  seedPost(raw, { id: 'p1', author: 'u1', content: 'hello' })
+  expect(db.read((tx) => itemOrdinaryVisible(tx, 'p1'))).toBe(true)
+
+  store.removeLocalPost({ postId: 'p1', actor: { kind: 'author' }, now: NOW })
+  // The row survives (removal is an edit) and still projects for ordinary reads —
+  // only the reply-target gate must refuse it.
+  expect(db.read((tx) => projectItem(tx, 'p1', ANON))).toBeDefined()
+  expect(db.read((tx) => itemOrdinaryVisible(tx, 'p1'))).toBe(false)
+})
+
+test('projectHistory refuses (404) for a removed local post — the moderator-retained revisions are an admin-only record, not a public one', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  seedPost(raw, { id: 'p1', author: 'u1', content: 'hello' })
+  expect(db.read((tx) => projectHistory(tx, 'p1', ANON))).toBeDefined()
+
+  store.removeLocalPost({ postId: 'p1', actor: { kind: 'administrator', category: 'spam', note: null }, now: NOW })
+  expect(db.read((tx) => projectHistory(tx, 'p1', ANON))).toBeUndefined()
 })
 
 // ---- publisher descriptor (spec §3.6) ---------------------------------------
