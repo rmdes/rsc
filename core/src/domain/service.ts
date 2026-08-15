@@ -142,16 +142,13 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       // account rows, in one atomic write (spec §2.6). Auth rows stay a separate step.
       logical.deleteLocalAccount({ accountId: user.id, actorId: user.id, now: new Date().toISOString() })
       if (user.authUserId) repo.deleteAuthRows(user.authUserId)
-      bus.emitPostDeleted({ handle: user.handle }) // one event for the whole account, not per-post
       return { ok: true }
     },
     async deletePost(id: string): Promise<{ ok: true } | { error: 'unknown' | 'remote' }> {
       const post = await repo.getPost(id)
       if (!post) return { error: 'unknown' }
       if (post.source !== 'local') return { error: 'remote' }
-      const author = await repo.getUser(post.authorId) // captured BEFORE the delete
       logical.deleteLocalPost({ postId: id, actorId: post.authorId, now: new Date().toISOString() })
-      if (author) bus.emitPostDeleted({ handle: author.handle })
       return { ok: true }
     },
     getSetting(key: string) { return repo.getSetting(key) },

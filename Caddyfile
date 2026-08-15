@@ -22,7 +22,6 @@
 	# a case-mismatched handle anyway).
 	@core {
 		path /users/rss.xml
-		path /deletions.json
 		path /users/*/feed.xml /users/*/feed.json
 		path /users/*/following.opml
 		path /post/*/comments.xml

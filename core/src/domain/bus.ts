@@ -15,11 +15,6 @@ export interface EventBus {
   // notification, independently of each other.
   emitSequenceHint(sequence: number): void
   onSequenceHint(fn: (sequence: number) => void): () => void
-  // Deletion carries no TimelineEntry -- the post is gone and, for an account
-  // deletion, so is the users row. The handle is captured BEFORE the delete so
-  // push can resolve the per-author topic.
-  emitPostDeleted(e: { handle: string }): void
-  onPostDeleted(fn: (e: { handle: string }) => void): () => void
 }
 
 export function createEventBus(): EventBus {
@@ -35,11 +30,6 @@ export function createEventBus(): EventBus {
     onSequenceHint(fn) {
       emitter.on('seq-hint', fn)
       return () => emitter.off('seq-hint', fn)
-    },
-    emitPostDeleted(e) { emitter.emit('post-deleted', e) },
-    onPostDeleted(fn) {
-      emitter.on('post-deleted', fn)
-      return () => emitter.off('post-deleted', fn)
     },
   }
 }

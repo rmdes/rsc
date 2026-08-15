@@ -11,7 +11,6 @@ const PUSH_TIMEOUT_MS = 10_000
 
 export interface Push {
   onLocalPost(entry: TimelineEntry): Promise<void>
-  onPostDeleted(e: { handle: string }): Promise<void>
 }
 
 export interface PushDeps {
@@ -176,22 +175,6 @@ async function deliverOnce(fetchFn: typeof fetch, callback: string, body: string
   }
 }
 
-// Thin "go re-fetch this topic" nudge. Only valid where the receiver accepts
-// an unsigned/no-body ping: rssCloud (no signature scheme) and websub
-// external mode (the operator's hub re-fetches itself). Self-mode websub is
-// NOT one of these — our own receiver (websubDeliver) discards any delivery
-// that doesn't verify against the subscription's HMAC secret, and every
-// self-mode subscription has one, so a thin ping there is a silent no-op.
-async function thinPing(repo: Repository, fetchFn: typeof fetch, protocol: 'websub' | 'rsscloud', topics: string[]): Promise<void> {
-  const now = new Date().toISOString()
-  for (const topic of topics) {
-    const subs = (await repo.listActiveSubscriptions(topic, now)).filter((s) => s.protocol === protocol)
-    for (const sub of subs) {
-      await deliverOnce(fetchFn, sub.callback, new URLSearchParams({ url: topic }).toString(), { 'content-type': 'application/x-www-form-urlencoded' })
-    }
-  }
-}
-
 async function publishPing(hubUrl: string, topic: string, fetchFn: typeof fetch): Promise<void> {
   // Intentionally allows default redirect: 'follow' — hubUrl is operator-configured,
   // not attacker-controlled like callback URLs in verification/delivery paths.
@@ -299,70 +282,6 @@ export function createPush(deps: PushDeps): Push {
         }
       } catch (err) {
         console.error('push dispatch failed:', err instanceof Error ? err.message : err)
-      }
-    },
-
-    // Same never-rejects contract as onLocalPost (H4): dispatched synchronously
-    // off the bus, no global rejection handler.
-    async onPostDeleted(e: { handle: string }): Promise<void> {
-      try {
-        if (!config.publicUrl) return
-        const pushEnabled = config.websub.mode !== 'off' || config.rssCloud
-        if (!pushEnabled) return
-        const authorTopics = feedUrls(config.publicUrl, e.handle)
-        const fhTopic = firehoseUrl(config.publicUrl)
-
-        if (config.websub.mode === 'external') {
-          // Format-agnostic thin ping (the hub re-fetches) — both author
-          // formats plus the firehose, mirroring onLocalPost's external loop.
-          for (const topic of [authorTopics.xml, authorTopics.json, fhTopic]) {
-            try {
-              await publishPing(config.websub.hubUrl, topic, fetchFn)
-            } catch (err) {
-              console.error(`websub publish ping failed for ${topic}:`, err instanceof Error ? err.message : err)
-            }
-          }
-        }
-
-        if (config.websub.mode === 'self') {
-          // A thin ping is silently discarded by our own receiver (unsigned,
-          // fails HMAC verification), so self mode must send a fat body. The
-          // firehose one is always regenerable — a deletion just drops the
-          // post from it — so mirror onLocalPost's self-mode firehose block
-          // exactly: fat body, signed per subscriber.
-          //
-          // Author-topic self-mode subscribers get nothing. That is REQUIRED
-          // only for an account deletion, where the users row is already gone
-          // by the time this runs. For a single-post deletion the author is
-          // still present and renderRssFeed would produce a correct body — we
-          // skip it because the event carries only { handle } and cannot tell
-          // the two cases apart. Peers fall back to their next poll. Closing
-          // this means putting a discriminator on the event.
-          const now = new Date().toISOString()
-          const ctx = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
-          const fhSubs = (await repo.listActiveSubscriptions(fhTopic, now)).filter((s) => s.protocol === 'websub')
-          if (fhSubs.length > 0) {
-            const recent = await repo.getRecentLocalPosts(50)
-            let body = renderFirehoseRss(recent, ctx)
-            const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
-            body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
-              .map((p) => ({ guid: emittedGuid(p), count: fhCounts.get(p.id)!, feedUrl: commentsFeedUrl(ctx.publicUrl, p.id) })))
-            for (const sub of fhSubs) {
-              const headers: Record<string, string> = {
-                'content-type': 'application/rss+xml; charset=utf-8',
-                link: `<${fhTopic}>; rel="self", <${ctx.hubUrl}>; rel="hub"`,
-              }
-              if (sub.secret) headers['x-hub-signature'] = 'sha256=' + createHmac('sha256', sub.secret).update(body).digest('hex')
-              await deliverOnce(fetchFn, sub.callback, body, headers)
-            }
-          }
-        }
-
-        // rssCloud is RSS-only by construction (registration rejects non-xml
-        // topics), so no json counterpart exists to notify.
-        if (config.rssCloud) await thinPing(repo, fetchFn, 'rsscloud', [authorTopics.xml, fhTopic])
-      } catch (err) {
-        console.error('push dispatch failed (deletion):', err instanceof Error ? err.message : err)
       }
     },
   }

@@ -7,8 +7,6 @@ import type { Service } from '../../domain/service.ts'
 import type { FeedContext } from '../../domain/feed.ts'
 import type { TimelineLens, ProjectionViewer, LogicalItemDto } from '../../logical/types.ts'
 import { clampLimit, decodeBeforeCursor } from './shared.ts'
-import { encodeCursor, decodeCursor } from '../../domain/cursor.ts'
-import { normalizePermalink } from '../../logical/roots.ts'
 
 // =============================================================================
 // v2 ordinary read + feed surface (spec §3.4-3.6, §4.3, §4.5, §4.6) — Task 8
@@ -218,35 +216,5 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     let xml = renderCommentsFeed(logicalToFeedEntry(data.item), data.replies.map(logicalToFeedEntry), feeds)
     xml = injectComments(xml, data.replies)
     return c.body(xml, 200, XML)
-  })
-
-  // --- GET /deletions.json (Task 7) -----------------------------------------
-  // Public, like the feeds above — no auth, no peer gate (nothing in this
-  // codebase can identify an inbound caller as an approved peer; see the
-  // task-7 report). Ascending tuple-cursor paging over the permanent local
-  // deletion markers, filtered server-side to this instance's own absolute
-  // permalinks and normalized the same way identity keys are, so a
-  // federated consumer's lookup never silently misses.
-  app.get('/deletions.json', (c) => {
-    const EMPTY = { deletions: [], nextCursor: null, hasMore: false }
-    if (!feeds.publicUrl) return c.json(EMPTY) // no configured public URL: nothing is ours to serve
-
-    const cursorRaw = c.req.query('cursor')
-    let cursor: { deletedAt: string; id: string } | null = null
-    if (cursorRaw !== undefined) {
-      const dec = decodeCursor(cursorRaw)
-      if (!dec || dec.tuple.length !== 2) return c.json({ error: 'invalid cursor' }, 400)
-      cursor = { deletedAt: dec.tuple[0], id: dec.tuple[1] }
-    }
-    const limit = clampLimit(c.req.query('limit'))
-    const rows = store.listDeletionsAfter(cursor, limit + 1, feeds.publicUrl)
-    const page = rows.slice(0, limit)
-    const hasMore = rows.length > limit
-    const last = page[page.length - 1]
-    const nextCursor = hasMore && last ? encodeCursor(1, [last.deletedAt, last.id]) : null
-    const deletions = page
-      .map((r) => ({ ref: normalizePermalink(r.ref), deletedAt: r.deletedAt }))
-      .filter((d): d is { ref: string; deletedAt: string } => d.ref !== null)
-    return c.json({ deletions, nextCursor, hasMore })
   })
 }
