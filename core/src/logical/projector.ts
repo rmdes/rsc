@@ -803,7 +803,10 @@ export function isStructuralTombstone(tx: ReadTx, id: string): boolean {
 
 // Project one logical item to its ordinary DTO, or undefined when it is not
 // currently ordinary-visible (spec §3.4). Local id === post.id; a live local post
-// projects directly (no logical row needed); a deleted/absent local post ⇒ undefined.
+// projects directly (no logical row needed). A removed local post's row survives
+// (deletion-as-edit) and still projects, carrying the removal notice as content;
+// only an absent local post (never existed, or terminally deleted via account
+// deletion) ⇒ undefined.
 export function projectItem(tx: ReadTx, id: string, viewer: ProjectionViewer): LogicalItemDto | undefined {
   const post = tx.prepare(
     `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to, in_reply_to_post_id, thread_root_id

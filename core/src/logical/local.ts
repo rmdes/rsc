@@ -172,10 +172,27 @@ export function createLocalPost(input: { tx: WriteTx; author: User; content: str
   )
 }
 
+// Thrown by editLocalPost when the target carries the removed marker — the
+// moderation-bypass guard below. A distinct class (not a bare Error, not
+// DomainError, which app.onError maps to a fixed 400) so callers can
+// recognize it and choose the status themselves.
+export class PostRemovedError extends Error {}
+
 export function editLocalPost(input: { tx: WriteTx; postId: string; authorId: string; content: string; now: string }): LogicalItemDto {
   const { tx, postId, authorId, content, now } = input
   const cur = loadPost(tx, postId)
   if (!cur) throw new Error(`editLocalPost: unknown post ${postId}`)
+
+  // A removed post's row survives as an edit (removeLocalPost, below) — it no
+  // longer disappears from getPost, so the routes' old "!post -> 404" guard
+  // no longer blocks editing it. Refuse unconditionally, regardless of who
+  // removed it (the marker doesn't record that, and an author-vs-moderator
+  // split isn't worth a schema change): otherwise the author of a
+  // moderator-removed post PATCHes their own content straight back, and that
+  // PATCH republishes it (service.editLocalPost's bus.emitNewPost). Checked
+  // inside THIS write tx, not a separate read, so there is no TOCTOU window
+  // between the check and the write below.
+  if (isDeletedMarker(tx, postId)) throw new PostRemovedError(`editLocalPost: post ${postId} has been removed`)
 
   // Snapshot the superseded version, then overwrite (posts is the sole content
   // authority; post_revisions is the sole history authority — spec §2.6).

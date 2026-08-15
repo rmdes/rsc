@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
-import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, removeLocalPost, synthesizeLocalItem, materializeLocalChain } from '../src/logical/local.ts'
+import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, removeLocalPost, synthesizeLocalItem, materializeLocalChain, PostRemovedError } from '../src/logical/local.ts'
 import { getJournalMetadata, readJournalBatch } from '../src/logical/journal.ts'
 import type { User } from '../src/domain/types.ts'
 
@@ -100,6 +100,24 @@ test('editLocalPost snapshots a revision, updates content, and emits one upsert'
   expect(after.highWaterSeq).toBe(before.highWaterSeq + 1)
   const last = db.read((tx) => readJournalBatch(tx, before.highWaterSeq, 10))
   expect(last[0]).toMatchObject({ kind: 'upsert', logicalItemId: created.id })
+})
+
+// The moderation-bypass fix: removeLocalPost keeps the post row (deletion is
+// now an edit, not a destruction), so the old "getPost returns undefined"
+// guard editLocalPost used to get for free is gone. It must refuse a removed
+// post itself, regardless of who removed it (author or admin) — an author
+// PATCHing their own removed post back is exactly the bypass this closes.
+test('editLocalPost refuses a post carrying the removed marker, and leaves its content untouched', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'illegal stuff', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'author' }, now: LATER }))
+  const noticeContent = (raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(created.id) as { content: string }).content
+
+  expect(() => db.write((tx) => editLocalPost({ tx, postId: created.id, authorId: author.id, content: 'restored!', now: LATER }))).toThrow(PostRemovedError)
+
+  // The refused attempt wrote nothing: content is still the removal notice.
+  expect((raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(created.id) as { content: string }).content).toBe(noticeContent)
 })
 
 test('deleteLocalPost is terminal: content and revisions go, a permanent marker with no author/source remains', async () => {

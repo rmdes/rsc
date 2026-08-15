@@ -295,6 +295,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
     if (content === post.content) return c.json({ post }, 200) // no-op: no phantom revision
     const entry = await service.editLocalPost(post, content, me)
+    // A removed post (deletion-as-edit) refuses further edits — same status
+    // as the ownership check above, since both are "you may not edit this".
+    if ('error' in entry) return c.json({ error: 'not editable' }, 403)
     // local post — never carries reply-context (h-feed ingest only); no gate needed
     return c.json({ post: entry }, 200)
   })

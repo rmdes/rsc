@@ -335,6 +335,32 @@ test("PATCH /me/posts/:id edits only the key owner's own post", async () => {
   expect(body.post.content).toBe('edited content')
 })
 
+// Same moderation-bypass regression posts-edit.test.ts covers on the
+// cookie-authed twin: removal is now an edit (the row survives with a
+// notice), so PATCH must refuse a removed post itself — otherwise the key
+// owner PATCHes their own removed content straight back, and that PATCH
+// republishes via bus.emitNewPost.
+test('PATCH /me/posts/:id is refused on a removed post, and the notice content survives untouched', async () => {
+  const { app, cookie, auth, repo, service } = await freshApp('edit-removed@x.test')
+  const session = await auth.api.getSession({ headers: new Headers({ cookie }) })
+  const key = await mintKey(auth, session!.user.id, { posts: ['write'] })
+  const me = await ensureCoreUser(repo, session!.user.id)
+  const post = await service.createLocalPostAs(me.handle, me.displayName, 'illegal stuff')
+
+  const del = await app.request(`/me/posts/${post.id}`, { method: 'DELETE', headers: { 'x-api-key': key } })
+  expect(del.status).toBe(200)
+  const notice = (await repo.getPost(post.id))?.content
+
+  const res = await app.request(`/me/posts/${post.id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', 'x-api-key': key },
+    body: JSON.stringify({ content: 'restored!' })
+  })
+  expect(res.status).toBe(403)
+
+  expect((await repo.getPost(post.id))?.content).toBe(notice) // unchanged
+})
+
 test("DELETE /me/posts/:id deletes only the key owner's own post, never another user's", async () => {
   const repo = await createSqliteRepository(':memory:')
   const db = createDatabaseContext(repo.raw)

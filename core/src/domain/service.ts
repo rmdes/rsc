@@ -3,7 +3,7 @@ import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
 import type { NewLocalUser, TimelineEntry, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
-import type { RemovalActor } from '../logical/local.ts'
+import { PostRemovedError, type RemovalActor } from '../logical/local.ts'
 import type { Cursor } from './source-repository.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
@@ -47,9 +47,18 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       bus.emitNewPost(entry)
       return entry
     },
-    async editLocalPost(post: Post, content: string, author: User): Promise<TimelineEntry> {
+    // A removed post (deletion-as-edit, spec) refuses further edits — see
+    // editLocalPost's PostRemovedError comment. Returned as a typed result,
+    // matching deletePost's error-union below, so the route picks the status
+    // instead of a thrown error falling through to app.onError's generic 500.
+    async editLocalPost(post: Post, content: string, author: User): Promise<TimelineEntry | { error: 'removed' }> {
       const now = new Date().toISOString()
-      logical.editLocalPost({ postId: post.id, authorId: author.id, content, now })
+      try {
+        logical.editLocalPost({ postId: post.id, authorId: author.id, content, now })
+      } catch (err) {
+        if (err instanceof PostRemovedError) return { error: 'removed' }
+        throw err
+      }
       const entry: TimelineEntry = { ...post, content, editedAt: now, author }
       bus.emitNewPost(entry)
       return entry
