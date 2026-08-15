@@ -90,3 +90,22 @@ test('Edit is present for an ordinary (not removed) post owned by the viewer', (
 	const { body } = render(Page, { props: { data, form: null } } as never)
 	expect(body).toContain('/post/p1/edit')
 })
+
+// Coverage gap: nothing asserted the moderation category <select> renders on
+// this page's Remove form either — deleting it would leave the suite green
+// while every admin removal 400s (core's DELETE /admin/posts/:id requires
+// {category, note?}), the same class of bug this branch's Critical fixed.
+test('an admin removing someone else\'s post gets a category select', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined, author: { id: 'u2', handle: 'bob', displayName: 'Bob', kind: 'local' } })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: { id: 'u1', handle: 'alice', displayName: 'Alice', kind: 'local' }, isAnonymous: false, isAdmin: true } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('name="category"')
+	expect(body).toContain('remove-cat-p1')
+})
+
+test('the author\'s own plain Remove has no category select', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: root.author, isAnonymous: false } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('name="category"')
+})
