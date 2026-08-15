@@ -169,6 +169,21 @@ test('removeLocalPost keeps the row and replaces the content with a moderator no
   expect(rows.at(-1)).toMatchObject({ kind: 'upsert', logicalItemId: created.id })
 })
 
+test('removeLocalPost clears content_markdown too, not just content and title', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  // Local posts never write content_markdown today (only ingest does), but a
+  // migrated v1 post can carry one — set it directly so this assertion can
+  // actually fail if the clear is dropped.
+  raw.prepare(`UPDATE posts SET content_markdown = 'buy **cheap** pills now' WHERE id = ?`).run(created.id)
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+
+  const post = raw.prepare(`SELECT content_markdown FROM posts WHERE id = ?`).get(created.id) as { content_markdown: string | null }
+  expect(post.content_markdown).toBeNull()
+})
+
 test('removeLocalPost renders an underscored category as prose and appends the note', async () => {
   const { raw, db } = await fresh()
   const author = seedUser(raw, 'u1', 'alice')

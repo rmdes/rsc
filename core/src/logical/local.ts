@@ -258,9 +258,11 @@ export function removeLocalPost(input: { tx: WriteTx; postId: string; actor: Rem
   // Idempotent repeat (mirrors the PATCH no-op idiom in personal.ts/app.ts,
   // "no-op: no phantom revision"): a retry that lands on the SAME notice — a
   // client timeout retry, a double-clicked button — changes nothing, so it
-  // writes nothing: no content write, no revision, no journal entry, and (by
-  // extension, since service.deletePost's outbound emit is journal-driven) no
-  // redundant federation publish.
+  // writes nothing: no content write, no revision, no journal entry. That does
+  // NOT suppress the outbound publish: service.deletePost calls bus.emitNewPost
+  // unconditionally after this returns, so a repeated delete still fires one
+  // redundant fat-ping/WebSub-ping. Accepted: peers ingest it as an unchanged
+  // item, so the redundancy is harmless, just not free.
   if (alreadyRemoved && cur.content === notice) return
 
   // History splits on the actor, but ONLY on the transition INTO removal.
@@ -283,10 +285,10 @@ export function removeLocalPost(input: { tx: WriteTx; postId: string; actor: Rem
     }
   }
 
-  // Title is cleared too. Posts created here never have one, but a migrated v1
-  // post can — and a surviving headline above a removal notice would publish the
-  // very words being removed.
-  tx.prepare(`UPDATE posts SET title = NULL, content = ?, edited_at = ? WHERE id = ?`)
+  // Title and content_markdown are cleared too. Posts created here never carry
+  // either, but a migrated v1 post can — and a surviving headline or markdown
+  // source above a removal notice would publish the very words being removed.
+  tx.prepare(`UPDATE posts SET title = NULL, content = ?, content_markdown = NULL, edited_at = ? WHERE id = ?`)
     .run(notice, now, postId)
 
   materializeLocalItem(tx, { id: postId, permalink, timelineSortAt: cur.published_at, parentLogicalItemId: cur.in_reply_to_post_id })

@@ -187,6 +187,13 @@ async function publishPing(hubUrl: string, topic: string, fetchFn: typeof fetch)
   })
 }
 
+// Mirrors read.ts's feedLimit(): the same operator setting, same fallback,
+// so a fat-ping body matches what a pull of the same feed would return.
+async function feedLimit(repo: Repository): Promise<number> {
+  const n = Number((await repo.getSetting('feed_item_limit')) ?? '50')
+  return Number.isInteger(n) && n >= 1 ? n : 50
+}
+
 export function createPush(deps: PushDeps): Push {
   const { repo, config } = deps
   const fetchFn = deps.fetchFn ?? fetch
@@ -223,7 +230,7 @@ export function createPush(deps: PushDeps): Push {
         if (config.websub.mode === 'self') {
           const now = new Date().toISOString()
           const ctx = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
-          const posts = await repo.getPostsByAuthor(entry.author.id, 50)
+          const posts = await repo.getPostsByAuthor(entry.author.id, await feedLimit(repo))
           for (const [format, topic] of [['xml', topics.xml], ['json', topics.json]] as const) {
             const subs = (await repo.listActiveSubscriptions(topic, now)).filter((s) => s.protocol === 'websub')
             if (subs.length === 0) continue
@@ -250,7 +257,7 @@ export function createPush(deps: PushDeps): Push {
           const fhTopic = firehoseUrl(config.publicUrl)
           const fhSubs = (await repo.listActiveSubscriptions(fhTopic, now)).filter((s) => s.protocol === 'websub')
           if (fhSubs.length > 0) {
-            const recent = await repo.getRecentLocalPosts(50)
+            const recent = await repo.getRecentLocalPosts(await feedLimit(repo))
             let body = renderFirehoseRss(recent, ctx)
             const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
             body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
