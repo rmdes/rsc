@@ -31,6 +31,13 @@ export interface TimelineEntry {
 	// flat tree as a neutral connective marker (D11) — id + inReplyToPostId let the
 	// tree nest its reply subtree; the renderer shows a marker, never a card.
 	placeholder?: boolean
+	// v2 local items only: true once the post's removal marker is set (Task 3).
+	// Always false/undefined for a remote item — a peer's copy of a removed post
+	// carries no local marker, and that's correct, not a gap. Same-origin only:
+	// never mirrored into the outgoing feed (core's logicalToFeedEntry never sets
+	// it). Drives two things: the reply composer is not offered, and EditedMarker
+	// degrades its "edited" link to plain text instead of a 404ing one.
+	removed?: boolean
 }
 
 // v2 source-registry DTOs, mirroring core's `core/src/domain/types.ts`.

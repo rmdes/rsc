@@ -86,6 +86,14 @@ export type LogicalItemDto = {
   directReplyCount: number
   conversationReplyCount: number
   classification: { personal: boolean; federated: boolean }
+  // Task 3 (web surfaces for a removed post): true only for a LOCAL item whose
+  // removal marker (logical_deleted_local_v2) is set. Meaningful for local items
+  // only — a peer's copy of a removed post is an ordinary remote item with no
+  // local marker, so this is always false there (correct, not a bug: removal is
+  // deliberately expressed to peers as a content edit, never a flag, so it
+  // federates over plain RSS). A SAME-ORIGIN signal for our own web UI —
+  // logicalToFeedEntry (domain/feed.ts) must never wire it into the outbound feed.
+  removed: boolean
 }
 
 export type LogicalSingleItemEnvelope = {

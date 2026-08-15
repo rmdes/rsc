@@ -44,6 +44,9 @@ export type LogicalItemDto = {
 	directReplyCount: number
 	conversationReplyCount: number
 	classification: { personal: boolean; federated: boolean }
+	// Task 3 — local-only removal signal (verbatim from core/src/logical/types.ts;
+	// see that file's comment). Same-origin only, never federated.
+	removed: boolean
 }
 
 export type PublicLocalAccount = { id: string; handle: string; displayName: string }
@@ -239,7 +242,8 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 		// Carried through for the live lens (D2/D3): the federated/personal tabs
 		// filter on this, since a v2 upsert never sets the v1 fields they keyed off.
 		classification: dto.classification,
-		enclosures: dto.enclosures
+		enclosures: dto.enclosures,
+		removed: dto.removed
 	}
 }
 

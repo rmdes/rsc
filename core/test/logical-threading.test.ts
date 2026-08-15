@@ -323,6 +323,7 @@ function dto(id: string, parent: string | null): LogicalItemDto {
     title: null, content: 'x', contentMarkdown: 'x', permalink: null, originGuid: null, inReplyToRef: null, sourceLink: null, replyContext: null,
     enclosures: [], publishedAt: NOW, updatedAt: null, updatedAtProvenance: null,
     directReplyCount: 0, conversationReplyCount: 0, classification: { personal: false, federated: true },
+    removed: false,
   }
 }
 

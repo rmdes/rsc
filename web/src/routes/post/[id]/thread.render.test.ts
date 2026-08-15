@@ -52,3 +52,23 @@ test('a genuinely empty thread (no nodes) still shows "No such conversation."', 
 	const { body } = render(Page, { props: { data, form: null } } as never)
 	expect(body).toContain('No such conversation.')
 })
+
+// Task 3: the server already refuses a reply to a removed post (403) — the
+// composer must not be offered in the first place, so no action ever invites
+// the failure. No special component/visual treatment (brief): the removed
+// post still renders through the ordinary card path above; only the composer
+// panel disappears.
+test('the reply composer is absent when the viewed post is removed', () => {
+	const removedRoot = card({ id: 'p1', inReplyToPostId: undefined, removed: true })
+	const data = { postId: 'p1', thread: [removedRoot], rootId: 'p1', coreDown: false }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('write a reply')
+	expect(body).not.toContain('class="composer"')
+})
+
+test('the reply composer is present for an ordinary (not removed) post', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('write a reply')
+})

@@ -134,6 +134,7 @@ function buildDto(
     directReplyCount: 0,
     conversationReplyCount: 0,
     classification: { personal: false, federated: false },
+    removed: false, // a just-created/edited post is never the removal marker
   }
 }
 

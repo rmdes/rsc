@@ -40,6 +40,7 @@ const dto = (over: Partial<LogicalItemDto> = {}): LogicalItemDto => ({
 	directReplyCount: 0,
 	conversationReplyCount: 2,
 	classification: { personal: false, federated: true },
+	removed: false,
 	...over
 })
 

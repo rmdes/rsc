@@ -500,6 +500,29 @@ test('projectHistory refuses (404) for a removed local post — the moderator-re
   expect(db.read((tx) => projectHistory(tx, 'p1', ANON))).toBeUndefined()
 })
 
+// ---- removed DTO flag (Task 3 — the web layer's only signal that a local
+// item is a removal-as-edit, sourced from the same logical_deleted_local_v2
+// marker the gates above key off) -----------------------------------------
+
+test('projectItem reports removed:false for an ordinary local post and removed:true once it is removed', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  seedPost(raw, { id: 'p1', author: 'u1', content: 'hello' })
+  expect(db.read((tx) => projectItem(tx, 'p1', ANON))?.removed).toBe(false)
+
+  store.removeLocalPost({ postId: 'p1', actor: { kind: 'author' }, now: NOW })
+  expect(db.read((tx) => projectItem(tx, 'p1', ANON))?.removed).toBe(true)
+})
+
+test('a remote item never reports removed:true — the marker is local-only, a peer copy of a removed post is not itself "removed"', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  await acquire(db, 's1', 'https://feed.test/f', RSS(guidItem('g1')))
+  drain(store)
+  const id = oneRemoteId(raw)
+  expect(db.read((tx) => projectItem(tx, id, ANON))?.removed).toBe(false)
+})
+
 // ---- publisher descriptor (spec §3.6) ---------------------------------------
 
 test('resolvePublisher returns a feed-anchored descriptor for an evidence-backed publisher and undefined otherwise', async () => {

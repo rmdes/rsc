@@ -116,12 +116,16 @@
 		{/if}
 	</ul>
 
-	<details class="panel" open>
-		<summary>Reply</summary>
-		{#if replyError}<p class="error" role="alert">{replyError}</p>{/if}
-		<form method="POST" action="?/reply" class="composer" use:enhance={submitReply}>
-			<MarkdownComposer placeholder="write a reply" bind:value={content} />
-			<button>Reply</button>
-		</form>
-	</details>
+	{#if !viewed?.removed}
+		<!-- The server already refuses a reply to a removed post (403, Task 2) —
+		     don't offer an action that will only fail. -->
+		<details class="panel" open>
+			<summary>Reply</summary>
+			{#if replyError}<p class="error" role="alert">{replyError}</p>{/if}
+			<form method="POST" action="?/reply" class="composer" use:enhance={submitReply}>
+				<MarkdownComposer placeholder="write a reply" bind:value={content} />
+				<button>Reply</button>
+			</form>
+		</details>
+	{/if}
 </div>

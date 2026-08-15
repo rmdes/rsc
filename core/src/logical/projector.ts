@@ -731,6 +731,9 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
     directReplyCount: counts.direct,
     conversationReplyCount: counts.conversation,
     classification: { personal: personalLocal(tx, post.author_id, viewer.localAccountId), federated: false },
+    // Same durable marker the removal gates (itemOrdinaryVisible, projectHistory
+    // above) key off — removal is stored as an edit, so this is the only signal.
+    removed: isDeletedMarker(tx, post.id),
   }
 }
 
@@ -789,6 +792,8 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     directReplyCount: counts.direct,
     conversationReplyCount: counts.conversation,
     classification: { personal: personalRemote(tx, item.id, viewer.localAccountId), federated: federatedRemote(tx, item.id) },
+    // Local-only signal (types.ts) — a remote item never carries the marker.
+    removed: false,
   }
 }
 
