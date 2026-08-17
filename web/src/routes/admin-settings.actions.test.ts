@@ -14,12 +14,15 @@ test('save PATCHes valid integer caps', async () => {
 	const fetch = vi.fn(
 		async () =>
 			new Response(
-				JSON.stringify({ maxSubsPerUser: 250, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30 }),
+				JSON.stringify({ maxSubsPerUser: 250, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30, feedItemLimit: 50 }),
 				{ status: 200 }
 			)
 	)
 	const res = await actions.save(
-		saveEvent({ maxSubsPerUser: '250', maxRemoteItemsPerSource: '100', maxRemoteItemAgeDays: '30' }, fetch) as never
+		saveEvent(
+			{ maxSubsPerUser: '250', maxRemoteItemsPerSource: '100', maxRemoteItemAgeDays: '30', feedItemLimit: '50' },
+			fetch
+		) as never
 	)
 	expect(res).toEqual({ saved: true })
 	expect(fetch).toHaveBeenCalled()
@@ -28,32 +31,74 @@ test('save PATCHes valid integer caps', async () => {
 	expect(JSON.parse(String(init?.body))).toEqual({
 		maxSubsPerUser: 250,
 		maxRemoteItemsPerSource: 100,
-		maxRemoteItemAgeDays: 30
+		maxRemoteItemAgeDays: 30,
+		feedItemLimit: 50
 	})
 })
 
 test('save accepts 0 for maxRemoteItemsPerSource and maxRemoteItemAgeDays (unlimited)', async () => {
 	const fetch = vi.fn(
 		async () =>
-			new Response(JSON.stringify({ maxSubsPerUser: 250, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }), {
-				status: 200
-			})
+			new Response(
+				JSON.stringify({ maxSubsPerUser: 250, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50 }),
+				{ status: 200 }
+			)
 	)
 	const res = await actions.save(
-		saveEvent({ maxSubsPerUser: '250', maxRemoteItemsPerSource: '0', maxRemoteItemAgeDays: '0' }, fetch) as never
+		saveEvent(
+			{ maxSubsPerUser: '250', maxRemoteItemsPerSource: '0', maxRemoteItemAgeDays: '0', feedItemLimit: '50' },
+			fetch
+		) as never
 	)
 	expect(res).toEqual({ saved: true })
 	const init = (fetch.mock.calls[0] as unknown[])?.[1] as RequestInit | undefined
 	expect(JSON.parse(String(init?.body))).toEqual({
 		maxSubsPerUser: 250,
 		maxRemoteItemsPerSource: 0,
-		maxRemoteItemAgeDays: 0
+		maxRemoteItemAgeDays: 0,
+		feedItemLimit: 50
 	})
+})
+
+test('save forwards feedItemLimit', async () => {
+	const fetch = vi.fn(
+		async () =>
+			new Response(
+				JSON.stringify({ maxSubsPerUser: 250, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30, feedItemLimit: 25 }),
+				{ status: 200 }
+			)
+	)
+	const res = await actions.save(
+		saveEvent(
+			{ maxSubsPerUser: '250', maxRemoteItemsPerSource: '100', maxRemoteItemAgeDays: '30', feedItemLimit: '25' },
+			fetch
+		) as never
+	)
+	expect(res).toEqual({ saved: true })
+	const init = (fetch.mock.calls[0] as unknown[])?.[1] as RequestInit | undefined
+	expect(JSON.parse(String(init?.body))).toEqual({
+		maxSubsPerUser: 250,
+		maxRemoteItemsPerSource: 100,
+		maxRemoteItemAgeDays: 30,
+		feedItemLimit: 25
+	})
+})
+
+test('save rejects a feedItemLimit below 1', async () => {
+	const fetch = vi.fn()
+	const res = await actions.save(
+		saveEvent(
+			{ maxSubsPerUser: '250', maxRemoteItemsPerSource: '100', maxRemoteItemAgeDays: '30', feedItemLimit: '0' },
+			fetch
+		) as never
+	)
+	expect(res).toMatchObject({ status: 400 })
+	expect(fetch).not.toHaveBeenCalled()
 })
 
 test('save rejects non-integer and negative values without calling core', async () => {
 	const fetch = vi.fn()
-	const valid = { maxSubsPerUser: '250', maxRemoteItemsPerSource: '100', maxRemoteItemAgeDays: '30' }
+	const valid = { maxSubsPerUser: '250', maxRemoteItemsPerSource: '100', maxRemoteItemAgeDays: '30', feedItemLimit: '25' }
 	expect(await actions.save(saveEvent({ ...valid, maxSubsPerUser: 'abc' }, fetch) as never)).toMatchObject({
 		status: 400
 	})

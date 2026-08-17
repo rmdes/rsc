@@ -12,6 +12,7 @@
 	import type { SubmitFunction } from '@sveltejs/kit'
 	import { loadDraft, saveDraft } from '$lib/draft'
 	import { confirmSubmit } from '$lib/confirm'
+	import { AUDIT_CATEGORIES } from '$lib/logical-types'
 
 	let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -98,12 +99,28 @@
 				{#if root.title}<h2 class="title">{root.title}</h2>{/if}
 				<PostBody post={root} />
 				{#if root.source === 'remote' && root.url}<a class="source" href={root.url} rel="noreferrer">source</a>{/if}
-				{#if root.source === 'local' && data.me?.user.id === root.author.id}
+				{#if root.source === 'local' && !root.removed && data.me?.user.id === root.author.id}
 					<a class="edit" href="/post/{root.id}/edit">Edit</a>
 				{/if}
-				{#if data.me?.isAdmin && root.source === 'local'}
+				{#if root.source === 'local' && root.author.id === data.me?.user.id}
+					<!-- Author's own removal: core's DELETE /posts/:id takes no body. -->
 					<form method="POST" action="?/deletePost" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
 						<input type="hidden" name="id" value={root.id} />
+						<button class="danger-link" type="submit">Remove</button>
+					</form>
+				{:else if root.source === 'local' && data.me?.isAdmin}
+					<!-- Admin removing someone else's post: core's DELETE /admin/posts/:id
+					     REQUIRES {category, note?} — same moderation-category pattern as
+					     admin/items/[id]'s Hide/Restore forms. -->
+					<form method="POST" action="?/deletePost" class="remove-admin" use:enhance={confirmSubmit('Remove this post? This can\'t be undone.')}>
+						<input type="hidden" name="id" value={root.id} />
+						<input type="hidden" name="asAdmin" value="1" />
+						<label class="visually-hidden" for="remove-cat-{root.id}">Moderation category</label>
+						<select id="remove-cat-{root.id}" name="category" required>
+							{#each AUDIT_CATEGORIES as c (c)}<option value={c}>{c.replace(/_/g, ' ')}</option>{/each}
+						</select>
+						<label class="visually-hidden" for="remove-note-{root.id}">Note (optional)</label>
+						<input id="remove-note-{root.id}" name="note" placeholder="note (optional)" />
 						<button class="danger-link" type="submit">Remove</button>
 					</form>
 				{/if}
@@ -115,12 +132,16 @@
 		{/if}
 	</ul>
 
-	<details class="panel" open>
-		<summary>Reply</summary>
-		{#if replyError}<p class="error" role="alert">{replyError}</p>{/if}
-		<form method="POST" action="?/reply" class="composer" use:enhance={submitReply}>
-			<MarkdownComposer placeholder="write a reply" bind:value={content} />
-			<button>Reply</button>
-		</form>
-	</details>
+	{#if !viewed?.removed}
+		<!-- The server already refuses a reply to a removed post (403, Task 2) —
+		     don't offer an action that will only fail. -->
+		<details class="panel" open>
+			<summary>Reply</summary>
+			{#if replyError}<p class="error" role="alert">{replyError}</p>{/if}
+			<form method="POST" action="?/reply" class="composer" use:enhance={submitReply}>
+				<MarkdownComposer placeholder="write a reply" bind:value={content} />
+				<button>Reply</button>
+			</form>
+		</details>
+	{/if}
 </div>

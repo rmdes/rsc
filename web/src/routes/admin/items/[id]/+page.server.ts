@@ -1,7 +1,8 @@
 import { error, fail } from '@sveltejs/kit'
 import { authedFetch, cookieHeader } from '$lib/server/session'
 import { getAdminItemDetail, listItemAudit, hideItem, restoreItem } from '$lib/logical-api'
-import { AUDIT_CATEGORIES } from '$lib/logical-types'
+import { deletePost } from '$lib/api'
+import { AUDIT_CATEGORIES, type AuditCategory } from '$lib/logical-types'
 import type { Actions, PageServerLoad } from './$types'
 
 // The item-review surface (spec §7.3): the bounded evidence-review page behind
@@ -57,7 +58,33 @@ async function moderate(event: Parameters<Actions[string]>[0], kind: 'hide' | 'r
 	return { done: kind, commandId }
 }
 
+// A local item's logicalItemId IS its post id (materializeLocalItem/appendJournal
+// both key the local logical row on the post id — core/src/logical/local.ts), so
+// deletePost(itemId) is the same identity Hide/Restore already resolve. Removal
+// has no idempotency ledger (core's RemovalBody carries {category, note?}, no
+// commandId — service.deletePost's only outcomes are its 404/409 guards, nothing
+// to replay against), unlike hide/restore's commandId-bearing ModBody above.
+async function removeItem(event: Parameters<Actions[string]>[0]) {
+	const form = await event.request.formData()
+	const itemId = String(form.get('itemId') ?? '').trim()
+	const category = String(form.get('category') ?? '').trim()
+	const note = String(form.get('note') ?? '').trim()
+	if (!itemId) return fail(400, { error: 'itemId is required' })
+	if (!category) return fail(400, { error: 'a moderation category is required', kind: 'remove' })
+	try {
+		const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
+		// deletePost throws uniformly on a non-ok response (unlike hideItem/restoreItem's
+		// structured outcome above) — same fail(400) shape every other deletePost caller
+		// in the app uses (+page.server.ts x2), not moderate()'s 404/409 split.
+		await deletePost(f, itemId, { asAdmin: true, category: category as AuditCategory, ...(note ? { note } : {}) })
+	} catch (err) {
+		return fail(400, { error: err instanceof Error ? err.message : 'remove failed', kind: 'remove' })
+	}
+	return { done: 'remove' }
+}
+
 export const actions: Actions = {
 	hide: (event) => moderate(event, 'hide'),
-	restore: (event) => moderate(event, 'restore')
+	restore: (event) => moderate(event, 'restore'),
+	remove: removeItem
 }

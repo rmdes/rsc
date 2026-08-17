@@ -10,6 +10,7 @@ import { createSourceService } from '../src/domain/source-service.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
+import { removalNotice } from '../src/logical/local.ts'
 
 // Same erasure every other api-key test hits: createAuth's `plugins:
 // BetterAuthPlugin[]` widens every plugin so betterAuth()'s .api inference
@@ -396,9 +397,24 @@ describe('admin.moderation write routes', () => {
       body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.moderation': ['write'] } },
     })
     const res = await app.request('/admin-api/posts/nope', {
-      method: 'DELETE', headers: { 'x-api-key': created.key },
+      method: 'DELETE', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ category: 'spam' }),
     })
     expect(res.status).toBe(404)
+  })
+
+  test('DELETE /admin-api/posts/:id: missing category → 400', async () => {
+    const { app, auth, db } = await setup()
+    const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
+    const { userId } = await registerSession(auth, db, 'admin@x.test')
+    const created = await apiKeyApi.createApiKey({
+      body: { configId: 'admin', userId, name: 'k', permissions: { 'admin.moderation': ['write'] } },
+    })
+    const res = await app.request('/admin-api/posts/nope', {
+      method: 'DELETE', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(400)
   })
 
   test('an admin.sources-only key cannot hit moderation routes', async () => {
@@ -437,9 +453,9 @@ describe('admin.moderation write routes', () => {
     expect(await repo.getUserByHandle(handle)).toBeUndefined()
   })
 
-  // Mirrors moderation.test.ts's cookie-authed 'deletePost removes a local
-  // post' persisted-state check (repo.getPost → undefined).
-  test('DELETE /admin-api/posts/:id actually deletes a real local post (200 + row gone)', async () => {
+  // Mirrors moderation.test.ts's cookie-authed removal-notice check: the row
+  // survives with the moderator notice as its content, not gone.
+  test('DELETE /admin-api/posts/:id actually replaces a real local post with the moderator notice (200 + row survives)', async () => {
     const { app, auth, db, repo } = await setupWithLogicalStore()
     const apiKeyApi = auth.api as unknown as ApiKeyPluginApi
     const { userId: adminUserId } = await registerSession(auth, db, 'admin@x.test')
@@ -455,11 +471,14 @@ describe('admin.moderation write routes', () => {
     const postId = createdPost.post.id
 
     const res = await app.request(`/admin-api/posts/${postId}`, {
-      method: 'DELETE', headers: { 'x-api-key': created.key },
+      method: 'DELETE', headers: { 'x-api-key': created.key, 'content-type': 'application/json' },
+      body: JSON.stringify({ category: 'spam' }),
     })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
-    expect(await repo.getPost(postId)).toBeUndefined()
+    const stored = await repo.getPost(postId)
+    expect(stored).toBeDefined()
+    expect(stored!.content).toBe(removalNotice({ kind: 'administrator', category: 'spam', note: null }))
   })
 })
 

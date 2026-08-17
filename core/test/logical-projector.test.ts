@@ -6,7 +6,7 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
-import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolvePublisher } from '../src/logical/projector.ts'
+import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolvePublisher, itemOrdinaryVisible } from '../src/logical/projector.ts'
 import type { ProjectionViewer, TimelineLens, TimelineCursorV2 } from '../src/logical/types.ts'
 import { decodeCursor } from '../src/domain/cursor.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
@@ -45,6 +45,24 @@ function seedFederation(raw: Raw, sourceId: string, status = 'approved'): void {
 }
 function seedFollow(raw: Raw, follower: string, followed: string): void {
   raw.prepare(`INSERT INTO follows (follower_id, followed_id, created_at) VALUES (?, ?, ?)`).run(follower, followed, NOW)
+}
+// Materializes a local post's logical_items_v2 bridge row (mirrors local.ts
+// materializeLocalItem) so a remote row can carry a valid parent_logical_item_id
+// FK to it — seedPost alone only inserts into `posts`.
+function seedLocalOrigin(raw: Raw, id: string): void {
+  raw.prepare(
+    `INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at)
+     VALUES (?, 'local', ?, 'none', NULL, NULL, NULL, ?)`,
+  ).run(id, NOW, NOW)
+}
+// A remote logical item with no delivery/identity keys: eligibleDeliveries is
+// empty, so nodeVisible is false — the cheapest white-box invisible node,
+// standing in for a structural tombstone (which strips those same keys).
+function seedInvisibleRemoteChild(raw: Raw, id: string, parentId: string): void {
+  raw.prepare(
+    `INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at, structural_tombstone)
+     VALUES (?, 'remote', ?, 'resolved', ?, NULL, NULL, ?, 1)`,
+  ).run(id, NOW, parentId, NOW)
 }
 
 const publicLookup: LookupFn = async () => [{ address: '93.184.216.34' }]
@@ -174,6 +192,60 @@ test('directReplyCount and conversationReplyCount are derived at read time from 
   const dto = db.read((tx) => projectItem(tx, 'root', ANON))!
   expect(dto.directReplyCount).toBe(2)
   expect(dto.conversationReplyCount).toBe(3)
+})
+
+test('reply counts descend past an invisible node to its visible children', async () => {
+  const { raw, db } = await fresh()
+  seedUser(raw, 'u1', 'rick')
+  seedPost(raw, { id: 'A', author: 'u1' })
+  seedLocalOrigin(raw, 'A') // B (remote) needs a real parent row to FK against
+  seedInvisibleRemoteChild(raw, 'B', 'A') // structural-tombstone stand-in: no delivery ⇒ nodeVisible(B) is false
+  seedPost(raw, { id: 'C', author: 'u1', replyTo: 'B' }) // C survives, still parented to the now-invisible B
+
+  const a = db.read((tx) => projectItem(tx, 'A', ANON))!
+  expect(a.conversationReplyCount).toBe(1) // C still counts
+  expect(a.directReplyCount).toBe(0) // B does not, and C is not direct
+})
+
+test('replies under a parent whose source is later blocked still count toward the visible ancestor', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'rick')
+  seedPost(raw, { id: 'A', author: 'u1' })
+  seedLocalOrigin(raw, 'A')
+  seedSource(raw, 's1', 'https://feed.test/f')
+  seedJob(raw, { sourceId: 's1', deliveryKey: { kind: 'opaque', key: 'g1' } })
+  drain(store)
+  const b = oneRemoteId(raw)
+  // White-box reparent under A (same technique the file uses elsewhere to avoid
+  // driving full inReplyTo/permalink resolution just to get an edge in place).
+  raw.prepare(`UPDATE logical_items_v2 SET parent_state = 'resolved', parent_logical_item_id = ? WHERE id = ?`).run('A', b)
+  seedPost(raw, { id: 'C', author: 'u1', replyTo: b })
+  // An admin blocking the source is the real-world "administratively invisible
+  // parent" case: eligibleDeliveries' governance filter now excludes B, same as
+  // the tombstone case above, but through the actual governance gate.
+  raw.prepare(`UPDATE remote_sources_v2 SET governance = 'blocked' WHERE id = 's1'`).run()
+
+  const a = db.read((tx) => projectItem(tx, 'A', ANON))!
+  expect(a.conversationReplyCount).toBe(1)
+  expect(a.directReplyCount).toBe(0)
+})
+
+test('the node bound still caps the walk when the invisible subtree is large', async () => {
+  const { raw, db } = await fresh()
+  seedUser(raw, 'u1', 'rick')
+  seedPost(raw, { id: 'A', author: 'u1' })
+  seedLocalOrigin(raw, 'A')
+  let parent = 'A'
+  for (let i = 0; i < 6000; i++) {
+    const id = `n${i}`
+    seedInvisibleRemoteChild(raw, id, parent)
+    parent = id
+  }
+  // No delivery anywhere in the chain: every node is invisible. The walk must
+  // terminate at COUNT_NODE_BOUND rather than run the full 6000-node chain.
+  const a = db.read((tx) => projectItem(tx, 'A', ANON))!
+  expect(a.conversationReplyCount).toBe(0)
+  expect(a.directReplyCount).toBe(0)
 })
 
 // ---- river vs activity, applied BEFORE limit (spec §3.5) --------------------
@@ -400,6 +472,55 @@ test('local history returns the authoritative revision chain with a current mark
   expect(env.entries.map((e) => e.content)).toEqual(['v1', 'v2'])
   expect(env.entries[env.entries.length - 1].current).toBe(true)
   expect(env.currentSequence).toBe(1)
+})
+
+// ---- removal gates (removeLocalPost keeps the row; these must key off the
+// logical_deleted_local_v2 marker, not row absence — Task 2) ------------------
+
+test('itemOrdinaryVisible (the reply-target gate) refuses a removed local post but accepts an ordinary one', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  seedPost(raw, { id: 'p1', author: 'u1', content: 'hello' })
+  expect(db.read((tx) => itemOrdinaryVisible(tx, 'p1'))).toBe(true)
+
+  store.removeLocalPost({ postId: 'p1', actor: { kind: 'author' }, now: NOW })
+  // The row survives (removal is an edit) and still projects for ordinary reads —
+  // only the reply-target gate must refuse it.
+  expect(db.read((tx) => projectItem(tx, 'p1', ANON))).toBeDefined()
+  expect(db.read((tx) => itemOrdinaryVisible(tx, 'p1'))).toBe(false)
+})
+
+test('projectHistory refuses (404) for a removed local post — the moderator-retained revisions are an admin-only record, not a public one', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  seedPost(raw, { id: 'p1', author: 'u1', content: 'hello' })
+  expect(db.read((tx) => projectHistory(tx, 'p1', ANON))).toBeDefined()
+
+  store.removeLocalPost({ postId: 'p1', actor: { kind: 'administrator', category: 'spam', note: null }, now: NOW })
+  expect(db.read((tx) => projectHistory(tx, 'p1', ANON))).toBeUndefined()
+})
+
+// ---- removed DTO flag (Task 3 — the web layer's only signal that a local
+// item is a removal-as-edit, sourced from the same logical_deleted_local_v2
+// marker the gates above key off) -----------------------------------------
+
+test('projectItem reports removed:false for an ordinary local post and removed:true once it is removed', async () => {
+  const { raw, db, store } = await fresh()
+  seedUser(raw, 'u1', 'alice')
+  seedPost(raw, { id: 'p1', author: 'u1', content: 'hello' })
+  expect(db.read((tx) => projectItem(tx, 'p1', ANON))?.removed).toBe(false)
+
+  store.removeLocalPost({ postId: 'p1', actor: { kind: 'author' }, now: NOW })
+  expect(db.read((tx) => projectItem(tx, 'p1', ANON))?.removed).toBe(true)
+})
+
+test('a remote item never reports removed:true — the marker is local-only, a peer copy of a removed post is not itself "removed"', async () => {
+  const { raw, db, store } = await fresh()
+  seedSource(raw, 's1', 'https://feed.test/f')
+  await acquire(db, 's1', 'https://feed.test/f', RSS(guidItem('g1')))
+  drain(store)
+  const id = oneRemoteId(raw)
+  expect(db.read((tx) => projectItem(tx, id, ANON))?.removed).toBe(false)
 })
 
 // ---- publisher descriptor (spec §3.6) ---------------------------------------

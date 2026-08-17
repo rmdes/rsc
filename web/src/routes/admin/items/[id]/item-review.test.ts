@@ -70,7 +70,7 @@ async function loadItem(fetch: ReturnType<typeof vi.fn>, id = 'li1', search = ''
 	return (await load(loadEvent(fetch, id, search) as never)) as LoadResult
 }
 
-async function itemAction(action: 'hide' | 'restore', fetch: ReturnType<typeof vi.fn>, fields: Record<string, string>) {
+async function itemAction(action: 'hide' | 'restore' | 'remove', fetch: ReturnType<typeof vi.fn>, fields: Record<string, string>) {
 	vi.resetModules()
 	const { actions } = await import('./+page.server.ts')
 	return actions[action](formEvent(action, fields, fetch) as never)
@@ -191,6 +191,39 @@ test("core's distinct state-conflict 409s reach the admin verbatim, with the com
 		expect(res.data.error).toBe(err)
 		expect(res.data.commandId).toBe('retry-me')
 	}
+})
+
+// --- remove: DELETE /admin/posts/:id with {category, note?}, no commandId -----
+// A local item's logicalItemId IS its post id (core/src/logical/local.ts), so
+// removeItem calls deletePost(itemId) directly — same identity Hide/Restore
+// already resolve against.
+
+test('the remove action posts {category, note?} to /admin/posts/:id (a local logicalItemId is its post id)', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response('{}', { status: 200 }))
+	const res = await itemAction('remove', fetch, { itemId: 'li1', category: 'spam', note: 'repeat' })
+	expect(res).toEqual({ done: 'remove' })
+	const [url, init] = fetch.mock.calls[0] as [string, RequestInit]
+	expect(url).toContain('/admin/posts/li1')
+	expect(init.method).toBe('DELETE')
+	expect(JSON.parse(String(init.body))).toEqual({ category: 'spam', note: 'repeat' })
+})
+
+test('the remove action omits an empty note and refuses a missing category without calling core', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response('{}', { status: 200 }))
+	const res = await itemAction('remove', fetch, { itemId: 'li1', category: 'abuse' })
+	expect(res).toEqual({ done: 'remove' })
+	expect(JSON.parse(String((fetch.mock.calls[0][1] as RequestInit).body))).toEqual({ category: 'abuse' })
+
+	const refused = vi.fn()
+	expect(await itemAction('remove', refused, { itemId: 'li1' })).toMatchObject({ status: 400 })
+	expect(refused).not.toHaveBeenCalled()
+})
+
+test('the remove action surfaces core\'s rejection (e.g. a remote item is not a local post)', async () => {
+	const fetch = vi.fn(async (..._a: unknown[]) => new Response(JSON.stringify({ error: 'not a local post' }), { status: 409 }))
+	const res = (await itemAction('remove', fetch, { itemId: 'li1', category: 'spam' })) as { status: number; data: { error: string } }
+	expect(res.status).toBe(400)
+	expect(res.data.error).toBe('not a local post')
 })
 
 // --- the load-bearing render invariant (asserted against the .svelte source) ---

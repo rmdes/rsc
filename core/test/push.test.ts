@@ -190,6 +190,28 @@ test('O5: self mode fat ping counts a REMOTE logical reply (v2) so the push body
   expect(bodies[0]).toContain(`<source:comments count="1" feedUrl="https://cast.example.com/post/${root.id}/comments.xml"/>`)
 })
 
+test('self mode fat ping honours a configured feed_item_limit, not the hardcoded 50 (author feed + firehose)', async () => {
+  const { repo, service, config } = await setup(SELF_ENV)
+  await repo.setSetting('feed_item_limit', '2')
+  const authorTopic = 'https://cast.example.com/users/alice/feed.xml'
+  const fhTopic = 'https://cast.example.com/users/rss.xml'
+  await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic: authorTopic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  await repo.upsertSubscription({ id: 'fh1', protocol: 'websub', topic: fhTopic, callback: 'https://cb2.example.com/receive', callbackHost: 'cb2.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
+  let latest
+  for (const body of ['one', 'two', 'three', 'four']) latest = await service.createLocalPostAs('alice', 'Alice', body)
+  const calls: Array<{ url: string; body: string }> = []
+  const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), body: String(init?.body) })
+    return new Response('', { status: 200 })
+  })
+  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(latest!)
+  const authorBody = calls.find((c) => c.url === 'https://cb.example.com/receive')!.body
+  const fhBody = calls.find((c) => c.url === 'https://cb2.example.com/receive')!.body
+  expect(authorBody.match(/<item\b/g)?.length).toBe(2) // limit honoured, not the hardcoded 50
+  expect(fhBody.match(/<item\b/g)?.length).toBe(2)
+})
+
 test('renewing an existing subscription is not blocked by the per-host cap', async () => {
   const { repo, service, config } = await setup(SELF_ENV)
   await service.createLocalPostAs('alice', 'Alice', 'seed')

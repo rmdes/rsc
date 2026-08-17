@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { decodeCursor } from '../../domain/cursor.ts'
 import type { TimelineCursorV2 } from '../../logical/types.ts'
+import type { AuditCategory } from '../../domain/types.ts'
 
 // Cross-group helpers/constants shared by two or more of the
 // logical-routes/{write,read,personal,admin,public} route groups. Seeded by
@@ -69,4 +70,28 @@ export interface ApiKeyCreation {
   createApiKey(input: {
     body: { configId?: string; userId?: string; name?: string; permissions?: Record<string, string[]> }
   }): Promise<{ id: string; key: string; name: string | null; prefix: string | null }>
+}
+
+// The eight administrator-selectable values of the NINE-value TS AuditCategory
+// (V3 moderation's hide/restore/purge/unblock vocabulary — 'migration_review'
+// is system-only and never accepted from a route). Homed here, not in
+// write.ts alone, so DELETE /admin/posts/:id (app.ts) and
+// /admin-api/posts/:id (admin.ts) validate against this SAME list rather than
+// app.ts's own narrower six-value source-governance isAuditCategory.
+export const AUDIT_CATEGORIES: ReadonlyArray<AuditCategory> = ['spam', 'abuse', 'illegal_content', 'compromised_source', 'operator_policy', 'false_positive', 'remediated', 'other']
+export function isAuditCategory(v: unknown): v is AuditCategory {
+  return typeof v === 'string' && (AUDIT_CATEGORIES as readonly string[]).includes(v)
+}
+
+// The removal body for DELETE /admin/posts/:id and /admin-api/posts/:id:
+// {category, note?} — the same moderation vocabulary as hide/restore's
+// ModBody (write.ts), but WITHOUT commandId: post removal has no idempotency
+// ledger (service.deletePost's 404/409 guards are its only outcomes, no
+// conflict path to replay against).
+export type RemovalBody = { category: AuditCategory; note: string | null }
+export async function readRemovalBody(c: Context): Promise<RemovalBody | Response> {
+  const body = await readJsonBody(c)
+  if (!body || !isAuditCategory(body.category)) return c.json({ error: 'category invalid' }, 400)
+  if (body.note !== undefined && body.note !== null && !isString(body.note, 0, 2000)) return c.json({ error: 'note invalid' }, 400)
+  return { category: body.category, note: typeof body.note === 'string' ? body.note : null }
 }

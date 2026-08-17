@@ -52,3 +52,60 @@ test('a genuinely empty thread (no nodes) still shows "No such conversation."', 
 	const { body } = render(Page, { props: { data, form: null } } as never)
 	expect(body).toContain('No such conversation.')
 })
+
+// Task 3: the server already refuses a reply to a removed post (403) — the
+// composer must not be offered in the first place, so no action ever invites
+// the failure. No special component/visual treatment (brief): the removed
+// post still renders through the ordinary card path above; only the composer
+// panel disappears.
+test('the reply composer is absent when the viewed post is removed', () => {
+	const removedRoot = card({ id: 'p1', inReplyToPostId: undefined, removed: true })
+	const data = { postId: 'p1', thread: [removedRoot], rootId: 'p1', coreDown: false }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('write a reply')
+	expect(body).not.toContain('class="composer"')
+})
+
+test('the reply composer is present for an ordinary (not removed) post', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('write a reply')
+})
+
+// Finding 3: Edit loads the composer prefilled with the removal notice, then
+// 403s on submit (editLocalPost's PostRemovedError guard) — a dead end that
+// should never be offered in the first place, same reasoning as the composer
+// gate above.
+test('Edit is absent on a removed post, even for its own author', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined, removed: true })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: root.author, isAnonymous: false } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('/post/p1/edit')
+})
+
+test('Edit is present for an ordinary (not removed) post owned by the viewer', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: root.author, isAnonymous: false } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('/post/p1/edit')
+})
+
+// Coverage gap: nothing asserted the moderation category <select> renders on
+// this page's Remove form either — deleting it would leave the suite green
+// while every admin removal 400s (core's DELETE /admin/posts/:id requires
+// {category, note?}), the same class of bug this branch's Critical fixed.
+test('an admin removing someone else\'s post gets a category select', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined, author: { id: 'u2', handle: 'bob', displayName: 'Bob', kind: 'local' } })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: { id: 'u1', handle: 'alice', displayName: 'Alice', kind: 'local' }, isAnonymous: false, isAdmin: true } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).toContain('name="category"')
+	expect(body).toContain('remove-cat-p1')
+})
+
+test('the author\'s own plain Remove has no category select', () => {
+	const root = card({ id: 'p1', inReplyToPostId: undefined })
+	const data = { postId: 'p1', thread: [root], rootId: 'p1', coreDown: false, me: { user: root.author, isAnonymous: false } }
+	const { body } = render(Page, { props: { data, form: null } } as never)
+	expect(body).not.toContain('name="category"')
+})

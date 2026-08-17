@@ -234,6 +234,28 @@ test('state covers all five values', async () => {
   repo.close()
 })
 
+// removeLocalPost (Task 11) no longer deletes the posts row — it overwrites the
+// content with a removal notice and keeps it. adminItemState already keys off
+// the logical_deleted_local_v2 marker (not row absence), so this should be
+// unaffected; pin it against the actual removeLocalPost path rather than the
+// hand-seeded no-row marker above.
+test('state still reports deleted_local via removeLocalPost, whose row survives as a notice', async () => {
+  const { app, repo, store } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const author = await repo.createLocalUser({ handle: 'author1', displayName: 'Author' })
+  repo.raw.prepare(
+    `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at)
+     VALUES ('rm-1', ?, 'local', 'g-rm-1', NULL, 'original', NULL, ?, ?)`,
+  ).run(author.id, NOW, NOW)
+
+  store.removeLocalPost({ postId: 'rm-1', actor: { kind: 'author' }, now: NOW })
+  expect(await repo.getPost('rm-1')).toBeDefined() // the row survives
+
+  const detail = await (await app.request('/admin/items/rm-1', { headers: { cookie } })).json()
+  expect(detail.state).toBe('deleted_local')
+  repo.close()
+})
+
 test('an ordinary item reports state ordinary (real pipeline)', async () => {
   const { app, repo, raw, store, acquisition } = await makeApp({ 'https://feed.test/a': () => ok(RSS(guidItem('g1'))) })
   const cookie = await registeredSession(app, 'boss@x.test', repo)

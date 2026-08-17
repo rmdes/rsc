@@ -78,6 +78,27 @@ test('reply compose errors: unknown target 404; thread of unknown post 404', asy
   expect((await app.request('/post/ghost/thread')).status).toBe(404)
 })
 
+// removeLocalPost (Task 11) keeps the row and rewrites its content to a removal
+// notice, so projectItem now succeeds for it — projectThread stops emitting an
+// 'unavailable' placeholder for the removed node (the notice replaces it, by
+// design) and, critically, the thread must still surface the surviving replies
+// rather than 404ing the whole conversation.
+test('a thread rooted at a removed post still returns its replies; the notice replaces the placeholder', async () => {
+  const { app, service } = await makeApp()
+  const cookie = await anonSession(app)
+  const auth = { 'content-type': 'application/json', cookie }
+  const root = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 'root post' }) })).json()
+  const reply = await (await app.request('/posts', { method: 'POST', headers: auth, body: JSON.stringify({ content: 'a reply', inReplyTo: root.post.id }) })).json()
+
+  expect(await service.deletePost(root.post.id, { kind: 'author' })).toEqual({ ok: true })
+
+  const t = await (await app.request(`/post/${root.post.id}/thread`)).json()
+  expect(t.nodes.map((n: { kind: string }) => n.kind)).toEqual(['item', 'item']) // no placeholder
+  expect(new Set(itemIds(t))).toEqual(new Set([root.post.id, reply.post.id]))
+  const rootNode = t.nodes.find((n: { item?: { id: string } }) => n.item?.id === root.post.id)
+  expect(rootNode.item.content).toContain('removed by its author')
+})
+
 test('reply-to-reply threads to the TOP root', async () => {
   const { app } = await makeApp()
   const cookie = await anonSession(app)

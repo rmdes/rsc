@@ -7,6 +7,7 @@ import type {
 } from './types.ts'
 import { snapshotJournalCursor } from './journal.ts'
 import { encodeCursor } from '../domain/cursor.ts'
+import { isDeletedMarker } from './threading.ts'
 
 // Pure effective-selection and presentation-chain comparators (spec §3.2, §3.3,
 // §3.6, §4.4). NO database access — reconciliation calls these to write hints and
@@ -459,9 +460,17 @@ function remoteVisible(tx: ReadTx, itemId: string): boolean {
 
 // Whether a direct/descendant node counts as ordinary-visible (spec §3.4: retained
 // unavailable evidence and placeholders never count).
-// Exported as the reply-target gate: a LOCAL reply may target exactly what
-// ordinary reads can show — a local post or an ordinary-visible remote item.
+// Exported as the reply-target gate: a LOCAL reply may target what ordinary
+// reads can show MINUS a removed post. removeLocalPost (Task 11) keeps the
+// `posts` row and rewrites its content to a removal notice, so ordinary reads
+// (projectItem/nodeVisible) still show it — deliberately, the notice replaces
+// the old "Post unavailable" placeholder. A removed post must still be refused
+// as a NEW reply target though, so this gate adds the one check nodeVisible
+// does not: the logical_deleted_local_v2 marker. nodeVisible itself stays
+// marker-blind because replyCounts (below) shares it, and a removed post still
+// counts toward its parent's reply counts — it is still a rendered item.
 export function itemOrdinaryVisible(tx: ReadTx, id: string): boolean {
+  if (isDeletedMarker(tx, id)) return false
   return nodeVisible(tx, id)
 }
 function nodeVisible(tx: ReadTx, id: string): boolean {
@@ -494,10 +503,13 @@ function replyCounts(tx: ReadTx, id: string): { direct: number; conversation: nu
     for (const cid of level) {
       if (seen.has(cid)) continue
       seen.add(cid)
+      // Always descend: an invisible node (tombstoned, admin-hidden, or from a
+      // non-allowed source) must not remove its visible descendants from the
+      // count — the thread page renders them, so the card must count them.
+      for (const gc of childIds(tx, cid)) next.push(gc)
       if (!nodeVisible(tx, cid)) continue
       if (depth === 0) direct++
       conversation++
-      for (const gc of childIds(tx, cid)) next.push(gc)
     }
     level = next
     depth++
@@ -719,6 +731,9 @@ function projectLocal(tx: ReadTx, post: PostRow, viewer: ProjectionViewer): Logi
     directReplyCount: counts.direct,
     conversationReplyCount: counts.conversation,
     classification: { personal: personalLocal(tx, post.author_id, viewer.localAccountId), federated: false },
+    // Same durable marker the removal gates (itemOrdinaryVisible, projectHistory
+    // above) key off — removal is stored as an edit, so this is the only signal.
+    removed: isDeletedMarker(tx, post.id),
   }
 }
 
@@ -777,6 +792,8 @@ function projectRemote(tx: ReadTx, item: ItemRow, viewer: ProjectionViewer): Log
     directReplyCount: counts.direct,
     conversationReplyCount: counts.conversation,
     classification: { personal: personalRemote(tx, item.id, viewer.localAccountId), federated: federatedRemote(tx, item.id) },
+    // Local-only signal (types.ts) — a remote item never carries the marker.
+    removed: false,
   }
 }
 
@@ -791,7 +808,10 @@ export function isStructuralTombstone(tx: ReadTx, id: string): boolean {
 
 // Project one logical item to its ordinary DTO, or undefined when it is not
 // currently ordinary-visible (spec §3.4). Local id === post.id; a live local post
-// projects directly (no logical row needed); a deleted/absent local post ⇒ undefined.
+// projects directly (no logical row needed). A removed local post's row survives
+// (deletion-as-edit) and still projects, carrying the removal notice as content;
+// only an absent local post (never existed, or terminally deleted via account
+// deletion) ⇒ undefined.
 export function projectItem(tx: ReadTx, id: string, viewer: ProjectionViewer): LogicalItemDto | undefined {
   const post = tx.prepare(
     `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to, in_reply_to_post_id, thread_root_id
@@ -902,6 +922,14 @@ export function projectLocalActivity(tx: ReadTx, opts: { authorId: string | null
 
 export function projectHistory(tx: ReadTx, id: string, viewer: ProjectionViewer): LogicalHistoryEnvelope | undefined {
   if (!projectItem(tx, id, viewer)) return undefined
+  // A removed post now projects (removeLocalPost keeps the row and rewrites its
+  // content to a notice), so the projectItem gate above no longer excludes it.
+  // For a moderator removal the retained post_revisions are exactly the content
+  // that was actioned — kept deliberately as an admin record, but never a
+  // public one. Public history refuses; nothing here currently serves an
+  // admin-only revisions view, so there is no second surface to carve an
+  // exception into.
+  if (isDeletedMarker(tx, id)) return undefined
   const post = tx.prepare(
     `SELECT id, author_id, title, content, content_markdown, url, published_at, edited_at, in_reply_to, in_reply_to_post_id, thread_root_id FROM posts WHERE id = ? AND source = 'local'`,
   ).get(id) as PostRow | undefined

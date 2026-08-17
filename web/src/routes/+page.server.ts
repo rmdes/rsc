@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types'
 import { fail, redirect } from '@sveltejs/kit'
 import { getPeers, createPost, deletePost, subscribeToSource } from '$lib/api'
 import { getLogicalTimeline, type V2Lens } from '$lib/logical-api'
+import type { AuditCategory } from '$lib/logical-types'
 import { enrichEntries } from '$lib/server/render'
 import { authedFetch, cookieHeader, ensureSessionFetch } from '$lib/server/session'
 import { TABS, resolveTab, type Tab } from '$lib/tabs'
@@ -98,9 +99,18 @@ export const actions = {
 		const form = await event.request.formData()
 		const id = String(form.get('id') ?? '').trim()
 		if (!id) return fail(400, { error: 'id required' })
+		// asAdmin picks which core endpoint to call; core independently re-checks
+		// ownership/admin-ness on both, so this is a routing hint, not a trust boundary.
+		const asAdmin = form.get('asAdmin') === '1'
+		// Only the admin route takes a body — core's DELETE /admin/posts/:id
+		// requires {category, note?} (the same removal-audit vocabulary as
+		// hide/restore); the author's own DELETE /posts/:id takes none.
+		const category = String(form.get('category') ?? '').trim()
+		if (asAdmin && !category) return fail(400, { error: 'a moderation category is required' })
+		const note = String(form.get('note') ?? '').trim()
 		try {
 			const f = authedFetch(event.fetch, event.url.origin, cookieHeader(event.cookies))
-			await deletePost(f, id)
+			await deletePost(f, id, asAdmin ? { asAdmin, category: category as AuditCategory, ...(note ? { note } : {}) } : { asAdmin })
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'remove failed' })
 		}

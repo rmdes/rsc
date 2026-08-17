@@ -10,13 +10,13 @@ import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post, CommandEnvelope } from '../src/domain/types.ts'
-import { renderFirehoseRss, injectSourceComments, localGuid, renderRssFeed } from '../src/domain/feed.ts'
+import { renderFirehoseRss, injectSourceComments, localGuid, renderRssFeed, logicalToFeedEntry } from '../src/domain/feed.ts'
 import { generateRssFeed } from 'feedsmith'
 import { randomUUID, createHash } from 'node:crypto'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { convertToStructuralTombstone } from '../src/logical/threading.ts'
 import { projectItem, projectTimeline } from '../src/logical/projector.ts'
-import type { ProjectionViewer } from '../src/logical/types.ts'
+import type { ProjectionViewer, LogicalItemDto } from '../src/logical/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import { makeAuth } from './auth-helper.ts'
 
@@ -156,6 +156,28 @@ test('unknown handle 404s; remote handle 302s to its canonical feed; null-feedUr
   const redir = await app.request('/users/news/feed.xml')
   expect(redir.status).toBe(302)
   expect(redir.headers.get('location')).toBe('https://news.example.com/feed.xml')
+})
+
+// Task 3: `removed` is a same-origin signal for our own web UI, never a
+// federation signal — a peer learns of a removal from the notice text in the
+// content, never from a flag (design intent, task-3-brief.md). logicalToFeedEntry
+// builds TimelineEntry field-by-field (no spread), so an added DTO field must be
+// wired in explicitly to leak; this pins that it stays unwired.
+test('logicalToFeedEntry never carries the removed flag onto the outgoing feed entry, even for a removed item', () => {
+  const dto: LogicalItemDto = {
+    kind: 'logical_item', id: 'p1', origin: 'local', parentResolutionState: 'none',
+    parentLogicalItemId: null, threadRootId: null,
+    selectedAuthor: { kind: 'local', id: 'u1', handle: 'alice', displayName: 'Alice' },
+    title: null, content: 'This post has been removed by its author.', contentMarkdown: null,
+    permalink: 'https://tc.example/post/p1', originGuid: null, inReplyToRef: null,
+    sourceLink: null, replyContext: null, enclosures: [],
+    publishedAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-03T00:00:00.000Z',
+    updatedAtProvenance: 'explicit', directReplyCount: 0, conversationReplyCount: 0,
+    classification: { personal: false, federated: false },
+    removed: true,
+  }
+  const entry = logicalToFeedEntry(dto)
+  expect('removed' in entry).toBe(false)
 })
 
 test('firehose: RSS 2.0 channel + <source> attribution on every item', () => {
@@ -309,6 +331,17 @@ test('GET /users/rss.xml serves the firehose; a user literally named rss keeps t
   const perUser = await app.request('/users/rss/feed.xml')
   expect(perUser.status).toBe(200)
   expect(await perUser.text()).not.toContain(': all posts</title>')
+})
+
+test('the firehose honours feed_item_limit', async () => {
+  const { service, app } = await makeFirehoseApp()
+  await service.setSetting('feed_item_limit', '2')
+  await service.createLocalPostAs('alice', 'Alice', 'post one')
+  await service.createLocalPostAs('alice', 'Alice', 'post two')
+  await service.createLocalPostAs('alice', 'Alice', 'post three')
+  const res = await app.request('/users/rss.xml')
+  const xml = await res.text()
+  expect(xml.match(/<item>/g)?.length).toBe(2)
 })
 
 // The dogfood loop, re-pointed onto the v2 acquisition engine (v1's ingestItems

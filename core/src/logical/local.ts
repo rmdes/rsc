@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { WriteTx } from './database.ts'
 import type { LogicalItemDto } from './types.ts'
-import type { User } from '../domain/types.ts'
+import type { User, AuditCategory } from '../domain/types.ts'
 import { appendJournal } from './journal.ts'
-import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork } from './threading.ts'
+import { resolveInitialParent, wouldCycle, sweepStructuralTombstones, scheduleOrphanWork, isDeletedMarker } from './threading.ts'
 import { reapSourceIfOrphaned } from '../domain/source-repository.ts'
 import { deriveRoot } from './roots.ts'
 // parentReplyRef must mirror what projectRemote emits, so it lives there; local.ts
@@ -134,6 +134,7 @@ function buildDto(
     directReplyCount: 0,
     conversationReplyCount: 0,
     classification: { personal: false, federated: false },
+    removed: false, // a just-created/edited post is never the removal marker
   }
 }
 
@@ -172,10 +173,27 @@ export function createLocalPost(input: { tx: WriteTx; author: User; content: str
   )
 }
 
+// Thrown by editLocalPost when the target carries the removed marker — the
+// moderation-bypass guard below. A distinct class (not a bare Error, not
+// DomainError, which app.onError maps to a fixed 400) so callers can
+// recognize it and choose the status themselves.
+export class PostRemovedError extends Error {}
+
 export function editLocalPost(input: { tx: WriteTx; postId: string; authorId: string; content: string; now: string }): LogicalItemDto {
   const { tx, postId, authorId, content, now } = input
   const cur = loadPost(tx, postId)
   if (!cur) throw new Error(`editLocalPost: unknown post ${postId}`)
+
+  // A removed post's row survives as an edit (removeLocalPost, below) — it no
+  // longer disappears from getPost, so the routes' old "!post -> 404" guard
+  // no longer blocks editing it. Refuse unconditionally, regardless of who
+  // removed it (the marker doesn't record that, and an author-vs-moderator
+  // split isn't worth a schema change): otherwise the author of a
+  // moderator-removed post PATCHes their own content straight back, and that
+  // PATCH republishes it (service.editLocalPost's bus.emitNewPost). Checked
+  // inside THIS write tx, not a separate read, so there is no TOCTOU window
+  // between the check and the write below.
+  if (isDeletedMarker(tx, postId)) throw new PostRemovedError(`editLocalPost: post ${postId} has been removed`)
 
   // Snapshot the superseded version, then overwrite (posts is the sole content
   // authority; post_revisions is the sole history authority — spec §2.6).
@@ -197,10 +215,100 @@ export function editLocalPost(input: { tx: WriteTx; postId: string; authorId: st
   )
 }
 
+// Who removed a post, and why. An author needs no reason; a moderator picks from
+// the audit vocabulary already used by hide/restore (domain/types.ts AuditCategory)
+// and may add a note. Both end up as PUBLIC content — the notice federates.
+export type RemovalActor =
+  | { kind: 'author' }
+  | { kind: 'administrator'; category: AuditCategory; note: string | null }
+
+// The replacement body. Plain markdown: it is rendered to HTML for the feed's
+// <description> and emitted verbatim as <source:markdown>, so it must read as
+// prose in both. Categories are snake_case in the schema ('illegal_content');
+// the underscore swap is the whole "label" mapping — a lookup table here would
+// have to be kept in step with the CHECK constraint for no gain.
+export function removalNotice(actor: RemovalActor): string {
+  if (actor.kind === 'author') return 'This post was removed by its author.'
+  const head = `This post was removed by a moderator (${actor.category.replace(/_/g, ' ')}).`
+  return actor.note ? `${head}\n\n${actor.note}` : head
+}
+
+// Removal as an EDIT (not a destruction): the post keeps its row, id, permalink,
+// published_at and place in the thread, and its content becomes the notice. That
+// is what lets the removal federate for free — the outgoing feed already carries
+// this item at the same <guid>, so a peer ingests it as an ordinary edit and
+// overwrites its copy in place. No side channel, no consumer to build.
+//
+// The logical_deleted_local_v2 marker is still written, and is now the ONLY way
+// to tell a removed post from an ordinary one (the posts row no longer vanishes).
+// Every path that already keys on that marker — the orphan-adoption guard, the
+// admin item state, the permalink-owner check — keeps working untouched.
+//
+// No sweepStructuralTombstones call, unlike deleteLocalPost: that collapses a
+// parent tombstone left CHILDLESS by a deletion, and this post survives as a
+// child, so the sweep could only ever be a no-op here.
+export function removeLocalPost(input: { tx: WriteTx; postId: string; actor: RemovalActor; now: string }): void {
+  const { tx, postId, actor, now } = input
+  const cur = loadPost(tx, postId)
+  if (!cur) return
+  const permalink = cur.url ?? permalinkFor(postId)
+  const notice = removalNotice(actor)
+  const alreadyRemoved = isDeletedMarker(tx, postId)
+
+  // Idempotent repeat (mirrors the PATCH no-op idiom in personal.ts/app.ts,
+  // "no-op: no phantom revision"): a retry that lands on the SAME notice — a
+  // client timeout retry, a double-clicked button — changes nothing, so it
+  // writes nothing: no content write, no revision, no journal entry. That does
+  // NOT suppress the outbound publish: service.deletePost calls bus.emitNewPost
+  // unconditionally after this returns, so a repeated delete still fires one
+  // redundant fat-ping/WebSub-ping. Accepted: peers ingest it as an unchanged
+  // item, so the redundancy is harmless, just not free.
+  if (alreadyRemoved && cur.content === notice) return
+
+  // History splits on the actor, but ONLY on the transition INTO removal.
+  // cur.content is real user content exclusively on the first call; on any
+  // repeat, cur.content is already a PRIOR NOTICE — snapshotting that as
+  // "superseded content" would fabricate post_revisions history out of the
+  // removal machinery's own output (e.g. a moderator correcting spam→abuse
+  // must still update the notice, but must not manufacture a revision row).
+  if (!alreadyRemoved) {
+    if (actor.kind === 'administrator') {
+      // A moderator removal keeps the superseded text as an admin-only record
+      // of what was actioned.
+      tx.prepare(
+        `INSERT INTO post_revisions (id, post_id, title, content, content_markdown, seen_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(randomUUID(), postId, cur.title, cur.content, cur.content_markdown, now)
+    } else {
+      // An author removing their own post takes it with them, matching what
+      // deletion has always meant for them.
+      tx.prepare(`DELETE FROM post_revisions WHERE post_id = ?`).run(postId)
+    }
+  }
+
+  // Title and content_markdown are cleared too. Posts created here never carry
+  // either, but a migrated v1 post can — and a surviving headline or markdown
+  // source above a removal notice would publish the very words being removed.
+  tx.prepare(`UPDATE posts SET title = NULL, content = ?, content_markdown = NULL, edited_at = ? WHERE id = ?`)
+    .run(notice, now, postId)
+
+  materializeLocalItem(tx, { id: postId, permalink, timelineSortAt: cur.published_at, parentLogicalItemId: cur.in_reply_to_post_id })
+  tx.prepare(
+    `INSERT OR IGNORE INTO logical_deleted_local_v2 (logical_item_id, canonical_permalink, deleted_at) VALUES (?, ?, ?)`,
+  ).run(postId, permalink, now)
+  // upsert, NOT remove: this is an edit. A remove frame would make peers and open
+  // SSE clients drop the item instead of showing the notice.
+  appendJournal(tx, { kind: 'upsert', logicalItemId: postId, changeMask: 'presentation' }, now)
+}
+
 // Terminal deletion (spec §2.6): remove content + revisions, keep the logical
 // item (its descendants may reference it) and a permanent marker holding only the
 // logical id, canonical permalink, deletion time. No content/author/source/remote
 // attribution survives; the marker has no FK on the removed account.
+//
+// Used ONLY by account deletion now. A single-post removal goes through
+// removeLocalPost above; posts.author_id is a RESTRICT reference to users(id),
+// so surviving post rows would make DELETE FROM users fail and roll the whole
+// account deletion back.
 function terminallyDelete(tx: WriteTx, postId: string, now: string): void {
   const cur = loadPost(tx, postId)
   if (!cur) return

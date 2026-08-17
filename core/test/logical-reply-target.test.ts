@@ -70,3 +70,41 @@ test('POST /posts accepts a reply whose target is a v2 logical item, and the rep
   expect(bad.status).toBe(404)
   repo.close()
 })
+
+// removeLocalPost (Task 11) keeps the posts row and overwrites its content with
+// a removal notice, so repo.getPost still finds it — a removed post must not
+// become repliable again just because the row survives. Existing replies to it
+// are untouched (spec: removal is an edit, not a destruction).
+test('a removed post is no longer a valid reply target, even though its row survives as a notice', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const db = createDatabaseContext(raw)
+  const store = createLogicalStore(db)
+  const bus = createEventBus()
+  const service = createService(repo, bus, null, store)
+  const app = createApp({
+    service, bus, token: 't0k3n', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
+    sources: { service: createSourceService(repo, null), repo },
+    logical: { store, acquisition: createAcquisition({ db, lookupFn: publicLookup, now: () => NOW }) },
+  })
+
+  const cookie = await registeredSession(app, 'author@x.test', repo)
+  const created = await (await app.request('/posts', {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ content: 'original' }),
+  })).json() as { post: { id: string } }
+  const postId = created.post.id
+
+  expect(await service.deletePost(postId, { kind: 'author' })).toEqual({ ok: true })
+  // the row is still there — the point of the regression
+  expect(await repo.getPost(postId)).toBeDefined()
+
+  const reply = await app.request('/posts', {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ content: 'too late', inReplyTo: postId }),
+  })
+  expect(reply.status).toBe(404)
+  repo.close()
+})

@@ -11,7 +11,8 @@ import type { PushRowV2 } from './push.ts'
 import { getJournalMetadata, snapshotJournalCursor, appendJournal } from './journal.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import { assertHandleUnreserved } from './schema.ts'
-import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount } from './local.ts'
+import { createLocalPost, editLocalPost, deleteLocalPost, removeLocalPost, deleteLocalAccount } from './local.ts'
+import type { RemovalActor } from './local.ts'
 import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure, deferVerification } from './reconcile.ts'
 import { scheduleVerification, resolveVerificationBatch } from './verification.ts'
@@ -358,6 +359,11 @@ export function createLogicalStore(db: DatabaseContext) {
     },
     deleteLocalPost(input: { postId: string; actorId: string; now: string }): void {
       db.write((tx) => deleteLocalPost({ tx, ...input }))
+    },
+    // Ordinary removal (spec: deletion-as-edit) — beside deleteLocalPost, which
+    // stays account-deletion-only. See local.ts's removeLocalPost for what it does.
+    removeLocalPost(input: { postId: string; actor: RemovalActor; now: string }): void {
+      db.write((tx) => removeLocalPost({ tx, ...input }))
     },
     deleteLocalAccount(input: { accountId: string; actorId: string; now: string }): void {
       db.write((tx) => deleteLocalAccount({ tx, ...input }))

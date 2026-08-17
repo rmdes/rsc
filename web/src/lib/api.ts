@@ -1,5 +1,6 @@
 import { base } from '$lib/server/session'
 import type { OwnerFollowingView, TimelineEntry } from './types.ts'
+import type { AuditCategory } from './logical-types.ts'
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
 	try {
@@ -148,8 +149,26 @@ export async function deleteLocalAccount(f: typeof fetch, handle: string): Promi
 	if (!res.ok) throw new Error(await errorMessage(res, 'deleteLocalAccount failed'))
 }
 
-export async function deletePost(f: typeof fetch, id: string): Promise<void> {
-	const res = await f(`${base()}/admin/posts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+// The author's own DELETE /posts/:id takes no body. Core's admin route
+// (DELETE /admin/posts/:id) instead REQUIRES {category, note?} — the same
+// removal-audit vocabulary as hide/restore (core/src/api/logical-routes/shared.ts
+// readRemovalBody) — and 400s "category invalid" without it. No idempotency
+// ledger here (unlike hide/restore's commandId): deletePost's only outcomes are
+// the 404/409 guards, nothing to replay against.
+export async function deletePost(
+	f: typeof fetch,
+	id: string,
+	opts: { asAdmin: false } | { asAdmin: true; category: AuditCategory; note?: string }
+): Promise<void> {
+	const path = opts.asAdmin ? `/admin/posts/${encodeURIComponent(id)}` : `/posts/${encodeURIComponent(id)}`
+	const init: RequestInit = opts.asAdmin
+		? {
+				method: 'DELETE',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ category: opts.category, ...(opts.note ? { note: opts.note } : {}) })
+			}
+		: { method: 'DELETE' }
+	const res = await f(`${base()}${path}`, init)
 	if (!res.ok) throw new Error(await errorMessage(res, 'deletePost failed'))
 }
 
@@ -194,22 +213,19 @@ export async function revokeSession(f: typeof fetch, sessionToken: string): Prom
 	return res
 }
 
-export async function getAdminSettings(f: typeof fetch): Promise<{
+export interface AdminSettings {
 	maxSubsPerUser: number
 	maxRemoteItemsPerSource: number
 	maxRemoteItemAgeDays: number
+	feedItemLimit: number
 	tabLabels: Record<string, string | null>
 	tabSubtitles: Record<string, string | null>
-}> {
+}
+
+export async function getAdminSettings(f: typeof fetch): Promise<AdminSettings> {
 	const res = await f(`${base()}/admin/settings`)
 	if (!res.ok) throw new Error(await errorMessage(res, 'getAdminSettings failed'))
-	return (await res.json()) as {
-		maxSubsPerUser: number
-		maxRemoteItemsPerSource: number
-		maxRemoteItemAgeDays: number
-		tabLabels: Record<string, string | null>
-		tabSubtitles: Record<string, string | null>
-	}
+	return (await res.json()) as AdminSettings
 }
 
 export async function patchAdminSettings(
@@ -218,6 +234,7 @@ export async function patchAdminSettings(
 		maxSubsPerUser: number
 		maxRemoteItemsPerSource: number
 		maxRemoteItemAgeDays: number
+		feedItemLimit: number
 		tabLabels?: Record<string, string>
 		tabSubtitles?: Record<string, string>
 	}

@@ -29,8 +29,8 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
 const FEED_1 = 'https://203.0.113.10/one.xml'
 const FEED_2 = 'https://203.0.113.11/two.xml'
 
-// All PATCH bodies must include the numeric trio (validated before tab fields).
-const NUM = { maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }
+// All PATCH bodies must include the numeric quartet (validated before tab fields).
+const NUM = { maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50 }
 type App = Awaited<ReturnType<typeof makeApp>>['app'] // avoids importing the Hono type
 const patchTabs = (app: App, cookie: string, extra: Record<string, unknown>) =>
   app.request('/admin/settings', {
@@ -49,7 +49,7 @@ test('GET /admin/settings: admin sees the seeded default', async () => {
   const cookie = await registeredSession(app, 'boss@x.test', repo)
   const res = await app.request('/admin/settings', { headers: { cookie } })
   expect(res.status).toBe(200)
-  expect(await res.json()).toEqual({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, ...NULL_TABS })
+  expect(await res.json()).toEqual({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50, ...NULL_TABS })
 })
 
 test('PATCH /admin/settings: admin updates the cap, GET reflects it, and it is enforced on the next subscribe', async () => {
@@ -59,12 +59,12 @@ test('PATCH /admin/settings: admin updates the cap, GET reflects it, and it is e
   const patch = await app.request('/admin/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ maxSubsPerUser: 1, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
+    body: JSON.stringify({ maxSubsPerUser: 1, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50 }),
   })
   expect(patch.status).toBe(200)
 
   const get = await app.request('/admin/settings', { headers: { cookie } })
-  expect(await get.json()).toEqual({ maxSubsPerUser: 1, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, ...NULL_TABS })
+  expect(await get.json()).toEqual({ maxSubsPerUser: 1, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50, ...NULL_TABS })
 
   // v2 subscribe body: {url, commandId} — no `type` field (P4).
   const alice = await registeredSession(app, 'alice@x.test', repo)
@@ -96,7 +96,7 @@ test('PATCH /admin/settings: rejects non-integer and negative values', async () 
   }
   // untouched by the rejected attempts
   const get = await app.request('/admin/settings', { headers: { cookie } })
-  expect(await get.json()).toEqual({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, ...NULL_TABS })
+  expect(await get.json()).toEqual({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50, ...NULL_TABS })
 })
 
 test('PATCH /admin/settings: accepts zero (disables subscribing)', async () => {
@@ -105,10 +105,10 @@ test('PATCH /admin/settings: accepts zero (disables subscribing)', async () => {
   const res = await app.request('/admin/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ maxSubsPerUser: 0, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
+    body: JSON.stringify({ maxSubsPerUser: 0, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50 }),
   })
   expect(res.status).toBe(200)
-  expect(await (await app.request('/admin/settings', { headers: { cookie } })).json()).toEqual({ maxSubsPerUser: 0, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, ...NULL_TABS })
+  expect(await (await app.request('/admin/settings', { headers: { cookie } })).json()).toEqual({ maxSubsPerUser: 0, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50, ...NULL_TABS })
 })
 
 test('GET /admin/settings: includes the retention defaults (unlimited)', async () => {
@@ -127,7 +127,7 @@ test('PATCH /admin/settings: updates the retention caps, GET reflects it', async
   const patch = await app.request('/admin/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 200, maxRemoteItemAgeDays: 90 }),
+    body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 200, maxRemoteItemAgeDays: 90, feedItemLimit: 50 }),
   })
   expect(patch.status).toBe(200)
   const get = await app.request('/admin/settings', { headers: { cookie } })
@@ -155,7 +155,7 @@ test('PATCH /admin/settings: accepts 0 for both retention fields (means unlimite
   const res = await app.request('/admin/settings', {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0 }),
+    body: JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 0, maxRemoteItemAgeDays: 0, feedItemLimit: 50 }),
   })
   expect(res.status).toBe(200)
 })
@@ -187,6 +187,30 @@ test('PATCH: rejects an over-long label (25), over-long subtitle (121), newline,
   expect((await patchTabs(app, cookie, { tabSubtitles: { local: 'x'.repeat(121) } })).status).toBe(400)
   expect((await patchTabs(app, cookie, { tabLabels: { local: 'a\nb' } })).status).toBe(400)
   expect((await patchTabs(app, cookie, { tabLabels: { bogus: 'x' } })).status).toBe(400)
+})
+
+test('admin settings round-trip feedItemLimit', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const patch = await app.request('/admin/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ ...NUM, feedItemLimit: 25 }),
+  })
+  expect(patch.status).toBe(200)
+  const get = await app.request('/admin/settings', { headers: { cookie } })
+  expect((await get.json()).feedItemLimit).toBe(25)
+})
+
+test('admin settings reject feedItemLimit below 1', async () => {
+  const { app, repo } = await makeApp()
+  const cookie = await registeredSession(app, 'boss@x.test', repo)
+  const res = await app.request('/admin/settings', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ ...NUM, feedItemLimit: 0 }),
+  })
+  expect(res.status).toBe(400)
 })
 
 test('GET/PATCH /admin/settings gate: non-admin 403, anon 403, no session 401', async () => {

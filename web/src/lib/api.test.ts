@@ -96,14 +96,33 @@ test('deleteLocalAccount surfaces the core error', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local account' }), { status: 409 }))
 	await expect(deleteLocalAccount(f as unknown as typeof fetch, 'x')).rejects.toThrow('not a local account')
 })
-test('deletePost DELETEs /admin/posts/:id', async () => {
+// Core's DELETE /admin/posts/:id REQUIRES a JSON body ({category, note?}) —
+// sending none 400s "category invalid" (the Critical this test pins).
+test('deletePost DELETEs /admin/posts/:id WITH the category body when asAdmin', async () => {
 	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
-	await deletePost(f as unknown as typeof fetch, 'p1')
-	expect(f).toHaveBeenCalledWith('http://localhost:8787/admin/posts/p1', { method: 'DELETE' })
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true, category: 'spam' })
+	const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(url).toBe('http://localhost:8787/admin/posts/p1')
+	expect(init.method).toBe('DELETE')
+	expect(new Headers(init.headers).get('content-type')).toBe('application/json')
+	expect(JSON.parse(String(init.body))).toEqual({ category: 'spam' })
+})
+test('deletePost includes an optional note in the admin body', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true, category: 'spam', note: 'repeat offender' })
+	const [, init] = f.mock.calls[0] as unknown as [string, RequestInit]
+	expect(JSON.parse(String(init.body))).toEqual({ category: 'spam', note: 'repeat offender' })
+})
+// The author's own removal (DELETE /posts/:id) takes no body at all — core
+// refuses one on this route the same way it requires one on the admin route.
+test('deletePost DELETEs /posts/:id with NO body when not asAdmin', async () => {
+	const f = vi.fn(async (..._a: unknown[]) => new Response(null, { status: 200 }))
+	await deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: false })
+	expect(f).toHaveBeenCalledWith('http://localhost:8787/posts/p1', { method: 'DELETE' })
 })
 test('deletePost surfaces the core error', async () => {
 	const f = vi.fn(async () => new Response(JSON.stringify({ error: 'not a local post' }), { status: 409 }))
-	await expect(deletePost(f as unknown as typeof fetch, 'p1')).rejects.toThrow('not a local post')
+	await expect(deletePost(f as unknown as typeof fetch, 'p1', { asAdmin: true, category: 'spam' })).rejects.toThrow('not a local post')
 })
 
 test('listDeviceSessions GETs the multi-session list endpoint', async () => {
@@ -149,26 +168,29 @@ test('admin settings wrappers hit GET and PATCH', async () => {
 	const f = vi.fn(
 		async () =>
 			new Response(
-				JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30 }),
+				JSON.stringify({ maxSubsPerUser: 500, maxRemoteItemsPerSource: 100, maxRemoteItemAgeDays: 30, feedItemLimit: 50 }),
 				{ status: 200 }
 			)
 	)
 	expect(await getAdminSettings(f as unknown as typeof fetch)).toEqual({
 		maxSubsPerUser: 500,
 		maxRemoteItemsPerSource: 100,
-		maxRemoteItemAgeDays: 30
+		maxRemoteItemAgeDays: 30,
+		feedItemLimit: 50
 	})
 	await patchAdminSettings(f as unknown as typeof fetch, {
 		maxSubsPerUser: 250,
 		maxRemoteItemsPerSource: 0,
-		maxRemoteItemAgeDays: 0
+		maxRemoteItemAgeDays: 0,
+		feedItemLimit: 25
 	})
 	const [, patchInit] = f.mock.calls[1] as unknown as [string, RequestInit]
 	expect(patchInit.method).toBe('PATCH')
 	expect(JSON.parse(String(patchInit.body))).toEqual({
 		maxSubsPerUser: 250,
 		maxRemoteItemsPerSource: 0,
-		maxRemoteItemAgeDays: 0
+		maxRemoteItemAgeDays: 0,
+		feedItemLimit: 25
 	})
 })
 

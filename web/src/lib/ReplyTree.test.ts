@@ -26,7 +26,8 @@ const replyBy = (author: SelectedAuthor) =>
 		updatedAtProvenance: null,
 		directReplyCount: 0,
 		conversationReplyCount: 0,
-		classification: { personal: false, federated: true }
+		classification: { personal: false, federated: true },
+		removed: false
 	} as LogicalItemDto)
 
 // Fix 2: the nested byline must use the SAME branch every other byline uses —

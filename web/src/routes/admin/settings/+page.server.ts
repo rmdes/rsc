@@ -14,6 +14,15 @@ function parseNonNegativeInt(raw: FormDataEntryValue | null, field: string): num
 	return value
 }
 
+// feedItemLimit has no "0 means unlimited" meaning (unlike the three fields
+// above) — core rejects anything below 1, so it gets its own minimum-1 parser
+// rather than loosening parseNonNegativeInt for everyone else.
+function parsePositiveInt(raw: FormDataEntryValue | null, field: string): number {
+	const value = Number(String(raw ?? '').trim())
+	if (!Number.isInteger(value) || value < 1) throw new Error(`${field} must be an integer ≥ 1`)
+	return value
+}
+
 const TAB_KEYS = ['local', 'federated', 'personal', 'public'] as const
 
 // Only keys actually present on the submitted form are forwarded — a form with
@@ -31,11 +40,12 @@ function collectTabFields(form: FormData, prefix: string): Record<string, string
 export const actions: Actions = {
 	save: async (event) => {
 		const form = await event.request.formData()
-		let maxSubsPerUser: number, maxRemoteItemsPerSource: number, maxRemoteItemAgeDays: number
+		let maxSubsPerUser: number, maxRemoteItemsPerSource: number, maxRemoteItemAgeDays: number, feedItemLimit: number
 		try {
 			maxSubsPerUser = parseNonNegativeInt(form.get('maxSubsPerUser'), 'maxSubsPerUser')
 			maxRemoteItemsPerSource = parseNonNegativeInt(form.get('maxRemoteItemsPerSource'), 'maxRemoteItemsPerSource')
 			maxRemoteItemAgeDays = parseNonNegativeInt(form.get('maxRemoteItemAgeDays'), 'maxRemoteItemAgeDays')
+			feedItemLimit = parsePositiveInt(form.get('feedItemLimit'), 'feedItemLimit')
 		} catch (err) {
 			return fail(400, { error: err instanceof Error ? err.message : 'invalid input' })
 		}
@@ -47,6 +57,7 @@ export const actions: Actions = {
 				maxSubsPerUser,
 				maxRemoteItemsPerSource,
 				maxRemoteItemAgeDays,
+				feedItemLimit,
 				...(Object.keys(tabLabels).length ? { tabLabels } : {}),
 				...(Object.keys(tabSubtitles).length ? { tabSubtitles } : {})
 			})

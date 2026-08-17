@@ -135,7 +135,7 @@
 					<a class="source" href={post.inReplyTo} rel="noreferrer">in reply to ↗</a>
 				{/if}
 				{#if post.source === 'remote' && post.url}<a href={post.url} rel="noreferrer">source</a>{/if}
-				{#if post.source === 'local' && data.me?.user.id === post.author.id}
+				{#if post.source === 'local' && !post.removed && data.me?.user.id === post.author.id}
 					<a class="edit" href="/post/{post.id}/edit">Edit</a>
 				{/if}
 				{#if expanded[post.id]}
@@ -148,7 +148,7 @@
 								<div>
 									{#if p.title}<h3 class="title">{p.title}</h3>{/if}
 									<PostBody post={p} />
-									{#if p.source === 'local' && data.me?.user.id === p.author.id}
+									{#if p.source === 'local' && !p.removed && data.me?.user.id === p.author.id}
 										<a class="edit" href="/post/{p.id}/edit">Edit</a>
 									{/if}
 								</div>

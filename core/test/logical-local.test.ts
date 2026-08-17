@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import Database from 'better-sqlite3'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createDatabaseContext } from '../src/logical/database.ts'
-import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, synthesizeLocalItem, materializeLocalChain } from '../src/logical/local.ts'
+import { createLocalPost, editLocalPost, deleteLocalPost, deleteLocalAccount, removeLocalPost, synthesizeLocalItem, materializeLocalChain, PostRemovedError } from '../src/logical/local.ts'
 import { getJournalMetadata, readJournalBatch } from '../src/logical/journal.ts'
 import type { User } from '../src/domain/types.ts'
 
@@ -102,6 +102,24 @@ test('editLocalPost snapshots a revision, updates content, and emits one upsert'
   expect(last[0]).toMatchObject({ kind: 'upsert', logicalItemId: created.id })
 })
 
+// The moderation-bypass fix: removeLocalPost keeps the post row (deletion is
+// now an edit, not a destruction), so the old "getPost returns undefined"
+// guard editLocalPost used to get for free is gone. It must refuse a removed
+// post itself, regardless of who removed it (author or admin) — an author
+// PATCHing their own removed post back is exactly the bypass this closes.
+test('editLocalPost refuses a post carrying the removed marker, and leaves its content untouched', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'illegal stuff', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'author' }, now: LATER }))
+  const noticeContent = (raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(created.id) as { content: string }).content
+
+  expect(() => db.write((tx) => editLocalPost({ tx, postId: created.id, authorId: author.id, content: 'restored!', now: LATER }))).toThrow(PostRemovedError)
+
+  // The refused attempt wrote nothing: content is still the removal notice.
+  expect((raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(created.id) as { content: string }).content).toBe(noticeContent)
+})
+
 test('deleteLocalPost is terminal: content and revisions go, a permanent marker with no author/source remains', async () => {
   const { raw, db } = await fresh()
   const author = seedUser(raw, 'u1', 'alice')
@@ -122,6 +140,157 @@ test('deleteLocalPost is terminal: content and revisions go, a permanent marker 
   // a remove effect is journalled
   const rows = db.read((tx) => readJournalBatch(tx, 0, 20))
   expect(rows.at(-1)).toMatchObject({ kind: 'remove', logicalItemId: created.id })
+})
+
+test('removeLocalPost keeps the row and replaces the content with a moderator notice', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  // Posts created here never carry a title, but a migrated v1 post can — and a
+  // surviving headline would publish the very words being removed. Set one so the
+  // assertion below can actually fail if the clear is dropped.
+  raw.prepare(`UPDATE posts SET title = 'Buy cheap pills now' WHERE id = ?`).run(created.id)
+  const before = raw.prepare(`SELECT url, published_at FROM posts WHERE id = ?`).get(created.id) as { url: string | null; published_at: string }
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+
+  const post = raw.prepare(`SELECT title, content, url, published_at, edited_at FROM posts WHERE id = ?`).get(created.id) as
+    { title: string | null; content: string; url: string | null; published_at: string; edited_at: string }
+  expect(post.content).toBe('This post was removed by a moderator (spam).')
+  expect(post.title).toBeNull()
+  // identity and position are untouched — this is what lets a peer overwrite in place
+  expect(post.url).toBe(before.url)
+  expect(post.published_at).toBe(before.published_at)
+  expect(post.edited_at).toBe(LATER)
+  // the marker is what every removal-aware path keys on
+  expect(count(raw, 'logical_deleted_local_v2', 'WHERE logical_item_id = ?', created.id)).toBe(1)
+  // an EDIT, not a removal: a remove frame would make peers drop the item
+  const rows = db.read((tx) => readJournalBatch(tx, 0, 20))
+  expect(rows.at(-1)).toMatchObject({ kind: 'upsert', logicalItemId: created.id })
+})
+
+test('removeLocalPost clears content_markdown too, not just content and title', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  // Local posts never write content_markdown today (only ingest does), but a
+  // migrated v1 post can carry one — set it directly so this assertion can
+  // actually fail if the clear is dropped.
+  raw.prepare(`UPDATE posts SET content_markdown = 'buy **cheap** pills now' WHERE id = ?`).run(created.id)
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+
+  const post = raw.prepare(`SELECT content_markdown FROM posts WHERE id = ?`).get(created.id) as { content_markdown: string | null }
+  expect(post.content_markdown).toBeNull()
+})
+
+test('removeLocalPost renders an underscored category as prose and appends the note', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'x', replyToId: null, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'illegal_content', note: 'court order 12/3' }, now: LATER }))
+
+  const { content } = raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(created.id) as { content: string }
+  expect(content).toBe('This post was removed by a moderator (illegal content).\n\ncourt order 12/3')
+})
+
+test('an author removing their own post purges its revisions; a moderator keeps them', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+
+  const byAuthor = db.write((tx) => createLocalPost({ tx, author, content: 'v1', replyToId: null, now: NOW }))
+  db.write((tx) => editLocalPost({ tx, postId: byAuthor.id, authorId: author.id, content: 'v2', now: LATER }))
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', byAuthor.id)).toBe(1)
+  db.write((tx) => removeLocalPost({ tx, postId: byAuthor.id, actor: { kind: 'author' }, now: LATER }))
+  // the words go with them — nothing is left for /post/:id/history to serve
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', byAuthor.id)).toBe(0)
+  expect((raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(byAuthor.id) as { content: string }).content)
+    .toBe('This post was removed by its author.')
+
+  const byMod = db.write((tx) => createLocalPost({ tx, author, content: 'evidence', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: byMod.id, actor: { kind: 'administrator', category: 'abuse', note: null }, now: LATER }))
+  // retained as an admin-only record of what was actioned
+  const kept = raw.prepare(`SELECT content FROM post_revisions WHERE post_id = ?`).get(byMod.id) as { content: string }
+  expect(kept.content).toBe('evidence')
+})
+
+test('a repeat removal by the same actor is a no-op: no revision, no new journal entry', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'evidence', replyToId: null, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1) // the first removal's real-content snapshot
+  const afterFirst = db.read((tx) => getJournalMetadata(tx))
+
+  // Same actor, same category, same note: an identical resulting notice.
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: '2026-07-23T02:00:00.000Z' }))
+
+  // no fabricated revision from the repeat call
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1)
+  // no new journal entry
+  const afterSecond = db.read((tx) => getJournalMetadata(tx))
+  expect(afterSecond.highWaterSeq).toBe(afterFirst.highWaterSeq)
+  // edited_at was NOT bumped by the no-op repeat
+  const post = raw.prepare(`SELECT edited_at FROM posts WHERE id = ?`).get(created.id) as { edited_at: string }
+  expect(post.edited_at).toBe(LATER)
+})
+
+test('a moderator changing the category on an already-removed post updates the notice but adds no revision row', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'evidence', replyToId: null, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1) // the real 'evidence' content
+  const afterFirst = db.read((tx) => getJournalMetadata(tx))
+
+  const recategorized = '2026-07-23T02:00:00.000Z'
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'abuse', note: null }, now: recategorized }))
+
+  // the notice reflects the corrected category
+  const post = raw.prepare(`SELECT content, edited_at FROM posts WHERE id = ?`).get(created.id) as { content: string; edited_at: string }
+  expect(post.content).toBe('This post was removed by a moderator (abuse).')
+  expect(post.edited_at).toBe(recategorized)
+  // still exactly one revision row — the original 'evidence' snapshot, not the superseded 'spam' notice
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1)
+  const kept = raw.prepare(`SELECT content FROM post_revisions WHERE post_id = ?`).get(created.id) as { content: string }
+  expect(kept.content).toBe('evidence')
+  // a legitimate update still journals (it is not a no-op)
+  const afterSecond = db.read((tx) => getJournalMetadata(tx))
+  expect(afterSecond.highWaterSeq).toBe(afterFirst.highWaterSeq + 1)
+})
+
+test('the first removal is unaffected by the idempotency guard', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const created = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  const before = db.read((tx) => getJournalMetadata(tx))
+
+  db.write((tx) => removeLocalPost({ tx, postId: created.id, actor: { kind: 'administrator', category: 'spam', note: null }, now: LATER }))
+
+  const post = raw.prepare(`SELECT content, edited_at FROM posts WHERE id = ?`).get(created.id) as { content: string; edited_at: string }
+  expect(post.content).toBe('This post was removed by a moderator (spam).')
+  expect(post.edited_at).toBe(LATER)
+  expect(count(raw, 'post_revisions', 'WHERE post_id = ?', created.id)).toBe(1)
+  const after = db.read((tx) => getJournalMetadata(tx))
+  expect(after.highWaterSeq).toBe(before.highWaterSeq + 1)
+})
+
+test('a removed post keeps its place in the thread and its replies', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const parent = db.write((tx) => createLocalPost({ tx, author, content: 'parent', replyToId: null, now: NOW }))
+  const child = db.write((tx) => createLocalPost({ tx, author, content: 'reply', replyToId: parent.id, now: NOW }))
+
+  db.write((tx) => removeLocalPost({ tx, postId: parent.id, actor: { kind: 'author' }, now: LATER }))
+
+  expect(count(raw, 'posts', 'WHERE id = ?', child.id)).toBe(1)
+  const edge = raw.prepare(`SELECT parent_logical_item_id FROM logical_items_v2 WHERE id = ?`).get(child.id) as { parent_logical_item_id: string | null }
+  expect(edge.parent_logical_item_id).toBe(parent.id)
+  // the local-origin bridge survives too — terminallyDelete releases it, this must not
+  expect(count(raw, 'logical_local_origins_v2', 'WHERE post_id = ?', parent.id)).toBe(1)
 })
 
 test('deleting a parent that still has a child keeps the logical row and the descendant edge intact', async () => {

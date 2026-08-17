@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { sessionAuth, registeredOnly, requireAdmin, bearerAuth } from './auth.ts'
 import type { UserDirectory } from './auth.ts'
-import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes, mountAdminApiRoutes } from './logical-routes.ts'
+import { mountLogicalRoutes, mountLogicalReadRoutes, mountPersonalApiRoutes, mountAdminApiRoutes, readRemovalBody } from './logical-routes.ts'
 import type { LogicalRouteDeps } from './logical-routes.ts'
 import { DomainError, HandleTakenError } from '../domain/types.ts'
 import { buildFollowingOpml } from '../domain/opml.ts'
@@ -273,7 +273,8 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     let replyTarget
     if (typeof inReplyTo === 'string') {
       // Under v2 the target may be a remote logical item with no posts row —
-      // resolveReplyTarget accepts exactly what ordinary reads can show.
+      // resolveReplyTarget accepts what ordinary reads can show, MINUS a
+      // removed post (its row survives as a notice but is not repliable).
       replyTarget = await service.resolveReplyTarget(inReplyTo)
       if (!replyTarget) return c.json({ error: 'unknown post' }, 404)
     }
@@ -294,8 +295,24 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!isString(content, 1, 100000)) return c.json({ error: 'content invalid' }, 400)
     if (content === post.content) return c.json({ post }, 200) // no-op: no phantom revision
     const entry = await service.editLocalPost(post, content, me)
+    // A removed post (deletion-as-edit) refuses further edits — same status
+    // as the ownership check above, since both are "you may not edit this".
+    if ('error' in entry) return c.json({ error: 'not editable' }, 403)
     // local post — never carries reply-context (h-feed ingest only); no gate needed
     return c.json({ post: entry }, 200)
+  })
+
+  // Cookie-authed twin of personal.ts's key-authed DELETE /me/posts/:id, same
+  // ownership rule. Admins remove OTHERS' posts via DELETE /admin/posts/:id;
+  // this route is only ever the author acting on their own post.
+  app.delete('/posts/:id', authed, async (c) => {
+    const me = c.get('coreUser')
+    const post = await service.getPost(c.req.param('id'))
+    if (!post) return c.json({ error: 'unknown post' }, 404)
+    if (post.source !== 'local' || post.authorId !== me.id) return c.json({ error: 'not deletable' }, 403)
+    const result = await service.deletePost(post.id, { kind: 'author' })
+    if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
+    return c.json({ ok: true }, 200)
   })
 
   async function resolveUser(handleRaw: string): Promise<import('../domain/types.ts').User | undefined> {
@@ -579,13 +596,14 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
       // 0 here means "unlimited" -- a different meaning of 0 than maxSubsPerUser above (0 = disabled).
       maxRemoteItemsPerSource: Number(await service.getSetting('max_remote_items_per_source') ?? '0'),
       maxRemoteItemAgeDays: Number(await service.getSetting('max_remote_item_age_days') ?? '0'),
+      feedItemLimit: Number(await service.getSetting('feed_item_limit') ?? '50'),
       ...(await readTabOverrides((k) => service.getSetting(k))),
     }))
 
   app.patch('/admin/settings', jsonWrite, async (c) => {
     const body = await readJsonBody(c)
     if (!body) return c.json({ error: 'body invalid' }, 400)
-    const { maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays } = body
+    const { maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays, feedItemLimit } = body
     // maxSubsPerUser: 0 disables subscribing entirely (existing convention).
     if (!(typeof maxSubsPerUser === 'number' && Number.isInteger(maxSubsPerUser) && maxSubsPerUser >= 0)) {
       return c.json({ error: 'maxSubsPerUser invalid' }, 400)
@@ -598,6 +616,11 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     if (!(typeof maxRemoteItemAgeDays === 'number' && Number.isInteger(maxRemoteItemAgeDays) && maxRemoteItemAgeDays >= 0)) {
       return c.json({ error: 'maxRemoteItemAgeDays invalid' }, 400)
     }
+    // feedItemLimit: how many items each RSS/JSON feed renders. Minimum 1 --
+    // unlike the settings above, 0 has no useful meaning for a feed.
+    if (!(typeof feedItemLimit === 'number' && Number.isInteger(feedItemLimit) && feedItemLimit >= 1)) {
+      return c.json({ error: 'feedItemLimit invalid' }, 400)
+    }
     const labelResult = validateTabCopy(body.tabLabels, 'tab_label_', 24)
     if ('error' in labelResult) return c.json({ error: labelResult.error }, 400)
     const subtitleResult = validateTabCopy(body.tabSubtitles, 'tab_subtitle_', 120)
@@ -605,8 +628,9 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     await service.setSetting('max_subs_per_user', String(maxSubsPerUser))
     await service.setSetting('max_remote_items_per_source', String(maxRemoteItemsPerSource))
     await service.setSetting('max_remote_item_age_days', String(maxRemoteItemAgeDays))
+    await service.setSetting('feed_item_limit', String(feedItemLimit))
     for (const [k, v] of [...labelResult.ok, ...subtitleResult.ok]) await service.setSetting(k, v)
-    return c.json({ maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays }, 200)
+    return c.json({ maxSubsPerUser, maxRemoteItemsPerSource, maxRemoteItemAgeDays, feedItemLimit }, 200)
   })
 
   app.delete('/admin/users/:handle', async (c) => {
@@ -615,8 +639,10 @@ export function createApp(deps: { service: Service; bus: EventBus; token: string
     return c.json({ ok: true }, 200)
   })
 
-  app.delete('/admin/posts/:id', async (c) => {
-    const result = await service.deletePost(c.req.param('id') ?? '')
+  app.delete('/admin/posts/:id', jsonWrite, async (c) => {
+    const b = await readRemovalBody(c)
+    if (b instanceof Response) return b
+    const result = await service.deletePost(c.req.param('id') ?? '', { kind: 'administrator', category: b.category, note: b.note })
     if ('error' in result) return c.json({ error: result.error === 'unknown' ? 'unknown post' : 'not a local post' }, result.error === 'unknown' ? 404 : 409)
     return c.json({ ok: true }, 200)
   })
