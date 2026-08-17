@@ -27,6 +27,7 @@ import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult 
 import type { WriteTx } from './database.ts'
 import { encodeCursor } from '../domain/cursor.ts'
 import { clampLimit } from '../domain/source-repository.ts'
+import { approvedInstancePrefixes, prefixUpperBound } from './membership.ts'
 import { rowToItemAuditEvent, hideItem, restoreItem } from './moderation.ts'
 import type { ItemAuditRow } from './moderation.ts'
 import type { ModerationCommandInput, ItemModerationResult } from './types.ts'
@@ -328,12 +329,41 @@ function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
 }
 
 // The schedulability predicate (spec §1.3): enabled, not blocked, and either
-// actively subscribed or federated. Shared by listSchedulableSources (the full
-// membership-check list push.ts uses), countSchedulableSources, and
-// listDueSources (both below) — one predicate, never re-expressed.
-const SCHEDULABLE_SOURCE_WHERE = `s.operation = 'enabled' AND s.governance != 'blocked'
+// actively subscribed, federated, or an origin_verification member of an
+// instance we federate with. Shared by listSchedulableSources (the full
+// membership-check list push.ts uses), countSchedulableSources, listDueSources
+// and schedulerStats (all below) — one predicate, never re-expressed.
+//
+// The member arm (2026-08-17) fixes a bug that predates it: verification mints
+// a single_publisher source for an author's own feed and fetches it ONCE, and
+// that delivery then outranks the aggregate one in display selection. Left
+// unschedulable, the copy readers actually see was frozen at ingest, so no
+// later change at the origin could reach them — including a removal, which
+// under the deletion-as-edit design (local.ts's removeLocalPost) travels as an
+// ordinary content edit at the same guid, not as an absence.
+//
+// ponytail: schedulability follows the instance model — one approved instance
+// makes every origin_verification source on that scheme+host pollable. That is
+// how membership already works everywhere else (governance cascade, reap
+// guard), but this is the first consumer that spends NETWORK on it. Narrow it
+// to per-author opt-in only if a peer's author count ever makes the poll
+// budget hurt.
+//
+// Prefixes are computed by instancePrefix and bound as parameters rather than
+// re-derived in SQL: membership.ts is the one definition of what an instance
+// is, and a SQL copy of it would be a second one, free to drift. Every query
+// below opens its WHERE with this clause, so these params always bind FIRST.
+function schedulableSourceWhere(tx: ReadTx): { sql: string; params: string[] } {
+  const prefixes = approvedInstancePrefixes(tx, { activeOnly: true })
+  const ranges = prefixes.map(() => `(s.canonical_url >= ? AND s.canonical_url < ?)`).join(' OR ')
+  const member = prefixes.length === 0 ? '' : ` OR (s.provenance = 'origin_verification' AND (${ranges}))`
+  return {
+    sql: `s.operation = 'enabled' AND s.governance != 'blocked'
   AND (EXISTS (SELECT 1 FROM source_subscriptions_v2 sub WHERE sub.source_id = s.id AND sub.state = 'active')
-       OR EXISTS (SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = s.id))`
+       OR EXISTS (SELECT 1 FROM federation_relationships_v2 f WHERE f.source_id = s.id)${member})`,
+    params: prefixes.flatMap((p) => [p, prefixUpperBound(p)]),
+  }
+}
 
 // The local-mutation write seam (Task 3): each command runs inside ONE db.write()
 // so local storage, logical metadata, and journal effects commit atomically (spec
@@ -679,9 +709,10 @@ export function createLogicalStore(db: DatabaseContext) {
     // --- scheduler support (spec §1.3) ------------------------------------
     listSchedulableSources(): string[] {
       return db.read((tx) => {
+        const sched = schedulableSourceWhere(tx)
         const rows = tx.prepare(
-          `SELECT s.id FROM remote_sources_v2 s WHERE ${SCHEDULABLE_SOURCE_WHERE} ORDER BY s.id ASC`,
-        ).all() as { id: string }[]
+          `SELECT s.id FROM remote_sources_v2 s WHERE ${sched.sql} ORDER BY s.id ASC`,
+        ).all(...sched.params) as { id: string }[]
         return rows.map((r) => r.id)
       })
     },
@@ -713,9 +744,12 @@ export function createLogicalStore(db: DatabaseContext) {
       })
     },
     countSchedulableSources(): number {
-      return db.read((tx) => (tx.prepare(
-        `SELECT COUNT(*) AS n FROM remote_sources_v2 s WHERE ${SCHEDULABLE_SOURCE_WHERE}`,
-      ).get() as { n: number }).n)
+      return db.read((tx) => {
+        const sched = schedulableSourceWhere(tx)
+        return (tx.prepare(
+          `SELECT COUNT(*) AS n FROM remote_sources_v2 s WHERE ${sched.sql}`,
+        ).get(...sched.params) as { n: number }).n
+      })
     },
     // Staleness-ordered (oldest last_poll_at first, NULLs first — never-polled
     // is maximally overdue), LIMIT-bounded due-query (spec 2026-07-28 §1). A
@@ -731,10 +765,11 @@ export function createLogicalStore(db: DatabaseContext) {
         const nowMs = Date.parse(input.now)
         const baseCutoff = new Date(nowMs - input.pollSeconds * 1000).toISOString()
         const pushCutoff = new Date(nowMs - input.pollSeconds * 1000 * input.pushPollFactor).toISOString()
+        const sched = schedulableSourceWhere(tx)
         const rows = tx.prepare(
           `SELECT s.id AS id, s.canonical_url AS canonical_url FROM remote_sources_v2 s
            LEFT JOIN source_health_v2 h ON h.source_id = s.id
-           WHERE ${SCHEDULABLE_SOURCE_WHERE}
+           WHERE ${sched.sql}
              AND (
                h.last_poll_at IS NULL
                OR h.last_poll_at < CASE
@@ -743,7 +778,7 @@ export function createLogicalStore(db: DatabaseContext) {
              )
            ORDER BY h.last_poll_at ASC, s.id ASC
            LIMIT ?`,
-        ).all(input.now, pushCutoff, baseCutoff, input.limit) as { id: string; canonical_url: string }[]
+        ).all(...sched.params, input.now, pushCutoff, baseCutoff, input.limit) as { id: string; canonical_url: string }[]
         return rows.map((r) => ({ id: r.id, canonicalUrl: r.canonical_url }))
       })
     },
@@ -758,15 +793,16 @@ export function createLogicalStore(db: DatabaseContext) {
       windowSpanSeconds: number | null
     } {
       return db.read((tx) => {
+        const sched = schedulableSourceWhere(tx)
         const { n: catalogSize } = tx.prepare(
-          `SELECT COUNT(*) AS n FROM remote_sources_v2 s WHERE ${SCHEDULABLE_SOURCE_WHERE}`,
-        ).get() as { n: number }
+          `SELECT COUNT(*) AS n FROM remote_sources_v2 s WHERE ${sched.sql}`,
+        ).get(...sched.params) as { n: number }
 
         const staleness = tx.prepare(
           `SELECT MIN(h.last_poll_at) AS oldest, SUM(CASE WHEN h.last_poll_at IS NULL THEN 1 ELSE 0 END) AS neverPolled
            FROM remote_sources_v2 s LEFT JOIN source_health_v2 h ON h.source_id = s.id
-           WHERE ${SCHEDULABLE_SOURCE_WHERE}`,
-        ).get() as { oldest: string | null; neverPolled: number | null }
+           WHERE ${sched.sql}`,
+        ).get(...sched.params) as { oldest: string | null; neverPolled: number | null }
         const mostOverdueSeconds = catalogSize === 0 || (staleness.neverPolled ?? 0) > 0 || staleness.oldest === null
           ? null
           : Math.round((Date.parse(input.now) - Date.parse(staleness.oldest)) / 1000)

@@ -12,7 +12,7 @@ import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_I
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
 import type { LogicalStore } from '../logical/store.ts'
-import { memberRows, memberRowsPage, memberCounts, healMembers, approvedInstanceFor, instancePrefix, prefixUpperBound } from '../logical/membership.ts'
+import { memberRows, memberRowsPage, memberCounts, healMembers, approvedInstanceFor, approvedInstancePrefixes, prefixUpperBound } from '../logical/membership.ts'
 import { findCurrentDeliveryVersion } from '../logical/acquisition.ts'
 import { deleteObservationVersions } from '../logical/tombstones.ts'
 
@@ -684,20 +684,11 @@ export class SqliteRepository implements Repository, SourceRepository {
   // share one definition. Approved instances are few (single digits), so the
   // OR-list is small and every bound is a parameter, never interpolated.
   private memberExclusionClause(): { sql: string; params: string[] } {
-    const instances = this.raw.prepare(
-      `SELECT s.canonical_url FROM remote_sources_v2 s
-       JOIN federation_relationships_v2 f ON f.source_id = s.id AND f.status = 'approved'`,
-    ).all() as { canonical_url: string }[]
-    const ranges: string[] = []
-    const params: string[] = []
-    const seen = new Set<string>()
-    for (const i of instances) {
-      const prefix = instancePrefix(i.canonical_url)
-      if (!prefix || seen.has(prefix)) continue
-      seen.add(prefix)
-      ranges.push('(canonical_url >= ? AND canonical_url < ?)')
-      params.push(prefix, prefixUpperBound(prefix))
-    }
+    // No activeOnly: a blocked or paused instance still governs its members,
+    // so they stay protected from orphan reaping. See approvedInstancePrefixes.
+    const prefixes = approvedInstancePrefixes(this.raw)
+    const ranges = prefixes.map(() => '(canonical_url >= ? AND canonical_url < ?)')
+    const params = prefixes.flatMap((p) => [p, prefixUpperBound(p)])
     // No approved instances ⇒ nothing can be a member ⇒ no exclusion at all
     // (an empty OR-list would be a syntax error, not a no-op).
     if (ranges.length === 0) return { sql: '', params: [] }

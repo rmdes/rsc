@@ -67,6 +67,104 @@ test('countSchedulableSources matches listSchedulableSources().length', async ()
   raw.close()
 })
 
+// --- instance members are schedulable (2026-08-17) ---------------------------
+// Origin verification mints a single_publisher source for an author's own feed
+// and fetches it ONCE. That delivery then outranks the aggregate one and
+// becomes what readers see — so a copy nobody ever refreshes was the copy on
+// display, and no later edit or removal at the origin could reach us. A member
+// of an instance we federate with is therefore schedulable in its own right.
+// Approved-only, deliberately: the instance itself is schedulable while its
+// federation is still pending, but its members are a far wider blast radius.
+
+// `overridden` is written explicitly in both seeds: the column DEFAULTs to 1
+// (sqlite.ts), but a federation source is created with 1 and a
+// verification-minted member with 0, and 0-vs-1 decides whether the ordinary
+// governance cascade reaches the row. Relying on the default would seed
+// admin-overridden members and quietly test the wrong thing.
+function seedInstance(raw: Raw, id: string, host: string, opts: { status?: string; governance?: string; operation?: string } = {}): void {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
+     VALUES (?, ?, 'aggregate', ?, ?, 'admin_federation', NULL, 0, 1, ?)`,
+  ).run(id, `https://${host}/users/rss.xml`, opts.operation ?? 'enabled', opts.governance ?? 'allowed', NOW)
+  raw.prepare(`INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)`)
+    .run(id, opts.status ?? 'approved', NOW, NOW)
+}
+
+// Column-for-column what verification.ts's findOrCreateOriginSource writes:
+// single_publisher, origin_verification, overridden 0, and — the point — no
+// subscription and no federation row of its own.
+function seedMember(raw: Raw, id: string, url: string, opts: { governance?: string; operation?: string } = {}): void {
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
+     VALUES (?, ?, 'single_publisher', ?, ?, 'origin_verification', NULL, 0, 0, ?)`,
+  ).run(id, url, opts.operation ?? 'enabled', opts.governance ?? 'allowed', NOW)
+}
+
+test('an origin_verification member of an approved instance is schedulable', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test')
+  seedMember(raw, 'member', 'https://peer.test/users/claude/feed.xml')
+  expect(store.listSchedulableSources()).toEqual(['inst', 'member'])
+  expect(store.countSchedulableSources()).toBe(2)
+  expect(store.listDueSources({ now: NOW, pollSeconds: 60, pushPollFactor: 10, limit: 10 }).map((d) => d.id))
+    .toEqual(['inst', 'member'])
+  raw.close()
+})
+
+test('an origin_verification source under no approved instance stays unschedulable', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test')
+  // Verified through an aggregator we merely subscribe to — a different host,
+  // so no approved instance governs it. We do not poll the whole web.
+  seedMember(raw, 'stranger', 'https://elsewhere.test/authors/bob.xml')
+  expect(store.listSchedulableSources()).toEqual(['inst'])
+  raw.close()
+})
+
+test('members of a pending-federation instance are not schedulable', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test', { status: 'pending' })
+  seedMember(raw, 'member', 'https://peer.test/users/claude/feed.xml')
+  expect(store.listSchedulableSources()).toEqual(['inst']) // the instance itself still is
+  raw.close()
+})
+
+test('a blocked member is not schedulable even under an approved instance', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test')
+  seedMember(raw, 'member', 'https://peer.test/users/claude/feed.xml', { governance: 'blocked' })
+  expect(store.listSchedulableSources()).toEqual(['inst'])
+  raw.close()
+})
+
+test('a member is not schedulable once its instance is blocked', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test', { governance: 'blocked' })
+  seedMember(raw, 'member', 'https://peer.test/users/claude/feed.xml')
+  expect(store.listSchedulableSources()).toEqual([])
+  raw.close()
+})
+
+// Pausing an instance must stop traffic to the whole instance, members
+// included. An instance is one feed; its members are as many as it has
+// authors, so members that kept polling through a pause would hit the peer
+// harder than never pausing at all.
+test('pausing an instance also stops polling its members', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test', { operation: 'paused' })
+  seedMember(raw, 'member', 'https://peer.test/users/claude/feed.xml')
+  expect(store.listSchedulableSources()).toEqual([])
+  raw.close()
+})
+
+test('scheme is part of the instance identity — http members do not ride an https federation', async () => {
+  const { raw, store } = await fresh()
+  seedInstance(raw, 'inst', 'peer.test')
+  seedMember(raw, 'member', 'http://peer.test/users/claude/feed.xml')
+  expect(store.listSchedulableSources()).toEqual(['inst'])
+  raw.close()
+})
+
 test('listDueSources: never-polled sources are due, ordered by id when equally stale', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 'c')

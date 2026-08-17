@@ -34,6 +34,33 @@ export function approvedInstanceFor(raw: Db, memberUrl: string): ApprovedInstanc
   return { id: pick.id, canonicalUrl: pick.canonical_url, governance: pick.governance, createdAt: pick.created_at }
 }
 
+// The distinct prefixes of every approved-federated instance — the ONE place
+// the member prefix set is derived. Both consumers below build their own SQL
+// around it (they mean different things by "member"), but neither re-derives
+// the set: sqlite.ts's memberExclusionClause protects members from orphan
+// reaping, store.ts's schedulability predicate decides which get polled.
+//
+// `activeOnly` is what separates them. Reaping asks "does an instance govern
+// this row at all?", so a blocked or paused instance still counts — matching
+// approvedInstanceFor above, which deliberately PREFERS a blocked instance.
+// Scheduling asks "are we actively exchanging with it?", where blocked and
+// paused must both stop traffic: an instance is one feed, its members are as
+// many as it has authors, so continuing to poll them through a pause would
+// hit the peer harder than not pausing at all.
+export function approvedInstancePrefixes(raw: Db, opts: { activeOnly?: boolean } = {}): string[] {
+  const rows = raw.prepare(
+    `SELECT s.canonical_url FROM remote_sources_v2 s
+     JOIN federation_relationships_v2 f ON f.source_id = s.id AND f.status = 'approved'
+     ${opts.activeOnly ? `WHERE s.governance != 'blocked' AND s.operation = 'enabled'` : ''}`,
+  ).all() as { canonical_url: string }[]
+  const prefixes = new Set<string>()
+  for (const r of rows) {
+    const p = instancePrefix(r.canonical_url)
+    if (p) prefixes.add(p)
+  }
+  return [...prefixes].sort()
+}
+
 // The shared range fragment (F7/PT7): both memberRows and memberRowsPage
 // build their WHERE clause from this constant, and the EXPLAIN plan test
 // asserts against it directly — a hand-retyped copy in the test could drift
