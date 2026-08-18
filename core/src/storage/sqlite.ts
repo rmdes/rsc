@@ -1591,6 +1591,18 @@ export const MIGRATIONS: string[][] = [
   // migration #22 — mid-array insertion corrupts user_version on live
   // databases.
   [],
+  // Migration 24 (2026-08-18): guest posts are LOCAL ONLY — a guest account is
+  // transient, and once swept its per-user feed 404s forever, stranding peer
+  // copies attributed to an account that no longer exists. Why the flag is on
+  // the post rather than derived from the author: createLocalPost in
+  // logical/local.ts. Backfill covers currently-anonymous authors; already-swept
+  // guests have no rows left here, and their peer-side residue needs the dead
+  // sources deleted instead.
+  [
+    'ALTER TABLE posts ADD COLUMN local_only integer NOT NULL DEFAULT 0',
+    `UPDATE posts SET local_only = 1 WHERE author_id IN (
+       SELECT u.id FROM users u JOIN user au ON au.id = u.auth_user_id WHERE au.isAnonymous = 1)`,
+  ],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {

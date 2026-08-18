@@ -158,10 +158,18 @@ export function createLocalPost(input: { tx: WriteTx; author: User; content: str
   // emits <source:inReplyTo> and cross-instance conversations reassemble.
   const inReplyToRef = parentLogicalItemId ? parentReplyRef(tx, parentLogicalItemId) : null
 
+  // Guest posts never federate (migration 24). Stamped HERE and not derived
+  // from the author on read, because onLinkAccount (auth.ts) re-points the same
+  // core row at a registered auth user — a derived rule would publish the whole
+  // back-catalogue the moment a guest signs up.
+  const isGuest = !!tx.prepare(
+    `SELECT 1 FROM users u JOIN user au ON au.id = u.auth_user_id WHERE u.id = ? AND au.isAnonymous = 1`,
+  ).get(author.id)
+
   tx.prepare(
-    `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at, in_reply_to, in_reply_to_post_id, thread_root_id, source_name, source_feed_url, content_markdown, edited_at, reply_context_author, reply_context_snippet)
-     VALUES (?, ?, 'local', ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)`,
-  ).run(id, author.id, randomUUID(), content, url, now, now, inReplyToRef, parentLogicalItemId, threadRootId)
+    `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at, in_reply_to, in_reply_to_post_id, thread_root_id, source_name, source_feed_url, content_markdown, edited_at, reply_context_author, reply_context_snippet, local_only)
+     VALUES (?, ?, 'local', ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)`,
+  ).run(id, author.id, randomUUID(), content, url, now, now, inReplyToRef, parentLogicalItemId, threadRootId, isGuest ? 1 : 0)
 
   materializeLocalItem(tx, { id, permalink, timelineSortAt: now, parentLogicalItemId })
   appendJournal(tx, { kind: 'upsert', logicalItemId: id, changeMask: 'presentation' }, now)

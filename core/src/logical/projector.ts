@@ -909,9 +909,12 @@ export function projectTimeline(tx: ReadTx, query: TimelineQuery): LogicalTimeli
 // firehose (`origin=local` WITHOUT the river predicate) and local-account feeds
 // (local_author activity). Both transport local replies, so no river filter here.
 export function projectLocalActivity(tx: ReadTx, opts: { authorId: string | null; limit: number }): LogicalItemDto[] {
+  // local_only excludes guest posts (migration 24). Safe to filter here: this
+  // backs ONLY the firehose and the two per-user feeds; what readers see on
+  // this instance comes from projectTimeline/projectItem.
   const rows = (opts.authorId
-    ? tx.prepare(`SELECT id FROM posts WHERE source = 'local' AND author_id = ? ORDER BY published_at DESC, id DESC LIMIT ?`).all(opts.authorId, opts.limit)
-    : tx.prepare(`SELECT id FROM posts WHERE source = 'local' ORDER BY published_at DESC, id DESC LIMIT ?`).all(opts.limit)) as { id: string }[]
+    ? tx.prepare(`SELECT id FROM posts WHERE source = 'local' AND local_only = 0 AND author_id = ? ORDER BY published_at DESC, id DESC LIMIT ?`).all(opts.authorId, opts.limit)
+    : tx.prepare(`SELECT id FROM posts WHERE source = 'local' AND local_only = 0 ORDER BY published_at DESC, id DESC LIMIT ?`).all(opts.limit)) as { id: string }[]
   const anon: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
   const out: LogicalItemDto[] = []
   for (const r of rows) { const d = projectItem(tx, r.id, anon); if (d) out.push(d) }

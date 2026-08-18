@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest'
 import { randomUUID, createHash } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { createSqliteRepository, MIGRATIONS } from '../src/storage/sqlite.ts'
 import { createEventBus } from '../src/domain/bus.ts'
 import { createService } from '../src/domain/service.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
@@ -154,4 +154,88 @@ test('O4: comments.xml emits a remote reply ORIGIN guid (permalink + opaque wire
   // NOT our internal UUID (the defect: the origin instance can't dedupe its own item).
   expect(xml).not.toContain(idA)
   expect(xml).not.toContain(idB)
+})
+
+// --- guests are local-only (2026-08-18) --------------------------------------
+// A guest account is transient: it is swept if it never registers, and its
+// per-user feed 404s from then on. Federating its posts therefore strands
+// content on peers attributed to an account that no longer exists. So a guest's
+// posts stay on this instance, and the flag is stamped ON THE POST at write
+// time — registering later publishes nothing retroactively.
+
+function seedGuest(raw: Raw, id: string, handle: string): void {
+  raw.prepare(`INSERT INTO user (id, name, email, emailVerified, image, createdAt, updatedAt, isAnonymous) VALUES (?, ?, ?, 0, NULL, ?, ?, 1)`)
+    .run(`auth-${id}`, handle, `${handle}@guest.invalid`, NOW, NOW)
+  raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at, auth_user_id) VALUES (?, 'local', ?, ?, NULL, ?, ?)`)
+    .run(id, handle, handle, NOW, `auth-${id}`)
+}
+// The exact shape onLinkAccount produces (core/src/auth.ts): the SAME core row
+// is re-pointed at a registered auth user. Handle and posts are untouched.
+function registerGuest(raw: Raw, id: string): void {
+  raw.prepare(`INSERT INTO user (id, name, email, emailVerified, image, createdAt, updatedAt, isAnonymous) VALUES (?, 'real', ?, 1, NULL, ?, ?, 0)`)
+    .run(`auth-real-${id}`, `real-${id}@example.test`, NOW, NOW)
+  raw.prepare(`UPDATE users SET auth_user_id = ? WHERE id = ?`).run(`auth-real-${id}`, id)
+}
+
+test('a guest post is absent from the firehose and from its own per-user feed', async () => {
+  const { app, repo, store } = await makeApp()
+  seedUser(repo.raw, 'u1', 'alice')
+  seedPost(repo.raw, { id: 'p1', author: 'u1', content: 'REGISTEREDBODY', url: 'https://rsc.test/post/p1' })
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  // through the REAL write path — seedPost bypasses the stamping and would
+  // assert against a state the application cannot produce.
+  const guest = (await repo.getUser('g1'))!
+  store.createLocalPost({ author: guest, content: 'GUESTBODY', replyToId: null, now: NOW, publicUrl: 'https://rsc.test' })
+
+  const fire = await (await app.request('/users/rss.xml')).text()
+  expect(fire).toContain('REGISTEREDBODY')
+  expect(fire).not.toContain('GUESTBODY')
+
+  const own = await (await app.request('/users/guest-abc/feed.xml')).text()
+  expect(own).not.toContain('GUESTBODY') // not separately subscribable either
+
+  const ownJson = await (await app.request('/users/guest-abc/feed.json')).text()
+  expect(ownJson).not.toContain('GUESTBODY')
+})
+
+test('registering does NOT publish the back-catalogue; only posts written after it federate', async () => {
+  const { app, repo, store } = await makeApp()
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  const guest = (await repo.getUser('g1'))!
+  store.createLocalPost({ author: guest, content: 'ASGUEST', replyToId: null, now: NOW, publicUrl: 'https://rsc.test' })
+
+  registerGuest(repo.raw, 'g1')
+  const nowRegistered = (await repo.getUser('g1'))!
+  store.createLocalPost({ author: nowRegistered, content: 'AFTERJOINING', replyToId: null, now: NOW, publicUrl: 'https://rsc.test' })
+
+  const fire = await (await app.request('/users/rss.xml')).text()
+  expect(fire).not.toContain('ASGUEST')      // written as a guest — stays local forever
+  expect(fire).toContain('AFTERJOINING')     // written as a real user — federates
+})
+
+test('a guest post stays readable on the instance itself', async () => {
+  const { app, repo, store } = await makeApp()
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  const guest = (await repo.getUser('g1'))!
+  const item = store.createLocalPost({ author: guest, content: 'GUESTBODY', replyToId: null, now: NOW, publicUrl: 'https://rsc.test' })
+  const res = await app.request(`/post/${item.id}/thread`)
+  expect(res.status).toBe(200)
+  expect(JSON.stringify(await res.json())).toContain('GUESTBODY')
+})
+
+test('migration 24 backfill marks an existing guest author\'s posts local-only', async () => {
+  const { repo } = await makeApp()
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  seedUser(repo.raw, 'u1', 'alice')
+  // pre-migration state: both posts unflagged
+  seedPost(repo.raw, { id: 'p1', author: 'g1', content: 'GUESTBODY' })
+  seedPost(repo.raw, { id: 'p2', author: 'u1', content: 'REGISTEREDBODY' })
+  repo.raw.prepare(`UPDATE posts SET local_only = 0`).run()
+
+  // run the SHIPPED backfill statement, not a retyped copy of it
+  for (const stmt of MIGRATIONS[23]) { if (stmt.startsWith('UPDATE')) repo.raw.exec(stmt) }
+
+  const flag = (id: string) => (repo.raw.prepare(`SELECT local_only AS f FROM posts WHERE id = ?`).get(id) as { f: number }).f
+  expect(flag('p1')).toBe(1)
+  expect(flag('p2')).toBe(0)
 })

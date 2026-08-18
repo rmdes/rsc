@@ -2451,3 +2451,76 @@ Allow the admin to replace the text in the sidebar about section with its own te
 repo and the footer still links to it, not to a landing page).
 
 Move the about page to the rsc-site repository, replace the about footer link with a link to landing page of RSC : https://rmdes.be
+---
+
+## Deletion propagation — DONE. Residue below.
+
+**Shipped `53e3886`, deployed to all 5 (2026-08-17).** Removing a post replaces
+its content with a notice; peers ingest it as an ordinary edit. Verified live
+across four instances with two identities, thread intact under the removed post.
+
+The fix that made it work: verification-minted per-author sources won display
+selection but were never polled, so **no remote edit had ever propagated**.
+They are now schedulable when an active approved-federated instance governs them.
+
+### Open — guests federate; they should not
+
+**Decided (operator, 2026-08-18): guest accounts are LOCAL ONLY. A guest's posts
+federate only once they join as a real user.** This removes the dead-feed
+problem at the source instead of managing its residue.
+
+Why it exists: guests are transient (anon TTL sweep; zero remain on rsc), but
+while alive they post and `core/src/domain/feed.ts:245,351` stamp each item with
+`source: /users/<handle>/feed.xml`. After the sweep that URL 404s forever,
+leaving peers **13 items on alice attributed to accounts that no longer exist**,
+each with a source now polled forever.
+
+Change is small and reuses what exists:
+- Firehose selects with no author filter at all —
+  `projectLocalActivity({authorId:null})`, `core/src/logical/projector.ts:911-919`.
+  Add the guest exclusion already written at `core/src/storage/sqlite.ts:447`
+  (`users.auth_user_id → user.isAnonymous`).
+- Same gate on `/users/:handle/feed.xml` (`core/src/api/logical-routes/read.ts:169`)
+  so a guest feed is not separately subscribable.
+- Note the layering: `projector.ts` would join better-auth's `user` table;
+  `sqlite.ts` already does this, but the logical layer does not yet.
+
+**Registration keeps the `guest-` handle forever** — there is no rename path in
+`core/src/`. So `handle LIKE 'guest-%'` is NOT a valid test for guest-ness: a
+registered user can carry that prefix, and a swept guest leaves none. Federation
+must gate on `user.isAnonymous`, never on the handle. (Separately: a registered
+user stuck with a `guest-xxxxxx` handle is its own small wart, worth its own fix
+once guests can federate at all.)
+
+**One consequence to confirm before building.** `onLinkAccount`
+(`core/src/auth.ts:73-82`) re-points the guest's core row to the new auth user
+on registration — same row, same handle, same posts, `isAnonymous` now 0. So
+gating on current author state means **registering retroactively federates the
+guest's entire back-catalogue**. If that is intended ("join and your posts go
+out"), nothing more to do. If only posts made *after* joining should federate,
+the flag has to be stamped on the post at creation, not derived from the author.
+
+Does NOT fix the 13 items already on peers — forward-only. Deleting the dead
+sources is separate and safe: all 13 have a firehose fallback delivery and would
+reselect it. Blocked by `reapSource`'s `instance_member` guard
+(`core/src/domain/source-repository.ts:265-267`), which protects exactly these rows.
+
+### Open — two small ones, no decision needed
+
+- **Notice precedence.** An author deleting after a moderator overwrites the
+  moderator's category-specific notice with a generic one. Pick a winner, guard
+  it in `removeLocalPost`.
+- **`instancePrefixClient`** (`web/src/routes/admin/feeds/+page.server.ts:63-80`)
+  hand-copies core's membership rule. Have core return an `isInstanceMember`
+  flag so web stops deriving it.
+
+### Operator actions
+
+- Rotate the 4 RSC API keys (printed to a transcript), update `RSC_IDENTITIES`.
+- An API key on a peer instance would let us test whether a peer can reply to a
+  post the origin removed — peers get the notice as content but never learn the
+  removed *state*.
+
+**Accepted, not a task:** propagation is per-author-feed, so a multi-author
+thread updates piecewise and converges within a cycle. The unit of federation is
+a feed; there is no atomic thread update.
