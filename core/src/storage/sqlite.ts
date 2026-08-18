@@ -7,7 +7,7 @@ import { HandleTakenError } from '../domain/types.ts'
 import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { RemoteSource, SourceSubscription, SourceAuditEvent, Page, SourceSummary, SourceDetail, PushSummary, FederationStatus, OwnerSourceFollow, PublicLocalFollow, PublicSourceFollow, PublicFollowingEntry, OwnerFollowingView, CommandEnvelope, AttributionMode, AuditCategory, FederationRelationship, SourceTransitionResult, SourceSubscriptionState, SourceGovernance, SourceOperation } from '../domain/types.ts'
 import type { SourceRepository, Cursor, SubscribeResult, ImportSourcesResult, UnsubscribeResult, EstablishFederationResult, SourceTransitionAction, SourceAxes, ReapCommandResult } from '../domain/source-repository.ts'
-import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, reapSource as reapSourceFn, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
+import { encodeCursor, clampLimit, checkCommand, storeCommand, reapSourceIfOrphaned, reapSource as reapSourceFn, DEAD_SOURCE_FAILURES, SOURCE_TRANSITIONS, CATEGORY_OPTIONAL_ACTIONS } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
 import { appendJournal } from '../logical/journal.ts'
 import { scheduleFanout } from '../logical/fanout.ts'
@@ -1304,6 +1304,26 @@ export class SqliteRepository implements Repository, SourceRepository {
         deleteAccount(o.id)
         swept++
       }
+    })()
+    return { swept }
+  }
+
+  // Dead-source sweep. Candidates are selected ONLY on health (never succeeded,
+  // failed repeatedly); every question of whether a given source may actually be
+  // removed is left to reapSource, which is the one authority on that. So this
+  // cannot delete a feed somebody subscribes to, a federated peer, or an
+  // admin-retained source — reapSource refuses each, and the sweep just counts a
+  // refusal as "not swept". Its own two evidence guards yield here because a URL
+  // that has never resolved is not evidence of anything (isDeadSource).
+  sweepDeadSources(): { swept: number } {
+    const raw = this.raw
+    const candidates = raw.prepare(
+      `SELECT s.id AS id FROM remote_sources_v2 s JOIN source_health_v2 h ON h.source_id = s.id
+        WHERE h.last_success_at IS NULL AND h.consecutive_failures >= ?`,
+    ).all(DEAD_SOURCE_FAILURES) as { id: string }[]
+    let swept = 0
+    raw.transaction(() => {
+      for (const c of candidates) if (reapSourceIfOrphaned(raw, c.id)) swept++
     })()
     return { swept }
   }

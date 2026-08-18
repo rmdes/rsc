@@ -250,6 +250,23 @@ export type ReapCommandResult = ReapResult | { kind: 'unknown' } | { kind: 'conf
 // regardless of force; admin_retained, source_audit_v2, and verified-origin
 // evidence are each gated on `!opts.force` — force must be explicit to lift
 // any of them, never silent.
+// A source whose feed has NEVER once been fetched successfully and has failed
+// repeatedly is a dead reference, not a live source. Both retention guards in
+// reapSource below exist to preserve evidence for a source that still EXISTS;
+// neither should pin a URL that has never resolved. The commonest case: a guest
+// account posts, verification mints a source for its per-user feed, the guest is
+// swept, and that feed 404s forever while its items keep displaying from it.
+// ponytail: fixed threshold, no setting — at one poll per cycle this is hours of
+// unbroken failure, and nobody has asked to tune it.
+export const DEAD_SOURCE_FAILURES = 20
+
+export function isDeadSource(tx: Db, sourceId: string): boolean {
+  const h = tx.prepare(
+    `SELECT last_success_at, consecutive_failures FROM source_health_v2 WHERE source_id = ?`,
+  ).get(sourceId) as { last_success_at: string | null; consecutive_failures: number } | undefined
+  return h !== undefined && h.last_success_at === null && h.consecutive_failures >= DEAD_SOURCE_FAILURES
+}
+
 export function reapSource(tx: Db, sourceId: string, opts: { force: boolean }, now: string = new Date().toISOString()): ReapResult {
   const { n } = tx.prepare(`SELECT COUNT(*) AS n FROM source_subscriptions_v2 WHERE source_id = ?`).get(sourceId) as { n: number }
   if (n > 0) return { kind: 'refused', reason: 'has_subscribers' }
@@ -261,7 +278,11 @@ export function reapSource(tx: Db, sourceId: string, opts: { force: boolean }, n
   // gating reap on the claim alone (verified_origin_evidence, below) let a
   // still-governed member get auto-reaped the moment its claim lapsed. Check
   // membership directly instead — force is still the only way past it.
-  if (!opts.force && source.provenance === 'origin_verification' && approvedInstanceFor(tx, source.canonical_url) !== null) {
+  // `dead` narrows the two evidence-retention guards below (NOT the subscriber,
+  // federation, admin_retained or audit_history guards — those record a human
+  // decision, which a broken feed does not undo).
+  const dead = isDeadSource(tx, sourceId)
+  if (!opts.force && !dead && source.provenance === 'origin_verification' && approvedInstanceFor(tx, source.canonical_url) !== null) {
     return { kind: 'refused', reason: 'instance_member' }
   }
   if (!opts.force && source.admin_retained !== 0) return { kind: 'refused', reason: 'admin_retained' }
@@ -271,7 +292,7 @@ export function reapSource(tx: Db, sourceId: string, opts: { force: boolean }, n
   // back a verified_origin publisher claim — is never removed UNLESS force is
   // explicitly set (this is the one guard force CAN lift, but never silently).
   const hasVerifiedOrigin = tx.prepare(`SELECT 1 FROM publisher_claims_v2 WHERE source_id = ? AND evidence_level = 'verified_origin' LIMIT 1`).get(sourceId)
-  if (hasVerifiedOrigin && !opts.force) return { kind: 'refused', reason: 'verified_origin_evidence' }
+  if (hasVerifiedOrigin && !opts.force && !dead) return { kind: 'refused', reason: 'verified_origin_evidence' }
   // Evidence-aware cleanup: remove the source's evidence under the shared step-4
   // rules and delete the source row. NO block tombstone; ONE reset iff an ordinary
   // item was affected (a zero-effect cleanup appends nothing).

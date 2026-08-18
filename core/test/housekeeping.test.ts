@@ -158,3 +158,24 @@ test('sweepHousekeeping reaps a source left orphaned by the swept account\'s del
   expect(anonSwept).toBe(1)
   expect(repo.raw.prepare(`SELECT id FROM remote_sources_v2 WHERE id = ?`).get('source-1')).toBeUndefined()
 })
+
+// Wiring test. source-cleanup.test.ts calls repo.sweepDeadSources() directly, so
+// on its own it passes whether or not the hourly job ever invokes it — the same
+// unwired-seam shape that let guest posts keep federating by push earlier today.
+test('the hourly sweep actually runs the dead-source sweep', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const config = loadConfig(unverifiedEnv)
+  const raw = repo.raw
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
+     VALUES ('dead', 'https://peer.test/users/guest-x/feed.xml', 'single_publisher', 'enabled', 'allowed', 'origin_verification', NULL, 0, 0, '2026-01-01T00:00:00.000Z')`,
+  ).run()
+  raw.prepare(
+    `INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures)
+     VALUES ('dead', '2026-01-02T00:00:00.000Z', NULL, '2026-01-02T00:00:00.000Z', 40)`,
+  ).run()
+
+  const { deadSourcesSwept } = await sweepHousekeeping(repo, config)
+  expect(deadSourcesSwept).toBe(1)
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = 'dead'`).get()).toBeUndefined()
+})

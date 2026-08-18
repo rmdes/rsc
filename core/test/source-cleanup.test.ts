@@ -1,7 +1,7 @@
 import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
-import { reapSourceIfOrphaned, fingerprintRequest } from '../src/domain/source-repository.ts'
+import { reapSourceIfOrphaned, fingerprintRequest, DEAD_SOURCE_FAILURES } from '../src/domain/source-repository.ts'
 import { trimSourceToCap } from '../src/logical/tombstones.ts'
 import type { CommandEnvelope } from '../src/domain/types.ts'
 import { randomUUID } from 'node:crypto'
@@ -634,4 +634,110 @@ test('trimSourceToCap chunks its dynamic IN (...) clauses so an excess set past 
   expect(countRows(raw, 'logical_items_v2')).toBe(1)
   expect(countRows(raw, 'deliveries_v2')).toBe(1)
   repo.close()
+})
+
+// --- dead-source sweep (2026-08-18) -------------------------------------------
+// A guest posts, verification mints a source for its per-user feed, the guest is
+// swept, and that feed 404s forever while its items keep displaying from it.
+// Measured across the fleet before this shipped: 34 never-succeeded sources, of
+// which 11 were REAL user subscriptions to broken feeds (a blog, several
+// podcasts, 5000+ consecutive failures each). Deleting those would silently
+// unsubscribe people, so the sweep selects only on health and lets reapSource
+// decide what may actually go.
+
+function seedHealth(raw: Raw, sourceId: string, failures: number, succeeded: boolean): void {
+  raw.prepare(
+    `INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures) VALUES (?, ?, ?, ?, ?)`,
+  ).run(sourceId, NOW, succeeded ? NOW : null, NOW, failures)
+}
+function seedVerificationSource(raw: Raw, url: string): string {
+  const id = randomUUID()
+  raw.prepare(
+    `INSERT INTO remote_sources_v2 (id, canonical_url, attribution_mode, operation, governance, provenance, provenance_note, admin_retained, overridden, created_at)
+     VALUES (?, ?, 'single_publisher', 'enabled', 'allowed', 'origin_verification', NULL, 0, 0, ?)`,
+  ).run(id, url, '2026-01-01T00:00:00.000Z')
+  return id
+}
+
+test('the dead-source sweep removes a never-succeeded verification source', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const dead = seedVerificationSource(raw, 'https://peer.test/users/guest-x/feed.xml')
+  seedHealth(raw, dead, 40, false)
+  expect(repo.sweepDeadSources()).toEqual({ swept: 1 })
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(dead)).toBeUndefined()
+  raw.close()
+})
+
+// THE safety property. Without it this sweep silently unsubscribes people from
+// feeds that are merely broken.
+test('the sweep NEVER removes a subscribed feed, however long it has been failing', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const subscribed = insertSourceRow(raw, { canonicalUrl: 'https://john.example/feed.rss' })
+  const owner = await repo.createLocalUser({ handle: 'sub', displayName: 'Sub' })
+  raw.prepare(`INSERT INTO source_subscriptions_v2 (id, owner_id, source_id, state, created_at) VALUES (?, ?, ?, 'active', ?)`)
+    .run(randomUUID(), owner.id, subscribed, NOW)
+  seedHealth(raw, subscribed, 5670, false) // the real number measured on rsc.rmdes.be
+
+  expect(repo.sweepDeadSources()).toEqual({ swept: 0 })
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(subscribed)).toBeDefined()
+  raw.close()
+})
+
+test('the sweep spares a federated peer and an admin-retained source', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const fed = insertSourceRow(raw, { canonicalUrl: 'https://peer.test/users/rss.xml' })
+  insertFederationRow(raw, fed)
+  seedHealth(raw, fed, 900, false)
+  const retained = insertSourceRow(raw, { canonicalUrl: 'https://kept.test/feed', adminRetained: true })
+  seedHealth(raw, retained, 900, false)
+
+  expect(repo.sweepDeadSources()).toEqual({ swept: 0 })
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(fed)).toBeDefined()
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(retained)).toBeDefined()
+  raw.close()
+})
+
+test('a source that has ever succeeded is spared, and one below the threshold is too', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const flaky = seedVerificationSource(raw, 'https://peer.test/users/a/feed.xml')
+  seedHealth(raw, flaky, 900, true) // failing now, but it worked once — a real outage
+  const young = seedVerificationSource(raw, 'https://peer.test/users/b/feed.xml')
+  seedHealth(raw, young, 3, false) // transient; below the threshold
+
+  expect(repo.sweepDeadSources()).toEqual({ swept: 0 })
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(flaky)).toBeDefined()
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(young)).toBeDefined()
+  raw.close()
+})
+
+// THE test for the guard narrowing. The four above pass with the narrowing
+// reverted -- their fixtures trip neither guard -- so on their own they prove
+// only that the sweep is wired up. This one reproduces what a stranded guest
+// feed actually IS: an origin_verification member of an approved instance that
+// also carries a verified_origin claim. Both guards refuse it while it is
+// merely unreachable; both must yield once it is provably dead.
+test('a dead instance member with a verified_origin claim is swept; alive, both guards still refuse it', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const instance = insertSourceRow(raw, { canonicalUrl: 'https://peer.test/users/rss.xml' })
+  insertFederationRow(raw, instance) // approved -> the member is instance-governed
+  const member = seedVerificationSource(raw, 'https://peer.test/users/guest-x/feed.xml')
+  const itemId = seedEvidence(raw, member, { verified: true })
+
+  // alive (never polled): both guards hold, exactly as before this change
+  expect(reapSourceIfOrphaned(raw, member)).toBe(false)
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(member)).toBeDefined()
+
+  // now provably dead
+  seedHealth(raw, member, DEAD_SOURCE_FAILURES, false)
+  expect(repo.sweepDeadSources()).toEqual({ swept: 1 })
+  expect(raw.prepare(`SELECT 1 FROM remote_sources_v2 WHERE id = ?`).get(member)).toBeUndefined()
+  // its evidence went with it, and the item it solely supported is gone too
+  expect(countRows(raw, 'publisher_claims_v2')).toBe(0)
+  expect(raw.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ?`).get(itemId)).toBeUndefined()
+  raw.close()
 })

@@ -31,4 +31,5 @@ export interface Repository {
   purgeExpiredSubscriptions(now: string): Promise<void>
   sweepUnverifiedUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
   sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
+  sweepDeadSources(): { swept: number }
 }
