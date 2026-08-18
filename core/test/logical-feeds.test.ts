@@ -258,3 +258,41 @@ test('the push-path feed queries exclude guest posts too', async () => {
 
   expect(await repo.getPostsByAuthor('g1', 50)).toEqual([])
 })
+
+// --- DRIFT CANARY: the feed twins ---------------------------------------------
+// RSC builds its outbound feeds TWICE and the two paths share no predicate:
+//   pulled  → projectLocalActivity        (logical/projector.ts, via api/logical-routes/read.ts)
+//   pushed  → getRecentLocalPosts / getPostsByAuthor
+//             (storage/sqlite.ts, via domain/push.ts — the fat-ping bodies peers consume)
+// This seam has leaked TWICE in one milestone: feed_item_limit reached only the
+// pull path, and local_only (guest posts) reached only the pull path — shipped to
+// five instances before a live guest post showed 0 in the firehose and landed on
+// two peers anyway.
+//
+// Deliberately asserts AGREEMENT, not any specific rule: it does not encode
+// "guests are excluded", so it keeps catching the NEXT divergence, whatever the
+// rule turns out to be. Anyone filtering one path and not the other fails here.
+test('drift canary: the pulled and pushed feeds select exactly the same posts', async () => {
+  const { repo, store } = await makeApp()
+  seedUser(repo.raw, 'u1', 'alice')
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  const alice = (await repo.getUser('u1'))!
+  const guest = (await repo.getUser('g1'))!
+
+  // a mixed corpus: registered root + reply, a guest post, and a remote item
+  store.createLocalPost({ author: alice, content: 'A1', replyToId: null, now: '2026-01-01T00:00:00.000Z', publicUrl: 'https://rsc.test' })
+  const a2 = store.createLocalPost({ author: alice, content: 'A2', replyToId: null, now: '2026-01-02T00:00:00.000Z', publicUrl: 'https://rsc.test' })
+  store.createLocalPost({ author: alice, content: 'A3reply', replyToId: a2.id, now: '2026-01-03T00:00:00.000Z', publicUrl: 'https://rsc.test' })
+  store.createLocalPost({ author: guest, content: 'G1', replyToId: null, now: '2026-01-04T00:00:00.000Z', publicUrl: 'https://rsc.test' })
+  seedRemoteItem(repo.raw, 's1', 'https://feed.test/f', 'g-remote', 'REMOTEBODY')
+
+  const pulledFirehose = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit: 50 })).map((d) => d.id).sort()
+  const pushedFirehose = (await repo.getRecentLocalPosts(50)).map((e) => e.id).sort()
+  expect(pushedFirehose).toEqual(pulledFirehose)
+
+  for (const id of ['u1', 'g1']) {
+    const pulled = store.snapshot((tx) => tx.projectLocalActivity({ authorId: id, limit: 50 })).map((d) => d.id).sort()
+    const pushed = (await repo.getPostsByAuthor(id, 50)).map((p) => p.id).sort()
+    expect(pushed).toEqual(pulled)
+  }
+})
