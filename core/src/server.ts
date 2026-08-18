@@ -112,9 +112,11 @@ bus.onNewPost((e) => { void push.onLocalPost(e) })
 let sweepTimer: NodeJS.Timeout
 async function sweepLoop() {
   try {
-    const { anonSwept, unverifiedSwept } = await sweepHousekeeping(repo, config, logicalStore)
+    const { anonSwept, unverifiedSwept, deadSourcesSwept } = await sweepHousekeeping(repo, config, logicalStore)
     if (anonSwept > 0) console.log(`swept ${anonSwept} abandoned anonymous account(s)`)
     if (unverifiedSwept > 0) console.log(`swept ${unverifiedSwept} never-verified account(s)`)
+    // This one DELETES source rows and their evidence, so it is never silent.
+    if (deadSourcesSwept > 0) console.log(`swept ${deadSourcesSwept} source(s) whose feed has never resolved`)
   } catch (err) {
     console.error('housekeeping sweep failed:', err instanceof Error ? err.message : err)
   }
