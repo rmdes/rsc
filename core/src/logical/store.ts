@@ -353,6 +353,11 @@ function adminItemDetail(tx: ReadTx, id: string): AdminItemDetail | undefined {
 // re-derived in SQL: membership.ts is the one definition of what an instance
 // is, and a SQL copy of it would be a second one, free to drift. Every query
 // below opens its WHERE with this clause, so these params always bind FIRST.
+// 2^8 = 256 x the poll interval, i.e. ~4h at the 60 s default: long enough to
+// stop hammering a dead feed, short enough that a recovered one returns the
+// same day. ponytail: fixed, no setting — nobody has asked to tune it.
+const FAILURE_BACKOFF_MAX_SHIFT = 8
+
 function schedulableSourceWhere(tx: ReadTx): { sql: string; params: string[] } {
   const prefixes = approvedInstancePrefixes(tx, { activeOnly: true })
   const ranges = prefixes.map(() => `(s.canonical_url >= ? AND s.canonical_url < ?)`).join(' OR ')
@@ -751,6 +756,18 @@ export function createLogicalStore(db: DatabaseContext) {
         ).get(...sched.params) as { n: number }).n
       })
     },
+    // Failure backoff: the interval doubles per consecutive failure, capped at
+    // 2^8 = 256x. consecutive_failures was written by recordHealth and read by
+    // NOTHING, so a permanently broken feed was retried at full cadence forever
+    // — 5670 consecutive failures measured on one real subscription. Deleting
+    // such a source is wrong while somebody subscribes to it (a broken feed may
+    // come back), so it is polled rarely instead. The cap keeps a recovered feed
+    // to hours, not days; recordHealth zeroes the counter on any success.
+    //
+    // Expressed as elapsed-seconds arithmetic rather than the precomputed cutoff
+    // strings this used to compare against, because the interval is now
+    // per-source. julianday parses this codebase's ISO timestamps (probed) with
+    // ~2e-5 s of float error — irrelevant against a 60 s floor.
     // Staleness-ordered (oldest last_poll_at first, NULLs first — never-polled
     // is maximally overdue), LIMIT-bounded due-query (spec 2026-07-28 §1). A
     // source with an active, unexpired push lease needs pollSeconds ×
@@ -772,13 +789,14 @@ export function createLogicalStore(db: DatabaseContext) {
            WHERE ${sched.sql}
              AND (
                h.last_poll_at IS NULL
-               OR h.last_poll_at < CASE
-                    WHEN EXISTS (SELECT 1 FROM push_subscriptions_v2 p WHERE p.source_id = s.id AND p.state = 'active' AND p.expires_at > ?)
-                    THEN ? ELSE ? END
+               OR (julianday(?) - julianday(h.last_poll_at)) * 86400.0 >
+                  ? * (CASE WHEN EXISTS (SELECT 1 FROM push_subscriptions_v2 p WHERE p.source_id = s.id AND p.state = 'active' AND p.expires_at > ?)
+                            THEN ? ELSE 1 END)
+                    * (1 << MIN(COALESCE(h.consecutive_failures, 0), ?))
              )
            ORDER BY h.last_poll_at ASC, s.id ASC
            LIMIT ?`,
-        ).all(...sched.params, input.now, pushCutoff, baseCutoff, input.limit) as { id: string; canonical_url: string }[]
+        ).all(...sched.params, input.now, input.pollSeconds, input.now, input.pushPollFactor, FAILURE_BACKOFF_MAX_SHIFT, input.limit) as { id: string; canonical_url: string }[]
         return rows.map((r) => ({ id: r.id, canonicalUrl: r.canonical_url }))
       })
     },

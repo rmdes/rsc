@@ -274,6 +274,10 @@ test('a source with no active subscription and no federation is not scheduled', 
   raw.close()
 })
 
+// The poll times below step over the failure backoff deliberately: after 1
+// failure the retry interval is 2x60s and after 2 it is 4x60s, so polling at 61s
+// (as this test did before backoff existed) would now be a no-op and the counter
+// would never reach 2. The subject here is the COUNTER, not the schedule.
 test('consecutive failures count up on operational failure and reset on success', async () => {
   const { raw, store, repo } = await fresh()
   await seedSubscribed(raw, repo, 's1')
@@ -281,17 +285,17 @@ test('consecutive failures count up on operational failure and reset on success'
   const sched = createScheduler({ store, acquisition: stubEngine({ outcomeFor: () => outcome }), config: CONFIG, drainVerification: undefined, push: undefined, breather: undefined })
 
   await sched.pollDue(NOW)
-  await sched.pollDue(at(61))
+  await sched.pollDue(at(121)) // past 2x60s
   let h = raw.prepare(`SELECT consecutive_failures, last_failure_at, last_success_at FROM source_health_v2 WHERE source_id = 's1'`).get() as { consecutive_failures: number; last_failure_at: string | null; last_success_at: string | null }
   expect(h.consecutive_failures).toBe(2)
-  expect(h.last_failure_at).toBe(at(61))
+  expect(h.last_failure_at).toBe(at(121))
   expect(h.last_success_at).toBeNull()
 
   outcome = 'parsed'
-  await sched.pollDue(at(122))
+  await sched.pollDue(at(362))
   h = raw.prepare(`SELECT consecutive_failures, last_success_at FROM source_health_v2 WHERE source_id = 's1'`).get() as { consecutive_failures: number; last_failure_at: string | null; last_success_at: string | null }
   expect(h.consecutive_failures).toBe(0) // reset by success
-  expect(h.last_success_at).toBe(at(122))
+  expect(h.last_success_at).toBe(at(362))
   raw.close()
 })
 
@@ -653,5 +657,70 @@ test('a throwing source still gets recordHealth — its staleness advances inste
   expect(order).toEqual(['z-never'])
 
   spy.mockRestore()
+  raw.close()
+})
+
+// --- failure backoff (2026-08-18) --------------------------------------------
+// consecutive_failures was written by recordHealth and read by NOTHING, so a
+// permanently broken feed was retried at full cadence forever: 5670 consecutive
+// failures measured on one real subscription on rsc.rmdes.be. Deleting such a
+// source is wrong when somebody subscribes to it -- a broken feed may come back
+// -- so the poll interval widens instead, doubling per failure to a cap.
+
+function seedHealthFor(raw: Raw, id: string, opts: { lastPollAt: string; failures: number }): void {
+  raw.prepare(
+    `INSERT INTO source_health_v2 (source_id, last_poll_at, last_success_at, last_failure_at, consecutive_failures) VALUES (?, ?, NULL, ?, ?)`,
+  ).run(id, opts.lastPollAt, opts.lastPollAt, opts.failures)
+}
+const due = (store: ReturnType<typeof createLogicalStore>, at: string) =>
+  store.listDueSources({ now: at, pollSeconds: 60, pushPollFactor: 10, limit: 10 }).map((d) => d.id)
+
+test('backoff: a healthy source keeps the plain interval', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  seedHealthFor(raw, 's1', { lastPollAt: NOW, failures: 0 })
+  expect(due(store, at(59))).toEqual([])
+  expect(due(store, at(61))).toEqual(['s1'])
+  raw.close()
+})
+
+test('backoff: the interval doubles per consecutive failure', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  seedHealthFor(raw, 's1', { lastPollAt: NOW, failures: 3 }) // 2^3 = 8x -> 480s
+  expect(due(store, at(300))).toEqual([])
+  expect(due(store, at(481))).toEqual(['s1'])
+  raw.close()
+})
+
+test('backoff: the interval is capped, so a recovered feed is retried within hours', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  seedHealthFor(raw, 's1', { lastPollAt: NOW, failures: 5670 }) // the real number, capped at 256x
+  expect(due(store, at(60 * 256 - 10))).toEqual([])
+  expect(due(store, at(60 * 256 + 10))).toEqual(['s1'])
+  raw.close()
+})
+
+test('backoff: a success resets it — recordHealth zeroes the counter', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  seedHealthFor(raw, 's1', { lastPollAt: NOW, failures: 9 })
+  expect(due(store, at(61))).toEqual([]) // still backed off
+  store.recordHealth({ sourceId: 's1', outcome: 'parsed', now: at(61) })
+  expect(due(store, at(122))).toEqual(['s1']) // plain interval again
+  raw.close()
+})
+
+test('backoff multiplies the push-lease interval rather than replacing it', async () => {
+  const { raw, store, repo } = await fresh()
+  await seedSubscribed(raw, repo, 's1')
+  seedHealthFor(raw, 's1', { lastPollAt: NOW, failures: 2 }) // 4x, on top of the 10x lease
+  raw.prepare(
+    `INSERT INTO push_subscriptions_v2 (id, source_id, mode, endpoint, topic, callback_token, secret, state, expires_at, created_at)
+     VALUES ('lease-1', 's1', 'websub', 'https://hub.test/hub', 'https://feed.test/s1', 'tok', NULL, 'active', ?, ?)`,
+  ).run(at(100000), NOW)
+  expect(due(store, at(60 * 10 * 4 - 10))).toEqual([])
+  expect(due(store, at(60 * 10 * 4 + 10))).toEqual(['s1'])
   raw.close()
 })
