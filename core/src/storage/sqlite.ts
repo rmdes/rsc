@@ -68,7 +68,7 @@ function cascadeInstanceAction(raw: Database.Database, instance: { id: string; c
 }
 
 interface UsersTable { id: string; kind: 'local' | 'remote'; handle: string; display_name: string; feed_url: string | null; created_at: string; auth_user_id: string | null; feed_type: FeedType | null }
-interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null }
+interface PostsTable { id: string; author_id: string; source: 'local' | 'remote'; guid: string; title: string | null; content: string; url: string | null; published_at: string; created_at: string; in_reply_to: string | null; in_reply_to_post_id: string | null; thread_root_id: string | null; source_name: string | null; source_feed_url: string | null; content_markdown: string | null; edited_at: string | null; reply_context_author: string | null; reply_context_snippet: string | null; local_only: number }
 interface SubscriptionsTable { id: string; protocol: 'websub' | 'rsscloud'; topic: string; callback: string; callback_host: string; secret: string | null; expires_at: string; created_at: string }
 interface FollowsTable { follower_id: string; followed_id: string; created_at: string }
 interface PostRevisionsTable { id: string; post_id: string; title: string | null; content: string; content_markdown: string | null; seen_at: string }
@@ -287,8 +287,14 @@ export class SqliteRepository implements Repository, SourceRepository {
     return r ? rowToPost(r) : undefined
   }
 
+  // local_only = 0 on both feed queries below: these are the PUSH twins of
+  // projectLocalActivity (domain/push.ts builds the fat-ping bodies from them,
+  // never from the projector). A guest post filtered out of the pulled feed but
+  // present in the pushed one still federates -- measured live 2026-08-18.
+  // Their only production callers are those two push bodies; the service
+  // passthroughs have none.
   async getPostsByAuthor(authorId: string, limit: number): Promise<Post[]> {
-    const rows = await this.db.selectFrom('posts').selectAll().where('author_id', '=', authorId).orderBy('published_at', 'desc').orderBy('id', 'desc').limit(limit).execute()
+    const rows = await this.db.selectFrom('posts').selectAll().where('author_id', '=', authorId).where('local_only', '=', 0).orderBy('published_at', 'desc').orderBy('id', 'desc').limit(limit).execute()
     return rows.map(rowToPost)
   }
 
@@ -299,6 +305,7 @@ export class SqliteRepository implements Repository, SourceRepository {
       .selectAll('posts')
       .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id', 'users.feed_type as u_feed_type'])
       .where('users.kind', '=', 'local')
+      .where('posts.local_only', '=', 0)
       .orderBy('posts.published_at', 'desc')
       .orderBy('posts.id', 'desc')
       .limit(limit)

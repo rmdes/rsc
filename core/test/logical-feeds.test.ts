@@ -239,3 +239,22 @@ test('migration 24 backfill marks an existing guest author\'s posts local-only',
   expect(flag('p1')).toBe(1)
   expect(flag('p2')).toBe(0)
 })
+
+// The PUSH twins. domain/push.ts builds fat-ping bodies from these repository
+// methods, not from projectLocalActivity — a guest post filtered out of the
+// PULLED feed but still present in the PUSHED one federates anyway, which is
+// exactly what happened live on 2026-08-18.
+test('the push-path feed queries exclude guest posts too', async () => {
+  const { repo, store } = await makeApp()
+  seedUser(repo.raw, 'u1', 'alice')
+  seedPost(repo.raw, { id: 'p1', author: 'u1', content: 'REGISTEREDBODY' })
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  const guest = (await repo.getUser('g1'))!
+  store.createLocalPost({ author: guest, content: 'GUESTBODY', replyToId: null, now: NOW, publicUrl: 'https://rsc.test' })
+
+  const firehoseBody = await repo.getRecentLocalPosts(50)
+  expect(firehoseBody.map((e) => e.content).join(' ')).toContain('REGISTEREDBODY')
+  expect(firehoseBody.map((e) => e.content).join(' ')).not.toContain('GUESTBODY')
+
+  expect(await repo.getPostsByAuthor('g1', 50)).toEqual([])
+})
