@@ -16,7 +16,7 @@ test('a fresh database migrates to the current version and works', async () => {
   expect((await repo.getRecentLocalPosts(10)).length).toBe(0)
   expect(u.handle).toBe('alice')
   const raw = new Database(file, { readonly: true })
-  expect(raw.pragma('user_version', { simple: true })).toBe(24)
+  expect(raw.pragma('user_version', { simple: true })).toBe(25)
   raw.close()
 })
 
@@ -96,7 +96,7 @@ test('a version-1 database upgrades in place to version 2 with data preserved', 
   expect((await repo.getRecentLocalPosts(10)).map((e) => e.content)).toEqual(['kept'])
   await repo.upsertSubscription({ id: 'x1', protocol: 'websub', topic: 't', callback: 'c', callbackHost: 'h', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(24)
+  expect(check.pragma('user_version', { simple: true })).toBe(25)
   check.close()
 })
 
@@ -132,7 +132,7 @@ test('a version-2 database upgrades in place to version 3 with data preserved', 
   // reads it); only the repository accessors for it were retired, so write raw.
   repo.raw.prepare("INSERT INTO push_subscriptions VALUES ('p1','u1','websub','e','t2','tok',NULL,'pending','2027-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')").run()
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(24)
+  expect(check.pragma('user_version', { simple: true })).toBe(25)
   check.close()
 })
 
@@ -243,7 +243,7 @@ test('migration 11: feed_type classified by content_markdown, UNIQUE(feed_url), 
   await expect(repo.createRemoteUser({ handle: 'dup', displayName: 'Dup', feedUrl: 'https://blog/f' })).rejects.toThrow()
 
   const check = new Database(file, { readonly: true })
-  expect(check.pragma('user_version', { simple: true })).toBe(24)
+  expect(check.pragma('user_version', { simple: true })).toBe(25)
   check.close()
 })
 
@@ -283,7 +283,7 @@ test('migration 18 relabels an aggregate source publisher and drops its stale ha
   // Re-open through the real repository constructor, which runs migrate()
   // from version 17 up to current (18).
   const repo = await createSqliteRepository(file)
-  expect(repo.raw.pragma('user_version', { simple: true })).toBe(24)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(25)
   expect((repo.raw.prepare(`SELECT identity_level FROM remote_publishers_v2 WHERE id = 'p1'`).get() as { identity_level: string }).identity_level).toBe('source_scoped_fallback')
   expect(repo.raw.prepare(`SELECT 1 FROM handle_reservations_v2 WHERE publisher_id = 'p1'`).get()).toBeUndefined()
   // single_publisher untouched
@@ -378,7 +378,7 @@ test('migration 19 heals instance-governed members: clears overridden, syncs gov
   // Re-open through the real repository constructor, which runs migrate()
   // from version 18 up to current (19), calling healMembers once when crossing 19.
   const repo = await createSqliteRepository(file)
-  expect(repo.raw.pragma('user_version', { simple: true })).toBe(24)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(25)
 
   // All origin_verification rows should have overridden = 0 (cleared by the heal)
   const verifyRows = repo.raw.prepare(`SELECT id, overridden FROM remote_sources_v2 WHERE provenance = 'origin_verification'`).all() as { id: string; overridden: number }[]
@@ -437,7 +437,7 @@ test('migration 19 heal leaves a self-federated origin_verification row untouche
 
   raw.close()
   const repo = await createSqliteRepository(file)
-  expect(repo.raw.pragma('user_version', { simple: true })).toBe(24)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(25)
 
   const dSelf = repo.raw.prepare(`SELECT governance, overridden FROM remote_sources_v2 WHERE id = 'd-self'`).get() as { governance: string; overridden: number }
   expect(dSelf.governance).toBe('allowed') // untouched — not d-inst's quarantined

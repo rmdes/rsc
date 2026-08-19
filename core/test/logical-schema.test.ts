@@ -99,7 +99,7 @@ test('overridden: DEFAULT 1, mint writes 0, CHECK enforces the bit', async () =>
                VALUES ('s1', 'https://a.test/f', 'single_publisher', 'enabled', 'allowed', 'user_subscription', NULL, 0, '2026-07-25T00:00:00.000Z')`).run()
   expect((raw.prepare(`SELECT overridden FROM remote_sources_v2 WHERE id = 's1'`).get() as { overridden: number }).overridden).toBe(1)
   expect(() => raw.prepare(`UPDATE remote_sources_v2 SET overridden = 2 WHERE id = 's1'`).run()).toThrow()
-  expect(raw.pragma('user_version', { simple: true })).toBe(24)
+  expect(raw.pragma('user_version', { simple: true })).toBe(25)
   repo.close()
 })
 
@@ -108,6 +108,6 @@ test('migration 20 adds acquisition_runs_v2(started_at) and acquisition_runs_v2(
   const idx = indexNames(repo.raw)
   expect([...idx].some((n) => n === 'acquisition_runs_v2_started_at')).toBe(true)
   expect([...idx].some((n) => n === 'acquisition_runs_v2_status')).toBe(true)
-  expect(repo.raw.pragma('user_version', { simple: true })).toBe(24)
+  expect(repo.raw.pragma('user_version', { simple: true })).toBe(25)
   repo.close()
 })

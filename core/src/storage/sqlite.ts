@@ -1630,6 +1630,20 @@ export const MIGRATIONS: string[][] = [
     `UPDATE posts SET local_only = 1 WHERE author_id IN (
        SELECT u.id FROM users u JOIN user au ON au.id = u.auth_user_id WHERE au.isAnonymous = 1)`,
   ],
+  // Migration 25 (2026-08-19): better-auth 1.7 account identity.
+  // 1.7 recognizes an external account by the unique (issuer, accountId) pair
+  // and its INSERTs supply `issuer` — without the column, every sign-up/link
+  // fails with "table account has no column named issuer". Backfill per the
+  // 1.7 upgrade guide's table: credential accounts get 'local:credential'.
+  // This deployment is credential-only (emailAndPassword + magicLink + anonymous
+  // + apiKey configure no OAuth providers; verified on prod: providerId =
+  // 'credential' exclusively), so that one UPDATE covers every existing row.
+  // Index name is the guide's own (account_issuer_accountId_uidx).
+  [
+    `ALTER TABLE account ADD COLUMN issuer text`,
+    `UPDATE account SET issuer = 'local:credential' WHERE providerId = 'credential'`,
+    `CREATE UNIQUE INDEX account_issuer_accountId_uidx ON account (issuer, accountId)`,
+  ],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
