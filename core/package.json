@@ -33,7 +33,7 @@
     "unist-util-visit": "5.1.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.0",
+    "@types/better-sqlite3": "^9.0.0",
     "@types/hast": "3.0.5",
     "@types/node": "^24.13.3",
     "@types/nodemailer": "8.0.1",
