@@ -387,3 +387,57 @@ test('materializeLocalChain is bounded: a hand-corrupted self-edge does not recu
   expect(ok).toBe(false)
   expect(count(raw, 'logical_items_v2')).toBe(0)
 })
+
+// --- notice precedence (2026-08-19) -------------------------------------------
+// Whoever removed LAST used to write the public notice, and nothing refuses an
+// author deleting a post a moderator already removed. So the moderated party
+// could turn "removed by a moderator (spam)" into "removed by its author" --
+// publicly, and on every federated peer. Operator decision: the moderator's
+// statement wins.
+const MOD_SPAM = { kind: 'administrator' as const, category: 'spam' as const, note: null }
+const contentOf = (raw: Raw, id: string): string =>
+  (raw.prepare(`SELECT content FROM posts WHERE id = ?`).get(id) as { content: string }).content
+
+test('an author deleting a moderator-removed post does NOT overwrite the moderator notice', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const p = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: MOD_SPAM, now: LATER }))
+  const revsAfterMod = raw.prepare(`SELECT COUNT(*) AS n FROM post_revisions WHERE post_id = ?`).get(p.id) as { n: number }
+
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: { kind: 'author' }, now: LATER }))
+
+  expect(contentOf(raw, p.id)).toBe('This post was removed by a moderator (spam).')
+  // and the admin record is untouched by the author's attempt
+  expect(raw.prepare(`SELECT COUNT(*) AS n FROM post_revisions WHERE post_id = ?`).get(p.id)).toEqual(revsAfterMod)
+})
+
+test('a moderator removing after the author DOES take precedence', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const p = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: { kind: 'author' }, now: LATER }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: MOD_SPAM, now: LATER }))
+  expect(contentOf(raw, p.id)).toBe('This post was removed by a moderator (spam).')
+})
+
+test('a moderator may still correct their own notice', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const p = db.write((tx) => createLocalPost({ tx, author, content: 'spammy thing', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: MOD_SPAM, now: LATER }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: { kind: 'administrator', category: 'abuse', note: 'escalated' }, now: LATER }))
+  expect(contentOf(raw, p.id)).toBe('This post was removed by a moderator (abuse).\n\nescalated')
+  // still no fabricated revision from the removal machinery's own output
+  expect(raw.prepare(`SELECT COUNT(*) AS n FROM post_revisions WHERE post_id = ?`).get(p.id)).toEqual({ n: 1 })
+})
+
+test('an author repeating their own delete stays a no-op', async () => {
+  const { raw, db } = await fresh()
+  const author = seedUser(raw, 'u1', 'alice')
+  const p = db.write((tx) => createLocalPost({ tx, author, content: 'mine', replyToId: null, now: NOW }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: { kind: 'author' }, now: LATER }))
+  db.write((tx) => removeLocalPost({ tx, postId: p.id, actor: { kind: 'author' }, now: LATER }))
+  expect(contentOf(raw, p.id)).toBe('This post was removed by its author.')
+  expect(raw.prepare(`SELECT COUNT(*) AS n FROM post_revisions WHERE post_id = ?`).get(p.id)).toEqual({ n: 0 })
+})

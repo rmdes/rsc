@@ -273,6 +273,14 @@ export function removeLocalPost(input: { tx: WriteTx; postId: string; actor: Rem
   // item, so the redundancy is harmless, just not free.
   if (alreadyRemoved && cur.content === notice) return
 
+  // The moderator's statement wins (operator decision, 2026-08-19): an author
+  // deleting an already-moderator-removed post would otherwise replace the
+  // stated reason with the generic author notice, turning a moderation action
+  // into a voluntary withdrawal on every federated peer. Their delete still
+  // succeeds, it just changes nothing. THIS DIRECTION ONLY — a moderator may
+  // still correct their own notice, and still takes precedence after an author.
+  if (alreadyRemoved && actor.kind === 'author' && cur.content !== removalNotice({ kind: 'author' })) return
+
   // History splits on the actor, but ONLY on the transition INTO removal.
   // cur.content is real user content exclusively on the first call; on any
   // repeat, cur.content is already a PRIOR NOTICE — snapshotting that as
