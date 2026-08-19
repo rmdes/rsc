@@ -1,5 +1,7 @@
 import { test, expect } from 'vitest'
 import { createSqliteRepository } from '../src/storage/sqlite.ts'
+import { createDatabaseContext } from '../src/logical/database.ts'
+import { createLogicalStore } from '../src/logical/store.ts'
 import { createSourceService } from '../src/domain/source-service.ts'
 import { reapSourceIfOrphaned, fingerprintRequest, DEAD_SOURCE_FAILURES } from '../src/domain/source-repository.ts'
 import { trimSourceToCap } from '../src/logical/tombstones.ts'
@@ -739,5 +741,37 @@ test('a dead instance member with a verified_origin claim is swept; alive, both 
   // its evidence went with it, and the item it solely supported is gone too
   expect(countRows(raw, 'publisher_claims_v2')).toBe(0)
   expect(raw.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ?`).get(itemId)).toBeUndefined()
+  raw.close()
+})
+
+// A LOCAL post is supported by its posts row, never by a delivery -- but it can
+// ACQUIRE one: our post federates to a peer, that peer's feed carries it back,
+// and the returning copy converges onto the same logical item. Removing that
+// source used to leave the item delivery-less, classify it unsupported, and
+// DELETE it. The posts row survived, so the text was intact but the post was
+// invisible in every feed and timeline. Six posts across four instances,
+// 2026-08-18. Latent long before the sweep that exposed it: unsubscribe and
+// account deletion reach the same line.
+test('removing a source never deletes a LOCAL post that had a delivery from it', async () => {
+  const repo = await createSqliteRepository(':memory:')
+  const raw = repo.raw as Raw
+  const db = createDatabaseContext(raw)
+  const store = createLogicalStore(db)
+  const alice = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
+  const item = store.createLocalPost({ author: alice, content: 'MY OWN POST', replyToId: null, now: NOW, publicUrl: 'https://alice.test' })
+
+  // the peer source that carried our own post back to us
+  const src = insertSourceRow(raw, { canonicalUrl: 'https://peer.test/users/rss.xml' })
+  const del = randomUUID(); const run = randomUUID(); const ver = randomUUID()
+  raw.prepare(`INSERT INTO acquisition_runs_v2 (id, source_id, reason, status, started_at, acquisition_committed_at, completed_at, outcome, counters_json, failure_category, diagnostic, push_capability_json) VALUES (?,?,'scheduled','terminal',?,?,?,'parsed','{}',NULL,NULL,NULL)`).run(run, src, NOW, NOW, NOW)
+  raw.prepare(`INSERT INTO deliveries_v2 (id, source_id, key_kind, key, first_seen_at, last_seen_at, last_seen_run_id, seen_count) VALUES (?,?,'permalink',?,?,?,?,1)`).run(del, src, `https://alice.test/post/${item.id}`, NOW, NOW, run)
+  raw.prepare(`INSERT INTO observation_versions_v2 (id, delivery_id, fingerprint_version, fingerprint, canonical_material, arrival_at, run_id, wire_ordinal, last_seen_at, last_seen_run_id, seen_count, raw_evidence_json, normalized_json) VALUES (?,?,1,?,?,?,?,0,?,?,1,'{}','{}')`).run(ver, del, randomUUID(), Buffer.from('m'), NOW, run, NOW, run)
+  raw.prepare(`INSERT INTO logical_identity_keys_v2 (kind, key, logical_item_id) VALUES ('delivery', ?, ?)`).run(del, item.id)
+
+  expect(reapSourceIfOrphaned(raw, src)).toBe(true)
+  expect(raw.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ?`).get(item.id)).toBeDefined()
+  expect(raw.prepare(`SELECT 1 FROM posts WHERE id = ?`).get(item.id)).toBeDefined()
+  // and it still projects -- the point of the row surviving
+  expect(store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit: 10 })).map((d) => d.id)).toEqual([item.id])
   raw.close()
 })

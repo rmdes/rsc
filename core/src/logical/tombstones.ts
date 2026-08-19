@@ -141,9 +141,20 @@ export function removeSourceEvidence(tx: WriteTx, input: { sourceId: string; now
   // ---- per-item effects (spec §5.2 step 4) --------------------------------
   const hasDelivery = (id: string): boolean =>
     tx.prepare(`SELECT 1 FROM logical_identity_keys_v2 WHERE kind = 'delivery' AND logical_item_id = ? LIMIT 1`).get(id) !== undefined
+  // A LOCAL item is supported by its own posts row, never by a delivery. It can
+  // still ACQUIRE one: our post federates to a peer, that peer's feed carries it
+  // back, and the returning copy converges onto the same logical item. Removing
+  // that source then leaves the item delivery-less — and treating it as
+  // unsupported DELETED the local post (its posts row survived, so the text was
+  // intact but invisible everywhere). Observed on six posts across four
+  // instances, 2026-08-18, when the dead-source sweep first removed such sources
+  // in bulk; latent long before that, since any unsubscribe or account deletion
+  // reaches the same line.
+  const isLocal = (id: string): boolean =>
+    tx.prepare(`SELECT 1 FROM logical_items_v2 WHERE id = ? AND origin = 'local' LIMIT 1`).get(id) !== undefined
   const unsupported = new Set<string>()
   for (const id of affected) {
-    if (hasDelivery(id)) applySelectionHints(tx, id, '') // other deliveries remain ⇒ reselect
+    if (hasDelivery(id) || isLocal(id)) applySelectionHints(tx, id, '') // reselect; a local item simply drops back to having no delivery
     else unsupported.add(id)
   }
   // delete unsupported leaves to a fixpoint; a surviving descendant edge blocks a
