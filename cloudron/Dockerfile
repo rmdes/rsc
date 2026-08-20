@@ -14,7 +14,9 @@ WORKDIR /app/code
 COPY package.json package-lock.json ./
 COPY core/package.json core/package.json
 COPY web/package.json web/package.json
-RUN chown -R cloudron:cloudron /app/code && \
+# npm@12: npm 11 ci ignores better-sqlite3 v13's gypfile:false and compiles from
+# source (works here — base has g++ — but slow and pointless; 12 uses the prebuild).
+RUN npm i -g npm@12 && chown -R cloudron:cloudron /app/code && \
     gosu cloudron:cloudron npm ci
 
 # App source, then build web (adapter-node → web/build).

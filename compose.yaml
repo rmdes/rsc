@@ -16,7 +16,10 @@ services:
     working_dir: /app
     # One npm ci populates the shared root node_modules volume (workspaces
     # hoist), then core runs in watch mode. web waits for core to be healthy.
-    command: sh -c "npm ci && npm run dev -w core"
+    # npm@12 first: npm 11's `ci` ignores better-sqlite3 v13's gypfile:false and
+    # forces a node-gyp compile this toolchain-less image cannot do; npm 12 uses
+    # the tarball-bundled prebuild (npm i was never affected — only ci).
+    command: sh -c "npm i -g npm@12 && npm ci && npm run dev -w core"
     environment:
       RSC_AUTH_SECRET: dev-secret-not-for-production-000000000000
       RSC_TOKEN: dev-token

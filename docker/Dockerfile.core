@@ -3,7 +3,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 # Whole repo (workspaces hoist to root node_modules); .dockerignore prunes it.
 COPY . .
-RUN npm ci
+# npm@12: npm 11 ci forces a gyp compile on better-sqlite3 v13 (ignores gypfile:false)
+RUN npm i -g npm@12 && npm ci
 EXPOSE 8787
 # Prod start: no --watch, env comes from the container (compose), not a file.
 CMD ["npm", "run", "start", "-w", "core"]

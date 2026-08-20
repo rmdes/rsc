@@ -1,7 +1,8 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY . .
-RUN npm ci
+# npm@12: npm 11 ci forces a gyp compile on better-sqlite3 v13 (ignores gypfile:false)
+RUN npm i -g npm@12 && npm ci
 RUN npm run build -w web
 
 FROM node:24-bookworm-slim
