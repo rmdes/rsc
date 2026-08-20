@@ -1,7 +1,7 @@
 FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
 
 # Node 22.x — core runs .ts via native type stripping (needs >=22.18).
-ARG NODE_VERSION=22.22.0
+ARG NODE_VERSION=22.22.2
 RUN mkdir -p /usr/local/node-$NODE_VERSION && \
     curl -fsSL https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-x64.tar.gz \
       | tar zxf - --strip-components 1 -C /usr/local/node-$NODE_VERSION
@@ -14,9 +14,15 @@ WORKDIR /app/code
 COPY package.json package-lock.json ./
 COPY core/package.json core/package.json
 COPY web/package.json web/package.json
-# npm@12: npm 11 ci ignores better-sqlite3 v13's gypfile:false and compiles from
-# source (works here — base has g++ — but slow and pointless; 12 uses the prebuild).
-RUN npm i -g npm@12 && chown -R cloudron:cloudron /app/code && \
+# npm@12: every earlier npm's `ci` (10 and 11 both, tested) ignores
+# better-sqlite3 v13's gypfile:false and forces a node-gyp compile; npm 12 uses
+# the tarball-bundled prebuild. Installed by REPLACING the bundled npm from the
+# registry tarball — `npm i -g npm` upgrading itself from 10→12 corrupts its own
+# tree mid-reify ("Cannot find module 'promise-retry'", reproduced in this build).
+RUN curl -fsSL https://registry.npmjs.org/npm/-/npm-12.0.2.tgz | tar zxf - -C /tmp && \
+    rm -rf /usr/local/node-$NODE_VERSION/lib/node_modules/npm && \
+    mv /tmp/package /usr/local/node-$NODE_VERSION/lib/node_modules/npm
+RUN chown -R cloudron:cloudron /app/code && \
     gosu cloudron:cloudron npm ci
 
 # App source, then build web (adapter-node → web/build).
