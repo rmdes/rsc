@@ -18,13 +18,13 @@ const ONE = JSON.stringify({ me: { url: 'https://rsc.example', key: 'k1' } })
 describe('loadConfig', () => {
   it('parses an identity per instance', () => {
     const cfg = loadConfig({ RSC_IDENTITIES: TWO })
-    expect(cfg.identities.get('be')).toEqual({ url: 'https://rsc.rmdes.be', key: 'k-be' })
-    expect(cfg.identities.get('net')).toEqual({ url: 'https://rsc.rmendes.net', key: 'k-net' })
+    expect(cfg.identities.get('be')).toEqual({ url: 'https://rsc.rmdes.be/api/v1', key: 'k-be' })
+    expect(cfg.identities.get('net')).toEqual({ url: 'https://rsc.rmendes.net/api/v1', key: 'k-net' })
   })
 
-  it('strips a trailing slash from each url', () => {
+  it('strips a trailing slash from each url before appending the api base', () => {
     const cfg = loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'https://rsc.example/', key: 'k1' } }) })
-    expect(cfg.identities.get('me')!.url).toBe('https://rsc.example')
+    expect(cfg.identities.get('me')!.url).toBe('https://rsc.example/api/v1')
   })
 
   it('throws when RSC_IDENTITIES is missing', () => {
@@ -71,7 +71,7 @@ describe('resolveIdentity', () => {
   const two = loadConfig({ RSC_IDENTITIES: TWO })
 
   it('uses the only identity when as is omitted', () => {
-    expect(resolveIdentity(one, undefined)).toEqual({ url: 'https://rsc.example', key: 'k1' })
+    expect(resolveIdentity(one, undefined)).toEqual({ url: 'https://rsc.example/api/v1', key: 'k1' })
   })
 
   // With two instances configured, an omitted `as` is ambiguous about WHICH
@@ -83,7 +83,7 @@ describe('resolveIdentity', () => {
   })
 
   it('resolves a named identity to its own instance and key', () => {
-    expect(resolveIdentity(two, 'net')).toEqual({ url: 'https://rsc.rmendes.net', key: 'k-net' })
+    expect(resolveIdentity(two, 'net')).toEqual({ url: 'https://rsc.rmendes.net/api/v1', key: 'k-net' })
   })
 
   it('errors on an unknown name and does NOT fall back', () => {
@@ -455,7 +455,7 @@ describe('renderThread', () => {
 
 // rscFetch takes the resolved instance URL, not a Config: which instance a
 // call goes to is now decided upstream by resolveIdentity.
-const BASE = 'https://rsc.example'
+const BASE = 'https://rsc.example/api/v1'
 
 function stubFetch(status: number, body: unknown) {
   const spy = vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }))
@@ -466,12 +466,32 @@ function stubFetch(status: number, body: unknown) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('rscFetch', () => {
-  it('prefixes /api/v1 and sends no key when none is given', async () => {
+  it('appends the path to the base verbatim and sends no key when none is given', async () => {
     const spy = stubFetch(200, { ok: true })
-    await rscFetch(BASE,'/post/li_1/thread')
+    await rscFetch(BASE, '/post/li_1/thread')
     const [url, init] = spy.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe('https://rsc.example/api/v1/post/li_1/thread')
     expect(new Headers(init.headers).has('x-api-key')).toBe(false)
+  })
+
+  // Regression guard: stdio's absolute URLs must be byte-identical to what
+  // they were before the prefix moved out of rscFetch and into loadConfig.
+  it('composes with loadConfig to the same absolute url as before the move', async () => {
+    const spy = stubFetch(200, { ok: true })
+    const cfg = loadConfig({ RSC_IDENTITIES: JSON.stringify({ me: { url: 'https://rsc.example', key: 'k1' } }) })
+    const id = resolveIdentity(cfg, undefined) as { url: string; key: string }
+    await rscFetch(id.url, '/me/timeline', { key: id.key })
+    const [url] = spy.mock.calls[0] as unknown as [string]
+    expect(url).toBe('https://rsc.example/api/v1/me/timeline')
+  })
+
+  // The hosted transport passes a bare core origin (no /api/v1): core mounts
+  // /me/timeline at root. Same helper, no special case.
+  it('supports a base with no /api/v1 segment (the hosted transport case)', async () => {
+    const spy = stubFetch(200, { ok: true })
+    await rscFetch('http://core:8787', '/me/timeline', { key: 'k' })
+    const [url] = spy.mock.calls[0] as unknown as [string]
+    expect(url).toBe('http://core:8787/me/timeline')
   })
 
   it('sends x-api-key when a key is given', async () => {
