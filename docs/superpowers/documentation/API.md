@@ -343,3 +343,25 @@ recoverable.
   change shape.
 - **One key per integration.** Rate limits and revocation are per key, so a
   misbehaving script can be cut off without touching anything else.
+
+## There is already a client
+
+If what you want is to read and write RSC from an AI assistant rather than
+from your own code, the repo ships an **MCP server** built on exactly the
+routes above — `mcp/` in the repository, documented in the README.
+
+It is a thin client over this API and nothing more: three tools (read your
+timeline, read a conversation, post or reply), no privileged access, no
+private endpoints. It authenticates with an ordinary key you mint at
+`/settings/api-keys`, the same one you would use from `curl`.
+
+Two things in it are worth copying if you write your own client:
+
+- **Post creation is not idempotent.** `POST /me/posts` takes no `commandId`,
+  unlike the subscription routes which require one. Do not retry a failed
+  write — a duplicate post federates to every subscriber, and there is no
+  undo. Retry reads if you like; never writes.
+- **A key is scoped to one instance.** Keys from two instances are not
+  interchangeable, so bind the instance URL to the credential in your
+  config rather than storing it alongside. Getting this backwards is easy
+  and only shows up when you add the second instance.
