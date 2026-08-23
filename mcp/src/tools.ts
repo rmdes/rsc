@@ -11,6 +11,7 @@ import * as z from 'zod/v4'
 // name:key pairs, which could not express an account on each of two
 // instances at all — the url belongs to the identity, not beside it.
 export interface Identity {
+  /** Full API base — origin PLUS any REST prefix. Paths are appended verbatim. */
   url: string
   key: string
 }
@@ -62,7 +63,13 @@ export function loadConfig(env: Record<string, string | undefined>): Config {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new Error(`RSC_IDENTITIES entry "${name}" must use an http or https url`)
     }
-    identities.set(name, { url: v.url.trim().replace(/\/+$/, ''), key: v.key.trim() })
+    // `url` is the FULL API BASE, not the instance origin. The stdio entry
+    // points at a public instance, whose MCP-reachable REST surface is web's
+    // /api/v1 proxy; the hosted transport (web/src/routes/mcp/+server.ts)
+    // passes core's origin unprefixed, because core mounts /me/timeline at
+    // root. One field, resolved by whoever builds the Config — rscFetch just
+    // concatenates. Nothing reads the bare origin.
+    identities.set(name, { url: `${v.url.trim().replace(/\/+$/, '')}/api/v1`, key: v.key.trim() })
   }
   if (identities.size === 0) throw new Error('RSC_IDENTITIES must configure at least one identity')
   return { identities }
@@ -250,7 +257,7 @@ export async function rscFetch(baseUrl: string, path: string, opts: FetchOpts = 
 
   let res: Response
   try {
-    res = await fetch(`${baseUrl}/api/v1${path}`, {
+    res = await fetch(`${baseUrl}${path}`, {
       method: opts.method ?? 'GET',
       headers,
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),

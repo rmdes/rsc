@@ -365,3 +365,71 @@ Two things in it are worth copying if you write your own client:
   interchangeable, so bind the instance URL to the credential in your
   config rather than storing it alongside. Getting this backwards is easy
   and only shows up when you add the second instance.
+
+### Hosted transport: `POST /mcp`
+
+Every RSC instance also serves the same three tools directly over HTTP —
+`https://<instance>/mcp` — for any MCP client that speaks Streamable HTTP,
+not just `claude mcp add` against the stdio server above. This is the
+`web/` SvelteKit app itself, not a separate process.
+
+```bash
+curl -X POST https://rsc.example.org/mcp \
+  -H "authorization: Bearer $RSC_KEY" \
+  -H "content-type: application/json" \
+  -H "accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+- **Auth** is `Authorization: Bearer <key>` — the same key from
+  `/settings/api-keys` as everywhere else in this document, not a separate
+  credential. Missing or malformed → `401` before any upstream call.
+- **Both headers on the request are mandatory** for a client that does not
+  send `mcp-protocol-version`. `content-type: application/json` or the
+  request is `415`. `accept` must list *both* `application/json` and
+  `text/event-stream` or the request is `406` — that Accept check only runs
+  on this legacy leg; a client sending `mcp-protocol-version` skips it.
+- **Tool results are `text/event-stream`**, one frame per response:
+  `event: message\ndata: {…}\n\n`. Protocol-level errors — `401`, `415`,
+  `406`, and the `subscriptions/listen` refusal below — are plain JSON, not
+  SSE.
+- **`GET` and `DELETE` are not supported** — `405`. This route is a single
+  stateless POST endpoint; there is no session to open or close.
+- **The instance-wide limits above still apply** — 300 requests/hour per
+  key, and per-tool permission checks: a `timeline:read`-only key calling
+  `rsc_post` gets the tool's own `401`-shaped error text back as a normal
+  (non-error-HTTP) tool result, the same as any other permission failure
+  from this API.
+- **`as` is not used here.** The stdio client's `as` argument exists to pick
+  between multiple configured identities; the hosted route has exactly one —
+  whichever key the caller presented — so omit `as`: any value other than
+  `hosted` is rejected with an "Unknown identity" tool error.
+- **`subscriptions/listen` is refused** (`"Subscription limit reached"`).
+  This server only registers the three tools and never calls a notifier, so
+  there is nothing for a subscription to ever emit; refusing it up front
+  also closes off an unauthenticated caller pinning an idle SSE connection
+  against the same process that serves the rest of the web UI.
+
+**Known, accepted limitation — error messages leak internal detail.** Tool
+errors on this route reuse the exact strings `mcp/src/tools.ts`'s `rscFetch`
+already produces for the stdio client, and two of them assume a stdio
+caller: a rejected key comes back as `"...check RSC_IDENTITIES and the
+key's permissions"` (an env var a hosted caller has never set and cannot
+act on), and a network-level failure can name the internal upstream address
+(`http://core:8787` in production, not the public instance URL). This was a
+spec-accepted tradeoff — `rscFetch` is shared code outside this milestone's
+scope, and rewriting its error strings for two audiences was judged not
+worth a second code path. Treat it as a documented rough edge, not a bug to
+file.
+
+**Not yet verified — pre-deploy checklist item.** The tests for this route
+call its `POST` handler directly (`web/src/routes/mcp/server.test.ts`), so
+three things are proven only by inspection, not by an end-to-end request:
+SvelteKit's own routing (the `405` on `GET` is asserted by checking the
+module has no `GET` export, not by hitting a running server), the
+`adapter-node` production build, and the Caddy / cloudron-nginx hop in
+front of it. SSE survives those proxies elsewhere in this codebase (the
+public firehose already streams through the same path), which makes it
+likely `/mcp` does too — but that has not been demonstrated for this route.
+Confirm a real SSE response reaches a client through the production reverse
+proxy before relying on this in the field.
