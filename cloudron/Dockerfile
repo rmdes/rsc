@@ -14,6 +14,11 @@ WORKDIR /app/code
 COPY package.json package-lock.json ./
 COPY core/package.json core/package.json
 COPY web/package.json web/package.json
+# mcp/ is a declared workspace (root package.json) and web's /mcp route imports
+# @rsc/mcp/src/tools.ts. Without this manifest `npm ci` installs none of mcp's
+# dependencies, so the production image — the deployment path for every live
+# instance — would ship without the MCP SDK.
+COPY mcp/package.json mcp/package.json
 # npm@12: every earlier npm's `ci` (10 and 11 both, tested) ignores
 # better-sqlite3 v13's gypfile:false and forces a node-gyp compile; npm 12 uses
 # the tarball-bundled prebuild. Installed by REPLACING the bundled npm from the
