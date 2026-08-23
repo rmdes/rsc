@@ -30,13 +30,25 @@ export function bearer(request: Request): string | null {
 // only web's proxy carries /api/v1. Looping back through the instance's public
 // origin was rejected — a full DNS/TLS/reverse-proxy round trip, and
 // rscFetch's `redirect: 'error'` makes any edge redirect fail every tool call.
-const handler = createMcpHandler((ctx) => {
-	// Non-null on both counts: POST below rejects every tokenless request
-	// before handler.fetch runs, and the SDK sets requestInfo on both the
-	// modern and legacy legs (dist/index.mjs:1261 and :972).
-	const key = bearer(ctx.requestInfo!)!
-	return buildServer({ identities: new Map([['hosted', { url: base(), key }]]) })
-})
+const handler = createMcpHandler(
+	(ctx) => {
+		// Non-null on both counts: POST below rejects every tokenless request
+		// before handler.fetch runs, and the SDK sets requestInfo on both the
+		// modern and legacy legs (dist/index.mjs:1261 and :973).
+		const key = bearer(ctx.requestInfo!)!
+		return buildServer({ identities: new Map([['hosted', { url: base(), key }]]) })
+	},
+	// buildServer only registers tools, never a notifier, so subscriptions/listen
+	// can never emit anything but keepalives on this route. Refusing it costs
+	// nothing and closes an unauthenticated stream-pinning DoS: auth here is
+	// syntactic only (a real key is validated later, by core, per tool call),
+	// so any Bearer-shaped header could otherwise pin an SSE stream + 15s timer
+	// against the same process serving the whole web UI, up to the process-wide
+	// DEFAULT_MAX_SUBSCRIPTIONS cap. `0` survives the SDK's `?? DEFAULT_MAX_SUBSCRIPTIONS`
+	// (dist/index.mjs:1220) and is refused before any stream/timer exists
+	// (dist/mcp-DXXb3Vv3.mjs:225).
+	{ maxSubscriptions: 0 }
+)
 
 export const POST: RequestHandler = ({ request }) => {
 	// Auth is checked HERE, not inside the factory. A factory throw unwinds to
@@ -44,7 +56,7 @@ export const POST: RequestHandler = ({ request }) => {
 	// via internalServerErrorResponse at :945) — so a missing key raised in the
 	// factory would reach the caller as a server error instead of a 401. The
 	// factory re-reads the same header once the route has admitted the request.
-	if (!bearer(request)) return new Response(null, { status: 401 })
+	if (!bearer(request)) return new Response(null, { status: 401, headers: { 'www-authenticate': 'Bearer' } })
 	return handler.fetch(request)
 }
 

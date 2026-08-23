@@ -42,6 +42,7 @@ test('a request with no Authorization header is 401 and never calls upstream', a
 	const res = await POST({ request: rpc() } as never)
 
 	expect(res.status).toBe(401)
+	expect(res.headers.get('www-authenticate')).toBe('Bearer')
 	expect(fetchMock).not.toHaveBeenCalled()
 })
 
@@ -64,6 +65,14 @@ test('bearer() accepts the scheme case-insensitively, per RFC 7235', () => {
 	expect(bearer(new Request('http://x', { headers: { authorization: 'bearer rsc_k' } }))).toBe('rsc_k')
 	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer rsc_k' } }))).toBe('rsc_k')
 	expect(bearer(new Request('http://x'))).toBe(null)
+	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer\trsc_k' } }))).toBe('rsc_k')
+	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer   rsc_k' } }))).toBe('rsc_k')
+	// The Headers object joins repeated headers comma-separated (RFC 9110 5.3);
+	// the combined value is not a valid Bearer challenge.
+	expect(
+		bearer(new Request('http://x', { headers: [['authorization', 'a'], ['authorization', 'Bearer b']] }))
+	).toBe(null)
+	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer Bearer x' } }))).toBe(null)
 })
 
 test('a valid Bearer key round-trips a tool call and reaches core with x-api-key', async () => {
@@ -99,12 +108,68 @@ test('the API key never appears in the response body', async () => {
 	expect(await res.text()).not.toContain('rsc_secret_key')
 })
 
-test('the API key never appears in an upstream-failure body either', async () => {
-	global.fetch = vi.fn(async () => { throw new TypeError('fetch failed') }) as unknown as typeof fetch
+test('the key reaches core but never comes back in an error body', async () => {
+	// A synthetic key-bearing throw would only test undici's message shape, not
+	// ours: Node's fetch sets err.message to the literal "fetch failed" on every
+	// real network failure (host/port live on .cause, never the message), so
+	// that string can never carry the key — asserting against a fabricated one
+	// is vacuous. Exercise the real leak-shaped path instead: a genuine upstream
+	// rejection whose message rscFetch actually returns to the caller (the 401
+	// branch), with the key demonstrably in play on the same request.
+	const fetchMock = vi.fn(async () => new Response(
+		JSON.stringify({ error: 'invalid api key' }),
+		{ status: 401, headers: { 'content-type': 'application/json' } }
+	))
+	global.fetch = fetchMock as unknown as typeof fetch
 
 	const res = await POST({ request: rpc({ authorization: 'Bearer rsc_secret_key' }) } as never)
 	const body = await res.text()
+
+	// The key reached the upstream request...
+	const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+	expect(new Headers(init.headers).get('x-api-key')).toBe('rsc_secret_key')
+	// ...so its absence here is a real result, not an accident of a mock that
+	// was never handed the key to begin with.
 	expect(body).not.toContain('rsc_secret_key')
+})
+
+// buildServer only registers tools and never calls a notifier, so
+// subscriptions/listen can never emit anything real on this route — it's
+// pure dead weight an unauthenticated-looking caller could otherwise use to
+// pin an SSE stream + 15s keepalive timer against the process serving the
+// whole web UI. maxSubscriptions: 0 must refuse it immediately instead.
+test('subscriptions/listen is refused immediately and does not hold the connection open', async () => {
+	const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+	global.fetch = fetchMock as unknown as typeof fetch
+
+	const request = new Request('http://x/mcp', {
+		method: 'POST',
+		headers: {
+			...MCP_HEADERS,
+			'mcp-protocol-version': '2026-07-28',
+			'mcp-method': 'subscriptions/listen',
+			authorization: 'Bearer rsc_secret_key'
+		},
+		body: JSON.stringify({
+			jsonrpc: '2.0',
+			id: 1,
+			method: 'subscriptions/listen',
+			params: {
+				notifications: { tools: true },
+				_meta: {
+					'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+					'io.modelcontextprotocol/clientCapabilities': {}
+				}
+			}
+		})
+	})
+
+	const res = await POST({ request } as never)
+
+	expect(res.status).toBe(200)
+	const payload = JSON.parse(await res.text()) as { error?: { message?: string } }
+	expect(payload.error?.message).toBe('Subscription limit reached')
+	expect(fetchMock).not.toHaveBeenCalled()
 })
 
 // GET/DELETE are deliberately not exported: SvelteKit answers 405, matching
