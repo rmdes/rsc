@@ -2524,3 +2524,21 @@ reselect it. Blocked by `reapSource`'s `instance_member` guard
 **Accepted, not a task:** propagation is per-author-feed, so a multi-author
 thread updates piecewise and converges within a cycle. The unit of federation is
 a feed; there is no atomic thread update.
+
+## Track B — publish the RSC MCP server to npm (PARKED 2026-08-23)
+
+**Mechanism:** publish `mcp/` so `npx @rsc/mcp` runs the stdio server without
+cloning the repo.
+
+**Why parked, not dropped:** phase 2 Track A (hosted transport at `POST /mcp`,
+shipped + deployed 2026-08-23) removed the original motivation. A client that
+cannot spawn a local process now reaches an instance with an ordinary API key
+and no install at all. What publishing would still buy: (a) clients that prefer
+stdio for local-trust reasons, (b) operators of their own RSC instances wanting
+the stdio server without a clone. Neither has an asker yet.
+
+**Unresolved before any spec:** publishing turns `RSC_IDENTITIES` from private
+config into a public interface, and makes the phase-1 stdio server a supported
+product surface with the compat obligations that implies.
+
+**Status:** parked — revisit when someone actually asks for the package.
