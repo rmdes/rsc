@@ -1,6 +1,7 @@
 import { createMcpHandler } from '@modelcontextprotocol/server'
 import { buildServer } from '@rsc/mcp/src/tools.ts'
 import { base } from '$lib/server/session'
+import { bearer } from '$lib/server/mcp-auth'
 import type { RequestHandler } from './$types'
 
 // Phase 2, Track A: the hosted transport. Sits beside mcp/src/stdio.ts against
@@ -11,15 +12,6 @@ import type { RequestHandler } from './$types'
 // Hosted inverts stdio's identity model: the server owns no credentials, the
 // caller presents one, and the instance is fixed. That is a single-identity
 // Config, which resolveIdentity already handles; `as` is vestigial here.
-
-// RFC 7235: the auth scheme is case-insensitive. Exported for the test — this
-// predicate is the whole perimeter, so it gets asserted directly.
-export function bearer(request: Request): string | null {
-	const raw = request.headers.get('authorization')
-	if (!raw) return null
-	const m = /^Bearer[ \t]+(\S+)$/i.exec(raw.trim())
-	return m ? m[1] : null
-}
 
 // ONE module-level handler. The SDK builds a fresh McpServer per request from
 // this factory, so the per-caller credential is read from ctx.requestInfo

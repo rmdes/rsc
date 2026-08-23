@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from 'vitest'
-import { POST, bearer } from './+server.ts'
+import { POST } from './+server.ts'
 
 const originalFetch = global.fetch
 afterEach(() => {
@@ -59,20 +59,6 @@ test.each([
 
 	expect(res.status).toBe(401)
 	expect(fetchMock).not.toHaveBeenCalled()
-})
-
-test('bearer() accepts the scheme case-insensitively, per RFC 7235', () => {
-	expect(bearer(new Request('http://x', { headers: { authorization: 'bearer rsc_k' } }))).toBe('rsc_k')
-	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer rsc_k' } }))).toBe('rsc_k')
-	expect(bearer(new Request('http://x'))).toBe(null)
-	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer\trsc_k' } }))).toBe('rsc_k')
-	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer   rsc_k' } }))).toBe('rsc_k')
-	// The Headers object joins repeated headers comma-separated (RFC 9110 5.3);
-	// the combined value is not a valid Bearer challenge.
-	expect(
-		bearer(new Request('http://x', { headers: [['authorization', 'a'], ['authorization', 'Bearer b']] }))
-	).toBe(null)
-	expect(bearer(new Request('http://x', { headers: { authorization: 'Bearer Bearer x' } }))).toBe(null)
 })
 
 test('a valid Bearer key round-trips a tool call and reaches core with x-api-key', async () => {

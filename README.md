@@ -247,6 +247,13 @@ from the web UI.
 author's feed. Note feeds are served by **core** directly, not through web:
 in dev that is `http://localhost:8787/users/<handle>/feed.xml`.
 
+**No local process needed:** every instance also serves these same three
+tools directly at `POST https://<instance>/mcp` (Streamable HTTP,
+key-authed, no `RSC_IDENTITIES` to configure) for any MCP client that isn't
+`claude mcp add`. See
+[`docs/superpowers/documentation/API.md`](docs/superpowers/documentation/API.md#hosted-transport-post-mcp)
+for the request shape and its known limitations.
+
 ## Docs
 
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — design documents for
