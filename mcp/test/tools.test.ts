@@ -515,6 +515,14 @@ describe('rscFetch', () => {
     expect(r.message).not.toContain('k2')
   })
 
+  it('omits RSC_IDENTITIES advice and the base URL from the hosted rejected-key message', async () => {
+    stubFetch(401, { error: 'unauthorized' })
+    const r = await rscFetch(BASE, '/me/timeline', { key: 'k2', hosted: true }) as { ok: false; message: string }
+    expect(r.message).not.toContain('RSC_IDENTITIES')
+    expect(r.message).not.toContain(BASE)
+    expect(r.message).not.toContain('k2')
+  })
+
   it('explains a 429 as the per-key hourly limit', async () => {
     stubFetch(429, { error: 'rate limited' })
     const r = await rscFetch(BASE,'/me/timeline', { key: 'k1' }) as { ok: false; message: string }
@@ -535,6 +543,23 @@ describe('rscFetch', () => {
     // matches the 500-on-write sibling below: a retry-once regression on the
     // read path would otherwise still pass every other test in this file.
     expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  // Node's fetch (undici) sets err.message to the literal "fetch failed" on
+  // every network error — host/port detail lives on .cause, never in the
+  // message itself (measured). Reproduced verbatim rather than fabricating a
+  // message with a url or key baked in, which would test undici, not us.
+  it('includes the base URL in the stdio (default) network-failure message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    const r = await rscFetch(BASE, '/me/timeline', { key: 'k1' }) as { ok: false; message: string }
+    expect(r.message).toContain(BASE)
+  })
+
+  it('omits the base URL and RSC_IDENTITIES from the hosted network-failure message', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('fetch failed') }))
+    const r = await rscFetch(BASE, '/me/timeline', { key: 'k1', hosted: true }) as { ok: false; message: string }
+    expect(r.message).not.toContain(BASE)
+    expect(r.message).not.toContain('RSC_IDENTITIES')
   })
 
   it('issues exactly ONE request when the server 500s on a write', async () => {

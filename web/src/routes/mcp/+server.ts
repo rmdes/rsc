@@ -28,7 +28,7 @@ const handler = createMcpHandler(
 		// before handler.fetch runs, and the SDK sets requestInfo on both the
 		// modern and legacy legs (dist/index.mjs:1261 and :973).
 		const key = bearer(ctx.requestInfo!)!
-		return buildServer({ identities: new Map([['hosted', { url: base(), key }]]) })
+		return buildServer({ identities: new Map([['hosted', { url: base(), key }]]), hosted: true })
 	},
 	// buildServer only registers tools, never a notifier, so subscriptions/listen
 	// can never emit anything but keepalives on this route. Refusing it costs

@@ -18,6 +18,11 @@ export interface Identity {
 
 export interface Config {
   identities: Map<string, Identity>
+  // Set ONLY by web/src/routes/mcp/+server.ts. The hosted caller has never
+  // seen RSC_IDENTITIES and Identity.url there is core's internal address
+  // (http://core:8787) — rscFetch uses this to keep both out of hosted error
+  // messages, without sniffing the url itself.
+  hosted?: boolean
 }
 
 // ONE variable, JSON:
@@ -240,6 +245,7 @@ export interface FetchOpts {
   body?: unknown
   key?: string
   identityName?: string
+  hosted?: boolean
 }
 
 // One request, no retries, ever. POST /me/posts carries no commandId (unlike
@@ -279,9 +285,19 @@ export async function rscFetch(baseUrl: string, path: string, opts: FetchOpts = 
     // functional regression.
     const cause = err instanceof Error ? err.cause : undefined
     if (cause instanceof Error && cause.message === 'unexpected redirect') {
-      return { ok: false, message: `${baseUrl} responded with a redirect instead of a direct answer; this client refuses to follow redirects on write-capable requests.` }
+      return {
+        ok: false,
+        message: opts.hosted
+          ? 'The RSC instance responded with a redirect instead of a direct answer; this client refuses to follow redirects on write-capable requests.'
+          : `${baseUrl} responded with a redirect instead of a direct answer; this client refuses to follow redirects on write-capable requests.`
+      }
     }
-    return { ok: false, message: `Could not reach ${baseUrl}: ${err instanceof Error ? err.message : 'network error'}` }
+    return {
+      ok: false,
+      message: opts.hosted
+        ? `Could not reach the RSC instance: ${err instanceof Error ? err.message : 'network error'}`
+        : `Could not reach ${baseUrl}: ${err instanceof Error ? err.message : 'network error'}`
+    }
   }
 
   let parsed: unknown
@@ -298,7 +314,12 @@ export async function rscFetch(baseUrl: string, path: string, opts: FetchOpts = 
   if (res.ok) {
     return parseOk
       ? { ok: true, data: parsed }
-      : { ok: false, message: `${baseUrl} returned a response that was not valid JSON (HTTP ${res.status}).` }
+      : {
+          ok: false,
+          message: opts.hosted
+            ? `The RSC instance returned a response that was not valid JSON (HTTP ${res.status}).`
+            : `${baseUrl} returned a response that was not valid JSON (HTTP ${res.status}).`
+        }
   }
 
   const core = typeof parsed === 'object' && parsed !== null && typeof (parsed as { error?: unknown }).error === 'string'
@@ -307,13 +328,21 @@ export async function rscFetch(baseUrl: string, path: string, opts: FetchOpts = 
 
   if (res.status === 401 || res.status === 403) {
     const who = opts.identityName ? `identity "${opts.identityName}"` : 'the configured key'
-    return { ok: false, message: `The key for ${who} was rejected (${res.status}) — check RSC_IDENTITIES and the key's permissions.` }
+    return {
+      ok: false,
+      message: opts.hosted
+        ? `The key for ${who} was rejected (${res.status}) — check the API key and its permissions.`
+        : `The key for ${who} was rejected (${res.status}) — check RSC_IDENTITIES and the key's permissions.`
+    }
   }
   if (res.status === 429) {
     return { ok: false, message: 'Rate limited (429). Each API key allows 300 requests per hour; wait rather than retrying.' }
   }
   if (res.status === 503) {
-    return { ok: false, message: `The RSC instance at ${baseUrl} is unreachable (503).` }
+    return {
+      ok: false,
+      message: opts.hosted ? 'The RSC instance is unreachable (503).' : `The RSC instance at ${baseUrl} is unreachable (503).`
+    }
   }
   return { ok: false, message: core ? `${core} (HTTP ${res.status})` : `Request failed with HTTP ${res.status}.` }
 }
@@ -340,7 +369,7 @@ export const toolHandlers = {
     if (args.limit !== undefined) q.set('limit', String(args.limit))
     if (args.before !== undefined) q.set('before', args.before)
     const suffix = q.size ? `?${q.toString()}` : ''
-    const res = await rscFetch(picked.url, `/me/timeline${suffix}`, { key: picked.key, identityName: args.as })
+    const res = await rscFetch(picked.url, `/me/timeline${suffix}`, { key: picked.key, identityName: args.as, hosted: cfg.hosted })
     if (!res.ok) return fail(res.message)
     return ok(renderTimeline(res.data as TimelineEnvelope))
   },
@@ -351,7 +380,7 @@ export const toolHandlers = {
   async thread(args: { postId: string; as?: string }, cfg: Config): Promise<ToolResult> {
     const picked = resolveIdentity(cfg, args.as)
     if ('error' in picked) return fail(picked.error)
-    const res = await rscFetch(picked.url, `/post/${encodeURIComponent(args.postId)}/thread`)
+    const res = await rscFetch(picked.url, `/post/${encodeURIComponent(args.postId)}/thread`, { hosted: cfg.hosted })
     if (!res.ok) return fail(res.message)
     return ok(renderThread(res.data as ThreadEnvelope))
   },
@@ -361,7 +390,7 @@ export const toolHandlers = {
     if ('error' in picked) return fail(picked.error)
     const body: { content: string; inReplyTo?: string } = { content: args.content }
     if (args.inReplyTo !== undefined) body.inReplyTo = args.inReplyTo
-    const res = await rscFetch(picked.url, '/me/posts', { method: 'POST', body, key: picked.key, identityName: args.as })
+    const res = await rscFetch(picked.url, '/me/posts', { method: 'POST', body, key: picked.key, identityName: args.as, hosted: cfg.hosted })
     if (!res.ok) {
       return fail(args.inReplyTo ? `${res.message} (reply target: ${args.inReplyTo})` : res.message)
     }
