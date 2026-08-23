@@ -384,12 +384,15 @@ curl -X POST https://rsc.example.org/mcp \
 - **Auth** is `Authorization: Bearer <key>` — the same key from
   `/settings/api-keys` as everywhere else in this document, not a separate
   credential. Missing or malformed → `401` before any upstream call.
-- **Both headers on the request are mandatory.** `content-type:
-  application/json` or the request is `415`. `accept` must list *both*
-  `application/json` and `text/event-stream` or the request is `406` — the
-  SDK requires both even though every response here is SSE.
-- **Responses are `text/event-stream`**, one frame per response:
-  `event: message\ndata: {…}\n\n`.
+- **Both headers on the request are mandatory** for a client that does not
+  send `mcp-protocol-version`. `content-type: application/json` or the
+  request is `415`. `accept` must list *both* `application/json` and
+  `text/event-stream` or the request is `406` — that Accept check only runs
+  on this legacy leg; a client sending `mcp-protocol-version` skips it.
+- **Tool results are `text/event-stream`**, one frame per response:
+  `event: message\ndata: {…}\n\n`. Protocol-level errors — `401`, `415`,
+  `406`, and the `subscriptions/listen` refusal below — are plain JSON, not
+  SSE.
 - **`GET` and `DELETE` are not supported** — `405`. This route is a single
   stateless POST endpoint; there is no session to open or close.
 - **The instance-wide limits above still apply** — 300 requests/hour per
@@ -399,8 +402,8 @@ curl -X POST https://rsc.example.org/mcp \
   from this API.
 - **`as` is not used here.** The stdio client's `as` argument exists to pick
   between multiple configured identities; the hosted route has exactly one —
-  whichever key the caller presented — so `as` is accepted but has nothing
-  to select between.
+  whichever key the caller presented — so omit `as`: any value other than
+  `hosted` is rejected with an "Unknown identity" tool error.
 - **`subscriptions/listen` is refused** (`"Subscription limit reached"`).
   This server only registers the three tools and never calls a notifier, so
   there is nothing for a subscription to ever emit; refusing it up front
