@@ -11,10 +11,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.1",
+    "@better-auth/api-key": "1.7.2",
     "@hono/node-server": "^2.0.0",
     "@paulrobertlloyd/mf2tojf2": "^3.0.0",
-    "better-auth": "1.7.1",
+    "better-auth": "1.7.2",
     "better-sqlite3": "^13.0.0",
     "feedsmith": "^2.9.6",
     "hono": "^4.6.0",
