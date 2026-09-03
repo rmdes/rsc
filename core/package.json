@@ -20,7 +20,7 @@
     "hono": "^4.6.0",
     "kysely": "^0.29.3",
     "microformats-parser": "^2.0.6",
-    "nodemailer": "9.0.6",
+    "nodemailer": "9.1.1",
     "rehype-highlight": "7.0.2",
     "rehype-stringify": "10.0.1",
     "remark-breaks": "4.0.0",
