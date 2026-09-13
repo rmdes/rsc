@@ -1644,6 +1644,15 @@ export const MIGRATIONS: string[][] = [
     `UPDATE account SET issuer = 'local:credential' WHERE providerId = 'credential'`,
     `CREATE UNIQUE INDEX account_issuer_accountId_uidx ON account (issuer, accountId)`,
   ],
+  // Migration 26 (2026-09-13): better-auth 1.7.3 dropped the issuer identity
+  // again — accounts are keyed by (providerId, accountId) as in 1.6 and new rows
+  // never write `issuer`. Migration 25's column and index are dead; this is the
+  // 1.7 upgrade guide's SQLite cleanup, verbatim (index first: DROP COLUMN
+  // refuses an indexed column).
+  [
+    `DROP INDEX account_issuer_accountId_uidx`,
+    `ALTER TABLE account DROP COLUMN issuer`,
+  ],
 ]
 
 function migrate(sqlite: InstanceType<typeof Database>): void {
