@@ -37,6 +37,13 @@ services:
     volumes:
       - ./:/app
       - node_modules:/app/node_modules # container's linux better-sqlite3 wins
+      # web/node_modules must be mounted HERE too, not just on web: npm ci
+      # installs what cannot hoist (vitest 5 and friends) into the per-workspace
+      # dir, and web masks that path with this same named volume. Without this
+      # line core's ci wrote them to the HOST bind mount while web saw an
+      # image-seeded EMPTY volume — `npm test -w web` then failed with exit 127
+      # (no vitest) for weeks. One ci, both volumes; web only runs vite.
+      - web-node-modules:/app/web/node_modules
       # Writable paths → named volumes, NOT the host bind mount: the container
       # runs as root, so anything it writes onto ./ would land root-owned and
       # break the host toolchain (npm test EACCES). Keep its writes in volumes.
@@ -57,8 +64,11 @@ services:
     image: node:24-bookworm-slim
     container_name: rsc-web
     working_dir: /app
-    # node_modules is already populated by core's npm ci (shared volume); just
-    # run vite. --host exposes the dev server outside the container.
+    # Both node_modules volumes are populated by core's npm ci (core mounts the
+    # same two); just run vite. Deliberately NO `npm ci` here — it would wipe
+    # the shared root volume out from under the already-running core, since
+    # depends_on waits for core to be HEALTHY (i.e. serving) before web starts.
+    # --host exposes the dev server outside the container.
     command: sh -c "npm run dev -w web -- --host 0.0.0.0"
     environment:
       CORE_API_URL: http://core:8787
