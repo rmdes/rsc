@@ -1,0 +1,43 @@
+# Dependabot — dependency updates.
+#
+# Security updates need NO config and already run (they produced the 8-package
+# npm_and_yarn batch). This file adds *version* updates, which do not run
+# without it — that is why only a security PR had appeared.
+#
+# Scope note: the three npm workspaces (core, web, mcp) share ONE root
+# lockfile, so a single `directory: /` entry covers all of them. Verified
+# empirically, not assumed: the security batch correctly bumped BOTH
+# core/package.json and web/package.json from the root with no config present.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5 # security updates are exempt from this limit
+    groups:
+      # One PR for every patch+minor across all three workspaces. This is the
+      # whole point of the group: without it a Renovate-sized backlog of
+      # single-package PRs rebuilds itself (11 were open before this).
+      # Majors are deliberately NOT grouped — each one gets its own PR so it
+      # can be reviewed on its own merits. This repo has no CI on PRs, so a
+      # major landing inside a grouped PR would merge unverified.
+      npm-patch-minor:
+        update-types:
+          - patch
+          - minor
+
+  # Base images. cloudron/Dockerfile is digest-pinned
+  # (`FROM cloudron/base:5.1.0@sha256:...`) which Dependabot updates tag+digest
+  # together; docker/Dockerfile.{core,web} track node:24-bookworm-slim.
+  #
+  # KNOWN GAP, not an oversight: `ARG NODE_VERSION=22.22.2` in
+  # cloudron/Dockerfile is fetched as a tarball, not a FROM, so NO bot tracks
+  # it — Dependabot cannot, and Renovate could not either without a custom
+  # manager it never had. Bump it by hand when Node 22.x moves.
+  - package-ecosystem: docker
+    directories:
+      - /cloudron
+      - /docker
+    schedule:
+      interval: weekly
