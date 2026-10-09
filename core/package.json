@@ -11,16 +11,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.4",
-    "@hono/node-server": "^2.0.0",
+    "@better-auth/api-key": "1.7.7",
+    "@hono/node-server": "^2.1.3",
     "@paulrobertlloyd/mf2tojf2": "^3.0.0",
-    "better-auth": "1.7.4",
+    "better-auth": "1.7.7",
     "better-sqlite3": "^13.0.0",
     "feedsmith": "^2.9.6",
-    "hono": "^4.6.0",
-    "kysely": "^0.29.3",
+    "hono": "^4.13.13",
+    "kysely": "^0.29.6",
     "microformats-parser": "^2.0.6",
-    "nodemailer": "10.0.9",
+    "nodemailer": "10.0.15",
     "rehype-highlight": "7.0.2",
     "rehype-stringify": "10.0.1",
     "remark-breaks": "4.0.0",
@@ -28,7 +28,7 @@
     "remark-gfm": "4.0.1",
     "remark-parse": "11.0.0",
     "remark-rehype": "11.1.2",
-    "sanitize-html": "^2.17.6",
+    "sanitize-html": "^2.18.0",
     "unified": "11.0.5",
     "unist-util-visit": "5.1.0"
   },
@@ -36,9 +36,9 @@
     "@types/better-sqlite3": "^9.0.0",
     "@types/hast": "3.0.5",
     "@types/node": "^24.13.3",
-    "@types/nodemailer": "8.0.1",
-    "@types/sanitize-html": "^2.16.1",
+    "@types/nodemailer": "8.0.2",
+    "@types/sanitize-html": "^2.16.2",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.3"
   }
 }
