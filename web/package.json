@@ -31,7 +31,7 @@
 		"@cartamd/plugin-slash": "4.2.0",
 		"@modelcontextprotocol/server": "2.0.0",
 		"carta-md": "^4.11.2",
-		"dompurify": "^3.4.12",
+		"dompurify": "^3.4.16",
 		"rehype-highlight": "7.0.2",
 		"rehype-stringify": "10.0.1",
 		"remark-breaks": "4.0.0",
