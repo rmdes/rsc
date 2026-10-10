@@ -8,7 +8,9 @@
 
 **Tech Stack:** npm workspaces · Node native type stripping (core, no build) · SvelteKit + adapter-node (web) · vitest 5 · unified/remark/rehype · sanitize-html · Cloudron image.
 
-**Spec:** `docs/superpowers/specs/2026-10-10-shared-render-workspace-design.md` (rev 2).
+**Spec:** `docs/superpowers/specs/2026-10-10-shared-render-workspace-design.md` (rev 3).
+
+**Plan rev 2** folds a clean-context review (READY WITH CHANGES). It fixes two expectations that would have stopped a correct implementation (Task 3 Step 6, Task 4 Step 4), restores spec criterion 5's pre-deploy feed check (Task 4 Step 5), adds timeouts and "run as ONE command" guards, and adds the TESTING.md map fix (spec rev 3).
 
 ## Global Constraints
 
@@ -22,6 +24,8 @@
 - **Shared checkout:** a parallel session commits on `main`. Never `git add -A`; stage explicit paths. Never `git stash`.
 - Every commit message ends with the line: `developed with the help of AI tools`
 - **Expected test counts** (baseline at plan time: core 107 files / 1223 tests, web 56 files / 500 tests): after Task 1 core = 108 files / 1237; after Task 2 core = 108 / 1224; after Task 3 web = 56 / 487.
+- **Multi-line shell blocks that use `$B`, `$F` or `$BASE` must be run as ONE command.** Shell variables do not survive between separate tool calls, and a lost `$B` leaves a planted error or mutation in an uncommitted file that `git checkout` cannot restore.
+- The dev stack is **shared** with a parallel session. Restarting it (Task 1 Step 8, Task 2 Step 6) interrupts that session's stack — say so in your report when you do it.
 
 ---
 
@@ -268,7 +272,13 @@ Expected: FAIL — the import `@rsc/render/src/render.ts` cannot be resolved (no
 
 - [ ] **Step 4: Create `render/src/render.ts`**
 
-Everything from `SANITIZE_CONFIG` through `pipeline` is copied from `core/src/domain/markdown.ts:18-79` with its comments unchanged, except that the pipeline's twin-contract comment is replaced (there is no twin any more).
+Everything from `SANITIZE_CONFIG` through `pipeline` is copied from `core/src/domain/markdown.ts:18-79` with its comments unchanged, with three deliberate exceptions:
+
+- one clarifying line is added after SEC-4;
+- the pipeline's twin-contract comment (`markdown.ts:67-70`) is replaced, because there is no twin any more;
+- its "everything here is sync" sentence is kept in substance but reworded, because `renderPostHtml` no longer lives in the same file.
+
+Reviewers: these three are intended, not drift.
 
 ```ts
 import { unified } from 'unified'
@@ -295,6 +305,8 @@ import type { Element, Root, Text } from 'hast'
 // never set allowDangerousHtml) AND the sanitizer still runs after: defense
 // in depth. Remote content is never routed through this: pass-through
 // applies to OTHERS' content, not to HTML we author ourselves.
+// (SEC-4 describes the renderMarkdown path. sanitize() below is the separate,
+// deliberate path for remote HTML displayed by web.)
 const SANITIZE_CONFIG: sanitizeHtml.IOptions = {
   allowedTags: ['p', 'br', 'a', 'em', 'strong', 'b', 'i', 'blockquote', 'code', 'pre', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'img', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'del', 'span'],
   allowedAttributes: { a: ['href', 'rel'], img: ['src', 'loading'] },
@@ -439,9 +451,12 @@ Expected: exactly one line, `+      "version": "0.0.0",` (the new `render` packa
 
 - [ ] **Step 8: Restart the dev stack so core's `npm ci` installs the workspace**
 
+Run as ONE command:
+
 ```bash
 docker compose down && docker compose up -d
-until [ "$(docker inspect -f '{{.State.Health.Status}}' rsc-core 2>/dev/null)" = "healthy" ]; do sleep 5; done
+for i in $(seq 1 90); do [ "$(docker inspect -f '{{.State.Health.Status}}' rsc-core 2>/dev/null)" = "healthy" ] && break; sleep 5; done
+[ "$(docker inspect -f '{{.State.Health.Status}}' rsc-core)" = "healthy" ] || { echo "core NOT healthy after 7.5 min"; docker compose logs core | tail -40; exit 1; }
 docker compose exec -T core ls -la /app/node_modules/@rsc/
 test ! -e render/node_modules && echo "OK: nothing installed into render/node_modules on the host"
 ```
@@ -455,7 +470,7 @@ Expected: PASS — 1 file, **14 tests**.
 
 - [ ] **Step 10: Prove core's `tsc` actually type-checks the new workspace**
 
-The design relies on core's typecheck covering `render/src/render.ts` (it has no tsconfig of its own). Plant a type error, confirm it is caught, restore:
+The design relies on core's typecheck covering `render/src/render.ts` (it has no tsconfig of its own). Plant a type error, confirm it is caught, restore. Run as ONE command:
 
 ```bash
 B=$(mktemp) && cp render/src/render.ts "$B"
@@ -682,9 +697,12 @@ Expected: **no output** — removing declarations from core changes no resolved 
 
 - [ ] **Step 6: Restart the stack and confirm nothing in core still references the twin**
 
+Run as ONE command:
+
 ```bash
 docker compose down && docker compose up -d
-until [ "$(docker inspect -f '{{.State.Health.Status}}' rsc-core 2>/dev/null)" = "healthy" ]; do sleep 5; done
+for i in $(seq 1 90); do [ "$(docker inspect -f '{{.State.Health.Status}}' rsc-core 2>/dev/null)" = "healthy" ] && break; sleep 5; done
+[ "$(docker inspect -f '{{.State.Health.Status}}' rsc-core)" = "healthy" ] || { echo "core NOT healthy after 7.5 min"; docker compose logs core | tail -40; exit 1; }
 grep -rn "renderLocalHtml\|domain/markdown" core/src core/test && echo "STALE REFERENCES FOUND" || echo "OK: no references to the deleted twin"
 ```
 
@@ -815,7 +833,7 @@ Expected: PASS, **4 tests**.
 
 - [ ] **Step 5: Prove the smoke test is load-bearing (mutation)**
 
-Temporarily break the remote branch, confirm only the smoke test fails, restore:
+Temporarily break the remote branch, confirm only the smoke test fails, restore. Run as ONE command:
 
 ```bash
 B=$(mktemp) && cp web/src/lib/server/render.ts "$B"
@@ -831,11 +849,11 @@ Expected: `sanitize calls after mutation: 0`; with the mutation, **exactly one**
 - [ ] **Step 6: Confirm the gate is defined exactly once**
 
 ```bash
-grep -rln "SANITIZE_CONFIG" --include='*.ts' --include='*.svelte' core web mcp render | grep -v node_modules
-grep -rn "unified()" --include='*.ts' core/src web/src render/src | grep -v node_modules
+grep -rln "const SANITIZE_CONFIG" --include='*.ts' --include='*.svelte' core web mcp render | grep -v node_modules
+grep -rln "unified()" --include='*.ts' core/src web/src render/src | grep -v node_modules
 ```
 
-Expected: the first prints only `render/src/render.ts`; the second prints only `render/src/render.ts`.
+Expected: each prints only `render/src/render.ts`. (Grep the *definition*, `const SANITIZE_CONFIG`: the bare name also appears in comments, e.g. `core/test/render.test.ts`'s header.)
 
 - [ ] **Step 7: Web, svelte-check and core gates**
 
@@ -873,6 +891,7 @@ EOF
 
 **Files:**
 - Modify: `CLAUDE.md` (workspaces section; sanitizer invariant)
+- Modify: `docs/superpowers/documentation/TESTING.md` (suite map, two lines)
 - Verification only (no change expected): `docker/Dockerfile.core`, `docker/Dockerfile.web`
 
 **Interfaces:**
@@ -888,9 +907,10 @@ Then, immediately after the `web/` bullet (the one ending `server-side via \`COR
 ```markdown
 - **`render/`** — the XSS gate (`@rsc/render`), source only: `src/render.ts`
   plus a `package.json`; no build, no tsconfig, no test runner of its own.
-  core and web import it by deep path (`@rsc/render/src/render.ts`); its tests
-  run in core's suite (`core/test/render.test.ts`) and core's `tsc`
-  type-checks it.
+  core and web import it by deep path (`@rsc/render/src/render.ts`) without
+  declaring it — it resolves through the npm-workspace link, exactly like
+  `@rsc/mcp`. Its tests run in core's suite (`core/test/render.test.ts`) and
+  core's `tsc` type-checks it.
 ```
 
 - [ ] **Step 2: Replace the sanitizer invariant in `CLAUDE.md`**
@@ -912,6 +932,38 @@ Replace the whole bullet that begins `- **The sanitizer is the XSS gate.** Displ
   `web/package.json` would inline the sanitizer into the production bundle.
 ```
 
+- [ ] **Step 2b: Point `TESTING.md`'s suite map at the new home of the gate tests**
+
+`docs/superpowers/documentation/TESTING.md`'s "What each suite covers" map would otherwise send readers to the wrong place for sanitizer tests (spec rev 3).
+
+In the **core** bullet, replace
+
+```markdown
+  (`auth.test.ts`), feeds in/out and dual contract (`feed.test.ts`,
+  `rich-content.test.ts`), ingest + discovery (`ingest*.test.ts`,
+```
+
+with
+
+```markdown
+  (`auth.test.ts`), feeds in/out and dual contract (`feed.test.ts`,
+  `rich-content.test.ts`), the XSS gate `@rsc/render` — hostile fixtures, GFM,
+  highlighting, the canonical fixture (`render.test.ts`), ingest + discovery
+  (`ingest*.test.ts`,
+```
+
+In the **web** bullet, replace
+
+```markdown
+  the server render/sanitizer twin (`server/render.test.ts`), the cookie-relay
+```
+
+with
+
+```markdown
+  the display-precedence adapter over the XSS gate (`server/render.test.ts`), the cookie-relay
+```
+
 - [ ] **Step 3: Build the production (Cloudron) image locally**
 
 ```bash
@@ -927,7 +979,7 @@ docker run --rm rsc-render-check sh -c '
   node -v
   cd /app/code/core && node --input-type=module -e "
     const m = await import(\"@rsc/render/src/render.ts\");
-    console.log(\"renderMarkdown:\", m.renderMarkdown(\"**ok** <script>x</script>\"));
+    console.log(\"renderMarkdown:\", m.renderMarkdown(\"**ok**\\n\\n<script>x</script>\"));
     console.log(\"sanitize:\", m.sanitize(\"<script>x</script>ok\"));
   "
   echo "--- @rsc/render import specifiers left in web/build (expect none):"
@@ -939,12 +991,38 @@ docker run --rm rsc-render-check sh -c '
 
 Expected:
 - `v22.22.2` — type stripping across the workspace symlink works on the **production** Node, not just the dev container's Node 24.
-- `renderMarkdown: <p><strong>ok</strong></p>` (the raw `<script>` block is dropped at the parser).
+- `renderMarkdown: <p><strong>ok</strong></p>`. The `<script>` stands as its own **block** (blank line before it), so remark drops it whole. Measured against today's pipeline. Contrast: the same tag *inline* in a paragraph loses its tags but keeps its text — `"**ok** <script>x</script>"` gives `<p><strong>ok</strong> x</p>`.
 - `sanitize: ok`.
 - **No** `@rsc/render` specifier in `web/build` — the gate is bundled into web's build. This is what keeps `docker/Dockerfile.web`'s runtime stage (which copies only `web/build` and `node_modules`, not `render/`) working.
 - `sanitize-html`, `unified` and `rehype-highlight` all appear as **external** imports — the production web bundle has the same shape as before the move.
 
-If any expectation fails, stop and report; do not deploy.
+Then the feed, which is spec criterion 5 ("a feed is well-formed"), checked *before* any deploy. Core's `renderRssFeed` needs no database, so it runs directly in the production image on Node 22. The image writes the XML; the host parses it. Run as ONE command:
+
+```bash
+F=$(mktemp)
+docker run --rm rsc-render-check sh -c 'cd /app/code/core && node --input-type=module -e "
+  const { renderRssFeed } = await import(\"./src/domain/feed.ts\");
+  const u = { id: \"u1\", kind: \"local\", handle: \"alice\", displayName: \"Alice\", feedUrl: null, createdAt: \"2026-01-01T00:00:00.000Z\", authUserId: null };
+  const p = { id: \"p1\", authorId: \"u1\", source: \"local\", guid: \"g-1\", title: null, content: \"**hello**\\n\\n<script>alert(1)</script>\", url: null, publishedAt: \"2026-01-01T00:00:00.000Z\", createdAt: \"2026-01-01T00:00:00.000Z\" };
+  process.stdout.write(renderRssFeed(u, [p], { publicUrl: \"https://cast.example\", hubUrl: null, rssCloud: false }));
+"' > "$F"
+python3 - "$F" <<'EOF'
+import sys, xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()          # raises if not well-formed
+items = root.findall('.//item')
+desc = items[0].findtext('description') or ''
+print('WELL-FORMED:', root.tag, '| items:', len(items))
+print('description:', repr(desc))
+assert '<strong>hello</strong>' in desc, 'markdown was not rendered through the gate'
+assert 'script' not in desc and 'alert' not in desc, 'hostile block survived'
+print('OK: feed rendered through @rsc/render on the production image')
+EOF
+rm -f "$F"
+```
+
+Expected: `WELL-FORMED: rss | items: 1`, a description containing `<p><strong>hello</strong></p>` with no `script`, and `OK: …`.
+
+If any expectation in this step fails, stop and report; do not deploy.
 
 - [ ] **Step 5: Boot the image and confirm both processes load the gate**
 
@@ -973,14 +1051,16 @@ docker rmi rsc-render-check
 
 - [ ] **Step 7: Lockfile proof across the whole change**
 
-Compare against the commit before Task 1 (the spec's rev-2 commit, `99deda6`):
+Compare against the parent of Task 1's commit, the one that first added `render/package.json`. This is computed rather than hard-coded, so a parallel session's commits in between can't confuse it. Run as ONE command:
 
 ```bash
-python3 - <<'EOF'
-import json, subprocess
+BASE=$(git log --format=%H --diff-filter=A -- render/package.json | tail -1)^
+echo "base: $(git log --oneline -1 $BASE)"
+BASE="$BASE" python3 - <<'EOF'
+import json, os, subprocess
 pk = ['unified','remark-parse','remark-gfm','remark-breaks','remark-emoji','remark-rehype',
       'rehype-highlight','rehype-stringify','sanitize-html','unist-util-visit','@types/hast','@types/sanitize-html']
-old = json.loads(subprocess.run(['git','show','99deda6:package-lock.json'],capture_output=True,text=True,check=True).stdout)['packages']
+old = json.loads(subprocess.run(['git','show',os.environ['BASE']+':package-lock.json'],capture_output=True,text=True,check=True).stdout)['packages']
 new = json.load(open('package-lock.json'))['packages']
 bad = 0
 for p in pk:
@@ -1008,7 +1088,7 @@ Expected: `tsc exit: 0`; core **108 / 1224**; web **56 / 487**; svelte-check **0
 - [ ] **Step 9: Commit**
 
 ```bash
-git add CLAUDE.md
+git add CLAUDE.md docs/superpowers/documentation/TESTING.md
 git commit -F - <<'EOF'
 docs(claude): one XSS gate in @rsc/render — replace the twins invariant
 
@@ -1033,4 +1113,9 @@ Deploying is **not** a plan task. It needs the operator's explicit go-ahead and 
 ## Notes beyond the spec
 
 - **VPS image path** (`docker/Dockerfile.core`, `docker/Dockerfile.web`, used by `compose.prod.yaml`) — not mentioned in the spec. No change is needed. `Dockerfile.core` copies the whole repo before `npm ci`. `Dockerfile.web`'s runtime stage copies only `web/build` and `node_modules`, so it depends on the gate being bundled into `web/build`. Task 4 Step 4 verifies exactly that.
-- **Criterion 5 coverage:** a fresh image has no users, so "renders posts and a well-formed feed" is covered in two parts. Booting proves the gate loads in both processes: core loads it via `feed.ts` at startup, and web loads it on the `/` SSR. The in-image `renderMarkdown`/`sanitize` calls prove its output on Node 22. Feed well-formedness on real data is re-checked at the canary deploy (`/u/<handle>/feed.xml`).
+- **Criterion 5 coverage, all before any deploy:**
+  - Booting the image proves the gate loads in both processes: core loads it at startup via `feed.ts`, and web loads it on the `/` SSR.
+  - The in-image `renderMarkdown` / `sanitize` calls prove its output on Node 22.
+  - The in-image `renderRssFeed` call, parsed on the host, proves a well-formed feed rendered through the gate.
+  - A fresh image has no users, so "renders posts" on real data is the one part left to the canary deploy, where it is a confirmation rather than the test.
+- **Not changed:** `README.md:153` says "Two workspaces". That was already stale before this change (mcp made three), and fixing it is out of scope.

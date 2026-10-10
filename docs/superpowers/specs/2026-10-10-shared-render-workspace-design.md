@@ -1,6 +1,7 @@
 # Shared render workspace — Design
 
-**Status:** Rev 2, 2026-10-10. Rev 1 approved section-by-section in
+**Status:** Rev 3, 2026-10-10. Rev 3 adds only the TESTING.md suite-map fix
+(see Documentation), found by the plan's clean-context review. Rev 1 approved section-by-section in
 brainstorming; rev 2 folds a clean-context ponytail review (verdict on rev 1:
 NOT READY — 1 Critical, 4 Important). Every folded finding was re-verified
 against the code before folding. See "Rev 2 changes" at the end.
@@ -215,7 +216,12 @@ Duplicates collapse; coverage does not shrink. The plan pins exact numbers.
   parser, `sanitize` keeps benign text); `{@html}` appears in exactly one web
   component (`PostBody.svelte`); the DOMPurify preview in `MarkdownComposer.svelte`
   is cosmetic, not a gate.*
-- No `TESTING.md` change: render's tests run inside core's existing gate.
+- `docs/superpowers/documentation/TESTING.md`: **no new commands** — render's
+  tests run inside core's existing gate. But its "What each suite covers" map
+  is corrected (rev 3): the core bullet gains `render.test.ts` (the XSS gate),
+  and the web bullet's "server render/sanitizer twin" becomes the
+  display-precedence adapter. Left alone, the map would send anyone looking for
+  the sanitizer tests to the wrong suite.
 - "Twin" wording survives in a few comments and test names
   (`history/+page.server.ts:17`, `history.load.test.ts:14,39`,
   `u-page.test.ts:70`, `item-review.test.ts:234`, `MarkdownComposer.svelte:44`,
