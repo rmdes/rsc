@@ -1,6 +1,6 @@
 # Retire `TimelineEntry` — Design
 
-**Status:** Rev 2, 2026-10-10. Rev 1 was approved section-by-section in
+**Status:** Rev 3, 2026-10-10 (web keeps the `TimelineEntry` name — see "Rev 3 changes"). Rev 1 was approved section-by-section in
 brainstorming (scope: core + web; approach A of three: renderers read
 `LogicalItemDto` directly). Rev 2 folds a clean-context review (verdict on
 rev 1: READY WITH CHANGES; 6 Important) — every folded finding re-verified
@@ -133,12 +133,12 @@ Each symbol is re-grepped for callers before deletion.
 
 ### Web
 
-**6. One view type, `Entry`**, defined in `logical-types.ts` beside its two
-producers (`logicalToEntry`, `placeholderToEntry`), replacing `TimelineEntry`
-and `RenderEntry`. Its author type is a named `EntryAuthor`, used where code
-now writes `TimelineEntry['author']` (`api.ts` `getFollowing`/`getMe`,
-`Avatar.svelte`, `FeedIcon.svelte`). `types.ts` keeps only the source-registry
-types.
+**6. One view type: web's `TimelineEntry` absorbs `RenderEntry`.** Once core's
+`TimelineEntry` is gone the web name collides with nothing, so it stays (rev 3,
+user decision). `enclosures?: EnclosureDto[]` folds into
+`web/src/lib/types.ts`'s `TimelineEntry`; `RenderEntry`
+(`logical-types.ts:210`) is deleted and its users switch to `TimelineEntry`.
+`TimelineEntry['author']` stays as is.
 
 **7. Dead fields.** `sourceName` and its read sites go, including the
 `sourceName` props of `Avatar`/`FeedIcon` — after confirming at each site that
@@ -196,8 +196,8 @@ svelte-check — in the containers).
    pulled body, over the step-1 fixture.
 4. **Deletions** (§5). Done-test: `grep -rn "logicalToFeedEntry\|TimelineEntry" core/src`
    is empty.
-5. **Web `Entry`** (§6–8). Done-test: `grep -rn TimelineEntry web/src` is empty;
-   svelte-check 0/0.
+5. **Web view type** (§6–8). Done-test: `grep -rn RenderEntry web/src` is
+   empty; svelte-check 0/0.
 
 Branch-end gates: `.claude/skills/run-rsc/driver.sh smoke` and `flow` on the
 dev stack; a pulled personal feed and the firehose pass valid.rss.chat; a
@@ -209,6 +209,12 @@ captured fat-ping body diffed against the pulled feed on the dev stack.
   deliberately adversarial fixture in step 1.
 - Test fixtures across ~10 core test files are built in the v1 shape; the
   conversion is mechanical but wide. The `dto()` helper keeps it short.
+
+## Rev 3 changes
+
+Web keeps the `TimelineEntry` name (review ponytail finding 11, user decision):
+`RenderEntry` folds into it instead of both being renamed to `Entry` /
+`EntryAuthor` — ~5 files instead of ~20, same debt removed (§6, step 5).
 
 ## Rev 2 changes
 
