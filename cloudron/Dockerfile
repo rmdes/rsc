@@ -19,6 +19,12 @@ COPY web/package.json web/package.json
 # dependencies, so the production image — the deployment path for every live
 # instance — would ship without the MCP SDK.
 COPY mcp/package.json mcp/package.json
+# render/ is the XSS gate (@rsc/render), imported by core's domain/feed.ts and
+# web's lib/server/render.ts. Same failure mode as mcp above: without this
+# manifest `npm ci` silently under-installs — none of render's dependencies —
+# and the build still succeeds, shipping an image that cannot load its
+# sanitizer.
+COPY render/package.json render/package.json
 # npm@12: every earlier npm's `ci` (10 and 11 both, tested) ignores
 # better-sqlite3 v13's gypfile:false and forces a node-gyp compile; npm 12 uses
 # the tarball-bundled prebuild. Installed by REPLACING the bundled npm from the
