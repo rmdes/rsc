@@ -1,6 +1,9 @@
 # Shared render workspace — Design
 
-**Status:** Rev 1, 2026-10-10. Approved section-by-section in brainstorming.
+**Status:** Rev 2, 2026-10-10. Rev 1 approved section-by-section in
+brainstorming; rev 2 folds a clean-context ponytail review (verdict on rev 1:
+NOT READY — 1 Critical, 4 Important). Every folded finding was re-verified
+against the code before folding. See "Rev 2 changes" at the end.
 **Origin:** item 1 of the recommended order in
 `docs/superpowers/reviews/2026-08-06-architecture-debt-review.md`.
 
@@ -23,7 +26,7 @@ These correct the 2026-08-06 review, which this design otherwise follows.
 |---|---|
 | The twins are byte-identical modulo whitespace | **No.** The pipeline + `SANITIZE_CONFIG` + `HIGHLIGHT_MAX_CHARS` + `skipOversizedFences` are identical. The **exports differ**: core has `renderLocalHtml(md)`; web has `renderPostHtml(post)` (with precedence policy) and `enrichEntries(entries)`. |
 | A drift canary guards them | **No real canary.** Two independent test files (`core/test/rich-content.test.ts`, `web/src/lib/server/render.test.ts`) that cannot see each other; they catch drift only if someone forgets to update expectations too. |
-| ~9 duplicated deps | **12**: 10 runtime (`unified`, `remark-parse`, `remark-gfm`, `remark-breaks`, `remark-emoji`, `remark-rehype`, `rehype-highlight`, `rehype-stringify`, `sanitize-html`, `unist-util-visit`) + `@types/hast` + `@types/sanitize-html`. Grep-verified: **none** is imported anywhere in core or web outside the twins. |
+| ~9 duplicated deps | **12**: 10 runtime (`unified`, `remark-parse`, `remark-gfm`, `remark-breaks`, `remark-emoji`, `remark-rehype`, `rehype-highlight`, `rehype-stringify`, `sanitize-html`, `unist-util-visit`) + `@types/hast` + `@types/sanitize-html`. In **core**, none is imported outside the twin. In **web**, two are: `MarkdownComposer.svelte:26-27` dynamically imports `remark-breaks` and `rehype-highlight` for the client preview (rev 1 claimed "none" — a static-import-only grep missed these). Ranges are copied verbatim: `sanitize-html` and `@types/sanitize-html` are caret ranges, not exact pins. |
 | A third workspace is feasible | **Proven, not assumed.** Core runs on Node native type stripping with no build step, and Node refuses to strip types for files under `node_modules`. Probe in the core container: `import('@rsc/mcp/src/tools.ts')` succeeded and type-stripped — the workspace symlink (`node_modules/@rsc/mcp -> ../../mcp`) resolves to a realpath outside `node_modules`. |
 
 One finding the review missed entirely, and which drives the API below. Web's
@@ -49,21 +52,39 @@ the proof (success criterion 1).
 
 ### Package
 
-A fourth npm workspace, mirroring `mcp/` (the proven precedent):
+A fourth npm workspace containing **only the source**. No test runner, no
+tsconfig of its own:
 
 ```
 render/
   package.json        "@rsc/render", "type": "module"
-  tsconfig.json       extends ../tsconfig.base.json — copied from mcp/
-  vitest.config.ts    copied from mcp/
   src/render.ts       the gate
-  test/render.test.ts
 ```
 
+Its tests live in core's suite and its types are checked by core's `tsc`, which
+follows the import into the realpath `render/src/render.ts` (to be confirmed at
+implementation by planting a deliberate type error — see success criteria).
+A runner of its own would need `vitest`, which does **not** hoist in this repo
+(the lockfile has it only at `core/`, `mcp/`, `web/node_modules`), so it would
+install into `render/node_modules` on the dev host bind mount, root-owned —
+the bug class fixed in `89700c7`. Add a runner only if a consumer core
+doesn't cover ever appears.
+
 - Root `package.json` `workspaces`: `["core", "web", "mcp"]` → add `"render"`.
-- `render/package.json` declares the 10 runtime deps at their **current exact
-  pins** and the two `@types` packages as devDependencies.
-- `core/package.json` and `web/package.json` each **remove all 12**.
+- `render/package.json` declares the 10 runtime deps (as `dependencies`) and
+  the two `@types` packages, **ranges copied verbatim** from today.
+- `core/package.json` **removes all 12** — nothing else in core uses them.
+- `web/package.json` **removes nothing.** This follows the actual mcp
+  precedent (`acec537`, "declare mcp's deps in web"): adapter-node externalizes
+  only `pkg.dependencies` (`node_modules/@sveltejs/adapter-node/index.js:75-77`)
+  and bundles everything else with rollup. Today the gate's deps are external
+  in `web/build`; undeclaring them would inline sanitize-html, htmlparser2,
+  postcss and highlight.js into the production bundle via rollup-commonjs — a
+  different artifact for the XSS gate, violating the pure-move rule. Two of
+  them are also used directly by `MarkdownComposer.svelte`. Web's `@types`
+  stay too, so `svelte-check` keeps resolving them when it follows the import.
+- Net: the gate's **code** is single-sourced; the dependency **declaration**
+  is removed from core only. That is the honest scope.
 - Consumers import by deep path, matching `web/src/routes/mcp/+server.ts:2`
   (`@rsc/mcp/src/tools.ts`): `@rsc/render/src/render.ts`. **No `exports`
   field** — the deep path is the resolution route proven under core's type
@@ -122,7 +143,8 @@ post.content, SANITIZE_CONFIG)`, because `renderMarkdown` is exactly
 
 Tests are sorted by **what they exercise**, not by which file holds them today.
 
-**→ `render/test/render.test.ts`** (gate behaviour):
+**→ `core/test/render.test.ts`** (gate behaviour; imports
+`@rsc/render/src/render.ts`, runs in core's suite):
 
 - Hostile fixtures against **both** entry points, each with its own positive
   assertions. Fixture set is the **union** of both suites — none dropped. Core
@@ -136,7 +158,13 @@ Tests are sorted by **what they exercise**, not by which file holds them today.
   stripping, the three `HIGHLIGHT_MAX_CHARS` tests (over-budget fence, small
   fence still highlighted, per-document budget), SEC-4.
 - Web's transform-attributes test (`rel="noreferrer"`, `loading="lazy"` survive
-  output) and GFM autolink — both exercise the config, not web policy.
+  output) — exercises the config, not web policy.
+- **Dedupe while merging.** Drop exact duplicates: core's "hljs classes
+  survive" and "small fence still gets hljs" use the same input with
+  overlapping assertions — keep one. Web's "GFM autolink" is already covered by
+  core's SEC-4 test (autolink + forced `rel`) — drop it. The smaller tests the
+  canonical fixture also pins (`<br>`, emoji, `del`) stay: they are failure
+  locators, not duplicates.
 
 **core `rich-content.test.ts` keeps its 6 feed/ingest contracts:**
 `source:markdown` captured into `ParsedItem.contentMarkdown`; RSS dual contract;
@@ -146,15 +174,18 @@ calls the gate.
 
 **web `render.test.ts` keeps 4:** precedence; `enrichEntries`; the DOMPurify
 preview parity pin; and **one** hostile smoke test through `renderPostHtml`
-proving the adapter routes remote HTML into `sanitize`.
+proving the adapter routes remote HTML into `sanitize`. That smoke test is
+**load-bearing**: the precedence test passes even if the adapter were written
+`: post.content` instead of `: sanitize(post.content)` — only the smoke test
+catches remote HTML shipping unsanitized.
 
 **Liveness rule.** Every negative assertion keeps a paired positive one. A test
 of only negatives passes when the function returns `''` — mutation-proven on
 both twins on 2026-08-07. Each entry point gets its own liveness assertion.
 
-**Expected count change.** Roughly core 19 → 6, web 17 → 4, render 0 → ~16:
-about 36 → 26 overall. Duplicates collapse; coverage does not shrink. The plan
-pins exact numbers.
+**Expected count change.** Core's `rich-content.test.ts` 19 → 6 plus a new
+`core/test/render.test.ts` of ~14; web 17 → 4. About 36 → 24 overall.
+Duplicates collapse; coverage does not shrink. The plan pins exact numbers.
 
 ### Packaging
 
@@ -163,15 +194,14 @@ pins exact numbers.
   failure mode: without it `npm ci` silently installs none of render's deps and
   **the XSS gate fails to load in production** — a build that succeeds and a
   runtime that cannot render. This is why success criterion 5 is mandatory.
-- `compose.yaml`: **no change expected.** Core's single `npm ci` populates the
-  shared root `node_modules`, where the `@rsc/render` symlink lands. The deps
-  have no competing versions after the move, so they should hoist. **Verify** at
-  implementation that nothing lands under `render/node_modules` on the host bind
-  mount (that is the root-owned-files bug class fixed in `89700c7`); `mcp/`
-  already has the same exposure, so if it occurs it is an accepted precedent,
-  documented rather than worked around.
-- Vite: **no config change.** web → `@rsc/mcp` already proves that dev, SSR,
-  and the adapter-node production build resolve a linked workspace's `.ts`.
+- `compose.yaml`: **no change.** Core's single `npm ci` populates the shared
+  root `node_modules`, where the `@rsc/render` symlink lands. Each of the 12
+  packages has exactly one version in the lockfile, so they stay hoisted at
+  root; with no test runner in render, nothing has a reason to install into
+  `render/node_modules`. Checked at implementation, not assumed.
+- Vite: **no config change**, *because web keeps declaring the deps*. web →
+  `@rsc/mcp` proves a linked workspace's `.ts` resolves in dev, SSR and the
+  adapter-node build — but only with its deps declared in web (`acec537`).
 - `.dockerignore`: `render/` is not excluded. No change.
 
 ### Documentation
@@ -185,8 +215,12 @@ pins exact numbers.
   parser, `sanitize` keeps benign text); `{@html}` appears in exactly one web
   component (`PostBody.svelte`); the DOMPurify preview in `MarkdownComposer.svelte`
   is cosmetic, not a gate.*
-- `docs/superpowers/documentation/TESTING.md`: add the gate commands for
-  `render` — and for `mcp`, which are missing today.
+- No `TESTING.md` change: render's tests run inside core's existing gate.
+- "Twin" wording survives in a few comments and test names
+  (`history/+page.server.ts:17`, `history.load.test.ts:14,39`,
+  `u-page.test.ts:70`, `item-review.test.ts:234`, `MarkdownComposer.svelte:44`,
+  `TESTING.md:25`). Harmless and out of scope for a pure move; this spec does
+  not claim the word is gone.
 - Historical specs, plans and reviews are left untouched, per convention.
 
 ## Success criteria
@@ -196,12 +230,21 @@ pins exact numbers.
 2. Core's 6 feed/ingest tests and web's precedence / `enrichEntries` tests pass
    **without modification**.
 3. `SANITIZE_CONFIG` is defined in **exactly one file** repo-wide (grep).
-4. All gates green: core, web and render tests; core and render typecheck;
-   `svelte-check` 0 errors / 0 warnings.
-5. **The Cloudron image builds and a deployed canary (skyfleet.blue) renders
-   posts and serves a well-formed feed.** The only gate that catches a missing
-   Dockerfile line.
-6. `npm audit` result unchanged — moving dependencies must not move versions.
+4. All gates green: core and web tests; core typecheck; `svelte-check`
+   0 errors / 0 warnings. **Core's `tsc` proven to cover render**: plant a type
+   error in `render/src/render.ts`, confirm `npm run typecheck -w core` fails,
+   revert.
+5. **Local production-image check, before any deploy:** build
+   `cloudron/Dockerfile` locally, run it, and confirm a page renders and a feed
+   is well-formed; plus `node -e "import('@rsc/render/src/render.ts')"` inside
+   the image. This catches a missing Dockerfile COPY line, confirms type
+   stripping across the workspace on the image's **Node 22.22.2** (the earlier
+   probe ran on the dev container's Node 24), and needs no live instance.
+6. Lockfile diff: the version of every one of the 12 packages is unchanged.
+   (Each has a single lockfile entry, so an unchanged version set is the proof.)
+
+Deployment afterwards follows the normal canary procedure — it is no longer
+the test.
 
 ## Out of scope
 
@@ -215,7 +258,36 @@ pins exact numbers.
 
 | Risk | Mitigation |
 |---|---|
-| Dockerfile line forgotten → gate absent in production, build still green | Success criterion 5: deploy a canary and render before rolling the fleet |
+| Dockerfile line forgotten → gate absent in production, build still green | Criterion 5: local image build + run, before any deploy |
+| Undeclaring deps in web changes the production bundle | Web removes nothing (rev 2, following `acec537`) |
 | A fixture dropped while merging two suites | Union rule; review the merged test against both originals line by line |
-| Non-hoisted deps land root-owned on the host bind mount | Verify after `npm ci`; accepted precedent (`mcp/`) if it occurs |
-| Lockfile churn moves a version | `npm audit` and a lockfile diff review; versions must be identical |
+| Adapter written `: post.content` → remote HTML unsanitized | Web's retained hostile smoke test fails |
+| Lockfile churn moves a version | Criterion 6 lockfile diff |
+
+## Rev 2 changes
+
+Folded from the clean-context review; each finding re-verified first.
+
+- **C1 (Critical)** — rev 1 removed the 10 runtime deps from web. That
+  inverts the mcp precedent it cited and would inline the gate's deps into the
+  production web bundle. Now: web removes nothing; core removes all 12.
+- **I1** — rev 1's "none imported outside the twins" was false for web
+  (`MarkdownComposer.svelte:26-27`, dynamic imports missed by a static grep).
+  Fact table corrected.
+- **I2 + P1** — vitest does not hoist here, so render's own runner would
+  install root-owned files on the dev bind mount. Cut: render is source only;
+  its tests live in core's suite; core's `tsc` covers it (proven by a planted
+  error).
+- **I3** — "exact pins" was false for `sanitize-html` and its types. Now
+  "ranges copied verbatim".
+- **I4 + P4** — rev 1 used a live production deploy as a test step, and the
+  type-stripping probe ran on Node 24 while production runs 22.22.2. Now a
+  local image build + run, on the real image.
+- **P2** — dropped the unrelated "add mcp's TESTING.md commands" item.
+- **P3** — two exact duplicate tests dropped while merging.
+- **P5** — `npm audit` criterion merged into the lockfile diff check.
+- **M1** — residual "twin" wording listed and explicitly left out of scope.
+- **Kept as load-bearing** (confirmed by the review): web's `render.ts` path
+  and exports, two entry points, the Dockerfile COPY line with its comment,
+  the liveness rule, the security comments moved verbatim, and web's hostile
+  smoke test.
