@@ -14,15 +14,21 @@ automatically discover `AGENTS.md`.
 - `web/` is the browser-facing SvelteKit/Svelte 5 application. Browsers must
   talk only to web. Web proxies auth, internal API calls, and the SSE stream to
   core.
+- `render/` (`@rsc/render`) holds the single XSS gate, `src/render.ts`. It has
+  no build or test runner of its own; its tests run in core's suite.
+- `mcp/` is a Model Context Protocol server, a thin stdio client over core's
+  `/api/v1`, run from source (not deployed).
 - In production, only feed and federation endpoints from core are public. See
   `Caddyfile`; do not expose the rest of core.
 
 ## Load-bearing rules
 
-- The Markdown sanitizer is the XSS gate. `core/src/domain/markdown.ts` and
-  `web/src/lib/server/render.ts` are intentional twins protected by drift
-  tests. Change both or neither. `{@html}` belongs only in
-  `web/src/lib/PostBody.svelte`.
+- The Markdown sanitizer is the XSS gate, and there is exactly one copy:
+  `render/src/render.ts` (`@rsc/render`). Core and web both import it; never
+  reintroduce a second copy. Its two entry points are deliberately not
+  equivalent: `renderMarkdown()` drops raw-HTML blocks at the parser, while
+  `sanitize()` cleans untrusted HTML and keeps benign text. `{@html}` belongs
+  only in `web/src/lib/PostBody.svelte`.
 - `/api/auth/*` must go through web. The web proxy supplies the `Origin` header
   needed by emailed verification and magic-link navigations and relays cookies.
 - Before changing UI, follow `design-system/rsc/MASTER.md`. Keep component

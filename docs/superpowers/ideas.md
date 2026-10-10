@@ -1301,6 +1301,13 @@ decided, and the `better-auth` MCP only if claiming enters scope.
 
 ---
 
+> **Note (2026-10-10):** the sanitizer "twins" referenced in the backlog
+> entries below (`core/src/domain/markdown.ts` + `web/src/lib/server/render.ts`,
+> "edit both twins") were merged into one XSS gate, `render/src/render.ts`
+> (`@rsc/render`). Read every such pointer as that single file — there is no
+> second copy to keep in sync. Line numbers cited against the old
+> `markdown.ts` no longer apply.
+
 ## Paste an image into the composer — the plugin is 5% of it; hosting the bytes is the feature
 
 **Status:** candidate (2026-07-25) — the *ask* is small and concrete; the
