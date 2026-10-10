@@ -31,7 +31,7 @@ of the code. Line numbers drift, so re-open before relying on one.
 
 ## Architecture
 
-Three npm workspaces in one repo:
+Four npm workspaces in one repo:
 
 - **`core/`** — headless Hono/Node service, SQLite (better-sqlite3 + Kysely),
   `better-auth` for identity. Owns feeds, federation (WebSub/rssCloud),
@@ -41,6 +41,12 @@ Three npm workspaces in one repo:
 - **`web/`** — SvelteKit (Svelte 5 runes, `adapter-node`). The whole UI and
   the only thing browsers talk to; proxies auth + the SSE stream to core
   server-side via `CORE_API_URL`.
+- **`render/`** — the XSS gate (`@rsc/render`), source only: `src/render.ts`
+  plus a `package.json`; no build, no tsconfig, no test runner of its own.
+  core and web import it by deep path (`@rsc/render/src/render.ts`) without
+  declaring it — it resolves through the npm-workspace link, exactly like
+  `@rsc/mcp`. Its tests run in core's suite (`core/test/render.test.ts`) and
+  core's `tsc` type-checks it.
 - **`mcp/`** — a Model Context Protocol server, a thin stdio client over
   core's `/api/v1`: read a timeline/thread, post/reply. Same native-type-
   stripping, no-build-step convention as `core/`. Not deployed — run from
@@ -48,12 +54,18 @@ Three npm workspaces in one repo:
 
 Load-bearing invariants — don't break these without understanding why:
 
-- **The sanitizer is the XSS gate.** Display HTML is produced by ONE path and
-  sanitized server-side. `core/src/domain/markdown.ts` and
-  `web/src/lib/server/render.ts` are hand-duplicated **twins** (same unified
-  pipeline + sanitize-html config); a drift-canary test in both suites fails
-  if they diverge. Change both or neither. `{@html}` appears in exactly one
-  web component (`PostBody.svelte`).
+- **The sanitizer is the XSS gate, and there is exactly one.** It lives in
+  `render/src/render.ts` (`@rsc/render`); core (`domain/feed.ts`) and web
+  (`lib/server/render.ts`) both import it — there is no second copy, and
+  `SANITIZE_CONFIG` is unexported, so change it only there. Its two entry
+  points are deliberately NOT equivalent: `renderMarkdown()` parses as
+  markdown, so a raw-HTML block dies at the parser before the sanitizer runs;
+  `sanitize()` cleans untrusted HTML directly, so benign text survives.
+  `{@html}` appears in exactly one web component (`PostBody.svelte`). The
+  DOMPurify preview in `MarkdownComposer.svelte` is cosmetic, not a gate.
+  **web keeps declaring the gate's runtime dependencies on purpose:**
+  adapter-node externalizes only web's `dependencies`, so removing them from
+  `web/package.json` would inline the sanitizer into the production bundle.
 - **`/api/auth/*` is served by web, never core directly.** Emailed
   verify/magic-link clicks are native GETs with no `Origin`; better-auth 403s
   those, so `web/src/routes/api/auth/[...path]/+server.ts` injects `Origin`

@@ -14,7 +14,9 @@ script — this is an npm-workspaces monorepo):
 
 - **core** (`core/test/`): the API surface (`api*.test.ts`), auth + sessions
   (`auth.test.ts`), feeds in/out and dual contract (`feed.test.ts`,
-  `rich-content.test.ts`), ingest + discovery (`ingest*.test.ts`,
+  `rich-content.test.ts`), the XSS gate `@rsc/render` — hostile fixtures, GFM,
+  highlighting, the canonical fixture (`render.test.ts`), ingest + discovery
+  (`ingest*.test.ts`,
   `discovery.test.ts`), threading (`*threading*.test.ts`), federation
   (`federation*.test.ts`, `push*.test.ts`, `push-in.test.ts`), the SQLite
   adapter + migrations + WAL (`sqlite-repository.test.ts`, `migrations.test.ts`,
@@ -22,7 +24,7 @@ script — this is an npm-workspaces monorepo):
   `smoke.test.ts`.
 - **web** (`web/src/**`): form actions (`*.actions.test.ts` for compose /
   addRemote / reply / follow / auth), page + layout loads (`*.load.test.ts`),
-  the server render/sanitizer twin (`server/render.test.ts`), the cookie-relay
+  the display-precedence adapter over the XSS gate (`server/render.test.ts`), the cookie-relay
   session helpers (`server/session.test.ts`), the `/api/auth/[...path]` proxy,
   the SSE proxy (`stream/server.test.ts`), and lib units (draft, lens,
   plaintext, wedge, api).
