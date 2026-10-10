@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { RemoteSourceV2Row } from '../storage/sqlite.ts'
+import type { RemoteSourceV2Row } from '../storage/source-sqlite.ts'
 import { encodeCursor, clampLimit, type Cursor } from '../domain/source-repository.ts'
 type Db = InstanceType<typeof Database>
 

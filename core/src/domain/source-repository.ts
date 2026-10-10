@@ -199,6 +199,15 @@ export function clampLimit(n: number): number {
   return Math.max(1, Math.min(100, Math.trunc(n)))
 }
 
+// Shared tail of every v2 cursor-paginated read: rows arrived limit+1 deep;
+// split off the displayed page and, if the extra row is present, encode a
+// nextCursor off the last displayed row's (created_at, id).
+export function splitPage<R extends { created_at: string; id: string }>(rows: R[], lim: number): { page: R[]; nextCursor: string | null } {
+  const page = rows.slice(0, lim)
+  const last = page[page.length - 1]
+  return { page, nextCursor: rows.length > lim && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null }
+}
+
 export type LedgerCheck<T> = { kind: 'new' } | { kind: 'replay'; result: T } | { kind: 'conflict' }
 
 interface LedgerRow { request_fingerprint: string; result_json: string }
