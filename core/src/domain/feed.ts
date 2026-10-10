@@ -2,7 +2,7 @@ import { generateRssFeed, generateJsonFeed } from 'feedsmith'
 import type { WebSubMode } from '../config.ts'
 import type { Post, User, TimelineEntry } from './types.ts'
 import type { LogicalItemDto } from '../logical/types.ts'
-import { renderLocalHtml } from './markdown.ts'
+import { renderMarkdown } from '@rsc/render/src/render.ts'
 import { normalizePermalink } from '../logical/roots.ts'
 import { safeReplyRef } from '../logical/projector.ts'
 
@@ -129,7 +129,7 @@ export function itemContentFields(p: Post) {
   const markdown = p.source === 'local' ? p.content : p.contentMarkdown ?? undefined
   const sourceNs = { ...(reply?.sourceNs ?? {}), ...(markdown ? { markdown } : {}) }
   return {
-    description: p.source === 'local' ? renderLocalHtml(p.content) : p.content,
+    description: p.source === 'local' ? renderMarkdown(p.content) : p.content,
     ...(Object.keys(sourceNs).length ? { sourceNs } : {}),
     ...(reply?.thr ? { thr: reply.thr } : {}),
   }
@@ -368,7 +368,7 @@ export function renderJsonFeed(user: User, posts: Post[], ctx: FeedContext): str
         id: localGuid(p).value,
         ...(p.title !== null ? { title: p.title } : {}),
         ...(p.source === 'local'
-          ? { content_html: renderLocalHtml(p.content), content_text: p.content }
+          ? { content_html: renderMarkdown(p.content), content_text: p.content }
           : { content_text: p.content }),
         ...(p.url !== null ? { url: p.url } : {}),
         date_published: p.publishedAt,

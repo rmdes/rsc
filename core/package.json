@@ -20,24 +20,12 @@
     "hono": "^4.13.7",
     "kysely": "^0.29.3",
     "microformats-parser": "^2.0.6",
-    "nodemailer": "10.0.9",
-    "rehype-highlight": "7.0.2",
-    "rehype-stringify": "10.0.1",
-    "remark-breaks": "4.0.0",
-    "remark-emoji": "5.0.2",
-    "remark-gfm": "4.0.1",
-    "remark-parse": "11.0.0",
-    "remark-rehype": "11.1.2",
-    "sanitize-html": "^2.18.0",
-    "unified": "11.0.5",
-    "unist-util-visit": "5.1.0"
+    "nodemailer": "10.0.9"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.0.0",
-    "@types/hast": "3.0.5",
     "@types/node": "^24.13.3",
     "@types/nodemailer": "8.0.1",
-    "@types/sanitize-html": "^2.16.1",
     "typescript": "^6.0.3",
     "vitest": "^5.0.0"
   }
