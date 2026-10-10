@@ -26,7 +26,7 @@
     "@types/better-sqlite3": "^9.0.0",
     "@types/node": "^24.13.3",
     "@types/nodemailer": "8.0.1",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   }
 }
