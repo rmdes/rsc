@@ -1357,6 +1357,17 @@ export class SqliteRepository implements Repository, SourceRepository {
 }
 
 // index N-1 holds the statements that bring the schema to version N.
+//
+// Not every version is pure SQL: migrate() (below) also runs a one-shot
+// imperative heal the first time a database crosses these versions, so read
+// it together with this array before reasoning about what a version did:
+//   19 — ALTER (the `overridden` column) + healMembers()
+//   22 — empty [] marker              + collapseVersionHistory()
+//   23 — empty [] marker              + healStrandedMembers()
+// An empty [] entry is never dead: it exists only to advance user_version so
+// its heal fires exactly once. Append new versions at the TAIL only — a
+// mid-array insertion renumbers every later version and corrupts user_version
+// on live databases.
 export const MIGRATIONS: string[][] = [
   [
     `CREATE TABLE users (
