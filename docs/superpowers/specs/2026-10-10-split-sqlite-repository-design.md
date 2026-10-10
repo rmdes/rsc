@@ -1,6 +1,6 @@
 # Split `SqliteRepository` along its two interfaces — Design
 
-**Status:** Rev 2, 2026-10-10. Rev 1 was approved section-by-section in
+**Status:** Rev 3, 2026-10-10. Rev 3 corrects three facts measured by dry-running the implementation plan on a throwaway copy (see "Rev 3 changes"). Rev 2: Rev 1 was approved section-by-section in
 brainstorming (approach A of three: composition). Rev 2 folds a clean-context
 review (verdict on rev 1: READY WITH CHANGES; 4 Important). Every folded
 finding was re-verified against the code first. See "Rev 2 changes" at the end.
@@ -30,7 +30,7 @@ treats the two concerns as one.
 | How production reaches the source half | One wiring point, `createSourcePlane(repo, …)` (`domain/source-service.ts:76`). Downstream, `sources.repo` reaches `api/app.ts:336` (as `sourceRepo` into `logical-routes/admin.ts:24`), `app.ts:353` (`v2repo`) and `app.ts:688`. All three call only source methods and are already typed `SourceRepository`. |
 | What the source service needs from `Repository` | Only `getUserByHandle` (`source-service.ts:102`, `:146`) and `getSetting` (`:118`, `:165`). |
 | Callers of `createSourcePlane` / `createSourceService` | 110 call sites: 106 in tests plus `server.ts:56` pass `repo`; `logical-v3-vertical.test.ts:176/540/580` pass `deps.repo`, where `deps` is `Awaited<ReturnType<typeof fresh>>`, a real `SqliteRepository`. None is a hand-built stub. |
-| Tests that use the repository **as** a source repository | 9 files make **69** direct source-method calls (`repo.X(`). Separately, **39** sites in **36** files hand the repository to `createApp` as its `SourceRepository`: 37 shorthand `sources: { service, repo }` sites in 34 files, plus `logical-v3-vertical.test.ts:176` (`repo: deps.repo`) and `api-key-cap.test.ts:53` (`sourceRepo: repo`). |
+| Tests that use the repository **as** a source repository | 9 files make **69** direct source-method calls (`repo.X(`). Separately, **38** sites in **35** files hand the repository to `createApp` as its `SourceRepository`: 36 shorthand `sources: { service, repo }` sites in 33 files, plus `logical-v3-vertical.test.ts:176` (`repo: deps.repo`) and `api-key-cap.test.ts:53` (`sourceRepo: repo`). One assertion, `expect(on.repo).toBe(repo)` in `logical-tombstones.test.ts`, pins the plane returning the very object it was given. |
 | Other test coupling | None. No test reaches a private field (`repo[...]`), uses `instanceof SqliteRepository`, or spreads or enumerates repository methods. The contract harness (`domain/repository-contract.ts:12`) takes `Repository & Pick<DatabaseContext,'raw'>` and calls no source method. `shutdown.ts:5` needs only `{ close(): void }`. |
 | Live docs | None describes the class's shape (`TESTING.md:98` mentions it only as an example LSP message). |
 
@@ -95,7 +95,7 @@ export class SqliteSourceRepository implements SourceRepository {
   `reapSourceIfOrphaned`, `clampLimit`, `DEAD_SOURCE_FAILURES`, `healMembers`.
   Remove what is truly unused; the list above is a starting point, not a
   substitute for checking.
-- `sqlite.ts` drops to roughly 1,050 lines; `source-sqlite.ts` is roughly 750.
+- `sqlite.ts` drops to 922 lines; `source-sqlite.ts` is 895 (measured in the dry run).
 
 ### Import direction
 
@@ -134,13 +134,19 @@ type SourceStore = Pick<Repository, 'getSetting' | 'getUserByHandle'> & { source
   `instance-member-reap`, `migration-convert`, `smoke`,
   `logical-policy-events`, `source-cleanup`, `logical-fanout`,
   `source-cascade`, `source-reads`.
-- The 39 hand-wired sites (36 files) change `repo` to `repo.sources` where the
+- The 38 hand-wired sites (35 files) change `repo` to `repo.sources` where the
   repository is passed as a `SourceRepository`:
   - `sources: { service, repo }` becomes `sources: { service, repo: repo.sources }`
   - `repo: deps.repo` becomes `repo: deps.repo.sources` at `logical-v3-vertical.test.ts:176`
   - `sourceRepo: repo` becomes `sourceRepo: repo.sources` at `api-key-cap.test.ts:53`
-- In total that's about 40 test files. **No assertion is edited, and no test is
-  added or removed.** The compiler lists the authoritative set of sites.
+- **Exactly one assertion changes.** In `logical-tombstones.test.ts`,
+  `expect(on.repo).toBe(repo)` becomes `toBe(repo.sources)`. The plane now
+  returns the source store, by design. The new form keeps the test's intent (the
+  plane exposes the real store, not a copy). It passes in commit 1, where
+  `repo.sources` *is* `repo`, and in commit 2.
+- In total that's about 40 test files. No test is added or removed, and every
+  other edit is a mechanical access-path change. The compiler lists the
+  authoritative set of sites.
 
 ## Staging: two green commits, no façade
 
@@ -219,3 +225,19 @@ Each was re-verified against the code before folding.
   are pruned (a new criterion); the downstream-consumer description is made
   precise; typecheck, not the test count, is named as the gate; the parameter
   name stays `repo`; the prose-only "someone re-adds a façade" risk row is cut.
+
+## Rev 3 changes
+
+The implementation plan was dry-run end to end, verbatim, on a throwaway copy.
+The fully moved copy was type-checked and tested inside the core container
+(typecheck 0, core 108 / 1224). That run corrected three facts:
+
+- **Hand-wired sites: 38 in 35 files, not 39 in 36.** The shorthand grep had
+  also matched `repo: deps.repo }`, an explicit site already counted separately.
+- **One assertion must change.** `logical-tombstones.test.ts` pins
+  `expect(on.repo).toBe(repo)`. After the move the plane returns
+  `repo.sources`, a different object, so exactly that one test failed in the dry
+  run (1223 / 1224). The assertion becomes `toBe(repo.sources)`, and the suite
+  then passes 1224 / 1224. Rev 2's "no assertion is edited" was wrong.
+- **Sizes:** 922 / 895 lines, not roughly 1,050 / 750.
+
