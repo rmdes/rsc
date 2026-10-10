@@ -93,7 +93,7 @@ test('a governance transition upserts a pending fan-out row {new generation, nul
   const id = seedSource(raw, { url: 'https://gov.test/f' })
   expect(fanoutRow(raw, id)).toBeUndefined()
 
-  await repo.transition({ command: adminCmd(admin.id, 'g1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'g1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(generation(raw, id)).toBe(1)
   expect(fanoutRow(raw, id)).toMatchObject({ generation: 1, last_item_cursor: null, state: 'pending' })
 })
@@ -101,7 +101,7 @@ test('a governance transition upserts a pending fan-out row {new generation, nul
 test('federation establishment enqueues a pending fan-out row', async () => {
   const { repo, raw } = await fresh()
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
-  await repo.establishFederation({ command: adminCmd(admin.id, 'f1'), canonicalUrl: 'https://fed.test/f', attributionMode: 'aggregate', category: 'operator_policy', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.establishFederation({ command: adminCmd(admin.id, 'f1'), canonicalUrl: 'https://fed.test/f', attributionMode: 'aggregate', category: 'operator_policy', note: null, actorKind: 'administrator', now: NOW })
   const src = raw.prepare(`SELECT id FROM remote_sources_v2 WHERE canonical_url = ?`).get('https://fed.test/f') as { id: string }
   expect(fanoutRow(raw, src.id)).toMatchObject({ generation: 1, last_item_cursor: null, state: 'pending' })
 })
@@ -110,8 +110,8 @@ test('pause and resume advance no generation and enqueue NO fan-out', async () =
   const { repo, raw } = await fresh()
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
   const id = seedSource(raw, { url: 'https://pr.test/f' })
-  await repo.transition({ command: adminCmd(admin.id, 'p1'), sourceId: id, action: 'pause', category: null, note: null, actorKind: 'administrator', now: NOW })
-  await repo.transition({ command: adminCmd(admin.id, 'r1'), sourceId: id, action: 'resume', category: null, note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'p1'), sourceId: id, action: 'pause', category: null, note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'r1'), sourceId: id, action: 'resume', category: null, note: null, actorKind: 'administrator', now: NOW })
   expect(generation(raw, id)).toBe(0)
   expect(count(raw, 'policy_fanout_v2')).toBe(0)
 })
@@ -121,7 +121,7 @@ test('a fault before commit rolls back the fan-out row together with the transit
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
   const id = seedSource(raw, { url: 'https://fault.test/f' })
   raw.exec('DROP TABLE command_ledger_v2') // storeCommand (last write) throws → whole BEGIN IMMEDIATE rolls back
-  await expect(repo.transition({ command: adminCmd(admin.id, 'x1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })).rejects.toThrow()
+  await expect(repo.sources.transition({ command: adminCmd(admin.id, 'x1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })).rejects.toThrow()
   expect(generation(raw, id)).toBe(0)
   expect(count(raw, 'policy_fanout_v2')).toBe(0)
 })
@@ -137,7 +137,7 @@ test('batches process 100 items in ascending id, recompute hints, persist the cu
   expect(itemIds.every((id) => selectedDelivery(raw, id) !== null)).toBe(true)
 
   // Quarantine (advances generation, enqueues fan-out) WITHOUT touching item hints.
-  await repo.transition({ command: adminCmd(admin.id, 'q1'), sourceId, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'q1'), sourceId, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(itemIds.every((id) => selectedDelivery(raw, id) !== null)).toBe(true) // still stale
 
   const claim1 = store.claimFanout(NOW)!
@@ -160,7 +160,7 @@ test('the drain converges a whole source in one pass with no second loop', async
   const { repo, raw, db, store } = await fresh()
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
   const { sourceId, itemIds } = await seedItems(db, raw, store, 105)
-  await repo.transition({ command: adminCmd(admin.id, 'q1'), sourceId, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'q1'), sourceId, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   drain(store) // the ONE drain processes fan-out alongside jobs
   expect(itemIds.every((id) => selectedDelivery(raw, id) === null)).toBe(true)
   expect(fanoutRow(raw, sourceId)!.state).toBe('done')
@@ -174,9 +174,9 @@ test('a running batch whose captured generation no longer matches supersedes and
   const { sourceId, itemIds } = await seedItems(db, raw, store, 3)
 
   // Rapid quarantine -> allow -> block: three generation advances, one row.
-  await repo.transition({ command: adminCmd(admin.id, 't1'), sourceId, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
-  await repo.transition({ command: adminCmd(admin.id, 't2'), sourceId, action: 'allow', category: 'false_positive', note: null, actorKind: 'administrator', now: NOW })
-  await repo.transition({ command: adminCmd(admin.id, 't3'), sourceId, action: 'block', category: 'abuse', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 't1'), sourceId, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 't2'), sourceId, action: 'allow', category: 'false_positive', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 't3'), sourceId, action: 'block', category: 'abuse', note: null, actorKind: 'administrator', now: NOW })
   expect(generation(raw, sourceId)).toBe(3)
 
   const before = itemIds.map((id) => selectedDelivery(raw, id))
@@ -206,7 +206,7 @@ test('the sync drain reaches fan-out and a later observation job while a verific
   // S1: reconciled items, then quarantined ⇒ a pending fan-out row with stale hints.
   const { sourceId: s1, itemIds } = await seedItems(db, raw, store, 3)
   expect(itemIds.every((id) => selectedDelivery(raw, id) !== null)).toBe(true)
-  await repo.transition({ command: adminCmd(admin.id, 'q1'), sourceId: s1, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'q1'), sourceId: s1, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(fanoutRow(raw, s1)!.state).toBe('pending')
 
   // S2: one freshly acquired observation job, left PENDING (not yet drained).

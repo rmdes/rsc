@@ -269,7 +269,7 @@ test('a grandfathered user gets no NEW subscription until back under the cap', a
     seedFollow(raw, 'l1', `u${n}`)
   }
   convert(raw)
-  const res = await repo.resolveAndSubscribeSource({
+  const res = await repo.sources.resolveAndSubscribeSource({
     command: { actorScope: 'owner', actorId: 'l1', commandId: 'c1', requestFingerprint: 'f1' },
     ownerId: 'l1', canonicalUrl: 'https://new.test/f.xml', cap: 2, now: NOW,
   })

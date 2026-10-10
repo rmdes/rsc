@@ -32,7 +32,7 @@ async function v2app(publicUrl: string | null) {
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
     feeds: { publicUrl, hubUrl: null, rssCloud: false },
-    sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW },
+    sources: { service: createSourceService(repo, null), repo: repo.sources }, logical: { store, acquisition, now: () => NOW },
   })
   return { repo: repo as typeof repo & { raw: Raw }, bus, service, store, db, app }
 }

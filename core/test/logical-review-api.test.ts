@@ -39,7 +39,7 @@ async function makeApp(fetchMap: Record<string, () => Response | Promise<Respons
   const app = createApp({
     service, bus, token: OPS_TOKEN, auth: makeAuth(repo), users: repo,
     adminEmails: new Set(['boss@x.test']),
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition, now: () => NOW },
   })
   return { app, repo, raw, db, store, acquisition }

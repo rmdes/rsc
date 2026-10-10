@@ -38,7 +38,7 @@ async function instance(publicUrl: string) {
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
     feeds: { publicUrl, hubUrl: null, rssCloud: false },
-    sources: { service: createSourceService(repo, publicUrl), repo },
+    sources: { service: createSourceService(repo, publicUrl), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   // A fetchFn that serves this instance's own routes for its public origin.

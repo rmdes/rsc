@@ -22,7 +22,7 @@ import { makeAuth, anonSession } from './auth-helper.ts'
 const v2deps = (repo: Awaited<ReturnType<typeof createSqliteRepository>>) => {
   const db = createDatabaseContext(repo.raw)
   const store = createLogicalStore(db)
-  return { store, sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition: createAcquisition({ db }) } }
+  return { store, sources: { service: createSourceService(repo, null), repo: repo.sources }, logical: { store, acquisition: createAcquisition({ db }) } }
 }
 
 async function makeApp() {

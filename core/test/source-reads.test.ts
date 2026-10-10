@@ -68,7 +68,7 @@ test('listSourceSummaries paginates stably across equal timestamps and SourceSum
   insertSource(raw, sourceA)
   insertSource(raw, sourceB)
 
-  const first = await repo.listSourceSummaries(undefined, 1)
+  const first = await repo.sources.listSourceSummaries(undefined, 1)
   expect(first.items).toHaveLength(1)
   expect(first.nextCursor).not.toBeNull()
   // 'push' joined the DTO in V4 Task 1 (all-null until a lease exists);
@@ -78,7 +78,7 @@ test('listSourceSummaries paginates stably across equal timestamps and SourceSum
   expect(first.items[0].retention).toBeNull()
   expect(first.items[0].addedBy).toEqual([])
 
-  const second = await repo.listSourceSummaries(decodeCursor(first.nextCursor!), 1)
+  const second = await repo.sources.listSourceSummaries(decodeCursor(first.nextCursor!), 1)
   expect(second.items).toHaveLength(1)
   expect(second.nextCursor).toBeNull()
 
@@ -95,7 +95,7 @@ test('getSourceDetail reports federationStatus none/status, subscriptionCounts, 
   const sourceId = randomUUID()
   insertSource(raw, sourceId)
 
-  expect((await repo.getSourceDetail(sourceId))!.federationStatus).toBe('none')
+  expect((await repo.sources.getSourceDetail(sourceId))!.federationStatus).toBe('none')
 
   raw.prepare(
     `INSERT INTO federation_relationships_v2 (source_id, status, provenance_note, created_at, updated_at) VALUES (?, 'approved', NULL, ?, ?)`,
@@ -119,7 +119,7 @@ test('getSourceDetail reports federationStatus none/status, subscriptionCounts, 
   // higher (deterministic across runs, unlike the old id DESC tie-break).
   insertAudit(raw, newerAudit, sourceId, T)
 
-  const detail = await repo.getSourceDetail(sourceId)
+  const detail = await repo.sources.getSourceDetail(sourceId)
   expect(detail!.federationStatus).toBe('approved')
   expect(detail!.subscriptionCounts).toEqual({ active: 2, pending: 1, pendingReview: 1 })
   expect(detail!.latestAudit).toMatchObject({ id: newerAudit })
@@ -130,21 +130,21 @@ test('getSourceDetail reports federationStatus none/status, subscriptionCounts, 
 test('getSource / listSourceSubscriptions / listSourceAudit: undefined on unknown id, stable cursor pagination', async () => {
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
-  expect(await repo.getSource('missing')).toBeUndefined()
+  expect(await repo.sources.getSource('missing')).toBeUndefined()
 
   const ownerA = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
   const ownerB = await repo.createLocalUser({ handle: 'fred', displayName: 'Fred' })
   const sourceId = randomUUID()
   insertSource(raw, sourceId)
-  expect((await repo.getSource(sourceId))!.id).toBe(sourceId)
+  expect((await repo.sources.getSource(sourceId))!.id).toBe(sourceId)
 
   const subA = randomUUID()
   const subB = randomUUID()
   insertSubscription(raw, subA, ownerA.id, sourceId, 'active')
   insertSubscription(raw, subB, ownerB.id, sourceId, 'active')
 
-  const subsFirst = await repo.listSourceSubscriptions(sourceId, undefined, 1)
-  const subsSecond = await repo.listSourceSubscriptions(sourceId, decodeCursor(subsFirst.nextCursor!), 1)
+  const subsFirst = await repo.sources.listSourceSubscriptions(sourceId, undefined, 1)
+  const subsSecond = await repo.sources.listSourceSubscriptions(sourceId, decodeCursor(subsFirst.nextCursor!), 1)
   expect(subsSecond.nextCursor).toBeNull()
   const subIds = new Set([...subsFirst.items, ...subsSecond.items].map((s) => s.id))
   expect(subIds).toEqual(new Set([subA, subB]))
@@ -154,8 +154,8 @@ test('getSource / listSourceSubscriptions / listSourceAudit: undefined on unknow
   insertAudit(raw, auditA, sourceId, T)
   insertAudit(raw, auditB, sourceId, T)
 
-  const auditFirst = await repo.listSourceAudit(sourceId, undefined, 1)
-  const auditSecond = await repo.listSourceAudit(sourceId, decodeCursor(auditFirst.nextCursor!), 1)
+  const auditFirst = await repo.sources.listSourceAudit(sourceId, undefined, 1)
+  const auditSecond = await repo.sources.listSourceAudit(sourceId, decodeCursor(auditFirst.nextCursor!), 1)
   expect(auditSecond.nextCursor).toBeNull()
   const auditIds = new Set([...auditFirst.items, ...auditSecond.items].map((a) => a.id))
   expect(auditIds).toEqual(new Set([auditA, auditB]))
@@ -168,10 +168,10 @@ test('limit is clamped to 1-100', async () => {
   const raw = repo.raw
   for (let i = 0; i < 3; i++) insertSource(raw, randomUUID())
 
-  const zero = await repo.listSourceSummaries(undefined, 0)
+  const zero = await repo.sources.listSourceSummaries(undefined, 0)
   expect(zero.items).toHaveLength(1)
 
-  const huge = await repo.listSourceSummaries(undefined, 1000)
+  const huge = await repo.sources.listSourceSummaries(undefined, 1000)
   expect(huge.items).toHaveLength(3)
   expect(huge.nextCursor).toBeNull()
 
@@ -189,13 +189,13 @@ test('q searches canonical_url; filter=orphan returns only zero-subscription all
   const owner = await repo.createLocalUser({ handle: 'owner1', displayName: 'Owner1' })
   insertSubscription(raw, randomUUID(), owner.id, subscribedId, 'active')
 
-  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  const orphans = await repo.sources.listSourceSummaries(undefined, 50, 'orphan')
   expect(orphans.items.map((i) => i.source.id)).toEqual([orphanId])
   expect(orphans.items[0].retention).toBe('reapable')
 
-  const searched = await repo.listSourceSummaries(undefined, 50, undefined, orphanId)
+  const searched = await repo.sources.listSourceSummaries(undefined, 50, undefined, orphanId)
   expect(searched.items.map((i) => i.source.id)).toEqual([orphanId])
-  const noMatch = await repo.listSourceSummaries(undefined, 50, undefined, 'no-such-substring-xyz')
+  const noMatch = await repo.sources.listSourceSummaries(undefined, 50, undefined, 'no-such-substring-xyz')
   expect(noMatch.items).toEqual([])
   repo.close()
 })
@@ -207,7 +207,7 @@ test('a pending_review-only source is NOT an orphan (C1 regression)', async () =
   insertSource(raw, sourceId)
   const owner = await repo.createLocalUser({ handle: 'owner2', displayName: 'Owner2' })
   insertSubscription(raw, randomUUID(), owner.id, sourceId, 'pending_review')
-  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  const orphans = await repo.sources.listSourceSummaries(undefined, 50, 'orphan')
   expect(orphans.items.map((i) => i.source.id)).not.toContain(sourceId)
   repo.close()
 })
@@ -226,7 +226,7 @@ test('retention ladder: verified_origin beats admin_retained beats audit_history
   insertAudit(raw, randomUUID(), auditedId, T)
   raw.prepare(`UPDATE remote_sources_v2 SET admin_retained = 1 WHERE id = ?`).run(retainedId)
   insertVerifiedOriginClaim(raw, verifiedId)
-  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  const orphans = await repo.sources.listSourceSummaries(undefined, 50, 'orphan')
   const byId = new Map(orphans.items.map((i) => [i.source.id, i.retention]))
   expect(byId.get(reapableId)).toBe('reapable')
   expect(byId.get(auditedId)).toBe('audit_history')
@@ -244,7 +244,7 @@ test('addedBy resolves the first 3 subscriber handles in created_at order, empty
   raw.prepare(`INSERT INTO users (id, kind, handle, display_name, created_at) VALUES ('u2', 'local', 'bob', 'Bob', ?)`).run(T)
   insertSubscription(raw, randomUUID(), 'u1', sourceId, 'active')
   insertSubscription(raw, randomUUID(), 'u2', sourceId, 'active')
-  const page = await repo.listSourceSummaries(undefined, 50)
+  const page = await repo.sources.listSourceSummaries(undefined, 50)
   const row = page.items.find((i) => i.source.id === sourceId)!
   expect(row.addedBy.map((a) => a.handle)).toEqual(['alice', 'bob'])
   repo.close()
@@ -278,12 +278,12 @@ test('filter=orphan excludes instance-governed members but keeps real orphans', 
   ).run(memberId, T)
   insertSource(raw, realOrphanId) // ordinary orphan on a different host
 
-  const orphans = await repo.listSourceSummaries(undefined, 50, 'orphan')
+  const orphans = await repo.sources.listSourceSummaries(undefined, 50, 'orphan')
   const ids = orphans.items.map((i) => i.source.id)
   expect(ids).toContain(realOrphanId)
   expect(ids).not.toContain(memberId)
 
   // The member is still a real, listable source — only this ONE list excludes it.
-  expect(await repo.getSource(memberId)).toBeDefined()
+  expect(await repo.sources.getSource(memberId)).toBeDefined()
   repo.close()
 })

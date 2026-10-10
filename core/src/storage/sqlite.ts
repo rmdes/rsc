@@ -214,6 +214,12 @@ export class SqliteRepository implements Repository, SourceRepository {
     return this.sqlite
   }
 
+  // The source-control plane's access path. Every consumer goes through it, so
+  // the SourceRepository half can move to its own class without touching them.
+  get sources(): SourceRepository {
+    return this
+  }
+
   private async insertUser(kind: 'local' | 'remote', handle: string, displayName: string, feedUrl: string | null, authUserId: string | null, feedType: FeedType | null): Promise<User> {
     assertHandleUnreserved(this.sqlite, handle)
     const row: UsersTable = { id: randomUUID(), kind, handle, display_name: displayName, feed_url: feedUrl, created_at: new Date().toISOString(), auth_user_id: authUserId, feed_type: feedType }

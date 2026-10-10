@@ -173,7 +173,7 @@ function makeApp(deps: Deps) {
     service: createService(deps.repo, createEventBus(), null, deps.store),
     bus: createEventBus(), token: 'ops-token', auth: makeAuth(deps.repo), users: deps.repo,
     adminEmails: new Set(['boss@x.test']),
-    sources: { service: createSourceService(deps.repo, null), repo: deps.repo },
+    sources: { service: createSourceService(deps.repo, null), repo: deps.repo.sources },
     logical: { store: deps.store, acquisition: stubEngine, now: () => NOW },
   })
 }
@@ -425,7 +425,7 @@ test('moderation: quarantining one approved source leaves Federated while an all
 
   // Quarantine the federated peer: generation advances and fan-out is enqueued in
   // the SAME transaction; item hints are still stale at this point.
-  await deps.repo.transition({
+  await deps.repo.sources.transition({
     command: { actorScope: 'administrator', actorId: admin.id, commandId: 'q1', requestFingerprint: fingerprintRequest(['q', 's_fed']) },
     sourceId: 's_fed', action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW,
   })

@@ -40,7 +40,7 @@ async function makeApp() {
     users: repo,
     adminEmails: new Set(['boss@x.test']),
     feeds: { publicUrl: null, hubUrl: null, rssCloud: false },
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo }

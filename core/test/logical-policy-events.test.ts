@@ -71,7 +71,7 @@ test('a governance transition advances the source generation and appends exactly
   const id = insertSourceRow(raw, { canonicalUrl: 'https://gov.test/f' })
   expect(generation(raw, id)).toBe(0)
 
-  const r = await repo.transition({ command: adminCmd(admin.id, 'g1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  const r = await repo.sources.transition({ command: adminCmd(admin.id, 'g1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(r).toMatchObject({ kind: 'applied' })
   expect(generation(raw, id)).toBe(1)
   expect(resets(raw)).toBe(1)
@@ -81,7 +81,7 @@ test('federation establishment advances generation and appends one reset', async
   const repo = await fresh()
   const raw = repo.raw
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
-  const r = await repo.establishFederation({ command: adminCmd(admin.id, 'f1'), canonicalUrl: 'https://fed.test/f', attributionMode: 'aggregate', category: 'operator_policy', note: null, actorKind: 'administrator', now: NOW })
+  const r = await repo.sources.establishFederation({ command: adminCmd(admin.id, 'f1'), canonicalUrl: 'https://fed.test/f', attributionMode: 'aggregate', category: 'operator_policy', note: null, actorKind: 'administrator', now: NOW })
   expect(r).toMatchObject({ kind: 'established' })
   const src = raw.prepare(`SELECT id FROM remote_sources_v2 WHERE canonical_url = ?`).get('https://fed.test/f') as { id: string }
   expect(generation(raw, src.id)).toBe(1)
@@ -98,7 +98,7 @@ test('set_attribution_mode advances generation and appends one reset even though
   insertSub(raw, a.id, id, 'active')
   insertSub(raw, b.id, id, 'active')
 
-  const r = await repo.transition({ command: adminCmd(admin.id, 'm1'), sourceId: id, action: 'set_attribution_mode', category: 'operator_policy', note: null, attributionMode: 'aggregate', actorKind: 'administrator', now: NOW })
+  const r = await repo.sources.transition({ command: adminCmd(admin.id, 'm1'), sourceId: id, action: 'set_attribution_mode', category: 'operator_policy', note: null, attributionMode: 'aggregate', actorKind: 'administrator', now: NOW })
   expect(r).toMatchObject({ kind: 'applied' })
   expect(generation(raw, id)).toBe(1)
   expect(resets(raw)).toBe(1) // ONE reset, not one-per-subscription (no fan-out)
@@ -112,8 +112,8 @@ test('pause and resume append no reset and never advance the generation', async 
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
   const id = insertSourceRow(raw, { canonicalUrl: 'https://pr.test/f' })
 
-  await repo.transition({ command: adminCmd(admin.id, 'p1'), sourceId: id, action: 'pause', category: null, note: null, actorKind: 'administrator', now: NOW })
-  await repo.transition({ command: adminCmd(admin.id, 'r1'), sourceId: id, action: 'resume', category: null, note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'p1'), sourceId: id, action: 'pause', category: null, note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: adminCmd(admin.id, 'r1'), sourceId: id, action: 'resume', category: null, note: null, actorKind: 'administrator', now: NOW })
   expect(generation(raw, id)).toBe(0)
   expect(resets(raw)).toBe(0)
 })
@@ -124,7 +124,7 @@ test('creating an ACTIVE subscription appends one Personal reset and does not ad
   const repo = await fresh()
   const raw = repo.raw
   const owner = await repo.createLocalUser({ handle: 'own', displayName: 'Own' })
-  const r = await repo.resolveAndSubscribeSource({ command: ownerCmd(owner.id, 's1'), ownerId: owner.id, canonicalUrl: 'https://sub.test/f', cap: 100, now: NOW })
+  const r = await repo.sources.resolveAndSubscribeSource({ command: ownerCmd(owner.id, 's1'), ownerId: owner.id, canonicalUrl: 'https://sub.test/f', cap: 100, now: NOW })
   expect(r).toMatchObject({ kind: 'source', created: true })
   const src = raw.prepare(`SELECT id FROM remote_sources_v2 WHERE canonical_url = ?`).get('https://sub.test/f') as { id: string }
   expect(generation(raw, src.id)).toBe(0) // membership change, not source policy
@@ -136,7 +136,7 @@ test('creating a PENDING (quarantined) subscription is inactive-to-inactive and 
   const raw = repo.raw
   const owner = await repo.createLocalUser({ handle: 'own', displayName: 'Own' })
   const id = insertSourceRow(raw, { canonicalUrl: 'https://q.test/f', governance: 'quarantined' })
-  const r = await repo.resolveAndSubscribeSource({ command: ownerCmd(owner.id, 's2'), ownerId: owner.id, canonicalUrl: 'https://q.test/f', cap: 100, now: NOW })
+  const r = await repo.sources.resolveAndSubscribeSource({ command: ownerCmd(owner.id, 's2'), ownerId: owner.id, canonicalUrl: 'https://q.test/f', cap: 100, now: NOW })
   expect(r).toMatchObject({ kind: 'source', subscription: { subscriptionState: 'pending' } })
   expect(generation(raw, id)).toBe(0)
   expect(resets(raw)).toBe(0)
@@ -151,9 +151,9 @@ test('removing an ACTIVE subscription appends one reset; removing a pending one 
   insertSub(raw, owner.id, active, 'active')
   insertSub(raw, owner.id, pending, 'pending')
 
-  await repo.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: pending, now: NOW })
+  await repo.sources.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: pending, now: NOW })
   expect(resets(raw)).toBe(0) // inactive removal
-  await repo.unsubscribe({ command: ownerCmd(owner.id, 'u2'), ownerId: owner.id, sourceId: active, now: NOW })
+  await repo.sources.unsubscribe({ command: ownerCmd(owner.id, 'u2'), ownerId: owner.id, sourceId: active, now: NOW })
   expect(resets(raw)).toBe(1) // active removal
 })
 
@@ -162,10 +162,10 @@ test('following a local account appends one reset only when a new edge is create
   const raw = repo.raw
   const owner = await repo.createLocalUser({ handle: 'own', displayName: 'Own' })
   const target = await repo.createLocalUser({ handle: 'tgt', displayName: 'Tgt' })
-  await repo.followLocalAccount({ command: ownerCmd(owner.id, 'l1'), ownerId: owner.id, targetId: target.id, now: NOW })
+  await repo.sources.followLocalAccount({ command: ownerCmd(owner.id, 'l1'), ownerId: owner.id, targetId: target.id, now: NOW })
   expect(resets(raw)).toBe(1)
   // a second, idempotent follow (different commandId, same edge) creates nothing → no reset
-  await repo.followLocalAccount({ command: ownerCmd(owner.id, 'l2'), ownerId: owner.id, targetId: target.id, now: NOW })
+  await repo.sources.followLocalAccount({ command: ownerCmd(owner.id, 'l2'), ownerId: owner.id, targetId: target.id, now: NOW })
   expect(resets(raw)).toBe(1)
 })
 
@@ -176,7 +176,7 @@ test('a no-op (conflict) transition changes neither generation nor journal', asy
   const raw = repo.raw
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
   const id = insertSourceRow(raw, { canonicalUrl: 'https://noop.test/f', governance: 'blocked' })
-  const r = await repo.transition({ command: adminCmd(admin.id, 'n1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  const r = await repo.sources.transition({ command: adminCmd(admin.id, 'n1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(r).toEqual({ kind: 'conflict' })
   expect(generation(raw, id)).toBe(0)
   expect(journalSeq(raw)).toBe(0)
@@ -188,11 +188,11 @@ test('a command-ledger REPLAY appends no new reset and does not advance generati
   const admin = await repo.createLocalUser({ handle: 'admin', displayName: 'Admin' })
   const id = insertSourceRow(raw, { canonicalUrl: 'https://replay.test/f' })
   const cmd = adminCmd(admin.id, 'rep1')
-  await repo.transition({ command: cmd, sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: cmd, sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(generation(raw, id)).toBe(1)
   expect(resets(raw)).toBe(1)
   // identical retry replays the stored result — no second effect
-  await repo.transition({ command: cmd, sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
+  await repo.sources.transition({ command: cmd, sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })
   expect(generation(raw, id)).toBe(1)
   expect(resets(raw)).toBe(1)
 })
@@ -207,7 +207,7 @@ test('a fault before the ledger write rolls back the domain change, audit, gener
   // Force storeCommand (the last write in the transaction) to throw: dropping the
   // ledger table makes its INSERT fail, so the whole BEGIN IMMEDIATE rolls back.
   raw.exec('DROP TABLE command_ledger_v2')
-  await expect(repo.transition({ command: adminCmd(admin.id, 'x1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })).rejects.toThrow()
+  await expect(repo.sources.transition({ command: adminCmd(admin.id, 'x1'), sourceId: id, action: 'quarantine', category: 'spam', note: null, actorKind: 'administrator', now: NOW })).rejects.toThrow()
 
   expect((raw.prepare(`SELECT governance FROM remote_sources_v2 WHERE id = ?`).get(id) as { governance: string }).governance).toBe('allowed')
   expect(generation(raw, id)).toBe(0)
@@ -231,7 +231,7 @@ test('removing the last subscription REMOVES the source and its evidence (eviden
      VALUES (?, ?, 'guid', 'k1', ?, ?, 'run1', 1)`,
   ).run(randomUUID(), id, T0, T0)
 
-  const r = await repo.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: id, now: NOW })
+  const r = await repo.sources.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: id, now: NOW })
   expect(r).toEqual({ kind: 'removed', sourceRemoved: true })
   expect(count(raw, 'remote_sources_v2', 'WHERE id = ?', id)).toBe(0) // source + evidence gone
   expect(count(raw, 'deliveries_v2', 'WHERE source_id = ?', id)).toBe(0)
@@ -244,7 +244,7 @@ test('removing the last subscription deletes an orphan source with no RESTRICT c
   const id = insertSourceRow(raw, { canonicalUrl: 'https://drop.test/f' })
   insertSub(raw, owner.id, id, 'active')
 
-  const r = await repo.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: id, now: NOW })
+  const r = await repo.sources.unsubscribe({ command: ownerCmd(owner.id, 'u1'), ownerId: owner.id, sourceId: id, now: NOW })
   expect(r).toEqual({ kind: 'removed', sourceRemoved: true })
   expect(count(raw, 'remote_sources_v2', 'WHERE id = ?', id)).toBe(0)
 })

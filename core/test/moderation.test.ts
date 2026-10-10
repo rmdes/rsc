@@ -19,7 +19,7 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
   const auth = makeAuth(repo)
   const app = createApp({
     service, bus, token: 'secret', auth, users: repo, adminEmails: new Set(adminEmails),
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, service, auth, bus }

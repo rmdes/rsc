@@ -18,7 +18,7 @@ test('smoke: anonymous sign-in, post, /me, and ops-token federation seeding all 
   const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
 
@@ -27,6 +27,6 @@ test('smoke: anonymous sign-in, post, /me, and ops-token federation seeding all 
   // establishFederation inserts federation_relationships_v2 with status
   // 'approved' directly, so the new source is immediately visible here — the
   // same method GET /peers' v2 arm uses (app.ts).
-  const approved = await repo.listApprovedFederationSources()
+  const approved = await repo.sources.listApprovedFederationSources()
   expect(approved.some((s) => s.canonicalUrl === 'https://203.0.113.199/feed.xml')).toBe(true)
 })

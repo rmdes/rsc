@@ -37,7 +37,7 @@ test('POST /posts accepts a reply whose target is a v2 logical item, and the rep
   })
   const app = createApp({
     service, bus, token: 't0k3n', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: eng, now: () => NOW },
   })
 
@@ -84,7 +84,7 @@ test('a removed post is no longer a valid reply target, even though its row surv
   const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 't0k3n', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db, lookupFn: publicLookup, now: () => NOW }) },
   })
 

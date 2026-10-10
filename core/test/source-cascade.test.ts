@@ -130,7 +130,7 @@ test('a cascading transition inserts two same-timestamp audit rows on the instan
   expect(rows.map((r) => r.action).sort()).toEqual(['instance_cascade', 'quarantine'])
   expect(new Set(rows.map((r) => r.created_at)).size).toBe(1)
 
-  const detail = await repo.getSourceDetail(instanceId)
+  const detail = await repo.sources.getSourceDetail(instanceId)
   expect(detail!.latestAudit?.action).toBe('quarantine')
 
   repo.close()

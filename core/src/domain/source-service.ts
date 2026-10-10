@@ -8,6 +8,11 @@ import { normalizeSourceUrl } from './source-url.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
 
+// What the source plane actually needs from the repository: two reads, plus the
+// source store itself. Narrower than `Repository & SourceRepository`, which made
+// the two persistence concerns look like one.
+export type SourceStore = Pick<Repository, 'getSetting' | 'getUserByHandle'> & { sources: SourceRepository }
+
 const OPERATION = 'subscribe'
 const IMPORT_OPERATION = 'import-opml'
 const UNSUBSCRIBE_OPERATION = 'unsubscribe'
@@ -74,11 +79,11 @@ export interface SourceService {
 // just the seam. server.ts always passes a real store now; only tests pass
 // `undefined` deliberately, to exercise the no-tombstone-consultation path.
 export function createSourcePlane(
-  repo: Repository & SourceRepository,
+  repo: SourceStore,
   publicUrl: string | null,
   logicalStore: { isTombstoned(url: string): boolean } | undefined,
-): { service: SourceService; repo: Repository & SourceRepository } {
-  return { service: createSourceService(repo, publicUrl, undefined, logicalStore && ((url) => logicalStore.isTombstoned(url))), repo }
+): { service: SourceService; repo: SourceRepository } {
+  return { service: createSourceService(repo, publicUrl, undefined, logicalStore && ((url) => logicalStore.isTombstoned(url))), repo: repo.sources }
 }
 
 // SourceService.subscribeByUrl owns the raw-URL dispatch (Task 3, design §4
@@ -93,7 +98,7 @@ export function createSourcePlane(
 // omitted (or with empty tombstone tables) it never fires, so the OFF path is
 // byte-identical. A tombstoned URL resolves to the SAME generic unavailable result
 // an SSRF/invalid URL returns — no oracle distinguishes the two (spec §5.1).
-export function createSourceService(repo: Repository & SourceRepository, publicUrl: string | null, lookupFn?: LookupFn, isTombstoned?: (url: string) => boolean): SourceService {
+export function createSourceService(repo: SourceStore, publicUrl: string | null, lookupFn?: LookupFn, isTombstoned?: (url: string) => boolean): SourceService {
   return {
     async subscribeByUrl(owner: User, url: string, commandId: string): Promise<SubscribeResult> {
       const now = new Date().toISOString()
@@ -105,7 +110,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
           // [operation, normalizedUrl] — same as the remote branch below, so
           // two spellings of one local feed URL replay instead of conflicting.
           const command = { actorScope: 'owner' as const, actorId: owner.id, commandId, requestFingerprint: fingerprintRequest([OPERATION, normalizeSourceUrl(url)]) }
-          return repo.followLocalAccount({ command, ownerId: owner.id, targetId: target.id, now })
+          return repo.sources.followLocalAccount({ command, ownerId: owner.id, targetId: target.id, now })
         }
       }
       // Not a local feed (or the local handle vanished): normalize + SSRF-check
@@ -117,7 +122,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
       if (isTombstoned?.(canonicalUrl)) return { kind: 'unavailable' } // tombstoned resolves as generic unavailable
       const cap = Number((await repo.getSetting('max_subs_per_user')) ?? '500')
       const command = { actorScope: 'owner' as const, actorId: owner.id, commandId, requestFingerprint: fingerprintRequest([OPERATION, canonicalUrl]) }
-      return repo.resolveAndSubscribeSource({ command, ownerId: owner.id, canonicalUrl, cap, now })
+      return repo.sources.resolveAndSubscribeSource({ command, ownerId: owner.id, canonicalUrl, cap, now })
     },
 
     // The batch analogue of subscribeByUrl (Task 4): partitions BEFORE the
@@ -164,7 +169,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
 
       const cap = Number((await repo.getSetting('max_subs_per_user')) ?? '500')
       const command = { actorScope: 'owner' as const, actorId: owner.id, commandId, requestFingerprint: fingerprintRequest([IMPORT_OPERATION, bounded]) }
-      return repo.importSourceSubscriptions({
+      return repo.sources.importSourceSubscriptions({
         command,
         ownerId: owner.id,
         localTargetIds: [...localTargetIds],
@@ -177,10 +182,10 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
 
     // Plain reads (Task 5) — no command envelope, nothing to ledger.
     ownerFollowing(ownerId: string): Promise<OwnerFollowingView> {
-      return repo.ownerFollowing(ownerId)
+      return repo.sources.ownerFollowing(ownerId)
     },
     publicFollowing(ownerId: string): Promise<PublicFollowingEntry[]> {
-      return repo.publicFollowing(ownerId)
+      return repo.sources.publicFollowing(ownerId)
     },
 
     // Stable-ID unsubscribe with last-subscription cleanup (Task 5). Fingerprint
@@ -189,7 +194,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
     async unsubscribe(ownerId: string, sourceId: string, commandId: string): Promise<UnsubscribeResult> {
       const now = new Date().toISOString()
       const command = { actorScope: 'owner' as const, actorId: ownerId, commandId, requestFingerprint: fingerprintRequest([UNSUBSCRIBE_OPERATION, sourceId, ownerId]) }
-      return repo.unsubscribe({ command, ownerId, sourceId, now })
+      return repo.sources.unsubscribe({ command, ownerId, sourceId, now })
     },
 
     // Administrator federation establishment (Task 6). Normalizes the URL the
@@ -211,7 +216,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
         commandId: input.commandId,
         requestFingerprint: fingerprintRequest([FEDERATION_OPERATION, canonicalUrl, input.attributionMode]),
       }
-      return repo.establishFederation({ command, canonicalUrl, attributionMode: input.attributionMode, category: input.category, note: input.note, actorKind: input.actorKind, now })
+      return repo.sources.establishFederation({ command, canonicalUrl, attributionMode: input.attributionMode, category: input.category, note: input.note, actorKind: input.actorKind, now })
     },
 
     // The lifecycle transition matrix (Task 6). Fingerprint is exactly
@@ -231,7 +236,7 @@ export function createSourceService(repo: Repository & SourceRepository, publicU
         commandId: input.commandId,
         requestFingerprint: fingerprintRequest([input.action, input.sourceId, input.actorId, input.attributionMode ?? '']),
       }
-      return repo.transition({
+      return repo.sources.transition({
         command, sourceId: input.sourceId, action: input.action, category: input.category,
         note: input.note, attributionMode: input.attributionMode, actorKind: input.actorKind, now,
       })

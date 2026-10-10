@@ -17,7 +17,7 @@ async function makeApp() {
   const service = createService(repo, bus, null, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, service }

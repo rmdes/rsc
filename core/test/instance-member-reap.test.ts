@@ -90,7 +90,7 @@ test('getSourceDetail surfaces retention "instance_member" for a live instance m
   approveFederation(raw, 'inst')
   seedSource(raw, { id: 'member', url: 'https://rss.chat/users/a.xml' })
 
-  const detail = await repo.getSourceDetail('member')
+  const detail = await repo.sources.getSourceDetail('member')
   expect(detail?.retention).toBe('instance_member')
 })
 
@@ -113,7 +113,7 @@ test('reapSource and retentionFor agree on the same instance-member fixture (dri
   const refused = reapSource(raw, 'member', { force: false }, NOW)
   expect(refused).toEqual({ kind: 'refused', reason: 'instance_member' })
 
-  const detail = await repo.getSourceDetail('member')
+  const detail = await repo.sources.getSourceDetail('member')
   expect(detail?.retention).toBe('instance_member')
 })
 

@@ -23,7 +23,7 @@ async function instance(publicUrl: string | null) {
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo,
     feeds: { publicUrl, hubUrl: null, rssCloud: false },
-    sources: { service: createSourceService(repo, publicUrl), repo },
+    sources: { service: createSourceService(repo, publicUrl), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { repo, service, app }

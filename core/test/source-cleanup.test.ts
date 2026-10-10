@@ -286,7 +286,7 @@ test('operator reap refuses a non-allowed-governance source', async () => {
   const raw = repo.raw
   const quarantined = insertSourceRow(raw, { canonicalUrl: 'https://reap-q.test/feed', governance: 'quarantined' })
 
-  const result = await repo.reapSource({ command: reapCmd('r1', quarantined), sourceId: quarantined, force: true, now: NOW })
+  const result = await repo.sources.reapSource({ command: reapCmd('r1', quarantined), sourceId: quarantined, force: true, now: NOW })
   expect(result).toEqual({ kind: 'refused', reason: 'not_allowed' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
 
@@ -300,7 +300,7 @@ test('operator reap refuses a source with any subscription, even force', async (
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-sub.test/feed' })
   insertSubscription(raw, owner.id, src, 'pending')
 
-  const result = await repo.reapSource({ command: reapCmd('r2', src), sourceId: src, force: true, now: NOW })
+  const result = await repo.sources.reapSource({ command: reapCmd('r2', src), sourceId: src, force: true, now: NOW })
   expect(result).toEqual({ kind: 'refused', reason: 'has_subscribers' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
 
@@ -313,7 +313,7 @@ test('operator reap refuses a federated source, even force', async () => {
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-fed.test/feed' })
   insertFederationRow(raw, src)
 
-  const result = await repo.reapSource({ command: reapCmd('r3', src), sourceId: src, force: true, now: NOW })
+  const result = await repo.sources.reapSource({ command: reapCmd('r3', src), sourceId: src, force: true, now: NOW })
   expect(result).toEqual({ kind: 'refused', reason: 'federated' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
 
@@ -326,12 +326,12 @@ test('operator reap refuses verified-origin evidence without force, but force re
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-verified.test/feed' })
   seedEvidence(raw, src, { verified: true })
 
-  const refused = await repo.reapSource({ command: reapCmd('r4a', src), sourceId: src, force: false, now: NOW })
+  const refused = await repo.sources.reapSource({ command: reapCmd('r4a', src), sourceId: src, force: false, now: NOW })
   expect(refused).toEqual({ kind: 'refused', reason: 'verified_origin_evidence' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
   expect(countRows(raw, 'publisher_claims_v2')).toBe(1)
 
-  const forced = await repo.reapSource({ command: reapCmd('r4b', src), sourceId: src, force: true, now: NOW })
+  const forced = await repo.sources.reapSource({ command: reapCmd('r4b', src), sourceId: src, force: true, now: NOW })
   expect(forced).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(0)
   expect(countRows(raw, 'publisher_claims_v2')).toBe(0) // the evidence was actually removed, not just the source row
@@ -352,11 +352,11 @@ test('operator reap refuses an admin_retained source without force, force lifts 
   const keptByAutoReap = raw.transaction(() => reapSourceIfOrphaned(raw, src, NOW))()
   expect(keptByAutoReap).toBe(false)
 
-  const refused = await repo.reapSource({ command: reapCmd('r5a', src), sourceId: src, force: false, now: NOW })
+  const refused = await repo.sources.reapSource({ command: reapCmd('r5a', src), sourceId: src, force: false, now: NOW })
   expect(refused).toEqual({ kind: 'refused', reason: 'admin_retained' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
 
-  const forced = await repo.reapSource({ command: reapCmd('r5b', src), sourceId: src, force: true, now: NOW })
+  const forced = await repo.sources.reapSource({ command: reapCmd('r5b', src), sourceId: src, force: true, now: NOW })
   expect(forced).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(0)
 
@@ -372,12 +372,12 @@ test('operator reap refuses a source with audit history without force, force lif
   const keptByAutoReap = raw.transaction(() => reapSourceIfOrphaned(raw, src, NOW))()
   expect(keptByAutoReap).toBe(false)
 
-  const refused = await repo.reapSource({ command: reapCmd('r5c', src), sourceId: src, force: false, now: NOW })
+  const refused = await repo.sources.reapSource({ command: reapCmd('r5c', src), sourceId: src, force: false, now: NOW })
   expect(refused).toEqual({ kind: 'refused', reason: 'audit_history' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(1)
   expect(countRows(raw, 'source_audit_v2')).toBe(1)
 
-  const forced = await repo.reapSource({ command: reapCmd('r5d', src), sourceId: src, force: true, now: NOW })
+  const forced = await repo.sources.reapSource({ command: reapCmd('r5d', src), sourceId: src, force: true, now: NOW })
   expect(forced).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(0)
   expect(countRows(raw, 'source_audit_v2')).toBe(0) // cascade-deleted with the source row
@@ -391,11 +391,11 @@ test('operator reap is ledgered and idempotent on replay, no second effect', asy
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-replay.test/feed' })
 
   const cmd = reapCmd('r6', src)
-  const first = await repo.reapSource({ command: cmd, sourceId: src, force: false, now: NOW })
+  const first = await repo.sources.reapSource({ command: cmd, sourceId: src, force: false, now: NOW })
   expect(first).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'command_ledger_v2')).toBe(1)
 
-  const replay = await repo.reapSource({ command: cmd, sourceId: src, force: false, now: NOW })
+  const replay = await repo.sources.reapSource({ command: cmd, sourceId: src, force: false, now: NOW })
   expect(replay).toEqual(first)
   expect(countRows(raw, 'command_ledger_v2')).toBe(1) // no second ledger row
 
@@ -408,13 +408,13 @@ test('a refused reap is never ledgered, so the same commandId re-judges against 
   const src = insertSourceRow(raw, { canonicalUrl: 'https://reap-retry.test/feed' })
   seedEvidence(raw, src, { verified: true })
 
-  const refused = await repo.reapSource({ command: reapCmd('r7a', src), sourceId: src, force: false, now: NOW })
+  const refused = await repo.sources.reapSource({ command: reapCmd('r7a', src), sourceId: src, force: false, now: NOW })
   expect(refused).toEqual({ kind: 'refused', reason: 'verified_origin_evidence' })
   expect(countRows(raw, 'command_ledger_v2')).toBe(0) // refusals are never ledgered, unlike 'reaped'
 
   // Same commandId, now with force:true -> refusal was never stored, so this
   // re-evaluates against live state (not a replay) and succeeds.
-  const sameIdRetry = await repo.reapSource({ command: reapCmd('r7a', src), sourceId: src, force: true, now: NOW })
+  const sameIdRetry = await repo.sources.reapSource({ command: reapCmd('r7a', src), sourceId: src, force: true, now: NOW })
   expect(sameIdRetry).toEqual({ kind: 'reaped' })
   expect(countRows(raw, 'remote_sources_v2')).toBe(0)
   expect(countRows(raw, 'command_ledger_v2')).toBe(1) // the successful reap IS ledgered
@@ -426,11 +426,11 @@ test('operator reap on an unknown source returns unknown, ledgered idempotently'
   const repo = await createSqliteRepository(':memory:')
   const raw = repo.raw
 
-  const result = await repo.reapSource({ command: reapCmd('r8', 'missing-source'), sourceId: 'missing-source', force: true, now: NOW })
+  const result = await repo.sources.reapSource({ command: reapCmd('r8', 'missing-source'), sourceId: 'missing-source', force: true, now: NOW })
   expect(result).toEqual({ kind: 'unknown' })
   expect(countRows(raw, 'command_ledger_v2')).toBe(1)
 
-  const replay = await repo.reapSource({ command: reapCmd('r8', 'missing-source'), sourceId: 'missing-source', force: true, now: NOW })
+  const replay = await repo.sources.reapSource({ command: reapCmd('r8', 'missing-source'), sourceId: 'missing-source', force: true, now: NOW })
   expect(replay).toEqual({ kind: 'unknown' })
   expect(countRows(raw, 'command_ledger_v2')).toBe(1)
 

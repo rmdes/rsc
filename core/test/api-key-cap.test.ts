@@ -50,7 +50,7 @@ async function setupAdmin() {
   const app = new Hono()
   app.use('/admin/*', sessionAuth(auth, repo, adminEmails), requireAdmin())
   mountAdminApiRoutes(app, {
-    auth, users: repo, adminEmails, service, sourceRepo: repo, sourceService,
+    auth, users: repo, adminEmails, service, sourceRepo: repo.sources, sourceService,
     logicalStore: store, feeds: { publicUrl: null, hubUrl: null, rssCloud: false },
     websubMode: 'off', pushInEnabled: false, mailEnabled: true, pollSeconds: 60,
   })

@@ -34,7 +34,7 @@ async function makeApp(opts: { mailEnabled?: boolean; mailer?: Mailer | null } =
   const auth = makeAuth(repo, mailer)
   const app = createApp({
     service, bus, token: 'secret', auth, users: repo, mailEnabled,
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, service, auth, store, mail: fake }

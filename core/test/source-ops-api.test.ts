@@ -56,7 +56,7 @@ async function makeApp() {
     auth: makeAuth(repo),
     users: repo,
     adminEmails: new Set(['boss@x.test']),
-    sources: { service: rec.service, repo },
+    sources: { service: rec.service, repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo, touched: rec.touched }

@@ -20,7 +20,7 @@ async function makeApp(adminEmails: string[] = ['boss@x.test']) {
     adminEmails: new Set(adminEmails), mailEnabled: true,
     feeds: { publicUrl: 'https://x.test', hubUrl: null, rssCloud: true },
     websub: 'self', pushIn: true,
-    sources: { service: createSourceService(repo, null), repo },
+    sources: { service: createSourceService(repo, null), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { app, repo }

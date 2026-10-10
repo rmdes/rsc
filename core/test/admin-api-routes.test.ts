@@ -40,7 +40,7 @@ async function setup(adminEmails: ReadonlySet<string> = new Set(['admin@x.test']
   const sourceService = createSourceService(repo, null)
   const app = createApp({
     service, bus, token: 'ops-token', auth, users: repo, adminEmails,
-    sources: { service: sourceService, repo },
+    sources: { service: sourceService, repo: repo.sources },
     logical: { store: logicalStoreStub } as never,
   })
   return { app, auth, repo, db }
@@ -67,7 +67,7 @@ async function setupWithLogicalStore(adminEmails: ReadonlySet<string> = new Set(
   const sourceService = createSourceService(repo, null)
   const app = createApp({
     service, bus, token: 'ops-token', auth, users: repo, adminEmails,
-    sources: { service: sourceService, repo },
+    sources: { service: sourceService, repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db: dbContext }) },
   })
   return { app, auth, repo, db }
@@ -227,7 +227,7 @@ describe('admin.read routes', () => {
     const sourceService = createSourceService(repo, null)
     const app = createApp({
       service, bus, token: 'ops-token', auth, users: repo, adminEmails,
-      sources: { service: sourceService, repo },
+      sources: { service: sourceService, repo: repo.sources },
       logical: { store: logicalStoreStub } as never,
     })
     const { userId } = await registerSession(auth, db, 'revocable@x.test')

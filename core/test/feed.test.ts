@@ -72,7 +72,7 @@ async function makeApp(feeds?: FeedContext) {
   const service = createService(repo, bus, publicUrl, store)
   const app = createApp({
     service, bus, token: 'secret', auth: makeAuth(repo), users: repo, feeds,
-    sources: { service: createSourceService(repo, publicUrl), repo },
+    sources: { service: createSourceService(repo, publicUrl), repo: repo.sources },
     logical: { store, acquisition: createAcquisition({ db }) },
   })
   return { repo, service, app, db, store }

@@ -232,7 +232,7 @@ test('createSourcePlane wires the tombstone guard from the logical store; with v
   seedTombstone(raw, tombstoned, ['https://93.184.216.35/feed'])
 
   const on = createSourcePlane(repo, PUBLIC_URL, store)
-  expect(on.repo).toBe(repo)
+  expect(on.repo).toBe(repo.sources)
   expect(await on.service.subscribeByUrl(owner, tombstoned, 's1')).toEqual({ kind: 'unavailable' })
   expect(await on.service.subscribeByUrl(owner, 'https://93.184.216.35/feed', 's2')).toEqual({ kind: 'unavailable' })
 

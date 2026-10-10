@@ -48,7 +48,7 @@ async function makeApp() {
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
     feeds: { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false },
-    sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW },
+    sources: { service: createSourceService(repo, null), repo: repo.sources }, logical: { store, acquisition, now: () => NOW },
   })
   const materialize = (...ids: string[]) => db.write((tx) => { for (const id of ids) materializeLocalPost(tx, id) }) // parent-before-child order
   return { app, repo: repo as typeof repo & { raw: Raw }, store, materialize }

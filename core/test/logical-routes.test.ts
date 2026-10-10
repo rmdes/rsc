@@ -52,7 +52,7 @@ async function makeApp() {
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(['boss@x.test']),
     feeds: { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false },
-    sources: { service: createSourceService(repo, null), repo }, logical: { store, acquisition, now: () => NOW },
+    sources: { service: createSourceService(repo, null), repo: repo.sources }, logical: { store, acquisition, now: () => NOW },
   })
   // Local posts flow through store.createLocalPost (materialized) in production;
   // seedPost writes raw, so materialize on demand for the thread/comments projector.
