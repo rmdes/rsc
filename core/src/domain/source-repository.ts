@@ -153,7 +153,7 @@ export interface SourceRepository {
     category: AuditCategory
     note: string | null
     // Widened with the audit vocabulary (V4 §6): the ops-token federation route
-    // (Task 9) ledgers as 'operator_token'. The SqliteRepository impl already
+    // (Task 9) ledgers as 'operator_token'. The SqliteSourceRepository impl already
     // accepts it — this declaration is what Task 9's route is typed against.
     actorKind: 'administrator' | 'operator_token'
     now: string

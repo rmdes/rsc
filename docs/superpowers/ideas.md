@@ -1086,7 +1086,7 @@ a drop-in `plugins: [...]` add. Consult the `better-auth` MCP for current API.
 - **`pending_review` has no exit — spec §3.3's "explicit reviewed activation"
   was never implemented.** Conversion sets **every** legacy instance follow to
   `pending_review` (`core/src/migration/convert.ts:288`, correct per spec §3.3),
-  but `activatePendingSubscriptions` (`core/src/storage/sqlite.ts:163-166`)
+  but `activatePendingSubscriptions` (`core/src/storage/source-sqlite.ts`)
   promotes only `state = 'pending'`, and its own comment says so:
   *"pending_review is terminal in V1; V2 owns its exit."* V2 never shipped one —
   there is no writer of `state = 'active'` over a `pending_review` row anywhere
