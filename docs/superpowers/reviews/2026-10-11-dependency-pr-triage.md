@@ -129,10 +129,18 @@ the mass rename is wanted for its own sake.
 - **#40** kit v3, **#28** adapter-node v6, **#24** feedsmith v3 — mapped above,
   each needs its own task.
 
-## Loose end
+## The one open security alert is a kit-3 dependency
 
-The push reported `1 low vulnerability on rmdes/rsc's default branch`
-(`https://github.com/rmdes/rsc/security/dependabot/1`). Not investigated.
+`1 low vulnerability on rmdes/rsc's default branch` is `cookie` — "accepts
+cookie name, path, and domain with out of bounds characters", fixed in 0.7.0.
+It is not a direct dependency: `npm ls cookie --all` resolves it as
+`@sveltejs/kit@2.70.3 -> cookie@0.6.0`, and kit 2 pins that range, so it cannot
+be bumped on its own without an override that fights kit's own expectations.
+
+`kit@3.0.1` depends on `cookie: ^2.0.1` and resolves `cookie@2.0.1`, so the
+SvelteKit 3 migration above clears this alert as a side effect. That is another
+reason to sequence it rather than defer it indefinitely — but at low severity it
+does not justify jumping ahead of the TimelineEntry retirement.
 
 ## Version drift worth converging
 
