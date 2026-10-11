@@ -1,5 +1,5 @@
 import type { Hono, Context } from 'hono'
-import { logicalToFeedEntry, renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectReplyCounts, feedChannel } from '../../domain/feed.ts'
+import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectReplyCounts, feedChannel } from '../../domain/feed.ts'
 import type { LogicalStore } from '../../logical/store.ts'
 import type { Auth } from '../../auth.ts'
 import type { UserDirectory } from '../auth.ts'
@@ -142,7 +142,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
   app.get('/users/rss.xml', async (c) => {
     const limit = await feedLimit()
     const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit }))
-    const xml = injectReplyCounts(renderFirehoseRss(items.map(logicalToFeedEntry), feeds), items, feeds)
+    const xml = injectReplyCounts(renderFirehoseRss(items, feeds), items, feeds)
     return c.body(xml, 200, XML)
   })
 
@@ -165,7 +165,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     const limit = await feedLimit()
     const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit }))
     const channel = feedChannel((c.req.param('handle') ?? '').toLowerCase(), items, c.req.param('handle') ?? '')
-    const xml = injectReplyCounts(renderRssFeed(channel, items.map(logicalToFeedEntry), feeds), items, feeds)
+    const xml = injectReplyCounts(renderRssFeed(channel, items, feeds), items, feeds)
     return c.body(xml, 200, XML)
   })
 
@@ -175,7 +175,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     const limit = await feedLimit()
     const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit }))
     const channel = feedChannel((c.req.param('handle') ?? '').toLowerCase(), items, c.req.param('handle') ?? '')
-    return c.body(renderJsonFeed(channel, items.map(logicalToFeedEntry), feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
+    return c.body(renderJsonFeed(channel, items, feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
   })
 
   // Comments feed: bounded thread projector for policy/safety, but serializes
@@ -204,7 +204,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
       return { item, replies }
     })
     if (!data) return c.json({ error: 'unknown post' }, 404)
-    let xml = renderCommentsFeed(logicalToFeedEntry(data.item), data.replies.map(logicalToFeedEntry), feeds)
+    let xml = renderCommentsFeed(data.item, data.replies, feeds)
     xml = injectReplyCounts(xml, data.replies, feeds)
     return c.body(xml, 200, XML)
   })

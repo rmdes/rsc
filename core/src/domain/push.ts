@@ -5,7 +5,7 @@ import type { LogicalStore } from '../logical/store.ts'
 import type { LocalPostEvent } from './bus.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
-import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, feedChannel, injectReplyCounts, logicalToFeedEntry } from './feed.ts'
+import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, feedChannel, injectReplyCounts } from './feed.ts'
 import type { User } from './types.ts' // still used by ResolvedTopic
 
 const PUSH_TIMEOUT_MS = 10_000
@@ -241,8 +241,8 @@ export function createPush(deps: PushDeps & { store: LogicalStore }): Push {
             if (subs.length === 0) continue
             // Body regenerated ONCE per topic per event; same body (and HMAC input) for every subscriber.
             const body = format === 'xml'
-              ? injectReplyCounts(renderRssFeed(channel, items.map(logicalToFeedEntry), ctx), items, ctx)
-              : renderJsonFeed(channel, items.map(logicalToFeedEntry), ctx)
+              ? injectReplyCounts(renderRssFeed(channel, items, ctx), items, ctx)
+              : renderJsonFeed(channel, items, ctx)
             const contentType = format === 'xml' ? 'application/rss+xml; charset=utf-8' : 'application/feed+json; charset=utf-8'
             for (const sub of subs) {
               const headers: Record<string, string> = {
@@ -258,7 +258,7 @@ export function createPush(deps: PushDeps & { store: LogicalStore }): Push {
           const fhSubs = (await repo.listActiveSubscriptions(fhTopic, now)).filter((s) => s.protocol === 'websub')
           if (fhSubs.length > 0) {
             const recent = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit }))
-            const body = injectReplyCounts(renderFirehoseRss(recent.map(logicalToFeedEntry), ctx), recent, ctx)
+            const body = injectReplyCounts(renderFirehoseRss(recent, ctx), recent, ctx)
             for (const sub of fhSubs) {
               const headers: Record<string, string> = {
                 'content-type': 'application/rss+xml; charset=utf-8',

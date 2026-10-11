@@ -5,7 +5,7 @@ import type { LogicalStreamSource } from '../../logical/runtime.ts'
 import type { ReadTx } from '../../logical/database.ts'
 import type { ProjectionViewer, LogicalItemDto } from '../../logical/types.ts'
 import type { FeedContext } from '../../domain/feed.ts'
-import { logicalToFeedEntry, itemContentFields } from '../../domain/feed.ts'
+import { itemContentFields } from '../../domain/feed.ts'
 import { MODEL, NEUTRAL_404 } from './shared.ts'
 
 // =============================================================================
@@ -152,24 +152,24 @@ const FIREHOSE_RESET = JSON.stringify({ model: 'firehose-v1', kind: 'reset' })
 const FIREHOSE_BATCH = 200
 
 export function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string, unknown> {
-  const entry = logicalToFeedEntry(item)
-  const { description, sourceNs } = itemContentFields(entry)
-  const authorUrl = entry.author.kind === 'local' && feeds.publicUrl ? `${feeds.publicUrl}/u/${entry.author.handle}` : entry.author.feedUrl
+  const { description, sourceNs } = itemContentFields(item)
+  const a = item.selectedAuthor
+  const authorUrl = a.kind === 'local' ? (feeds.publicUrl ? `${feeds.publicUrl}/u/${a.handle}` : null) : a.canonicalFeedUrl
   return {
     model: 'firehose-v1',
     kind: 'upsert',
     id: item.id,
-    title: entry.title,
+    title: item.title,
     content: description,
-    // entry.contentMarkdown only ever holds a REMOTE peer's captured markdown;
+    // item.contentMarkdown only ever holds a REMOTE peer's captured markdown;
     // a local post's markdown lives in content and only surfaces here via
     // itemContentFields' sourceNs.markdown (the same value /users/rss.xml emits
     // as source:markdown).
     contentMarkdown: sourceNs?.markdown ?? null,
-    url: entry.url,
-    publishedAt: entry.publishedAt,
-    author: { displayName: entry.author.displayName, url: authorUrl },
-    inReplyTo: entry.inReplyTo,
+    url: item.permalink,
+    publishedAt: item.publishedAt,
+    author: { displayName: a.displayName, url: authorUrl },
+    inReplyTo: item.inReplyToRef,
   }
 }
 

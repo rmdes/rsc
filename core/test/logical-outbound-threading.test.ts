@@ -8,9 +8,8 @@ import { createDatabaseContext } from '../src/logical/database.ts'
 import { createLogicalStore } from '../src/logical/store.ts'
 import { createAcquisition } from '../src/logical/acquisition.ts'
 import { createApp } from '../src/api/app.ts'
-import { renderRssFeed } from '../src/domain/feed.ts'
 import { createLocalPost } from '../src/logical/local.ts'
-import type { Post, User } from '../src/domain/types.ts'
+import type { Post } from '../src/domain/types.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import { makeAuth } from './auth-helper.ts'
 
@@ -39,7 +38,7 @@ async function v2app(publicUrl: string | null) {
 
 const guidOf = (xml: string): string => (xml.match(/<guid[^>]*>([^<]*)<\/guid>/)?.[1]) ?? '(no guid)'
 
-test('cutover identity: a v1-created post renders a byte-identical <guid> under v1 and v2 rendering', async () => {
+test('cutover identity: a v1-created post (UUID guid column, absolute url) emits its url as the bare guid', async () => {
   const { repo, app } = await v2app(PUB)
   // A v1-shaped local post: stored url ABSOLUTE, guid a UUID (v1's create).
   const id = 'p-cut'
@@ -48,13 +47,8 @@ test('cutover identity: a v1-created post renders a byte-identical <guid> under 
   repo.raw.prepare(`INSERT INTO users (id, kind, handle, display_name, feed_url, created_at) VALUES ('u1','local','alice','Alice',NULL,?)`).run(NOW)
   repo.raw.prepare(`INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at, in_reply_to, in_reply_to_post_id, thread_root_id, source_name, source_feed_url, content_markdown, edited_at, reply_context_author, reply_context_snippet) VALUES (?, 'u1','local',?,NULL,'BODY',?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)`).run(id, guid, url, NOW, NOW)
 
-  const user: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: NOW, authUserId: null }
-  const post: Post = { id, authorId: 'u1', source: 'local', guid, title: null, content: 'BODY', url, publishedAt: NOW, createdAt: NOW, inReplyTo: null, inReplyToPostId: null, threadRootId: null, contentMarkdown: null, editedAt: null }
-  const v1guid = guidOf(renderRssFeed(user, [post], CTX))
-  const v2guid = guidOf(await (await app.request('/users/alice/feed.xml')).text())
-
-  expect(v1guid).toBe(url) // rss.chat permalink-guid: the absolute url IS the guid
-  expect(v2guid).toBe(v1guid) // byte-identical across the flip
+  // rss.chat permalink-guid: the absolute url IS the guid — never the UUID column
+  expect(guidOf(await (await app.request('/users/alice/feed.xml')).text())).toBe(url)
 })
 
 test('v2 local reply to a LOCAL parent emits a resolvable source:inReplyTo and its own absolute guid/link', async () => {
