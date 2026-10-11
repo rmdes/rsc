@@ -2,9 +2,8 @@ import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { Repository } from '../domain/repository.ts'
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscription, PushProtocol, FeedType, Page } from '../domain/types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, Subscription, PushProtocol, FeedType, Page } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
-import { hideResolvedReplyContext } from '../domain/types.ts'
 import type { Cursor } from '../domain/source-repository.ts'
 import { clampLimit, splitPage, reapSourceIfOrphaned, DEAD_SOURCE_FAILURES } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
@@ -39,15 +38,6 @@ function rowToSubscription(r: SubscriptionsTable): Subscription {
 // must call the same function on its own rename path. Here it covers insertUser
 // (which backs createLocalUser/createRemoteUser, and through them service
 // ensureLocalUser and auth's guest allocation) and the v1 rename.
-
-type JoinedRow = PostsTable & { u_id: string; u_kind: 'local' | 'remote'; u_handle: string; u_display_name: string; u_feed_url: string | null; u_created_at: string; u_auth_user_id: string | null; u_feed_type: FeedType | null }
-
-function joinedRowToEntry(r: JoinedRow): TimelineEntry {
-  return hideResolvedReplyContext({
-    ...rowToPost(r),
-    author: { id: r.u_id, kind: r.u_kind, handle: r.u_handle, displayName: r.u_display_name, feedUrl: r.u_feed_url, createdAt: r.u_created_at, authUserId: r.u_auth_user_id, feedType: r.u_feed_type },
-  })
-}
 
 export class SqliteRepository implements Repository {
   private db: Kysely<DB>
@@ -138,61 +128,6 @@ export class SqliteRepository implements Repository {
   async getPost(id: string): Promise<Post | undefined> {
     const r = await this.db.selectFrom('posts').selectAll().where('id', '=', id).executeTakeFirst()
     return r ? rowToPost(r) : undefined
-  }
-
-  // local_only = 0 on both feed queries below: these are the PUSH twins of
-  // projectLocalActivity (domain/push.ts builds the fat-ping bodies from them,
-  // never from the projector). A guest post filtered out of the pulled feed but
-  // present in the pushed one still federates -- measured live 2026-08-18.
-  // Their only production callers are those two push bodies; the service
-  // passthroughs have none.
-  async getPostsByAuthor(authorId: string, limit: number): Promise<Post[]> {
-    const rows = await this.db.selectFrom('posts').selectAll().where('author_id', '=', authorId).where('local_only', '=', 0).orderBy('published_at', 'desc').orderBy('id', 'desc').limit(limit).execute()
-    return rows.map(rowToPost)
-  }
-
-  async getRecentLocalPosts(limit: number): Promise<TimelineEntry[]> {
-    const rows = await this.db
-      .selectFrom('posts')
-      .innerJoin('users', 'users.id', 'posts.author_id')
-      .selectAll('posts')
-      .select(['users.id as u_id', 'users.kind as u_kind', 'users.handle as u_handle', 'users.display_name as u_display_name', 'users.feed_url as u_feed_url', 'users.created_at as u_created_at', 'users.auth_user_id as u_auth_user_id', 'users.feed_type as u_feed_type'])
-      .where('users.kind', '=', 'local')
-      .where('posts.local_only', '=', 0)
-      .orderBy('posts.published_at', 'desc')
-      .orderBy('posts.id', 'desc')
-      .limit(limit)
-      .execute()
-    return rows.map(joinedRowToEntry)
-  }
-
-  async countRepliesByPostIds(ids: string[]): Promise<Map<string, number>> {
-    if (ids.length === 0) return new Map()
-    const rows = await this.db
-      .selectFrom('posts')
-      .select('in_reply_to_post_id')
-      .select(({ fn }) => fn.countAll().as('n'))
-      .where('in_reply_to_post_id', 'in', ids)
-      .groupBy('in_reply_to_post_id')
-      .execute()
-    const counts = new Map(rows.map((r) => [r.in_reply_to_post_id as string, Number(r.n)]))
-    // Union the v2 remote logical replies (they live in logical_items_v2, NOT posts),
-    // mirroring the projector's childIds remote arm EXACTLY (projector.ts childIds:
-    // origin='remote' AND parent_state='resolved' AND parent_logical_item_id = ?) so
-    // the fat-ping source:comments count matches the pull body's directReplyCount.
-    // Flag-OFF: v1 writes remote replies to `posts`, never here, so this adds +0 and
-    // never double-counts (a remote reply is in EITHER posts OR logical_items_v2).
-    // ponytail: counts resolved children without re-checking ordinary-visibility (the
-    // projector also gates on eligible deliveries); a resolved child is visible in
-    // practice — tighten to an eligibility join only if a divergence is observed.
-    const ph = ids.map(() => '?').join(',')
-    const remote = this.raw.prepare(
-      `SELECT parent_logical_item_id AS pid, COUNT(*) AS n FROM logical_items_v2
-       WHERE origin = 'remote' AND parent_state = 'resolved' AND parent_logical_item_id IN (${ph})
-       GROUP BY parent_logical_item_id`,
-    ).all(...ids) as { pid: string; n: number }[]
-    for (const r of remote) counts.set(r.pid, (counts.get(r.pid) ?? 0) + Number(r.n))
-    return counts
   }
 
   async upsertSubscription(s: Subscription) {

@@ -37,7 +37,7 @@ test('handles are lowercased, so posting as Alice then alice is one user', async
   const alice = await repo.getUserByHandle('alice')
   expect(alice).toBeDefined()
   expect(await repo.getUserByHandle('Alice')).toBeUndefined() // never a second, cased user
-  expect((await repo.getPostsByAuthor(alice!.id, 10)).map((p) => p.content).sort()).toEqual(['first', 'second'])
+  expect(repo.raw.prepare(`SELECT content FROM posts WHERE author_id = ? ORDER BY content`).all(alice!.id)).toEqual([{ content: 'first' }, { content: 'second' }])
 })
 
 test('a first post that loses the create race retries the lookup and succeeds', async () => {

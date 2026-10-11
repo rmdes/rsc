@@ -92,7 +92,7 @@ export type LogicalItemDto = {
   // local marker, so this is always false there (correct, not a bug: removal is
   // deliberately expressed to peers as a content edit, never a flag, so it
   // federates over plain RSS). A SAME-ORIGIN signal for our own web UI —
-  // logicalToFeedEntry (domain/feed.ts) must never wire it into the outbound feed.
+  // the feed renderers (domain/feed.ts) must never emit it.
   removed: boolean
 }
 

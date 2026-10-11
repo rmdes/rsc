@@ -17,7 +17,7 @@ import { randomUUID, createHash } from 'node:crypto'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { convertToStructuralTombstone } from '../src/logical/threading.ts'
 import { projectItem, projectTimeline } from '../src/logical/projector.ts'
-import type { ProjectionViewer, LogicalItemDto } from '../src/logical/types.ts'
+import type { ProjectionViewer } from '../src/logical/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import { makeAuth } from './auth-helper.ts'
 
@@ -80,8 +80,9 @@ async function makeApp(feeds?: FeedContext) {
 }
 
 async function seedAlice(service: Awaited<ReturnType<typeof makeApp>>['service']) {
-  await service.createLocalPostAs('alice', 'Alice', 'first body')
+  const first = await service.createLocalPostAs('alice', 'Alice', 'first body')
   await service.createLocalPostAs('alice', 'Alice', 'second body')
+  return first
 }
 
 test('RSS feed round-trips through our own parser (Textcasting profile intact)', async () => {
@@ -358,8 +359,7 @@ test('per-user feed emits the permalink as a bare guid (threadwalker string-comp
 
 test('firehose emits bare permalink guids and still injects source:comments (keyed on emitted guid)', async () => {
   const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const root = await seedAlice(service)
   await service.createLocalPostAs('bob', 'Bob', 'a reply', root)
   const body = await (await app.request('/users/rss.xml')).text()
   expect(body).toMatch(/<guid>https:\/\/cast\.example\.com\/post\/[^<]+<\/guid>/)
@@ -394,8 +394,7 @@ test('per-user feed names the author via the channel, not per-item source:accoun
 
 test('comments feed carries per-reply core <source> (multi-author, threadwalker names)', async () => {
   const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const root = await seedAlice(service)
   await service.createLocalPostAs('bob', 'Bob', 'bob replies', root)
   await service.createLocalPostAs('carol', 'Carol', 'carol replies', root)
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
@@ -567,8 +566,7 @@ test('a resolved reply whose parent degraded to a structural tombstone still emi
 
 test('a RSC conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {
   const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const root = await seedAlice(service)
   const wait = () => new Promise((r) => setTimeout(r, 2)) // repo orders replies by published_at then id (a
   // random UUID) — without this, sibling replies minted in the same millisecond
   // sort arbitrarily; force strictly-increasing published_at for a stable outline.

@@ -113,8 +113,7 @@ test('GET /users/:handle/stats 404s for an unknown handle', async () => {
 
 test('lens query params: both → 400 before resolution, unknown → 404, author lens works', async () => {
   const { app, repo, service } = await makeApp()
-  await service.createLocalPostAs('x', 'X', 'x1')
-  const post = (await service.getRecentLocalPosts(10))[0]!
+  const post = await service.createLocalPostAs('x', 'X', 'x1')
   expect((await app.request('/timeline?followed_by=ghost&author=alsoghost')).status).toBe(400) // both, even with unknown handles
   expect((await app.request('/timeline?author=ghost')).status).toBe(404)
   const lens = await (await app.request('/timeline?author=x')).json()

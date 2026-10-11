@@ -611,7 +611,7 @@ function remoteOriginGuid(tx: ReadTx, itemId: string): string | null {
 // outbound feed emits as <source:inReplyTo>, which a peer instance string-matches to
 // the parent's own <guid>. It MUST equal what the parent's feed advertises as its
 // guid: a LOCAL parent's guid is its absolute permalink (`url`) or, url-less, its own
-// id (logicalToFeedEntry emits guid = dto.id === post.id in the null-url fallback —
+// id (localGuid, domain/feed.ts, emits guid = dto.id in the null-permalink fallback —
 // NOT the opaque posts.guid column); a REMOTE parent advertises `remoteOriginGuid`.
 //
 // Lives HERE, not in roots.ts (a dependency leaf that must not import this module),

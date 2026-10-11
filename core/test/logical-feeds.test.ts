@@ -245,7 +245,7 @@ test('migration 24 backfill marks an existing guest author\'s posts local-only',
   expect(flag('p2')).toBe(0)
 })
 
-// --- PARITY PIN (retire-TimelineEntry plan, Task 1) -------------------------
+// --- PARITY PIN (retire-v1-entry plan, Task 1) -------------------------
 // Pins the bytes of every PULLED outbound format over one adversarial corpus, so
 // moving the renderers onto LogicalItemDto must leave them unchanged. Never
 // re-record these snapshots after they land: a diff is a regression.

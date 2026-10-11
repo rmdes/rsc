@@ -82,9 +82,6 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     getPost(id: string) {
       return repo.getPost(id)
     },
-    countRepliesByPostIds(ids: string[]) {
-      return repo.countRepliesByPostIds(ids)
-    },
     getUserByHandle(handle: string) {
       return repo.getUserByHandle(handle)
     },
@@ -110,17 +107,11 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
     createLocalUser(u: NewLocalUser) {
       return repo.createLocalUser(u)
     },
-    getPostsByAuthor(authorId: string, limit: number) {
-      return repo.getPostsByAuthor(authorId, limit)
-    },
     countFollowers(userId: string) {
       return repo.countFollowers(userId)
     },
     countPostsByAuthor(authorId: string) {
       return repo.countPostsByAuthor(authorId)
-    },
-    getRecentLocalPosts(limit: number) {
-      return repo.getRecentLocalPosts(limit)
     },
     async addFollow(follower: User, target: User): Promise<boolean> {
       if (follower.kind !== 'local') throw new DomainError('follower must be a local user')

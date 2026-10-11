@@ -16,17 +16,6 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository & Pick<
       return { repo, logical: createLogicalStore(createDatabaseContext(repo.raw)) }
     }
 
-    // Legacy v1 row shapes (a remote-authored post; an unresolved raw in_reply_to
-    // ref) that nothing writes any more but converted databases still hold —
-    // which is exactly what the two filters exercised below defend against.
-    // Seeded raw because every Repository method that could write this is dying.
-    function seedLegacyPost(repo: Pick<DatabaseContext, 'raw'>, p: { id: string; authorId: string; source: 'local' | 'remote'; at: string; inReplyTo?: string }): void {
-      repo.raw.prepare(
-        `INSERT INTO posts (id, author_id, source, guid, title, content, url, published_at, created_at, in_reply_to)
-         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?)`,
-      ).run(p.id, p.authorId, p.source, `g-${p.id}`, p.id, p.at, p.at, p.inReplyTo ?? null)
-    }
-
     test('creates and reads a local user', async () => {
       const repo = await makeRepo()
       const u = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
@@ -122,17 +111,6 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository & Pick<
       expect(await repo.countActiveSubscriptions({ callbackHost: 'cb.example.com' }, '2020-01-01T00:00:00.000Z')).toBe(1)
     })
 
-    test('getPostsByAuthor returns only that author, display-ordered, limited', async () => {
-      const { repo, logical } = await makeRepoAndStore()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      const b = await repo.createLocalUser({ handle: 'bob', displayName: 'Bob' })
-      const mine = [1, 2, 3].map((i) => logical.createLocalPost({ author: a, content: `alice ${i}`, replyToId: null, now: `2026-01-0${i}T00:00:00.000Z` }))
-      // bob's post is the newest of all: it would lead an unscoped result
-      logical.createLocalPost({ author: b, content: 'bob 1', replyToId: null, now: '2026-01-09T00:00:00.000Z' })
-      const posts = await repo.getPostsByAuthor(a.id, 2)
-      expect(posts.map((p) => p.id)).toEqual([mine[2].id, mine[1].id])
-    })
-
     test('countPostsByAuthor counts only that author\'s ROOT posts', async () => {
       const { repo, logical } = await makeRepoAndStore()
       const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
@@ -183,46 +161,6 @@ export function runRepositoryContract(makeRepo: () => Promise<Repository & Pick<
       logical.removeLocalFollow({ followerId: a.id, followedId: b.id, now })
       logical.removeLocalFollow({ followerId: a.id, followedId: b.id, now }) // already gone — no throw
       expect(await repo.listFollowing(a.id)).toEqual([])
-    })
-
-    test('countRepliesByPostIds keys on resolved ids only', async () => {
-      const { repo, logical } = await makeRepoAndStore()
-      const a = await repo.createLocalUser({ handle: 'a', displayName: 'A' })
-      const post = (content: string, replyToId: string | null, day: string) =>
-        logical.createLocalPost({ author: a, content, replyToId, now: `2026-01-0${day}T00:00:00.000Z` })
-      const root = post('root', null, '1')
-      const r1 = post('r1', root.id, '2')
-      post('r2', root.id, '3')
-      // a legacy UNRESOLVED reply whose raw ref happens to equal the root's id must NOT count
-      seedLegacyPost(repo, { id: 'stray', authorId: a.id, source: 'local', at: '2026-01-04T00:00:00.000Z', inReplyTo: root.id })
-      const counts = await repo.countRepliesByPostIds([root.id, r1.id])
-      expect(counts.get(root.id)).toBe(2)
-      expect(counts.get(r1.id)).toBeUndefined()
-      expect(await repo.countRepliesByPostIds([])).toEqual(new Map())
-    })
-
-    test('countRepliesByPostIds counts direct replies only, never the whole conversation', async () => {
-      const { repo, logical } = await makeRepoAndStore()
-      const a = await repo.createLocalUser({ handle: 'alice', displayName: 'Alice' })
-      const root = logical.createLocalPost({ author: a, content: 'root', replyToId: null, now: '2026-01-01T00:00:00.000Z' })
-      const r1 = logical.createLocalPost({ author: a, content: 'r1', replyToId: root.id, now: '2026-01-02T00:00:00.000Z' })
-      logical.createLocalPost({ author: a, content: 'r2', replyToId: r1.id, now: '2026-01-03T00:00:00.000Z' })
-      // root's grandchild is r1's child, not root's: 1 each, never 2 for the root
-      expect(await repo.countRepliesByPostIds([root.id, r1.id])).toEqual(new Map([[root.id, 1], [r1.id, 1]]))
-    })
-
-    test('getRecentLocalPosts: local authors only, newest first, limited', async () => {
-      const { repo, logical } = await makeRepoAndStore()
-      const local = await repo.createLocalUser({ handle: 'loc', displayName: 'Loc' })
-      const remote = await repo.createRemoteUser({ handle: 'rem', displayName: 'Rem', feedUrl: 'https://r.ex/f' })
-      const l1 = logical.createLocalPost({ author: local, content: 'l1', replyToId: null, now: '2026-01-01T00:00:00.000Z' })
-      const l2 = logical.createLocalPost({ author: local, content: 'l2', replyToId: null, now: '2026-01-02T00:00:00.000Z' })
-      // legacy remote-authored row, newest of all — excluded by author kind, not by date
-      seedLegacyPost(repo, { id: 'r1', authorId: remote.id, source: 'remote', at: '2026-01-03T00:00:00.000Z' })
-      const entries = await repo.getRecentLocalPosts(10)
-      expect(entries.map((e) => e.id)).toEqual([l2.id, l1.id])
-      expect(entries[0].author.handle).toBe('loc') // author joined inline
-      expect((await repo.getRecentLocalPosts(1)).map((e) => e.id)).toEqual([l2.id])
     })
   })
 }
