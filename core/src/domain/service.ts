@@ -3,13 +3,13 @@ import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
 import type { NewLocalUser, PostWithAuthor, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import { PostRemovedError, type RemovalActor } from '../logical/local.ts'
+import type { Cursor } from './source-repository.ts'
 
 // The local-write commands the service drives — all it calls on the store.
 export type LocalWriteStore = Pick<LogicalStore,
   'createLocalPost' | 'replyTargetVisible' | 'editLocalPost' | 'removeLocalPost'
   | 'deleteLocalAccount' | 'addLocalFollow' | 'removeLocalFollow' | 'updateUserProfile'>
-import { PostRemovedError, type RemovalActor } from '../logical/local.ts'
-import type { Cursor } from './source-repository.ts'
 
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 

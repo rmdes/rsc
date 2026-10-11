@@ -1,9 +1,9 @@
 import type { User, Post, NewLocalUser, NewRemoteUser, Subscription, PushProtocol, Page } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
+import type { Cursor } from './source-repository.ts'
 
 // The one store call the auth-user sweeps make (cascading account deletion).
 export type AccountDeleter = Pick<LogicalStore, 'deleteLocalAccount'>
-import type { Cursor } from './source-repository.ts'
 
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
