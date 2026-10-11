@@ -157,14 +157,12 @@ grep -rnw LogicalStore core/src
 ```
 
 Expected hits:
-- `store.ts`: the definition, its use inside `LogicalReader`, and comments.
+- `store.ts`: the definition, its use inside `LogicalReader`, and the header comment at ~L41 ("no LogicalStore interface").
 - `runtime.ts`: its import and `store: LogicalStore`.
 - `write.ts`: its import, `LogicalRouteDeps`, and inside `OpsStore`.
-- `server.ts`: none, or comments only.
-- `repository-contract.ts`: the harness.
 - The `Pick<LogicalStore, …>` lines of `service.ts`, `push.ts` (logical), `scheduler.ts` and `repository.ts`, plus their imports.
 
-Nothing else is expected. In particular, `read.ts`, `personal.ts`, `domain/push.ts`, `sqlite.ts` and `housekeeping.ts` must not mention it.
+Nothing else is expected: `server.ts` and `repository-contract.ts` do not name the type. In particular, `read.ts`, `personal.ts`, `domain/push.ts`, `sqlite.ts` and `housekeeping.ts` must not mention it.
 
 - [ ] **Step 9: Commit**
 
@@ -218,7 +216,7 @@ Expected: every count is `0`. A non-zero count means that method stays: report i
     // transaction.
 ```
 
-- **`removeSourceEvidence`.** Delete the method `removeSourceEvidence(tx: WriteTx, input: …): { ordinaryAffected: boolean } { return removeSourceEvidence(tx, input) },` (~L574-576). In the purge comment above `purgeSource(...)`, change `removeSourceEvidence\n    // is the shared step-4 helper (Task 7's cleanup reuses it inside its own write);` to:
+- **`removeSourceEvidence`.** Delete the method `removeSourceEvidence(tx: WriteTx, input: …): { ordinaryAffected: boolean } { return removeSourceEvidence(tx, input) },` (~L574-576). In the purge comment above `purgeSource(...)` (~L567-569), one line ends `…commit atomically. removeSourceEvidence` and the next line begins `// is the shared step-4 helper (Task 7's cleanup reuses it inside its own write);`. Cut ` removeSourceEvidence` from the first line so that it ends `…commit atomically.`, and replace the second line with:
 
 ```ts
     // tombstones.ts removeSourceEvidence is the shared step-4 helper (Task 7's
@@ -229,15 +227,15 @@ Expected: every count is `0`. A non-zero count means that method stays: report i
 
 ```ts
     // The enqueue (fanout.ts scheduleFanout) commits atomically with the
-    // transition's reset + generation advance — sqlite.ts calls it directly, next
-    // to advancePolicyGeneration.
+    // transition's reset + generation advance — storage/source-sqlite.ts calls it
+    // directly, next to advancePolicyGeneration.
 ```
 
 - **Header comment (~L44).** `// write methods (claimAcquisition, commitAcquisition, reconcileClaim, …).` becomes `// write methods (reconcileClaim, purgeSource, …).`
 
 - [ ] **Step 3: Drop the imports the deletions orphan** (`store.ts` head)
 
-- The `./types.ts` multi-line type import: remove `ClaimAcquisitionInput`, `ClaimAcquisitionResult`, `CommitAcquisitionInput`, `FailAcquisitionInput` and `AcquisitionRun`. Its second line goes away entirely, and its first line ends `…LogicalItemDto,`.
+- The `./types.ts` multi-line type import (store.ts:2-8): remove `ClaimAcquisitionInput`, `ClaimAcquisitionResult`, `CommitAcquisitionInput`, `FailAcquisitionInput` and `AcquisitionRun`. Line 3 becomes `  LogicalReadTx, SourceModelV2Activation, LogicalItemDto,`. Line 4 (`  CommitAcquisitionInput, FailAcquisitionInput, AcquisitionRun,`) is deleted whole.
 - `import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'` becomes `import { BOUNDS } from './acquisition.ts'`.
 - `import { scheduleVerification, resolveVerificationBatch } from './verification.ts'` becomes `import { resolveVerificationBatch } from './verification.ts'`.
 - `import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'` becomes `import { claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'`.
@@ -255,7 +253,7 @@ Expected: every name is `0`, except the names that now appear only in the reword
 
 - [ ] **Step 4: Record the deferred split in `docs/superpowers/ideas.md`**
 
-Read the file's existing entry format first, then append one entry in it:
+Read the file's existing entry format first: entries are a `## Title` heading followed by bold `**Field:**` paragraphs. Append one entry in that format, using **Name** as the `##` heading:
 
 - **Name:** Split `createLogicalStore` by consumer.
 - **Mechanism:** after the 2026-10-11 narrowing, every consumer's `Pick` alias shows near-disjoint groups: 8 local-write (`LocalWriteStore`), 15 ops (`OpsStore`), 6 push-row (`PushRowStore`), 3 scheduler (`SchedulerStore`), plus `snapshot` and the runtime-wired `Reconciler`, orphan and verification members. Each group could be its own factory over the same `DatabaseContext`.
