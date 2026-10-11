@@ -2570,7 +2570,9 @@ change.
 shows near-disjoint groups: 8 local-write (`LocalWriteStore`), 15 ops
 (`OpsStore`), 6 push-row (`PushRowStore`), 3 scheduler (`SchedulerStore`), plus
 `snapshot` and the runtime-wired `Reconciler`, orphan and verification members.
-Each group could be its own factory over the same `DatabaseContext`.
+Each group could be its own factory over the same `DatabaseContext`. Two members
+are shared and a split must assign them an owner: `recordHealth` (ops +
+scheduler) and `deleteLocalAccount` (local-write + `AccountDeleter`).
 
 **Grounding:** `docs/superpowers/specs/2026-10-11-logicalstore-narrowing-design.md`.
 
