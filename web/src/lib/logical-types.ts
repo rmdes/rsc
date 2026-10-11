@@ -204,12 +204,7 @@ export function asStreamEvent(x: unknown): LogicalV2StreamEvent {
 // is set only for a navigable remote publisher, so a byline can link /p/:id
 // instead of /u.
 
-// v2 entries carry the bounded enclosure list (audio/video/image attachments,
-// MASTER.md "text first, enclosures second"); v1 entries never had it, so the
-// field is optional and the attachment block simply doesn't render for them.
-export type RenderEntry = TimelineEntry & { enclosures?: EnclosureDto[] }
-
-export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
+export function logicalToEntry(dto: LogicalItemDto): TimelineEntry {
 	const a = dto.selectedAuthor
 	const resolved = dto.parentResolutionState === 'resolved'
 	const author: TimelineEntry['author'] =
@@ -233,7 +228,6 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 		replyContextSnippet: dto.replyContext?.snippet ?? null,
 		threadRootId: dto.threadRootId,
 		replyCount: dto.conversationReplyCount,
-		sourceName: null,
 		sourceFeedUrl: a.kind === 'remote_publisher' ? a.canonicalFeedUrl : null,
 		// Phase B: the remote version-history read surface is gone, so the "edited"
 		// affordance (which links to it) is local-only now.
@@ -254,7 +248,7 @@ export function logicalToEntry(dto: LogicalItemDto): RenderEntry {
 // render a connective marker, never a card — so there is no author, content,
 // or {@html} on it. Dropping these (the old bug) made every reply below an
 // unavailable ancestor unreachable, and a placeholder ROOT falsely empty.
-export function placeholderToEntry(node: Extract<ThreadNode, { kind: 'placeholder' }>): RenderEntry {
+export function placeholderToEntry(node: Extract<ThreadNode, { kind: 'placeholder' }>): TimelineEntry {
 	return {
 		id: node.logicalItemId,
 		title: null,

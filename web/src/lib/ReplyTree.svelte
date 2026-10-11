@@ -36,8 +36,8 @@
 		{:else}
 		<li class="post" class:remote={reply.source === 'remote'} class:highlight={reply.id === highlightId}>
 			<div class="byline">
-				<Avatar author={reply.author} sourceName={reply.sourceName} />
-				<strong>{reply.sourceName ?? reply.author.displayName}</strong>
+				<Avatar author={reply.author} />
+				<strong>{reply.author.displayName}</strong>
 				{#if reply.publisherId}
 					<!-- v2 remote publisher: /p, not /u (which stays local-account only) -->
 					<a class="handle" id="rt-by-{reply.id}" href="/p/{encodeURIComponent(reply.publisherId)}">{reply.author.displayName}</a>

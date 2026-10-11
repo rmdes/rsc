@@ -133,8 +133,8 @@
 			{#each posts as post (post.id)}
 				<li class="post" class:remote={post.source === 'remote'}>
 					<div class="byline">
-						<Avatar author={post.author} sourceName={post.sourceName} />
-						<strong>{post.sourceName ?? post.author.displayName}</strong>
+						<Avatar author={post.author} />
+						<strong>{post.author.displayName}</strong>
 						{#if post.publisherId}
 							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
 						{:else if post.author.handle}
@@ -142,7 +142,7 @@
 						{/if}
 						<span class="kind">{post.source}</span>
 						<a class="permalink" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
-						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
+						<FeedIcon author={post.author} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>
 					{#if post.title}<h3 class="title">{post.title}</h3>{/if}
 					<PostBody {post} />

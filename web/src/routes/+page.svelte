@@ -193,11 +193,11 @@
 						{#if post.source === 'remote' && post.url}<span class="source-host">{URL.parse(post.url)?.hostname}</span>{/if}
 						<a class="permalink" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
 						<EditedMarker {post} />
-						<FeedIcon author={post.author} sourceName={post.sourceName} sourceFeedUrl={post.sourceFeedUrl} />
+						<FeedIcon author={post.author} sourceFeedUrl={post.sourceFeedUrl} />
 					</div>
 					<div class="byline-name">
-						<Avatar author={post.author} sourceName={post.sourceName} />
-						<strong>{post.sourceName ?? post.author.displayName}</strong>
+						<Avatar author={post.author} />
+						<strong>{post.author.displayName}</strong>
 						{#if post.publisherId}
 							<a class="handle" id="by-{post.id}" href="/p/{encodeURIComponent(post.publisherId)}">{post.author.displayName}</a>
 						{:else if post.author.handle}

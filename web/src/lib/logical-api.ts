@@ -3,7 +3,8 @@
 // on any mismatch — it never falls back to or casts a v1 shape (spec §5.6 carve 2).
 
 import { base } from '$lib/server/session'
-import { asLogicalTimeline, asLogicalThread, asLogicalHistory, logicalToEntry, placeholderToEntry, LogicalContractError, type RenderEntry, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
+import type { TimelineEntry } from './types.ts'
+import { asLogicalTimeline, asLogicalThread, asLogicalHistory, logicalToEntry, placeholderToEntry, LogicalContractError, type TimelineLens, type LogicalHistoryEnvelope, type AdminItemDetail, type AdminSourceItemRow, type ItemAuditEvent, type TombstoneView } from './logical-types.ts'
 
 // Exactly one lens selector (spec §3.5). Built with encodeURIComponent, never
 // URLSearchParams (the cursor wire format `<ts>~<id>` mangles under form-encoding).
@@ -30,7 +31,7 @@ function timelineUrl(opts: V2Lens & { before?: string }): string {
 
 export interface V2TimelinePage {
 	lens: TimelineLens
-	entries: RenderEntry[]
+	entries: TimelineEntry[]
 	nextCursor: string | null
 	journalCursor: string
 }
@@ -50,7 +51,7 @@ export async function getLogicalTimeline(f: typeof fetch, opts: V2Lens & { befor
 // getLogicalTimeline directly (the throwing variant) so a contract violation THROWS
 // and fails the whole page closed to coreDown, rather than rendering a misleading
 // empty v2 timeline (spec §5.6 carve 2; tested in page.load.test.ts).
-export async function getLogicalRiverOrEmpty(f: typeof fetch, opts: V2Lens & { before?: string }): Promise<{ entries: RenderEntry[]; nextCursor: string | null; journalCursor: string | null }> {
+export async function getLogicalRiverOrEmpty(f: typeof fetch, opts: V2Lens & { before?: string }): Promise<{ entries: TimelineEntry[]; nextCursor: string | null; journalCursor: string | null }> {
 	try {
 		const page = await getLogicalTimeline(f, opts)
 		return { entries: page.entries, nextCursor: page.nextCursor, journalCursor: page.journalCursor }
@@ -65,7 +66,7 @@ export async function getLogicalRiverOrEmpty(f: typeof fetch, opts: V2Lens & { b
 
 export interface V2Thread {
 	rootId: string | null
-	entries: RenderEntry[]
+	entries: TimelineEntry[]
 	truncated: { depth: boolean; nodes: boolean; cycle: boolean }
 }
 
