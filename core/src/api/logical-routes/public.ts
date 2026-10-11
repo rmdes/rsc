@@ -151,7 +151,7 @@ const FIREHOSE_ANON: ProjectionViewer = { localAccountId: null, activeSourceIds:
 const FIREHOSE_RESET = JSON.stringify({ model: 'firehose-v1', kind: 'reset' })
 const FIREHOSE_BATCH = 200
 
-function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string, unknown> {
+export function firehoseEntry(item: LogicalItemDto, feeds: FeedContext): Record<string, unknown> {
   const entry = logicalToFeedEntry(item)
   const { description, sourceNs } = itemContentFields(entry)
   const authorUrl = entry.author.kind === 'local' && feeds.publicUrl ? `${feeds.publicUrl}/u/${entry.author.handle}` : entry.author.feedUrl

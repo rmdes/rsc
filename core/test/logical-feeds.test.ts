@@ -13,6 +13,8 @@ import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { createApp } from '../src/api/app.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import { makeAuth } from './auth-helper.ts'
+import { firehoseEntry } from '../src/api/logical-routes/public.ts'
+import type { ProjectionViewer } from '../src/logical/types.ts'
 
 type Raw = InstanceType<typeof Database>
 const NOW = '2026-07-23T00:00:00.000Z'
@@ -295,4 +297,80 @@ test('drift canary: the pulled and pushed feeds select exactly the same posts', 
     const pushed = (await repo.getPostsByAuthor(id, 50)).map((p) => p.id).sort()
     expect(pushed).toEqual(pulled)
   }
+})
+
+// --- PARITY PIN (retire-TimelineEntry plan, Task 1) -------------------------
+// Pins the bytes of every PULLED outbound format over one adversarial corpus, so
+// moving the renderers onto LogicalItemDto must leave them unchanged. Never
+// re-record these snapshots after they land: a diff is a regression.
+//
+// Post ids are random per run; stable() renames each UUID to ID<n> in order of
+// first appearance, so a snapshot is deterministic.
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g
+function stable(s: string): string {
+  const seen = new Map<string, string>()
+  return s.replace(UUID_RE, (u) => { if (!seen.has(u)) seen.set(u, `ID${seen.size}`); return seen.get(u)! })
+}
+
+// Everything the renderers branch on: markdown + raw HTML in a local body, a
+// url-less local post (guid = id, isPermaLink=false) carrying an XML-illegal NUL,
+// a local reply, an edit (atom:updated), a removal notice, a guest post (must be
+// absent), two remote replies (fragment permalink guid; opaque guid) and a local
+// reply to a REMOTE parent (the projector re-derives its source:inReplyTo).
+async function parityCorpus(repo: Awaited<ReturnType<typeof makeApp>>['repo'], store: Awaited<ReturnType<typeof makeApp>>['store']) {
+  const PUB = 'https://rsc.test'
+  const at = (n: number) => `2026-07-23T00:00:0${n}.000Z`
+  seedUser(repo.raw, 'u1', 'alice')
+  seedUser(repo.raw, 'u2', 'bob')
+  seedGuest(repo.raw, 'g1', 'guest-abc')
+  const alice = (await repo.getUser('u1'))!
+  const bob = (await repo.getUser('u2'))!
+  const guest = (await repo.getUser('g1'))!
+  const root = store.createLocalPost({ author: alice, content: 'ROOT **md** & <b>raw</b>', replyToId: null, now: at(1), publicUrl: PUB })
+  store.createLocalPost({ author: alice, content: 'URLLESS nul\u0000here', replyToId: null, now: at(2), publicUrl: null })
+  store.createLocalPost({ author: bob, content: 'BOBREPLY', replyToId: root.id, now: at(3), publicUrl: PUB })
+  store.editLocalPost({ postId: root.id, authorId: alice.id, content: 'ROOT edited **md**', now: at(4) })
+  const doomed = store.createLocalPost({ author: alice, content: 'DOOMED', replyToId: null, now: at(5), publicUrl: PUB })
+  store.removeLocalPost({ postId: doomed.id, actor: { kind: 'author' }, now: at(6) })
+  store.createLocalPost({ author: guest, content: 'GUESTBODY', replyToId: null, now: at(7), publicUrl: PUB })
+  seedRemoteReply(repo.raw, { sourceId: 'sA', deliveryKey: { kind: 'permalink', key: 'https://origin.test/reply-a#c1' }, permalink: 'https://origin.test/reply-a#c1', inReplyTo: `${PUB}/post/${root.id}`, content: 'REMOTEFRAG' })
+  seedRemoteReply(repo.raw, { sourceId: 'sB', deliveryKey: { kind: 'opaque', key: 'opaque-guid-b' }, permalink: null, inReplyTo: `${PUB}/post/${root.id}`, content: 'REMOTEOPAQUE' })
+  drain(store)
+  const remoteIds = [remoteIdForSource(repo.raw, 'sA'), remoteIdForSource(repo.raw, 'sB')]
+  // Both remote replies fall back to arrival time (published: ''), so they tie on
+  // timeline_sort_at and the comments feed would break the tie on their RANDOM ids —
+  // a flaky snapshot. Separate them.
+  repo.raw.prepare(`UPDATE logical_items_v2 SET timeline_sort_at = ? WHERE id = ?`).run('2026-07-23T00:00:00.500Z', remoteIds[1])
+  store.createLocalPost({ author: alice, content: 'REPLYTOREMOTE', replyToId: remoteIds[1], now: at(8), publicUrl: PUB })
+  return { root, remoteIds }
+}
+
+test('parity pin: every pulled outbound format, byte for byte', async () => {
+  const { app, repo, store } = await makeApp()
+  const { root, remoteIds } = await parityCorpus(repo, store)
+  const text = async (path: string) => {
+    const res = await app.request(path)
+    expect([path, res.status]).toEqual([path, 200])
+    return stable(await res.text())
+  }
+  const comments = await text(`/post/${root.id}/comments.xml`)
+  const firehose = await text('/users/rss.xml')
+  // the corpus really exercises what it claims — guards against a vacuous pin
+  for (const s of ['BOBREPLY', 'REMOTEFRAG', 'REMOTEOPAQUE']) expect(comments).toContain(s)
+  for (const s of ['ROOT edited', 'URLLESS', 'REPLYTOREMOTE', 'isPermaLink="false"']) expect(firehose).toContain(s)
+  expect(firehose).not.toContain('GUESTBODY')
+
+  expect(await text('/users/alice/feed.xml')).toMatchSnapshot('alice feed.xml')
+  expect(await text('/users/alice/feed.json')).toMatchSnapshot('alice feed.json')
+  expect(await text('/users/bob/feed.xml')).toMatchSnapshot('bob feed.xml')
+  expect(firehose).toMatchSnapshot('firehose rss.xml')
+  expect(comments).toMatchSnapshot('root comments.xml')
+
+  const feeds = { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false }
+  const ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }
+  const items = [
+    ...store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit: 50 })),
+    ...remoteIds.map((id) => store.snapshot((tx) => tx.projectItem(id, ANON))!),
+  ]
+  expect(stable(JSON.stringify(items.map((d) => firehoseEntry(d, feeds)), null, 1))).toMatchSnapshot('firehose-v1 entries')
 })
