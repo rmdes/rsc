@@ -2,6 +2,9 @@ import type { AcquisitionEngine } from './acquisition.ts'
 import type { LogicalStore } from './store.ts'
 import type { PushLifecycle } from './push.ts'
 
+// What the scheduler calls on the store.
+export type SchedulerStore = Pick<LogicalStore, 'recordHealth' | 'countSchedulableSources' | 'listDueSources'>
+
 // Single-lane serial poll loop (spec §1.3-1.4). One global loop in the single
 // Core process polls one source at a time, in stable sourceId order, skipping any
 // source whose durable last_poll_at is more recent than RSC_POLL_SECONDS. The
@@ -18,7 +21,7 @@ import type { PushLifecycle } from './push.ts'
 export type Breather = () => Promise<void>
 
 export interface SchedulerDeps {
-  store: LogicalStore
+  store: SchedulerStore
   acquisition: AcquisitionEngine
   config: { pollSeconds: number; ingestCycleMinutes: number; ingestConcurrency: number; ingestMaxPerHost: number }
   now?: () => string

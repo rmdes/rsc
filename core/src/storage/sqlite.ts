@@ -1,13 +1,12 @@
 import { Kysely, SqliteDialect } from 'kysely'
 import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import type { Repository } from '../domain/repository.ts'
+import type { Repository, AccountDeleter } from '../domain/repository.ts'
 import type { User, Post, NewLocalUser, NewRemoteUser, Subscription, PushProtocol, FeedType, Page } from '../domain/types.ts'
 import { HandleTakenError } from '../domain/types.ts'
 import type { Cursor } from '../domain/source-repository.ts'
 import { clampLimit, splitPage, reapSourceIfOrphaned, DEAD_SOURCE_FAILURES } from '../domain/source-repository.ts'
 import { LOGICAL_V2_SCHEMA, LOGICAL_V3_SCHEMA, LOGICAL_V4_SCHEMA, LOGICAL_PERF_INDEXES, LOGICAL_PERF_INDEXES_2, AGGREGATE_PUBLISHER_IDENTITY_FIX, assertHandleUnreserved } from '../logical/schema.ts'
-import type { LogicalStore } from '../logical/store.ts'
 import { healMembers } from '../logical/membership.ts'
 import { findCurrentDeliveryVersion } from '../logical/acquisition.ts'
 import { deleteObservationVersions } from '../logical/tombstones.ts'
@@ -334,7 +333,7 @@ export class SqliteRepository implements Repository {
     candidates: { id: string; createdAt: string | number }[],
     orphans: { id: string }[],
     ttlDays: number,
-    logical?: LogicalStore,
+    logical?: AccountDeleter,
   ): { swept: number } {
     const raw = this.raw
     const cutoff = Date.now() - ttlDays * 86400_000
@@ -384,7 +383,7 @@ export class SqliteRepository implements Repository {
     return { swept }
   }
 
-  sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
+  sweepAnonymousUsers(ttlDays: number, logical?: AccountDeleter): { swept: number } {
     const raw = this.raw
     const anons = raw.prepare(`SELECT id, createdAt FROM user WHERE isAnonymous = 1`).all() as { id: string; createdAt: string | number }[]
     const orphans = raw
@@ -404,7 +403,7 @@ export class SqliteRepository implements Repository {
   // `COALESCE(isAnonymous, 0) = 0` is load-bearing: anonymous rows are also
   // emailVerified = 0 and are the anon sweep's business. Without it one row
   // would be swept — and counted — twice.
-  sweepUnverifiedUsers(ttlDays: number, logical?: LogicalStore): { swept: number } {
+  sweepUnverifiedUsers(ttlDays: number, logical?: AccountDeleter): { swept: number } {
     const rows = this.raw
       .prepare(`SELECT id, createdAt FROM user WHERE emailVerified = 0 AND COALESCE(isAnonymous, 0) = 0`)
       .all() as { id: string; createdAt: string | number }[]

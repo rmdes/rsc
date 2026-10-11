@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { Config } from '../config.ts'
-import type { LogicalStore } from '../logical/store.ts'
+import type { LogicalReader } from '../logical/store.ts'
 import type { LocalPostEvent } from './bus.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
@@ -195,7 +195,7 @@ async function feedLimit(repo: Repository): Promise<number> {
   return Number.isInteger(n) && n >= 1 ? n : 50
 }
 
-export function createPush(deps: PushDeps & { store: LogicalStore }): Push {
+export function createPush(deps: PushDeps & { store: LogicalReader }): Push {
   const { repo, config, store } = deps
   const fetchFn = deps.fetchFn ?? fetch
 

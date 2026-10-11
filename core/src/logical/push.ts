@@ -11,6 +11,11 @@ import { FETCH_TIMEOUT_MS } from '../domain/ingest.ts'
 import { urlPort } from '../domain/feed.ts'
 import { cloudScheme } from '../domain/push.ts'
 
+// The push-row bookkeeping push's lifecycle calls on the store.
+export type PushRowStore = Pick<LogicalStore,
+  'findPushRow' | 'upsertPushRow' | 'deletePushRow' | 'listRenewablePushRows'
+  | 'purgeExpiredPushRows' | 'listSchedulableSources'>
+
 // The H5 thin-ping floor, inherited from the retired v1 push-in module.
 const THIN_PING_FLOOR_MS = 30_000
 
@@ -115,7 +120,7 @@ export function parsePushCapability(json: string | null): PushClaim | null {
 
 export function createLogicalPush(deps: {
   db: DatabaseContext
-  store: LogicalStore
+  store: PushRowStore
   config: Config
   // REQUIRED: a callback that cannot acquire is a callback that silently drops
   // every delivery. The callbacks drive this engine — through the runtime's

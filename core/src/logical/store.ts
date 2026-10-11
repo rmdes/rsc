@@ -841,3 +841,7 @@ export function createLogicalStore(db: DatabaseContext) {
 }
 
 export type LogicalStore = ReturnType<typeof createLogicalStore>
+
+// The read seam alone — what a consumer that only projects needs (the pulled feed
+// routes, the personal API routes, push's fat-ping bodies).
+export type LogicalReader = Pick<LogicalStore, 'snapshot'>

@@ -1,6 +1,5 @@
-import type { Repository } from './domain/repository.ts'
+import type { Repository, AccountDeleter } from './domain/repository.ts'
 import type { Config } from './config.ts'
-import type { LogicalStore } from './logical/store.ts'
 
 // Runs on server.ts's hourly sweepTimer (V4 Task 11 GAP 1): the retired v1 poll
 // cycle (domain/push-in.ts, now deleted) was the ONLY caller of
@@ -12,7 +11,7 @@ import type { LogicalStore } from './logical/store.ts'
 export async function sweepHousekeeping(
   repo: Pick<Repository, 'sweepAnonymousUsers' | 'sweepUnverifiedUsers' | 'sweepDeadSources' | 'purgeExpiredSubscriptions'>,
   config: Config,
-  logical?: LogicalStore,
+  logical?: AccountDeleter,
 ): Promise<{ anonSwept: number; unverifiedSwept: number; deadSourcesSwept: number }> {
   const { swept } = repo.sweepAnonymousUsers(config.anonTtlDays, logical)
   // F-3: anonymous first, so a row that is both (guests are emailVerified = 0)
