@@ -1,6 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ]
+  "description": [
+    "Renovate is OFF. Dependabot (.github/dependabot.yml) owns dependency updates:",
+    "it groups every patch+minor across the four workspaces into ONE PR and files",
+    "each major on its own. Renovate files one PR per package and does not group,",
+    "so running both rebuilt an 11-PR backlog AND filed every major twice.",
+    "Kept as `enabled: false` rather than deleted: with no config file at all the",
+    "Renovate app falls back to its own defaults and starts filing again."
+  ],
+  "enabled": false
 }
