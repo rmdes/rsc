@@ -329,7 +329,7 @@ async function parityCorpus(repo: Awaited<ReturnType<typeof makeApp>>['repo'], s
   const root = store.createLocalPost({ author: alice, content: 'ROOT **md** & <b>raw</b>', replyToId: null, now: at(1), publicUrl: PUB })
   store.createLocalPost({ author: alice, content: 'URLLESS nul\u0000here', replyToId: null, now: at(2), publicUrl: null })
   store.createLocalPost({ author: bob, content: 'BOBREPLY', replyToId: root.id, now: at(3), publicUrl: PUB })
-  store.editLocalPost({ postId: root.id, authorId: alice.id, content: 'ROOT edited **md**', now: at(4) })
+  store.editLocalPost({ postId: root.id, authorId: alice.id, content: 'ROOT edited **md** & <b>raw</b>', now: at(4) })
   const doomed = store.createLocalPost({ author: alice, content: 'DOOMED', replyToId: null, now: at(5), publicUrl: PUB })
   store.removeLocalPost({ postId: doomed.id, actor: { kind: 'author' }, now: at(6) })
   store.createLocalPost({ author: guest, content: 'GUESTBODY', replyToId: null, now: at(7), publicUrl: PUB })
@@ -365,6 +365,9 @@ test('parity pin: every pulled outbound format, byte for byte', async () => {
   expect(await text('/users/bob/feed.xml')).toMatchSnapshot('bob feed.xml')
   expect(firehose).toMatchSnapshot('firehose rss.xml')
   expect(comments).toMatchSnapshot('root comments.xml')
+  const remoteComments = await text(`/post/${remoteIds[1]}/comments.xml`)
+  expect(remoteComments).toContain('REPLYTOREMOTE')
+  expect(remoteComments).toMatchSnapshot('remote parent comments.xml')
 
   const feeds = { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false }
   const ANON: ProjectionViewer = { localAccountId: null, activeSourceIds: [] }

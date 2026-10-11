@@ -30,8 +30,8 @@ exports[`parity pin: every pulled outbound format, byte for byte > alice feed.js
   },
   {
    "id": "https://rsc.test/post/ID3",
-   "content_html": "<p>ROOT edited <strong>md</strong></p>",
-   "content_text": "ROOT edited **md**",
+   "content_html": "<p>ROOT edited <strong>md</strong> &amp; raw</p>",
+   "content_text": "ROOT edited **md** & <b>raw</b>",
    "url": "https://rsc.test/post/ID3",
    "date_published": "2026-07-23T00:00:01.000Z",
    "date_modified": "2026-07-23T00:00:04.000Z"
@@ -81,12 +81,14 @@ exports[`parity pin: every pulled outbound format, byte for byte > alice feed.xm
     <item>
       <link>https://rsc.test/post/ID3</link>
       <description>
-        <![CDATA[<p>ROOT edited <strong>md</strong></p>]]>
+        <![CDATA[<p>ROOT edited <strong>md</strong> &amp; raw</p>]]>
       </description>
       <guid>https://rsc.test/post/ID3</guid>
       <pubDate>Thu, 23 Jul 2026 00:00:01 GMT</pubDate>
       <atom:updated>2026-07-23T00:00:04.000Z</atom:updated>
-      <source:markdown>ROOT edited **md**</source:markdown>
+      <source:markdown>
+        <![CDATA[ROOT edited **md** & <b>raw</b>]]>
+      </source:markdown>
     <source:comments count="3" feedUrl="https://rsc.test/post/ID3/comments.xml"/></item>
   </channel>
 </rss>
@@ -174,13 +176,15 @@ exports[`parity pin: every pulled outbound format, byte for byte > firehose rss.
     <item>
       <link>https://rsc.test/post/ID3</link>
       <description>
-        <![CDATA[<p>ROOT edited <strong>md</strong></p>]]>
+        <![CDATA[<p>ROOT edited <strong>md</strong> &amp; raw</p>]]>
       </description>
       <guid>https://rsc.test/post/ID3</guid>
       <pubDate>Thu, 23 Jul 2026 00:00:01 GMT</pubDate>
       <source url="https://rsc.test/users/alice/feed.xml">alice</source>
       <atom:updated>2026-07-23T00:00:04.000Z</atom:updated>
-      <source:markdown>ROOT edited **md**</source:markdown>
+      <source:markdown>
+        <![CDATA[ROOT edited **md** & <b>raw</b>]]>
+      </source:markdown>
     <source:comments count="3" feedUrl="https://rsc.test/post/ID3/comments.xml"/></item>
   </channel>
 </rss>
@@ -254,8 +258,8 @@ exports[`parity pin: every pulled outbound format, byte for byte > firehose-v1 e
   "kind": "upsert",
   "id": "ID3",
   "title": null,
-  "content": "<p>ROOT edited <strong>md</strong></p>",
-  "contentMarkdown": "ROOT edited **md**",
+  "content": "<p>ROOT edited <strong>md</strong> &amp; raw</p>",
+  "contentMarkdown": "ROOT edited **md** & <b>raw</b>",
   "url": "https://rsc.test/post/ID3",
   "publishedAt": "2026-07-23T00:00:01.000Z",
   "author": {
@@ -297,13 +301,43 @@ exports[`parity pin: every pulled outbound format, byte for byte > firehose-v1 e
 ]"
 `;
 
+exports[`parity pin: every pulled outbound format, byte for byte > remote parent comments.xml 1`] = `
+"<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:thr="http://purl.org/syndication/thread/1.0" xmlns:source="https://source.scripting.com/">
+  <channel>
+    <title>Comments on &quot;t&quot;</title>
+    <link>https://rsc.test</link>
+    <description>Replies to &quot;t&quot;</description>
+    <atom:link href="https://rsc.test/post/ID0/comments.xml" rel="self" type="application/rss+xml"/>
+    <source:self>https://rsc.test/post/ID0/comments.xml</source:self>
+    <item>
+      <link>https://rsc.test/post/ID1</link>
+      <description>
+        <![CDATA[<p>REPLYTOREMOTE</p>]]>
+      </description>
+      <guid>https://rsc.test/post/ID1</guid>
+      <pubDate>Thu, 23 Jul 2026 00:00:08 GMT</pubDate>
+      <source url="https://rsc.test/users/alice/feed.xml">alice</source>
+      <thr:in-reply-to ref="opaque-guid-b"/>
+      <source:markdown>REPLYTOREMOTE</source:markdown>
+      <source:inReplyTo isPermaLink="false">opaque-guid-b</source:inReplyTo>
+    </item>
+  </channel>
+</rss>
+"
+`;
+
 exports[`parity pin: every pulled outbound format, byte for byte > root comments.xml 1`] = `
 "<?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:thr="http://purl.org/syndication/thread/1.0" xmlns:source="https://source.scripting.com/">
   <channel>
-    <title>Comments on &quot;ROOT edited **md**&quot;</title>
+    <title>
+      <![CDATA[Comments on "ROOT edited **md** & <b>raw</b>"]]>
+    </title>
     <link>https://rsc.test/post/ID0</link>
-    <description>Replies to &quot;ROOT edited **md**&quot;</description>
+    <description>
+      <![CDATA[Replies to "ROOT edited **md** & <b>raw</b>"]]>
+    </description>
     <atom:link href="https://rsc.test/post/ID0/comments.xml" rel="self" type="application/rss+xml"/>
     <source:self>https://rsc.test/post/ID0/comments.xml</source:self>
     <item>
