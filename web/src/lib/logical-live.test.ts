@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { applyLiveEvent, insertSorted, type LiveState } from './logical-live.ts'
+import { applyLiveEvent, insertSorted, overlayVisibleRootCount, type LiveState } from './logical-live.ts'
 import type { TimelineEntry } from './types.ts'
 
 // Minimal render entry with a sort key (publishedAt drives immutable order).
@@ -90,5 +90,14 @@ describe('applyLiveEvent — remove passthrough', () => {
 		const r = applyLiveEvent({ live: [], edited: {}, removed: new Set() }, remove('rep', { rootReplyCount: 4, threadRootId: 'root' }), ctx(roots))
 		expect(r.edited.root.replyCount).toBe(4)
 		expect(r.removed.has('rep')).toBe(true)
+	})
+})
+
+describe('overlayVisibleRootCount', () => {
+	it('replaces a visible root count with the server total, and never materializes an absent root', () => {
+		const posts = [e('root', 'T1', { replyCount: 1 })]
+		expect(overlayVisibleRootCount({}, posts, 'root', 3).root.replyCount).toBe(3)
+		expect(overlayVisibleRootCount({}, posts, 'off-page', 3)).toEqual({})
+		expect(overlayVisibleRootCount({ root: e('root', 'T1', { replyCount: 2 }) }, posts, 'root', 3).root.replyCount).toBe(3)
 	})
 })

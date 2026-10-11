@@ -38,21 +38,12 @@ export interface Post {
   replyContextSnippet?: string | null
 }
 
-// A resolved reply's reply-context is the replier's unverified claim about a
-// parent we now have for real — it must never leave core. Generic so it wraps
-// both a TimelineEntry (joinedRowToEntry, emitNewPost) and a bare Post (the
-// revisions route). Applied at every client-facing serialization site.
-export function hideResolvedReplyContext<T extends { inReplyToPostId?: string | null; replyContextAuthor?: string | null; replyContextSnippet?: string | null }>(e: T): T {
-  return e.inReplyToPostId ? { ...e, replyContextAuthor: null, replyContextSnippet: null } : e
-}
-
 export interface NewLocalUser { handle: string; displayName: string; authUserId?: string }
 export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string; feedType?: FeedType }
-// rootReplyCount is transient SSE timeline metadata (spec §Live updates): the
-// authoritative whole-conversation total for a newly-serialized resolved
-// reply, added only by the SSE route. It is never stored and never present on
-// roots, unresolved replies, or edits.
-export type TimelineEntry = Post & { author: User; rootReplyCount?: number }
+// The JSON a local write returns (POST /posts, PATCH /posts/:id and their /me
+// twins): the stored post plus its author. A frozen wire shape — mcp/src/tools.ts
+// reads post.id/post.url from it — so it changes only with the API.
+export type PostWithAuthor = Post & { author: User }
 
 export type PushProtocol = 'websub' | 'rsscloud'
 

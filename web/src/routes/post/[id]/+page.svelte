@@ -84,8 +84,8 @@
 		{:else if root}
 			<li class="post" class:remote={root.source === 'remote'} class:highlight={root.id === data.postId}>
 				<div class="byline">
-					<Avatar author={root.author} sourceName={root.sourceName} />
-					<strong>{root.sourceName ?? root.author.displayName}</strong>
+					<Avatar author={root.author} />
+					<strong>{root.author.displayName}</strong>
 					{#if root.publisherId}
 						<a class="handle" href="/p/{encodeURIComponent(root.publisherId)}">{root.author.displayName}</a>
 					{:else if root.author.handle}

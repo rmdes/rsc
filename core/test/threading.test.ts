@@ -2,7 +2,7 @@ import { test, expect } from 'vitest'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import { discoverFeed } from '../src/domain/discovery.ts'
 import { renderRssFeed, renderCommentsFeed, injectSourceComments } from '../src/domain/feed.ts'
-import type { User, Post, TimelineEntry } from '../src/domain/types.ts'
+import { dto, localAuthor, remoteAuthor } from './dto-helper.ts'
 
 const RSS_NS = 'xmlns:source="http://source.scripting.com/" xmlns:thr="http://purl.org/syndication/thread/1.0"'
 
@@ -30,14 +30,11 @@ test('mf2 in: u-in-reply-to as string and as array', () => {
   expect(discoverFeed(multi, 'https://b.ex/').hentries[0].inReplyTo).toBe('https://a.ex/1')
 })
 
-const user: User = { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
-const remoteAuthor: User = { id: 'u2', kind: 'remote', handle: 'bob', displayName: 'Bob', feedUrl: 'https://bob.example/rss.xml', createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
-const entry = (over: Partial<Post>, author: User = user): TimelineEntry => ({ id: 'p1', authorId: author.id, source: 'local', guid: 'guid-1', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over, author })
-const post = (over: Partial<Post>): Post => ({ id: 'p1', authorId: 'u1', source: 'local', guid: 'guid-1', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', ...over })
 const ctx = { publicUrl: 'https://cast.example', hubUrl: null, rssCloud: false }
+const channel = { handle: 'alice', displayName: 'Alice' }
 
 test('RSS out: reply items dual-emit; bare-guid ref carries isPermaLink=false; non-replies emit neither', () => {
-  const xml = renderRssFeed(user, [post({ inReplyTo: 'https://a.ex/1' }), post({ id: 'p2', guid: 'guid-2', inReplyTo: 'bare-guid-ref' }), post({ id: 'p3', guid: 'guid-3' })], ctx)
+  const xml = renderRssFeed(channel, [dto({ inReplyToRef: 'https://a.ex/1' }), dto({ id: 'p2', inReplyToRef: 'bare-guid-ref' }), dto({ id: 'p3' })], ctx)
   expect(xml).toContain('<source:inReplyTo>https://a.ex/1</source:inReplyTo>')
   expect(xml).toContain('<thr:in-reply-to ref="https://a.ex/1" href="https://a.ex/1"/>')
   expect(xml).toContain('<source:inReplyTo isPermaLink="false">bare-guid-ref</source:inReplyTo>')
@@ -75,10 +72,10 @@ test('injectSourceComments matches CDATA-wrapped guids (feedsmith wraps & < >)',
 })
 
 test('renderCommentsFeed: one item per reply, each with its own inReplyTo elements', () => {
-  const parent = post({ id: 'root', guid: 'root-guid', title: 'Root', content: 'root body' })
+  const parent = dto({ id: 'root', title: 'Root', content: 'root body' })
   const replies = [
-    entry({ id: 'c1', guid: 'c1-guid', content: 'first reply', inReplyTo: 'root-guid', publishedAt: '2026-01-02T00:00:00.000Z' }),
-    entry({ id: 'c2', guid: 'c2-guid', content: 'second reply', inReplyTo: 'root-guid', publishedAt: '2026-01-03T00:00:00.000Z' }),
+    dto({ id: 'c1', content: 'first reply', inReplyToRef: 'root-guid', publishedAt: '2026-01-02T00:00:00.000Z' }),
+    dto({ id: 'c2', content: 'second reply', inReplyToRef: 'root-guid', publishedAt: '2026-01-03T00:00:00.000Z' }),
   ]
   const xml = renderCommentsFeed(parent, replies, ctx)
   expect(xml).toContain('Comments on')
@@ -91,10 +88,10 @@ test('renderCommentsFeed: one item per reply, each with its own inReplyTo elemen
 // <source> (walkComments passes no channel default, so a reply with none walks
 // as "?"). Every reply in a comments feed must carry it.
 test('renderCommentsFeed: each reply carries core <source> naming its author', () => {
-  const parent = post({ id: 'root', guid: 'root-guid', title: 'Root', content: 'root body' })
+  const parent = dto({ id: 'root', title: 'Root', content: 'root body' })
   const replies = [
-    entry({ id: 'c1', guid: 'c1-guid', content: 'local reply', inReplyTo: 'root-guid' }), // Alice, local
-    entry({ id: 'c2', guid: 'c2-guid', source: 'remote', content: 'remote reply', inReplyTo: 'root-guid' }, remoteAuthor),
+    dto({ id: 'c1', content: 'local reply', inReplyToRef: 'root-guid', selectedAuthor: localAuthor() }), // Alice, local
+    dto({ id: 'c2', origin: 'remote', originGuid: 'c2-guid', content: 'remote reply', inReplyToRef: 'root-guid', selectedAuthor: remoteAuthor('Bob', 'https://bob.example/rss.xml') }),
   ]
   const xml = renderCommentsFeed(parent, replies, ctx)
   expect(xml).toContain('<source url="https://cast.example/users/alice/feed.xml">Alice</source>') // local -> our feed url

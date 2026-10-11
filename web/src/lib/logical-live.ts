@@ -1,13 +1,26 @@
 // Client reconciliation for the logical-v2 durable stream (spec §5.7). PURE — the
 // component owns the EventSource and the reset refetch; this file only reduces an
-// event onto river state. It reuses the frozen root-only overlay helper so a
-// resolved reply behaves identically in both models: it NEVER becomes a card and
+// event onto river state. Its root-only overlay helper keeps a resolved reply
+// from ever becoming a card: it
 // only ever replaces a LOADED root's authoritative conversation count.
 
 import type { TimelineEntry } from './types.ts'
-import { overlayVisibleRootCount } from './live.ts'
 
 export type LiveState = { live: TimelineEntry[]; edited: Record<string, TimelineEntry>; removed: Set<string> }
+
+// Replace a VISIBLE root's reply count with the server's total. The count is
+// authoritative — never incremented, never decremented, so replaying the same
+// frame lands on the same number. A root that isn't a loaded card is left
+// alone: an off-page parent is never materialized out of a reply frame.
+export function overlayVisibleRootCount(
+	edited: Record<string, TimelineEntry>,
+	posts: TimelineEntry[],
+	rootId: string,
+	count: number
+): Record<string, TimelineEntry> {
+	const root = posts.find((p) => p.id === rootId)
+	return root ? { ...edited, [rootId]: { ...root, replyCount: count } } : edited
+}
 
 // A stream frame translated by the proxy into render shape. `rootReplyCount` +
 // `threadRootId` ride an upsert/remove whose subject is a resolved reply (the

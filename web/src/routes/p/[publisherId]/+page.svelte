@@ -26,7 +26,7 @@
 		{#each data.timeline as post (post.id)}
 			<li class="post" class:remote={post.source === 'remote'}>
 				<div class="byline">
-					<Avatar author={post.author} sourceName={null} />
+					<Avatar author={post.author} />
 					<strong>{post.author.displayName}</strong>
 					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>
 					<EditedMarker {post} />

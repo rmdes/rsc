@@ -1,51 +1,9 @@
 import { generateRssFeed, generateJsonFeed } from 'feedsmith'
 import type { WebSubMode } from '../config.ts'
-import type { Post, User, TimelineEntry } from './types.ts'
 import type { LogicalItemDto } from '../logical/types.ts'
 import { renderMarkdown } from '@rsc/render/src/render.ts'
 import { normalizePermalink } from '../logical/roots.ts'
 import { safeReplyRef } from '../logical/projector.ts'
-
-// Adapt a logical-v2 ordinary DTO to the TimelineEntry shape the existing feed
-// renderers consume (spec §4.6: all public feeds use the central projector). Local
-// content is the markdown source (itemContentFields renders it); remote content is
-// the stored feed HTML.
-//
-// 2026-07-25 (V2 seam T1 — outbound threading + local feed identity): the reply ref
-// (dto.inReplyToRef) and the permalink (dto.permalink) are ALREADY ABSOLUTE — the
-// v2 local create now stores them exactly as v1 did (absolute url at create;
-// posts.in_reply_to = parent's absolute permalink/guid), so this adapter only
-// carries them through with NO join. localGuid/itemContentFields then emit guid +
-// <link> + <source:inReplyTo> identically to the v1 feed path, byte-for-byte across
-// the flip. (Supersedes the earlier framing that assumed an emission-time
-// publicUrl-join here; the join lives at create-time storage instead — v1 parity.)
-export function logicalToFeedEntry(dto: LogicalItemDto): TimelineEntry {
-  const a = dto.selectedAuthor
-  const author: User = a.kind === 'local'
-    ? { id: a.id, kind: 'local', handle: a.handle, displayName: a.displayName, feedUrl: null, createdAt: '', authUserId: null }
-    : { id: a.id, kind: 'remote', handle: '', displayName: a.displayName, feedUrl: a.canonicalFeedUrl, createdAt: '', authUserId: null }
-  return {
-    id: dto.id,
-    authorId: a.id,
-    source: dto.origin,
-    // A remote re-emission carries the ORIGIN wire guid (v1 parity: posts.guid),
-    // not our internal UUID, so the peer dedupes its own item back. emittedGuid +
-    // renderCommentsFeed already emit `guid` verbatim for a remote item. Local items
-    // keep the UUID here; localGuid derives their emitted guid from the permalink.
-    guid: dto.origin === 'remote' && dto.originGuid !== null ? dto.originGuid : dto.id,
-    title: dto.title,
-    content: dto.content ?? '',
-    url: dto.permalink,
-    publishedAt: dto.publishedAt,
-    createdAt: dto.publishedAt,
-    inReplyTo: dto.inReplyToRef,
-    inReplyToPostId: dto.parentLogicalItemId,
-    threadRootId: dto.threadRootId,
-    contentMarkdown: dto.contentMarkdown,
-    editedAt: dto.updatedAt,
-    author,
-  }
-}
 
 export interface FeedContext {
   publicUrl: string | null
@@ -53,24 +11,55 @@ export interface FeedContext {
   rssCloud: boolean
 }
 
+// A personal feed's channel identity — all renderRssFeed/renderJsonFeed read of
+// the account.
+export type FeedChannel = { handle: string; displayName: string }
+
+// A local account feed's channel: the newest item's local display name, else
+// `fallbackName` (an empty feed has no item to read it from). The pulled routes
+// pass the handle AS REQUESTED (v1 parity: /users/Alice/feed.xml of an empty feed
+// is titled "Alice"); push passes the stored handle, which is exactly what a pull
+// of its own topic URL requests. One helper, so the two cannot diverge.
+export function feedChannel(handle: string, items: LogicalItemDto[], fallbackName: string = handle): FeedChannel {
+  const a = items[0]?.selectedAuthor
+  return { handle, displayName: a && a.kind === 'local' ? a.displayName : fallbackName }
+}
+
+// The guid an item carries on the wire before localGuid's permalink rule. A
+// remote item re-emits its ORIGIN wire guid, so the peer dedupes its own item back
+// (v1 parity: posts.guid); a local item — or a remote one with no stored origin
+// guid — uses its id. (Local items never have an originGuid.)
+function wireGuid(d: LogicalItemDto): string {
+  return d.origin === 'remote' && d.originGuid !== null ? d.originGuid : d.id
+}
+
+// An item's author as the renderers name it. A remote publisher has no handle
+// here, and its feed is its origin's (canonicalFeedUrl, possibly unknown).
+function authorOf(d: LogicalItemDto): { displayName: string; handle: string; feedUrl: string | null } {
+  const a = d.selectedAuthor
+  return a.kind === 'local'
+    ? { displayName: a.displayName, handle: a.handle, feedUrl: null }
+    : { displayName: a.displayName, handle: '', feedUrl: a.canonicalFeedUrl }
+}
+
 // The emitted identity of a LOCAL post. A post created under a public URL
-// stored url = `${publicUrl}/post/${id}` (service.ts) — that stored url IS the
+// stored permalink = `${publicUrl}/post/${id}` (service.ts) — that stored url IS the
 // permalink and becomes a bare <guid> (rss.chat's convention, which our ingest
 // already honors, and which Dave's threadwalker string-compares). A post with
 // no stored url keeps its UUID guid with isPermaLink="false" (a bare non-URL
 // guid would be a lie, and that post emits no <link> either — consistent).
 // PIN (feedsmith 2.9.6): the URL branch omits the isPermaLink key entirely —
 // isPermaLink:true would serialize an attribute that breaks the walker.
-export function localGuid(p: Post): { value: string; isPermaLink?: false } {
-  return p.url !== null ? { value: p.url } : { value: p.guid, isPermaLink: false }
+export function localGuid(d: LogicalItemDto): { value: string; isPermaLink?: false } {
+  return d.permalink !== null ? { value: d.permalink } : { value: wireGuid(d), isPermaLink: false }
 }
 
 // The emitted <guid> VALUE for injector keying — the same string the render
 // paths put in the <guid> element. Local posts use their permalink (localGuid);
 // remote posts keep their origin guid. Use this at EVERY injector call site so
 // the remote guard can't be forgotten when a new one is added.
-export function emittedGuid(p: Post): string {
-  return p.source === 'local' ? localGuid(p).value : p.guid
+export function emittedGuid(d: LogicalItemDto): string {
+  return d.origin === 'local' ? localGuid(d).value : wireGuid(d)
 }
 
 export function feedUrls(publicUrl: string, handle: string): { xml: string; json: string } {
@@ -119,17 +108,17 @@ export function replyWireElements(ref: string) {
 // Dual contract per item: local posts emit rendered HTML + their markdown
 // source; remote posts re-emit as stored (pass-through), incl. any captured
 // source:markdown. Merges with replyWireElements' sourceNs (inReplyTo).
-export function itemContentFields(p: Post) {
-  // EVERY RSS render path funnels through here — including push.ts's WebSub
-  // fat-ping bodies, which build Posts straight from the repository and never see
-  // the projector. Gating only in the projector left the fat-ping (the prod
-  // default, RSC_WEBSUB=self) emitting whatever an origin put in its <guid>.
-  const ref = safeReplyRef(p.inReplyTo)
+export function itemContentFields(d: LogicalItemDto) {
+  // EVERY render path funnels through here — the pulled feeds, push's fat-ping
+  // bodies and the firehose-v1 JSON. safeReplyRef gates here as well as in the
+  // projector: a renderer never trusts its input.
+  const ref = safeReplyRef(d.inReplyToRef)
   const reply = ref ? replyWireElements(ref) : undefined
-  const markdown = p.source === 'local' ? p.content : p.contentMarkdown ?? undefined
+  const content = d.content ?? ''
+  const markdown = d.origin === 'local' ? content : d.contentMarkdown ?? undefined
   const sourceNs = { ...(reply?.sourceNs ?? {}), ...(markdown ? { markdown } : {}) }
   return {
-    description: p.source === 'local' ? renderMarkdown(p.content) : p.content,
+    description: d.origin === 'local' ? renderMarkdown(content) : content,
     ...(Object.keys(sourceNs).length ? { sourceNs } : {}),
     ...(reply?.thr ? { thr: reply.thr } : {}),
   }
@@ -172,11 +161,11 @@ function finalizeRss(xml: string): string {
     .replace(XML_ILLEGAL, '')
 }
 
-export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): string {
+export function renderRssFeed(channel: FeedChannel, items: LogicalItemDto[], ctx: FeedContext): string {
   const atomLinks: Array<{ href: string; rel: string; type?: string }> = []
   let cloud
   if (ctx.publicUrl) {
-    atomLinks.push({ href: feedUrls(ctx.publicUrl, user.handle).xml, rel: 'self', type: 'application/rss+xml' })
+    atomLinks.push({ href: feedUrls(ctx.publicUrl, channel.handle).xml, rel: 'self', type: 'application/rss+xml' })
     if (ctx.hubUrl) atomLinks.push({ href: ctx.hubUrl, rel: 'hub' })
     if (ctx.rssCloud) {
       const u = new URL(ctx.publicUrl)
@@ -191,19 +180,19 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
   }
   return finalizeRss(generateRssFeed(
     {
-      title: user.displayName,
-      link: channelLink(ctx, user.handle),
-      description: `Posts by ${user.displayName}`,
+      title: channel.displayName,
+      link: channelLink(ctx, channel.handle),
+      description: `Posts by ${channel.displayName}`,
       ...(atomLinks.length ? { atom: { links: atomLinks } } : {}),
       ...(cloud ? { cloud } : {}),
-      ...(ctx.publicUrl ? { sourceNs: { self: feedUrls(ctx.publicUrl, user.handle).xml } } : {}),
-      items: posts.map((p) => ({
-        ...(p.title !== null ? { title: p.title } : {}), // Textcasting: never synthesize a title
-        guid: localGuid(p),
-        ...(p.url !== null ? { link: p.url } : {}),
-        pubDate: p.publishedAt,
-        ...(p.editedAt ? { atom: { updated: p.editedAt } } : {}),
-        ...itemContentFields(p),
+      ...(ctx.publicUrl ? { sourceNs: { self: feedUrls(ctx.publicUrl, channel.handle).xml } } : {}),
+      items: items.map((d) => ({
+        ...(d.title !== null ? { title: d.title } : {}), // Textcasting: never synthesize a title
+        guid: localGuid(d),
+        ...(d.permalink !== null ? { link: d.permalink } : {}),
+        pubDate: d.publishedAt,
+        ...(d.updatedAt ? { atom: { updated: d.updatedAt } } : {}),
+        ...itemContentFields(d),
       })),
     },
     // lenient: type-level only — selects the DeepPartial<..., DateLike> overload so
@@ -216,7 +205,7 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
 // The all-users firehose (rss.chat's /users/rss.xml convention): every LOCAL
 // post, with RSS core <source> naming the item's author and linking their
 // personal feed — the same element our ingest attributes rss.chat items by.
-export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): string {
+export function renderFirehoseRss(items: LogicalItemDto[], ctx: FeedContext): string {
   const host = ctx.publicUrl ? new URL(ctx.publicUrl).host : 'rsc.invalid'
   const atomLinks: Array<{ rel: string; href: string; type?: string }> = []
   let cloud
@@ -236,15 +225,15 @@ export function renderFirehoseRss(entries: TimelineEntry[], ctx: FeedContext): s
       ...(atomLinks.length ? { atom: { links: atomLinks } } : {}),
       ...(cloud ? { cloud } : {}),
       ...(ctx.publicUrl ? { sourceNs: { self: firehoseUrl(ctx.publicUrl) } } : {}),
-      items: entries.map((p) => ({
-        ...(p.title !== null ? { title: p.title } : {}),
-        guid: localGuid(p),
-        ...(p.url !== null ? { link: p.url } : {}),
-        pubDate: p.publishedAt,
+      items: items.map((d) => ({
+        ...(d.title !== null ? { title: d.title } : {}),
+        guid: localGuid(d),
+        ...(d.permalink !== null ? { link: d.permalink } : {}),
+        pubDate: d.publishedAt,
         // RSS core <source>: the item's author and their personal feed.
-        ...(ctx.publicUrl ? { source: { title: p.author.displayName, url: feedUrls(ctx.publicUrl, p.author.handle).xml } } : {}),
-        ...(p.editedAt ? { atom: { updated: p.editedAt } } : {}),
-        ...itemContentFields(p),
+        ...(ctx.publicUrl ? { source: { title: authorOf(d).displayName, url: feedUrls(ctx.publicUrl, authorOf(d).handle).xml } } : {}),
+        ...(d.updatedAt ? { atom: { updated: d.updatedAt } } : {}),
+        ...itemContentFields(d),
       })),
     },
     { lenient: true },
@@ -300,6 +289,15 @@ function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: st
 export function injectSourceComments(xml: string, ads: Array<{ guid: string; count: number; feedUrl: string }>): string {
   return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:comments count="${ad.count}" feedUrl="${xmlAttrEscape(ad.feedUrl)}"/>` })))
 }
+// source:comments for every item with direct replies, keyed by the item's EMITTED
+// guid. One function for the pulled routes AND push's fat-ping bodies, so both
+// count replies the same way (the projector's directReplyCount).
+export function injectReplyCounts(xml: string, items: LogicalItemDto[], ctx: FeedContext): string {
+  if (!ctx.publicUrl) return xml
+  const pub = ctx.publicUrl
+  return injectSourceComments(xml, items.filter((d) => d.directReplyCount > 0)
+    .map((d) => ({ guid: emittedGuid(d), count: d.directReplyCount, feedUrl: commentsFeedUrl(pub, d.id) })))
+}
 // source:account was injected per-item so Dave's old threadwalker could read the
 // author. As of rss.chat issue #14 the walker reads the RSS core <source> element
 // instead, and item-level source:account is a spec violation (it's channel-level).
@@ -308,29 +306,32 @@ export function injectSourceComments(xml: string, ads: Array<{ guid: string; cou
 
 // The author's canonical feed URL for a core <source> element: a remote author's
 // own origin feed; a local author's feed on this instance (needs publicUrl).
-function authorSourceUrl(author: User, ctx: FeedContext): string | null {
+function authorSourceUrl(author: { handle: string; feedUrl: string | null }, ctx: FeedContext): string | null {
   return author.feedUrl ?? (ctx.publicUrl ? feedUrls(ctx.publicUrl, author.handle).xml : null)
 }
 
-export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: FeedContext): string {
-  const chars = Array.from(post.content) // code-point safe: .length/.slice on a string split surrogate pairs
-  const label = post.title ?? (chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : post.content)
-  const self = ctx.publicUrl ? commentsFeedUrl(ctx.publicUrl, post.id) : null
+export function renderCommentsFeed(item: LogicalItemDto, replies: LogicalItemDto[], ctx: FeedContext): string {
+  const body = item.content ?? '' // load-bearing ?? '': Array.from(null) would throw
+  const chars = Array.from(body) // code-point safe: .length/.slice on a string split surrogate pairs
+  const label = item.title ?? (chars.length > 60 ? `${chars.slice(0, 60).join('')}…` : body)
+  const self = ctx.publicUrl ? commentsFeedUrl(ctx.publicUrl, item.id) : null
   return finalizeRss(generateRssFeed(
     {
       title: `Comments on "${label}"`,
-      link: post.url ?? ctx.publicUrl ?? 'https://rsc.invalid',
+      link: item.permalink ?? ctx.publicUrl ?? 'https://rsc.invalid',
       description: `Replies to "${label}"`,
       ...(self ? { atom: { links: [{ href: self, rel: 'self', type: 'application/rss+xml' }] } } : {}),
       ...(self ? { sourceNs: { self } } : {}),
-      items: replies.map((p) => {
-        const srcUrl = authorSourceUrl(p.author, ctx)
+      items: replies.map((d) => {
+        const author = authorOf(d)
+        const srcUrl = authorSourceUrl(author, ctx)
+        const guid = wireGuid(d)
         return {
-          ...(p.title !== null ? { title: p.title } : {}),
+          ...(d.title !== null ? { title: d.title } : {}),
           // Unlike the other two RSS paths, replies here can be remote (a
           // cross-instance reply resolves onto our local post) — only local
           // items get the permalink-guid treatment; a remote item's guid VALUE
-          // must stay p.guid verbatim, never swapped to p.url.
+          // must stay the wire guid verbatim, never swapped to the permalink.
           // Identity, NOT url-shape: acquisition.ts:258 stores the wire guid and
           // DISCARDS the origin's isPermaLink, so a shape test would promote a
           // WordPress-style <guid isPermaLink="false">https://x/?p=1</guid> to a
@@ -341,15 +342,15 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
           // unnormalized rejects a legal fragment-bearing permalink guid whose
           // <link> is identical. Normalize ONLY the comparison; the emitted VALUE
           // stays p.guid verbatim (never swapped to p.url or a normalized form).
-          guid: p.source === 'local' ? localGuid(p) : { value: p.guid, ...((normalizePermalink(p.guid) ?? p.guid) === p.url ? {} : { isPermaLink: false }) },
-          ...(p.url !== null ? { link: p.url } : {}),
-          pubDate: p.publishedAt,
+          guid: d.origin === 'local' ? localGuid(d) : { value: guid, ...((normalizePermalink(guid) ?? guid) === d.permalink ? {} : { isPermaLink: false }) },
+          ...(d.permalink !== null ? { link: d.permalink } : {}),
+          pubDate: d.publishedAt,
           // RSS core <source>: the reply's author + their feed. Dave's fixed
           // threadwalker (issue #14) reads the author from here, and a comments
           // feed has no single-author channel to fall back to — so a reply
           // without it walks as "?". Mirrors renderFirehoseRss.
-          ...(srcUrl ? { source: { title: p.author.displayName, url: srcUrl } } : {}),
-          ...itemContentFields(p),
+          ...(srcUrl ? { source: { title: author.displayName, url: srcUrl } } : {}),
+          ...itemContentFields(d),
         }
       }),
     },
@@ -357,22 +358,22 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
   ))
 }
 
-export function renderJsonFeed(user: User, posts: Post[], ctx: FeedContext): string {
+export function renderJsonFeed(channel: FeedChannel, items: LogicalItemDto[], ctx: FeedContext): string {
   const feed = generateJsonFeed(
     {
-      title: user.displayName,
-      description: `Posts by ${user.displayName}`,
-      ...(ctx.publicUrl ? { feed_url: feedUrls(ctx.publicUrl, user.handle).json } : {}),
+      title: channel.displayName,
+      description: `Posts by ${channel.displayName}`,
+      ...(ctx.publicUrl ? { feed_url: feedUrls(ctx.publicUrl, channel.handle).json } : {}),
       ...(ctx.hubUrl ? { hubs: [{ type: 'WebSub', url: ctx.hubUrl }] } : {}),
-      items: posts.map((p) => ({
-        id: localGuid(p).value,
-        ...(p.title !== null ? { title: p.title } : {}),
-        ...(p.source === 'local'
-          ? { content_html: renderMarkdown(p.content), content_text: p.content }
-          : { content_text: p.content }),
-        ...(p.url !== null ? { url: p.url } : {}),
-        date_published: p.publishedAt,
-        ...(p.editedAt ? { date_modified: p.editedAt } : {}),
+      items: items.map((d) => ({
+        id: localGuid(d).value,
+        ...(d.title !== null ? { title: d.title } : {}),
+        ...(d.origin === 'local'
+          ? { content_html: renderMarkdown(d.content ?? ''), content_text: d.content ?? '' }
+          : { content_text: d.content ?? '' }),
+        ...(d.permalink !== null ? { url: d.permalink } : {}),
+        date_published: d.publishedAt,
+        ...(d.updatedAt ? { date_modified: d.updatedAt } : {}),
       })),
     },
     // lenient: type-level only — see renderRssFeed; generateJsonFeed's JS impl

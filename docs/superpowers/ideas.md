@@ -2549,3 +2549,17 @@ config into a public interface, and makes the phase-1 stdio server a supported
 product surface with the compat obligations that implies.
 
 **Status:** parked — revisit when someone actually asks for the package.
+
+## NUL in local post body renders inconsistently
+
+**Mechanism:** reject or strip XML-illegal characters (NUL and friends) at local
+write time, so every output format agrees. Today a NUL in a local post body is
+pinned (`core/test/__snapshots__/logical-feeds.test.ts.snap`, parity pin,
+2026-10-11) as three different results: U+FFFD in RSS `<description>`
+(`renderMarkdown`), stripped in `<source:markdown>` (`finalizeRss` XML_ILLEGAL
+strip), escaped `\u0000` in JSON Feed.
+
+**Tradeoff:** changes the pinned snapshots deliberately; re-record them in that
+change.
+
+**Status:** not specced.

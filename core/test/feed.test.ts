@@ -10,13 +10,14 @@ import { createApp } from '../src/api/app.ts'
 import { parseFeedWithMeta } from '../src/domain/ingest.ts'
 import type { FeedContext } from '../src/domain/feed.ts'
 import type { Post, CommandEnvelope } from '../src/domain/types.ts'
-import { renderFirehoseRss, injectSourceComments, localGuid, renderRssFeed, logicalToFeedEntry } from '../src/domain/feed.ts'
+import { renderFirehoseRss, injectSourceComments, localGuid, renderRssFeed } from '../src/domain/feed.ts'
+import { dto } from './dto-helper.ts'
 import { generateRssFeed } from 'feedsmith'
 import { randomUUID, createHash } from 'node:crypto'
 import { drainReconciliation } from '../src/logical/reconcile.ts'
 import { convertToStructuralTombstone } from '../src/logical/threading.ts'
 import { projectItem, projectTimeline } from '../src/logical/projector.ts'
-import type { ProjectionViewer, LogicalItemDto } from '../src/logical/types.ts'
+import type { ProjectionViewer } from '../src/logical/types.ts'
 import type { LookupFn } from '../src/domain/push-guard.ts'
 import { makeAuth } from './auth-helper.ts'
 
@@ -79,8 +80,9 @@ async function makeApp(feeds?: FeedContext) {
 }
 
 async function seedAlice(service: Awaited<ReturnType<typeof makeApp>>['service']) {
-  await service.createLocalPostAs('alice', 'Alice', 'first body')
+  const first = await service.createLocalPostAs('alice', 'Alice', 'first body')
   await service.createLocalPostAs('alice', 'Alice', 'second body')
+  return first
 }
 
 test('RSS feed round-trips through our own parser (Textcasting profile intact)', async () => {
@@ -158,38 +160,9 @@ test('unknown handle 404s; remote handle 302s to its canonical feed; null-feedUr
   expect(redir.headers.get('location')).toBe('https://news.example.com/feed.xml')
 })
 
-// Task 3: `removed` is a same-origin signal for our own web UI, never a
-// federation signal — a peer learns of a removal from the notice text in the
-// content, never from a flag (design intent, task-3-brief.md). logicalToFeedEntry
-// builds TimelineEntry field-by-field (no spread), so an added DTO field must be
-// wired in explicitly to leak; this pins that it stays unwired.
-test('logicalToFeedEntry never carries the removed flag onto the outgoing feed entry, even for a removed item', () => {
-  const dto: LogicalItemDto = {
-    kind: 'logical_item', id: 'p1', origin: 'local', parentResolutionState: 'none',
-    parentLogicalItemId: null, threadRootId: null,
-    selectedAuthor: { kind: 'local', id: 'u1', handle: 'alice', displayName: 'Alice' },
-    title: null, content: 'This post has been removed by its author.', contentMarkdown: null,
-    permalink: 'https://tc.example/post/p1', originGuid: null, inReplyToRef: null,
-    sourceLink: null, replyContext: null, enclosures: [],
-    publishedAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-03T00:00:00.000Z',
-    updatedAtProvenance: 'explicit', directReplyCount: 0, conversationReplyCount: 0,
-    classification: { personal: false, federated: false },
-    removed: true,
-  }
-  const entry = logicalToFeedEntry(dto)
-  expect('removed' in entry).toBe(false)
-})
-
 test('firehose: RSS 2.0 channel + <source> attribution on every item', () => {
   const ctx = { publicUrl: 'https://tc.example', hubUrl: 'https://tc.example/hub', rssCloud: true }
-  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
-  const entries = [{
-    id: 'p1', authorId: 'u1', source: 'local' as const, guid: 'guid-1', title: null,
-    content: 'hello **world**', url: 'https://tc.example/post/p1',
-    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
-    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
-    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
-  }]
+  const entries = [dto({ id: 'p1', content: 'hello **world**', permalink: 'https://tc.example/post/p1', publishedAt: '2026-01-02T00:00:00.000Z' })]
   const xml = renderFirehoseRss(entries, ctx)
   expect(xml).toContain('<title>tc.example: all posts</title>')
   expect(xml).toContain('<link>https://tc.example</link>')
@@ -206,13 +179,7 @@ test('firehose: RSS 2.0 channel + <source> attribution on every item', () => {
 
 test('injectSourceComments: element lands inside the right item; xmlns declared once', () => {
   const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
-  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
-  const entries = [{
-    id: 'p1', authorId: 'u1', source: 'local' as const, guid: 'guid-1', title: null,
-    content: 'x', url: null, publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
-    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
-    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
-  }]
+  const entries = [dto({ id: 'guid-1', content: 'x', publishedAt: '2026-01-02T00:00:00.000Z' })]
   let xml = renderFirehoseRss(entries, ctx)
   xml = injectSourceComments(xml, [{ guid: 'guid-1', count: 2, feedUrl: 'https://tc.example/post/p1/comments.xml' }])
   expect(xml).toContain('<source:comments count="2"')
@@ -225,14 +192,8 @@ const itemSpans = (xml: string) => [...xml.matchAll(/<item>[\s\S]*?<\/item>/g)].
 
 test('a body quoting another item\'s guid element cannot steal that item\'s source:comments', () => {
   const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
-  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
   const VICTIM = 'https://peer.example/post/one'
-  const entry = (id: string, content: string, url: string) => ({
-    id, authorId: 'u1', source: 'local' as const, guid: id, title: null, content, url,
-    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
-    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
-    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
-  })
+  const entry = (id: string, content: string, url: string) => dto({ id, content, permalink: url, publishedAt: '2026-01-02T00:00:00.000Z' })
   // The decoy sorts FIRST and its markdown — emitted verbatim as CDATA — quotes
   // the victim's guid element. A document-wide first-hit marker search lands here.
   const xml = renderFirehoseRss([
@@ -251,13 +212,7 @@ test('a body quoting another item\'s guid element cannot steal that item\'s sour
 
 test('injectSourceComments still matches a guid feedsmith CDATA-wrapped (& in the permalink)', () => {
   const ctx = { publicUrl: 'https://tc.example', hubUrl: null, rssCloud: false }
-  const alice = { id: 'u1', kind: 'local' as const, handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: '2026-01-01T00:00:00.000Z', authUserId: null }
-  const entry = (id: string, url: string) => ({
-    id, authorId: 'u1', source: 'local' as const, guid: id, title: null, content: `body ${id}`, url,
-    publishedAt: '2026-01-02T00:00:00.000Z', createdAt: '2026-01-02T00:00:00.000Z',
-    inReplyTo: null, inReplyToPostId: null, threadRootId: null,
-    sourceName: null, sourceFeedUrl: null, contentMarkdown: null, author: alice,
-  })
+  const entry = (id: string, url: string) => dto({ id, content: `body ${id}`, permalink: url, publishedAt: '2026-01-02T00:00:00.000Z' })
   // `&` in the value ⇒ feedsmith emits <guid><![CDATA[…]]></guid> (probed), on
   // its own lines — so the key can only be read by unwrapping and trimming.
   const AMP = 'https://tc.example/post/p2?a=1&b=2'
@@ -383,15 +338,14 @@ test('ROUND TRIP: our own v2 acquisition consumes our own firehose, threading an
   peerRepo.close()
 })
 
-test('localGuid: url-bearing post → bare permalink guid, no isPermaLink key', () => {
-  const p = { url: 'https://cast.example.com/post/abc', guid: 'uuid-abc', source: 'local' } as any
-  expect(localGuid(p)).toEqual({ value: 'https://cast.example.com/post/abc' })
-  expect('isPermaLink' in localGuid(p)).toBe(false)
+test('localGuid: permalink-bearing item → bare permalink guid, no isPermaLink key', () => {
+  const d = dto({ id: 'uuid-abc', permalink: 'https://cast.example.com/post/abc' })
+  expect(localGuid(d)).toEqual({ value: 'https://cast.example.com/post/abc' })
+  expect('isPermaLink' in localGuid(d)).toBe(false)
 })
 
-test('localGuid: url-less post → UUID guid with isPermaLink false (unchanged)', () => {
-  const p = { url: null, guid: 'uuid-xyz', source: 'local' } as any
-  expect(localGuid(p)).toEqual({ value: 'uuid-xyz', isPermaLink: false })
+test('localGuid: permalink-less item → its id with isPermaLink false', () => {
+  expect(localGuid(dto({ id: 'uuid-xyz' }))).toEqual({ value: 'uuid-xyz', isPermaLink: false })
 })
 
 test('per-user feed emits the permalink as a bare guid (threadwalker string-compare key)', async () => {
@@ -405,8 +359,7 @@ test('per-user feed emits the permalink as a bare guid (threadwalker string-comp
 
 test('firehose emits bare permalink guids and still injects source:comments (keyed on emitted guid)', async () => {
   const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const root = await seedAlice(service)
   await service.createLocalPostAs('bob', 'Bob', 'a reply', root)
   const body = await (await app.request('/users/rss.xml')).text()
   expect(body).toMatch(/<guid>https:\/\/cast\.example\.com\/post\/[^<]+<\/guid>/)
@@ -441,8 +394,7 @@ test('per-user feed names the author via the channel, not per-item source:accoun
 
 test('comments feed carries per-reply core <source> (multi-author, threadwalker names)', async () => {
   const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const root = await seedAlice(service)
   await service.createLocalPostAs('bob', 'Bob', 'bob replies', root)
   await service.createLocalPostAs('carol', 'Carol', 'carol replies', root)
   const body = await (await app.request(`/post/${root.id}/comments.xml`)).text()
@@ -614,8 +566,7 @@ test('a resolved reply whose parent degraded to a structural tombstone still emi
 
 test('a RSC conversation is walkable by threadwalker semantics (guid string-compare + source:account names)', async () => {
   const { service, app } = await makeApp(CTX)
-  await seedAlice(service)
-  const root = (await service.getRecentLocalPosts(10)).find((p) => p.content === 'first body')!
+  const root = await seedAlice(service)
   const wait = () => new Promise((r) => setTimeout(r, 2)) // repo orders replies by published_at then id (a
   // random UUID) — without this, sibling replies minted in the same millisecond
   // sort arbitrarily; force strictly-increasing published_at for a stable outline.
@@ -1018,29 +969,20 @@ test('reply-ref gate: protocol-relative shapes rejected, inert guid families kep
 })
 
 test('the WebSub fat-ping path is gated too: a hostile stored ref never reaches rendered RSS', () => {
-  // push.ts builds Posts straight from the repository (toPost maps posts.in_reply_to
-  // verbatim) and renders them WITHOUT the projector — RSC_WEBSUB defaults to 'self'
-  // in prod, so this is the live path. Gating only in the projector left it open.
-  const hostile: Post = {
-    id: 'p1', authorId: 'u1', source: 'local', guid: 'g1', title: null,
-    content: 'body', url: 'https://cast.example.com/post/p1',
-    publishedAt: NOW, createdAt: NOW, inReplyTo: 'javascript:alert(1)',
-    inReplyToPostId: null, threadRootId: null, sourceName: null, sourceFeedUrl: null,
-    contentMarkdown: null, editedAt: null, replyContextAuthor: null, replyContextSnippet: null,
-  }
-  const user: Post extends never ? never : Parameters<typeof renderRssFeed>[0] =
-    { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: NOW, authUserId: null }
+  // itemContentFields gates EVERY render path itself (safeReplyRef) — defense in depth behind the projector's own gate, since a renderer must never trust its input.
+  const hostile = dto({ id: 'p1', content: 'body', permalink: 'https://cast.example.com/post/p1', publishedAt: NOW, inReplyToRef: 'javascript:alert(1)' })
+  const user = { handle: 'alice', displayName: 'Alice' }
   const xml = renderRssFeed(user, [hostile], CTX)
   expect(xml).toContain('body') // the item really rendered — not a vacuous pass
   expect(xml).not.toContain('javascript:')
   // and an inert opaque ref on the same path still survives
-  const ok = renderRssFeed(user, [{ ...hostile, inReplyTo: 'yt:video:dQw4w9WgXcQ' }], CTX)
+  const ok = renderRssFeed(user, [{ ...hostile, inReplyToRef: 'yt:video:dQw4w9WgXcQ' }], CTX)
   expect(ok).toContain('<source:inReplyTo isPermaLink="false">yt:video:dQw4w9WgXcQ</source:inReplyTo>')
   // Interior C0 controls are not valid XML 1.0 at all: emitting one makes OUR OWN
   // public feed not-well-formed for every conformant reader, permanently, from a
   // single poisoned remote guid. The URL parser trims outer C0 but keeps interior.
   for (const bad of ['guid\u0000one', 'guid\u0001one', 'guid\u000bone', 'guid\u000cone']) {
-    const out = renderRssFeed(user, [{ ...hostile, inReplyTo: bad }], CTX)
+    const out = renderRssFeed(user, [{ ...hostile, inReplyToRef: bad }], CTX)
     expect(out).toContain('body') // rendered, so this is not a vacuous pass
     expect(out).not.toContain('<source:inReplyTo')
   }

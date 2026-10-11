@@ -1,4 +1,4 @@
-import type { User, Post, NewLocalUser, NewRemoteUser, TimelineEntry, Subscription, PushProtocol, Page } from './types.ts'
+import type { User, Post, NewLocalUser, NewRemoteUser, Subscription, PushProtocol, Page } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
 import type { Cursor } from './source-repository.ts'
 
@@ -21,9 +21,6 @@ export interface Repository {
   close(): void
   listFollowing(followerId: string): Promise<User[]>
   getPost(id: string): Promise<Post | undefined>
-  countRepliesByPostIds(ids: string[]): Promise<Map<string, number>>
-  getPostsByAuthor(authorId: string, limit: number): Promise<Post[]>
-  getRecentLocalPosts(limit: number): Promise<TimelineEntry[]>
   upsertSubscription(s: Subscription): Promise<void>
   deleteSubscription(protocol: PushProtocol, topic: string, callback: string): Promise<void>
   listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]>

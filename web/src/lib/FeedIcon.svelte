@@ -7,9 +7,8 @@
 	// else remote authors link their canonical feed, locals our proxied RSS.
 	let {
 		author,
-		sourceName = null,
 		sourceFeedUrl = null
-	}: { author: TimelineEntry['author']; sourceName?: string | null; sourceFeedUrl?: string | null } =
+	}: { author: TimelineEntry['author']; sourceFeedUrl?: string | null } =
 		$props()
 	// Scheme guard (defense in depth): every write path is http(s)-only already,
 	// but a javascript: URL here would be click-to-XSS if that ever slips.
@@ -24,7 +23,7 @@
 					? `/u/${author.handle}/feed.xml`
 					: null)
 	)
-	const label = $derived(`${sourceName ?? author.displayName}'s feed`)
+	const label = $derived(`${author.displayName}'s feed`)
 </script>
 
 {#if href}
