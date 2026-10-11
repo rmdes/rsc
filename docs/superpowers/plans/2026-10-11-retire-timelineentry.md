@@ -27,7 +27,7 @@
 
 | File | Responsibility | Tasks |
 |---|---|---|
-| `core/test/logical-feeds.test.ts` | parity snapshots; push==pull test; guest test | 1, 2 |
+| `core/test/logical-feeds.test.ts` | parity snapshots; push==pull test | 1, 2 |
 | `core/src/api/logical-routes/public.ts` | `firehoseEntry` exported (test seam), then reads the DTO | 1, 3 |
 | `core/src/domain/feed.ts` | renderers; new `feedChannel`, `injectReplyCounts`; adapter deleted | 2, 3 |
 | `core/src/api/logical-routes/read.ts` | pulled feed routes use `feedChannel` / `injectReplyCounts`, then pass DTOs | 2, 3 |
@@ -112,6 +112,10 @@ async function parityCorpus(repo: Awaited<ReturnType<typeof makeApp>>['repo'], s
   seedRemoteReply(repo.raw, { sourceId: 'sB', deliveryKey: { kind: 'opaque', key: 'opaque-guid-b' }, permalink: null, inReplyTo: `${PUB}/post/${root.id}`, content: 'REMOTEOPAQUE' })
   drain(store)
   const remoteIds = [remoteIdForSource(repo.raw, 'sA'), remoteIdForSource(repo.raw, 'sB')]
+  // Both remote replies fall back to arrival time (published: ''), so they tie on
+  // timeline_sort_at and the comments feed would break the tie on their RANDOM ids —
+  // a flaky snapshot. Separate them.
+  repo.raw.prepare(`UPDATE logical_items_v2 SET timeline_sort_at = ? WHERE id = ?`).run('2026-07-23T00:00:00.500Z', remoteIds[1])
   store.createLocalPost({ author: alice, content: 'REPLYTOREMOTE', replyToId: remoteIds[1], now: at(8), publicUrl: PUB })
   return { root, remoteIds }
 }
@@ -190,12 +194,12 @@ git commit -m "test(core): pin every pulled outbound feed format before retiring
 **Interfaces:**
 - Consumes: `parityCorpus`, `stable` (Task 1).
 - Produces:
-  - `feed.ts`: `export type FeedChannel = { handle: string; displayName: string }`, `export function feedChannel(handle: string, items: LogicalItemDto[]): FeedChannel`, and `export function injectReplyCounts(xml: string, items: LogicalItemDto[], ctx: FeedContext): string`.
+  - `feed.ts`: `export type FeedChannel = { handle: string; displayName: string }`, `export function feedChannel(handle: string, items: LogicalItemDto[], fallbackName: string = handle): FeedChannel`, and `export function injectReplyCounts(xml: string, items: LogicalItemDto[], ctx: FeedContext): string`.
   - `bus.ts`: `export interface LocalPostEvent { authorId: string; handle: string }`.
   - `types.ts`: `export type PostWithAuthor = Post & { author: User }`.
   - `push.ts`: `createPush(deps: PushDeps & { store: LogicalStore }): Push` and `Push.onLocalPost(e: LocalPostEvent): Promise<void>`.
 
-- [ ] **Step 1: Write the failing push==pull test and the guest test (replacing the canary)**
+- [ ] **Step 1: Write the failing push==pull test (replacing the canary and the push-path guest test)**
 
 In `core/test/logical-feeds.test.ts`:
 
@@ -265,16 +269,7 @@ test('push == pull: every fat-ping body is byte-equal to the pulled feed for its
   // Remote replies count toward source:comments on the PUSH path too (was push.test O5):
   // root has bob's local reply + two remote replies.
   expect(bodies.get('https://cb.test/alice-xml')).toContain('<source:comments count="3"')
-})
-
-test('a guest post is in no fat-ping body (guests are local-only)', async () => {
-  const ctx = await selfHubApp()
-  await parityCorpus(ctx.repo, ctx.store)
-  const topics = {
-    'https://cb.test/guest-xml': 'https://rsc.test/users/guest-abc/feed.xml',
-    'https://cb.test/firehose': 'https://rsc.test/users/rss.xml',
-  }
-  const bodies = await captureFatPings(ctx, topics, { authorId: 'g1', handle: 'guest-abc' })
+  // Guests are local-only on the push path too (was 'the push-path feed queries exclude guest posts too').
   expect(bodies.get('https://cb.test/firehose')).toContain('BOBREPLY') // delivered, not vacuous
   for (const body of bodies.values()) expect(body).not.toContain('GUESTBODY')
 })
@@ -283,7 +278,7 @@ test('a guest post is in no fat-ping body (guests are local-only)', async () => 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `docker compose exec -T core npm test -w core -- test/logical-feeds.test.ts`
-Expected: FAIL. The current `onLocalPost` reads `entry.author.handle` off the new event, throws inside its own try/catch, and delivers nothing, so `bodies.get(...)` is `undefined` and the equality assertion fails. The Task 1 snapshot test still PASSES.
+Expected: FAIL. The current `onLocalPost` sees `entry.source` as `undefined` on the new event, so `undefined !== 'local'` makes it return before delivering anything. `bodies.get(...)` is `undefined` and the equality assertion fails. The Task 1 snapshot test still PASSES.
 
 - [ ] **Step 3: Add `FeedChannel`, `feedChannel`, `injectReplyCounts` to `feed.ts` and widen the channel parameter**
 
@@ -294,12 +289,14 @@ In `core/src/domain/feed.ts`, add directly after the `FeedContext` interface:
 // the account.
 export type FeedChannel = { handle: string; displayName: string }
 
-// A local account feed's channel: the newest item's local display name, else the
-// handle (an empty feed has no item to read it from). One helper for the pulled
-// routes AND push, so their channel titles cannot diverge.
-export function feedChannel(handle: string, items: LogicalItemDto[]): FeedChannel {
+// A local account feed's channel: the newest item's local display name, else
+// `fallbackName` (an empty feed has no item to read it from). The pulled routes
+// pass the handle AS REQUESTED (v1 parity: /users/Alice/feed.xml of an empty feed
+// is titled "Alice"); push passes the stored handle, which is exactly what a pull
+// of its own topic URL requests. One helper, so the two cannot diverge.
+export function feedChannel(handle: string, items: LogicalItemDto[], fallbackName: string = handle): FeedChannel {
   const a = items[0]?.selectedAuthor
-  return { handle, displayName: a && a.kind === 'local' ? a.displayName : handle }
+  return { handle, displayName: a && a.kind === 'local' ? a.displayName : fallbackName }
 }
 ```
 
@@ -327,7 +324,7 @@ In `core/src/api/logical-routes/read.ts`:
 - In both `/users/:handle/feed.xml` and `/users/:handle/feed.json`, replace the two lines `const author = items[0]?.selectedAuthor` and `const user = { … }` with:
 
 ```ts
-    const channel = feedChannel((c.req.param('handle') ?? '').toLowerCase(), items)
+    const channel = feedChannel((c.req.param('handle') ?? '').toLowerCase(), items, c.req.param('handle') ?? '')
 ```
 
   and pass `channel` where `user` was passed (`renderRssFeed(channel, …)`, `renderJsonFeed(channel, …)`).
@@ -414,9 +411,8 @@ import type { LocalPostEvent } from './bus.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
 import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, feedChannel, injectReplyCounts, logicalToFeedEntry } from './feed.ts'
+import type { User } from './types.ts' // still used by ResolvedTopic
 ```
-
-  Then run `grep -n "User\b" core/src/domain/push.ts`. If `User` is used anywhere else in the file, re-add `import type { User } from './types.ts'`.
 - `Push` becomes `onLocalPost(e: LocalPostEvent): Promise<void>`. `PushDeps` is **unchanged**.
 - `createPush`'s first lines become:
 
@@ -948,7 +944,7 @@ Run:
 grep -rn "getPostsByAuthor\|getRecentLocalPosts\|countRepliesByPostIds\|hideResolvedReplyContext\|joinedRowToEntry\|JoinedRow\|TimelineEntry" core/src core/test mcp/src
 ```
 
-Expected callers are only the definitions and the sites listed in this task. Any other hit is a caller this plan missed: **stop and report it**.
+Expected callers are only the definitions and the sites listed in this task, plus one legitimate comment: `mcp/src/tools.ts:99` mentions *web's* `TimelineEntry` (it stays). Any other hit is a caller this plan missed: **stop and report it**.
 
 - [ ] **Step 2: Repoint the test callers first (still green before the deletions)**
 
