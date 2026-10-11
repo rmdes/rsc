@@ -1,16 +1,17 @@
 import { createHmac, randomBytes } from 'node:crypto'
 import type { Repository } from './repository.ts'
 import type { Config } from '../config.ts'
-import type { TimelineEntry } from './types.ts'
+import type { LogicalStore } from '../logical/store.ts'
+import type { LocalPostEvent } from './bus.ts'
 import { checkCallbackUrl } from './push-guard.ts'
 import type { LookupFn } from './push-guard.ts'
-import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, injectSourceComments, emittedGuid, commentsFeedUrl } from './feed.ts'
-import type { User } from './types.ts'
+import { feedUrls, firehoseUrl, renderRssFeed, renderJsonFeed, renderFirehoseRss, hubLinkUrl, feedChannel, injectReplyCounts, logicalToFeedEntry } from './feed.ts'
+import type { User } from './types.ts' // still used by ResolvedTopic
 
 const PUSH_TIMEOUT_MS = 10_000
 
 export interface Push {
-  onLocalPost(entry: TimelineEntry): Promise<void>
+  onLocalPost(e: LocalPostEvent): Promise<void>
 }
 
 export interface PushDeps {
@@ -194,8 +195,8 @@ async function feedLimit(repo: Repository): Promise<number> {
   return Number.isInteger(n) && n >= 1 ? n : 50
 }
 
-export function createPush(deps: PushDeps): Push {
-  const { repo, config } = deps
+export function createPush(deps: PushDeps & { store: LogicalStore }): Push {
+  const { repo, config, store } = deps
   const fetchFn = deps.fetchFn ?? fetch
 
   return {
@@ -204,13 +205,12 @@ export function createPush(deps: PushDeps): Push {
     // an escape here is process-fatal.
     // ponytail: N rapid posts = N regenerations × M subscribers, no
     // coalescing; debounce per topic when it matters.
-    async onLocalPost(entry: TimelineEntry): Promise<void> {
+    async onLocalPost(e: LocalPostEvent): Promise<void> {
       try {
-        if (entry.source !== 'local') return
         if (!config.publicUrl) return
         const pushEnabled = config.websub.mode !== 'off' || config.rssCloud
         if (!pushEnabled) return
-        const topics = feedUrls(config.publicUrl, entry.author.handle)
+        const topics = feedUrls(config.publicUrl, e.handle)
 
         if (config.websub.mode === 'external') {
           for (const topic of [topics.xml, topics.json]) {
@@ -230,19 +230,19 @@ export function createPush(deps: PushDeps): Push {
         if (config.websub.mode === 'self') {
           const now = new Date().toISOString()
           const ctx = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
-          const posts = await repo.getPostsByAuthor(entry.author.id, await feedLimit(repo))
+          // The SAME projector calls and renderers as the pulled routes
+          // (api/logical-routes/read.ts), so a fat-ping body is byte-equal to a
+          // pull of the same topic (pinned by logical-feeds.test.ts "push == pull").
+          const limit = await feedLimit(repo)
+          const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: e.authorId, limit }))
+          const channel = feedChannel(e.handle, items)
           for (const [format, topic] of [['xml', topics.xml], ['json', topics.json]] as const) {
             const subs = (await repo.listActiveSubscriptions(topic, now)).filter((s) => s.protocol === 'websub')
             if (subs.length === 0) continue
             // Body regenerated ONCE per topic per event; same body (and HMAC input) for every subscriber.
-            let body = format === 'xml' ? renderRssFeed(entry.author, posts, ctx) : renderJsonFeed(entry.author, posts, ctx)
-            if (format === 'xml') {
-              // Mirrors GET /users/:handle/feed.xml: advertise source:comments
-              // before signing, so a subscriber's fat-ping body matches a pull.
-              const counts = await repo.countRepliesByPostIds(posts.map((p) => p.id))
-              body = injectSourceComments(body, posts.filter((p) => (counts.get(p.id) ?? 0) > 0)
-                .map((p) => ({ guid: emittedGuid(p), count: counts.get(p.id)!, feedUrl: commentsFeedUrl(ctx.publicUrl, p.id) })))
-            }
+            const body = format === 'xml'
+              ? injectReplyCounts(renderRssFeed(channel, items.map(logicalToFeedEntry), ctx), items, ctx)
+              : renderJsonFeed(channel, items.map(logicalToFeedEntry), ctx)
             const contentType = format === 'xml' ? 'application/rss+xml; charset=utf-8' : 'application/feed+json; charset=utf-8'
             for (const sub of subs) {
               const headers: Record<string, string> = {
@@ -257,11 +257,8 @@ export function createPush(deps: PushDeps): Push {
           const fhTopic = firehoseUrl(config.publicUrl)
           const fhSubs = (await repo.listActiveSubscriptions(fhTopic, now)).filter((s) => s.protocol === 'websub')
           if (fhSubs.length > 0) {
-            const recent = await repo.getRecentLocalPosts(await feedLimit(repo))
-            let body = renderFirehoseRss(recent, ctx)
-            const fhCounts = await repo.countRepliesByPostIds(recent.map((p) => p.id))
-            body = injectSourceComments(body, recent.filter((p) => (fhCounts.get(p.id) ?? 0) > 0)
-              .map((p) => ({ guid: emittedGuid(p), count: fhCounts.get(p.id)!, feedUrl: commentsFeedUrl(ctx.publicUrl, p.id) })))
+            const recent = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit }))
+            const body = injectReplyCounts(renderFirehoseRss(recent.map(logicalToFeedEntry), ctx), recent, ctx)
             for (const sub of fhSubs) {
               const headers: Record<string, string> = {
                 'content-type': 'application/rss+xml; charset=utf-8',

@@ -16,15 +16,18 @@ async function setup(env: Record<string, string>) {
   const store = createLogicalStore(createDatabaseContext(repo.raw))
   const service = createService(repo, bus, null, store)
   const config = loadConfig(env)
-  return { repo, bus, service, config }
+  return { repo, bus, service, config, store }
 }
 
+// The bus event push receives for a local write.
+const ev = (p: { authorId: string; author: { handle: string } }) => ({ authorId: p.authorId, handle: p.author.handle })
+
 test('external mode publishes a ping per topic on a local post, including the firehose', async () => {
-  const { repo, service, config } = await setup(EXT_ENV)
+  const { repo, service, config, store } = await setup(EXT_ENV)
   const fetchFn = vi.fn(async () => new Response('ok', { status: 204 }))
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
   const entry = await service.createLocalPostAs('alice', 'Alice', 'ping-worthy')
-  await push.onLocalPost(entry)
+  await push.onLocalPost(ev(entry))
   expect(fetchFn).toHaveBeenCalledTimes(3) // author xml + json + firehose
   const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit]
   expect(url).toBe('https://hub.example.com/hub')
@@ -36,27 +39,21 @@ test('external mode publishes a ping per topic on a local post, including the fi
   expect(topics).toContain('https://cast.example.com/users/rss.xml')
 })
 
-test('remote posts and websub-off both produce no pings', async () => {
-  const { repo, config } = await setup(EXT_ENV)
+test('websub-off produces no pings', async () => {
   const fetchFn = vi.fn(async () => new Response('ok'))
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  const remote = await repo.createRemoteUser({ handle: 'news', displayName: 'News', feedUrl: 'https://news.example.com/f.xml' })
-  await push.onLocalPost({ id: 'x', authorId: remote.id, source: 'remote', guid: 'g', title: null, content: 'c', url: null, publishedAt: '2026-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z', author: remote })
-  expect(fetchFn).not.toHaveBeenCalled()
-
   const off = await setup({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's' })
-  const offPush = createPush({ repo: off.repo, config: off.config, fetchFn: fetchFn as unknown as typeof fetch })
+  const offPush = createPush({ repo: off.repo, config: off.config, store: off.store, fetchFn: fetchFn as unknown as typeof fetch })
   const entry = await off.service.createLocalPostAs('bob', 'Bob', 'silent')
-  await offPush.onLocalPost(entry)
+  await offPush.onLocalPost(ev(entry))
   expect(fetchFn).not.toHaveBeenCalled()
 })
 
 test('onLocalPost never rejects, even when fetch explodes (H4)', async () => {
-  const { repo, service, config } = await setup(EXT_ENV)
+  const { repo, service, config, store } = await setup(EXT_ENV)
   const fetchFn = vi.fn(async () => { throw new Error('network down') })
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
   const entry = await service.createLocalPostAs('alice', 'Alice', 'doomed ping')
-  await expect(push.onLocalPost(entry)).resolves.toBeUndefined()
+  await expect(push.onLocalPost(ev(entry))).resolves.toBeUndefined()
 })
 
 const SELF_ENV = { RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://cast.example.com', RSC_WEBSUB: 'self' }
@@ -134,7 +131,7 @@ test('websub subscribe rejects bad topics, private callbacks, and over-cap hosts
 })
 
 test('self mode delivers the fat ping with HMAC signature; expired subs skipped; failures retried once', async () => {
-  const { repo, service, config } = await setup(SELF_ENV)
+  const { repo, service, config, store } = await setup(SELF_ENV)
   const entrySeed = await service.createLocalPostAs('alice', 'Alice', 'first body')
   const topic = 'https://cast.example.com/users/alice/feed.xml'
   await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: 'shh', expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
@@ -144,8 +141,8 @@ test('self mode delivers the fat ping with HMAC signature; expired subs skipped;
     calls.push({ url: String(url), body: String(init?.body), sig: new Headers(init?.headers).get('x-hub-signature'), ct: new Headers(init?.headers).get('content-type') })
     return new Response('', { status: 200 })
   })
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(entrySeed)
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(ev(entrySeed))
   const xmlDeliveries = calls.filter((c) => c.url === 'https://cb.example.com/receive')
   expect(xmlDeliveries.length).toBe(1)
   expect(xmlDeliveries[0].ct).toContain('application/rss+xml')
@@ -156,42 +153,26 @@ test('self mode delivers the fat ping with HMAC signature; expired subs skipped;
 
   // failure path: one retry then drop, never throwing
   const flaky = vi.fn(async () => { throw new Error('conn refused') })
-  const push2 = createPush({ repo, config, fetchFn: flaky as unknown as typeof fetch })
-  await expect(push2.onLocalPost(entrySeed)).resolves.toBeUndefined()
+  const push2 = createPush({ repo, config, store, fetchFn: flaky as unknown as typeof fetch })
+  await expect(push2.onLocalPost(ev(entrySeed))).resolves.toBeUndefined()
   expect(flaky.mock.calls.length).toBe(2) // 1 attempt + 1 retry for the one live xml-topic subscriber
 })
 
 test('self mode fat ping advertises source:comments for a post with a reply', async () => {
-  const { repo, service, config } = await setup(SELF_ENV)
+  const { repo, service, config, store } = await setup(SELF_ENV)
   const root = await service.createLocalPostAs('alice', 'Alice', 'root post')
   const topic = 'https://cast.example.com/users/alice/feed.xml'
   await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   await service.createLocalPostAs('bob', 'Bob', 'a reply', root)
   const bodies: string[] = []
   const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(String(init?.body)); return new Response('', { status: 200 }) })
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(root)
-  expect(bodies[0]).toContain(`<source:comments count="1" feedUrl="https://cast.example.com/post/${root.id}/comments.xml"/>`)
-})
-
-test('O5: self mode fat ping counts a REMOTE logical reply (v2) so the push body matches the pull', async () => {
-  const { repo, service, config } = await setup(SELF_ENV)
-  const root = await service.createLocalPostAs('alice', 'Alice', 'root post')
-  const topic = 'https://cast.example.com/users/alice/feed.xml'
-  await repo.upsertSubscription({ id: 's1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
-  // A v2 remote reply lives in logical_items_v2, NOT posts. countRepliesByPostIds
-  // must union it in — the projector's directReplyCount (the PULL body) does.
-  const NOW = '2026-07-25T00:00:00.000Z'
-  repo.raw.prepare(`INSERT INTO logical_items_v2 (id, origin, timeline_sort_at, parent_state, parent_logical_item_id, selected_delivery_id, selected_publisher_id, created_at) VALUES (?, 'remote', ?, 'resolved', ?, NULL, NULL, ?)`).run(randomUUID(), NOW, root.id, NOW)
-  const bodies: string[] = []
-  const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => { bodies.push(String(init?.body)); return new Response('', { status: 200 }) })
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(root)
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(ev(root))
   expect(bodies[0]).toContain(`<source:comments count="1" feedUrl="https://cast.example.com/post/${root.id}/comments.xml"/>`)
 })
 
 test('self mode fat ping honours a configured feed_item_limit, not the hardcoded 50 (author feed + firehose)', async () => {
-  const { repo, service, config } = await setup(SELF_ENV)
+  const { repo, service, config, store } = await setup(SELF_ENV)
   await repo.setSetting('feed_item_limit', '2')
   const authorTopic = 'https://cast.example.com/users/alice/feed.xml'
   const fhTopic = 'https://cast.example.com/users/rss.xml'
@@ -204,8 +185,8 @@ test('self mode fat ping honours a configured feed_item_limit, not the hardcoded
     calls.push({ url: String(url), body: String(init?.body) })
     return new Response('', { status: 200 })
   })
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(latest!)
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(ev(latest!))
   const authorBody = calls.find((c) => c.url === 'https://cb.example.com/receive')!.body
   const fhBody = calls.find((c) => c.url === 'https://cb2.example.com/receive')!.body
   expect(authorBody.match(/<item\b/g)?.length).toBe(2) // limit honoured, not the hardcoded 50
@@ -273,12 +254,12 @@ test('rsscloud rejects non-http-post, unknown topics, and missing ip+domain', as
 })
 
 test('rsscloud thin ping goes to xml-topic subscribers on a local post', async () => {
-  const { repo, service, config } = await setup(CLOUD_ENV)
+  const { repo, service, config, store } = await setup(CLOUD_ENV)
   const entry = await service.createLocalPostAs('alice', 'Alice', 'ping me thin')
   await repo.upsertSubscription({ id: 'rc1', protocol: 'rsscloud', topic: 'https://cast.example.com/users/alice/feed.xml', callback: 'http://cb.example.com:5337/rsscloud/notify', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const fetchFn = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('', { status: 200 }))
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(entry)
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(ev(entry))
   const call = fetchFn.mock.calls.find((c2) => String(c2[0]) === 'http://cb.example.com:5337/rsscloud/notify')
   expect(call).toBeTruthy()
   const init = call![1] as RequestInit
@@ -336,7 +317,7 @@ test('resolveLocalTopic recognizes the firehose topic', async () => {
 })
 
 test('onLocalPost fat-pings firehose subscribers with the firehose XML (self-hub mode)', async () => {
-  const { repo, service, config } = await setup(SELF_ENV)
+  const { repo, service, config, store } = await setup(SELF_ENV)
   const entry = await service.createLocalPostAs('alice', 'Alice', 'firehose-worthy')
   const fhTopic = 'https://cast.example.com/users/rss.xml'
   await repo.upsertSubscription({ id: 'fh1', protocol: 'websub', topic: fhTopic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
@@ -345,8 +326,8 @@ test('onLocalPost fat-pings firehose subscribers with the firehose XML (self-hub
     calls.push({ url: String(url), body: String(init?.body), ct: new Headers(init?.headers).get('content-type'), link: new Headers(init?.headers).get('link') })
     return new Response('', { status: 200 })
   })
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(entry)
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(ev(entry))
   const fhDeliveries = calls.filter((c) => c.url === 'https://cb.example.com/receive')
   expect(fhDeliveries.length).toBe(1)
   expect(fhDeliveries[0].body).toContain(': all posts</title>')
@@ -356,15 +337,15 @@ test('onLocalPost fat-pings firehose subscribers with the firehose XML (self-hub
 })
 
 test('onLocalPost rssCloud thin-pings the firehose topic too', async () => {
-  const { repo, service, config } = await setup(CLOUD_ENV)
+  const { repo, service, config, store } = await setup(CLOUD_ENV)
   const entry = await service.createLocalPostAs('alice', 'Alice', 'ping me thin')
   const authorTopic = 'https://cast.example.com/users/alice/feed.xml'
   const fhTopic = 'https://cast.example.com/users/rss.xml'
   await repo.upsertSubscription({ id: 'rc1', protocol: 'rsscloud', topic: authorTopic, callback: 'http://cb.example.com:5337/rsscloud/notify', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   await repo.upsertSubscription({ id: 'rc2', protocol: 'rsscloud', topic: fhTopic, callback: 'http://cb2.example.com:5337/rsscloud/notify', callbackHost: 'cb2.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const fetchFn = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('', { status: 200 }))
-  const push = createPush({ repo, config, fetchFn: fetchFn as unknown as typeof fetch })
-  await push.onLocalPost(entry)
+  const push = createPush({ repo, config, store, fetchFn: fetchFn as unknown as typeof fetch })
+  await push.onLocalPost(ev(entry))
   const authorCall = fetchFn.mock.calls.find((c2) => String(c2[0]) === 'http://cb.example.com:5337/rsscloud/notify')
   const fhCall = fetchFn.mock.calls.find((c2) => String(c2[0]) === 'http://cb2.example.com:5337/rsscloud/notify')
   expect(authorCall).toBeTruthy()
@@ -397,8 +378,8 @@ test('all callback-bound fetches opt out of redirect following (SSRF bypass guar
   const topic = 'https://cast.example.com/users/alice/feed.xml'
   await ws.repo.upsertSubscription({ id: 'rd1', protocol: 'websub', topic, callback: 'https://cb.example.com/receive', callbackHost: 'cb.example.com', secret: null, expiresAt: '2027-01-01T00:00:00.000Z', createdAt: '2026-01-01T00:00:00.000Z' })
   const entry = await ws.service.createLocalPostAs('alice', 'Alice', 'redirect-guard post')
-  const push = createPush({ repo: ws.repo, config: ws.config, fetchFn: recorder as unknown as typeof fetch })
-  await push.onLocalPost(entry)
+  const push = createPush({ repo: ws.repo, config: ws.config, store: ws.store, fetchFn: recorder as unknown as typeof fetch })
+  await push.onLocalPost(ev(entry))
 
   const callbackCalls = seen.filter((c) => c.url.includes('cb.example.com'))
   expect(callbackCalls.length).toBeGreaterThanOrEqual(3) // 2 challenges + at least 1 delivery

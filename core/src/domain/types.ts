@@ -53,6 +53,10 @@ export interface NewRemoteUser { handle: string; displayName: string; feedUrl: s
 // reply, added only by the SSE route. It is never stored and never present on
 // roots, unresolved replies, or edits.
 export type TimelineEntry = Post & { author: User; rootReplyCount?: number }
+// The JSON a local write returns (POST /posts, PATCH /posts/:id and their /me
+// twins): the stored post plus its author. A frozen wire shape — mcp/src/tools.ts
+// hand-declares it — so it changes only with the API.
+export type PostWithAuthor = Post & { author: User }
 
 export type PushProtocol = 'websub' | 'rsscloud'
 

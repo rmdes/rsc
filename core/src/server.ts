@@ -48,7 +48,7 @@ await runtime.ready
 const service = createService(repo, bus, config.publicUrl, logicalStore)
 const mailer = createMailer(config.smtpUrl, config.mailFrom)
 const auth = createAuth({ sqlite: repo.raw, users: repo, secret: config.authSecret, webOrigin: config.webOrigin, anonTtlDays: config.anonTtlDays, mailer, authOpenApi: config.authOpenApi, adminEmails: config.adminEmails })
-const push = createPush({ repo, config })
+const push = createPush({ repo, config, store: logicalStore })
 if (config.pushIn && !config.publicUrl) console.log('push-in inactive: no public URL')
 // The source-control plane, through the ONE composition helper — it takes the
 // logical store (V3 Task 7) as a REQUIRED argument, so the tombstone guard cannot

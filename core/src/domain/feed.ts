@@ -53,6 +53,20 @@ export interface FeedContext {
   rssCloud: boolean
 }
 
+// A personal feed's channel identity — all renderRssFeed/renderJsonFeed read of
+// the account.
+export type FeedChannel = { handle: string; displayName: string }
+
+// A local account feed's channel: the newest item's local display name, else
+// `fallbackName` (an empty feed has no item to read it from). The pulled routes
+// pass the handle AS REQUESTED (v1 parity: /users/Alice/feed.xml of an empty feed
+// is titled "Alice"); push passes the stored handle, which is exactly what a pull
+// of its own topic URL requests. One helper, so the two cannot diverge.
+export function feedChannel(handle: string, items: LogicalItemDto[], fallbackName: string = handle): FeedChannel {
+  const a = items[0]?.selectedAuthor
+  return { handle, displayName: a && a.kind === 'local' ? a.displayName : fallbackName }
+}
+
 // The emitted identity of a LOCAL post. A post created under a public URL
 // stored url = `${publicUrl}/post/${id}` (service.ts) — that stored url IS the
 // permalink and becomes a bare <guid> (rss.chat's convention, which our ingest
@@ -172,11 +186,11 @@ function finalizeRss(xml: string): string {
     .replace(XML_ILLEGAL, '')
 }
 
-export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): string {
+export function renderRssFeed(channel: FeedChannel, posts: Post[], ctx: FeedContext): string {
   const atomLinks: Array<{ href: string; rel: string; type?: string }> = []
   let cloud
   if (ctx.publicUrl) {
-    atomLinks.push({ href: feedUrls(ctx.publicUrl, user.handle).xml, rel: 'self', type: 'application/rss+xml' })
+    atomLinks.push({ href: feedUrls(ctx.publicUrl, channel.handle).xml, rel: 'self', type: 'application/rss+xml' })
     if (ctx.hubUrl) atomLinks.push({ href: ctx.hubUrl, rel: 'hub' })
     if (ctx.rssCloud) {
       const u = new URL(ctx.publicUrl)
@@ -191,12 +205,12 @@ export function renderRssFeed(user: User, posts: Post[], ctx: FeedContext): stri
   }
   return finalizeRss(generateRssFeed(
     {
-      title: user.displayName,
-      link: channelLink(ctx, user.handle),
-      description: `Posts by ${user.displayName}`,
+      title: channel.displayName,
+      link: channelLink(ctx, channel.handle),
+      description: `Posts by ${channel.displayName}`,
       ...(atomLinks.length ? { atom: { links: atomLinks } } : {}),
       ...(cloud ? { cloud } : {}),
-      ...(ctx.publicUrl ? { sourceNs: { self: feedUrls(ctx.publicUrl, user.handle).xml } } : {}),
+      ...(ctx.publicUrl ? { sourceNs: { self: feedUrls(ctx.publicUrl, channel.handle).xml } } : {}),
       items: posts.map((p) => ({
         ...(p.title !== null ? { title: p.title } : {}), // Textcasting: never synthesize a title
         guid: localGuid(p),
@@ -300,6 +314,15 @@ function injectItemElements(xml: string, ads: Array<{ guid: string; fragment: st
 export function injectSourceComments(xml: string, ads: Array<{ guid: string; count: number; feedUrl: string }>): string {
   return injectItemElements(xml, ads.map((ad) => ({ guid: ad.guid, fragment: `<source:comments count="${ad.count}" feedUrl="${xmlAttrEscape(ad.feedUrl)}"/>` })))
 }
+// source:comments for every item with direct replies, keyed by the item's EMITTED
+// guid. One function for the pulled routes AND push's fat-ping bodies, so both
+// count replies the same way (the projector's directReplyCount).
+export function injectReplyCounts(xml: string, items: LogicalItemDto[], ctx: FeedContext): string {
+  if (!ctx.publicUrl) return xml
+  const pub = ctx.publicUrl
+  return injectSourceComments(xml, items.filter((d) => d.directReplyCount > 0)
+    .map((d) => ({ guid: emittedGuid(logicalToFeedEntry(d)), count: d.directReplyCount, feedUrl: commentsFeedUrl(pub, d.id) })))
+}
 // source:account was injected per-item so Dave's old threadwalker could read the
 // author. As of rss.chat issue #14 the walker reads the RSS core <source> element
 // instead, and item-level source:account is a spec violation (it's channel-level).
@@ -357,12 +380,12 @@ export function renderCommentsFeed(post: Post, replies: TimelineEntry[], ctx: Fe
   ))
 }
 
-export function renderJsonFeed(user: User, posts: Post[], ctx: FeedContext): string {
+export function renderJsonFeed(channel: FeedChannel, posts: Post[], ctx: FeedContext): string {
   const feed = generateJsonFeed(
     {
-      title: user.displayName,
-      description: `Posts by ${user.displayName}`,
-      ...(ctx.publicUrl ? { feed_url: feedUrls(ctx.publicUrl, user.handle).json } : {}),
+      title: channel.displayName,
+      description: `Posts by ${channel.displayName}`,
+      ...(ctx.publicUrl ? { feed_url: feedUrls(ctx.publicUrl, channel.handle).json } : {}),
       ...(ctx.hubUrl ? { hubs: [{ type: 'WebSub', url: ctx.hubUrl }] } : {}),
       items: posts.map((p) => ({
         id: localGuid(p).value,

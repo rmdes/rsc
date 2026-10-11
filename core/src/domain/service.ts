@@ -1,7 +1,7 @@
 import type { Repository } from './repository.ts'
 import type { EventBus } from './bus.ts'
 import { DomainError, HandleTakenError } from './types.ts'
-import type { NewLocalUser, TimelineEntry, User, Post } from './types.ts'
+import type { NewLocalUser, PostWithAuthor, User, Post } from './types.ts'
 import type { LogicalStore } from '../logical/store.ts'
 import { PostRemovedError, type RemovalActor } from '../logical/local.ts'
 import type { Cursor } from './source-repository.ts'
@@ -34,24 +34,24 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
   }
 
   return {
-    async createLocalPostAs(handle: string, displayName: string, content: string, replyTo?: Post): Promise<TimelineEntry> {
+    async createLocalPostAs(handle: string, displayName: string, content: string, replyTo?: Post): Promise<PostWithAuthor> {
       const author = await ensureLocalUser(handle, displayName)
       // v2-on: the command atomically commits the post + logical metadata +
-      // journal upsert in one write. Read the stored post back as a TimelineEntry
+      // journal upsert in one write. Read the stored post back (the write API's response shape)
       // (posts stays the content authority), then emit only the after-commit
       // local-feed push hint. Logical threading owns adoption (Task 7), so the v1
       // adoptOrphans sweep is not run here.
       const dto = logical.createLocalPost({ author, content, replyToId: replyTo?.id ?? null, now: new Date().toISOString(), publicUrl: publicUrl ?? null })
       const stored = await repo.getPost(dto.id)
-      const entry: TimelineEntry = { ...(stored as Post), author }
-      bus.emitNewPost(entry)
+      const entry: PostWithAuthor = { ...(stored as Post), author }
+      bus.emitNewPost({ authorId: author.id, handle: author.handle })
       return entry
     },
     // A removed post (deletion-as-edit, spec) refuses further edits — see
     // editLocalPost's PostRemovedError comment. Returned as a typed result,
     // matching deletePost's error-union below, so the route picks the status
     // instead of a thrown error falling through to app.onError's generic 500.
-    async editLocalPost(post: Post, content: string, author: User): Promise<TimelineEntry | { error: 'removed' }> {
+    async editLocalPost(post: Post, content: string, author: User): Promise<PostWithAuthor | { error: 'removed' }> {
       const now = new Date().toISOString()
       try {
         logical.editLocalPost({ postId: post.id, authorId: author.id, content, now })
@@ -59,8 +59,8 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
         if (err instanceof PostRemovedError) return { error: 'removed' }
         throw err
       }
-      const entry: TimelineEntry = { ...post, content, editedAt: now, author }
-      bus.emitNewPost(entry)
+      const entry: PostWithAuthor = { ...post, content, editedAt: now, author }
+      bus.emitNewPost({ authorId: author.id, handle: author.handle })
       return entry
     },
     // The reply-target resolver: a reply may target a remote item that exists
@@ -170,10 +170,8 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       if (!post) return { error: 'unknown' }
       if (post.source !== 'local') return { error: 'remote' }
       logical.removeLocalPost({ postId: id, actor, now: new Date().toISOString() })
-      const stored = await repo.getPost(id)
       const author = await repo.getUser(post.authorId)
-      const entry: TimelineEntry = { ...(stored as Post), author: author as User }
-      bus.emitNewPost(entry)
+      bus.emitNewPost({ authorId: post.authorId, handle: (author as User).handle })
       return { ok: true }
     },
     getSetting(key: string) { return repo.getSetting(key) },

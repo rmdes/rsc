@@ -15,6 +15,9 @@ import type { LookupFn } from '../src/domain/push-guard.ts'
 import { makeAuth } from './auth-helper.ts'
 import { firehoseEntry } from '../src/api/logical-routes/public.ts'
 import type { ProjectionViewer } from '../src/logical/types.ts'
+import { createPush } from '../src/domain/push.ts'
+import { loadConfig } from '../src/config.ts'
+import { hubLinkUrl, type FeedContext } from '../src/domain/feed.ts'
 
 type Raw = InstanceType<typeof Database>
 const NOW = '2026-07-23T00:00:00.000Z'
@@ -40,7 +43,7 @@ function seedRemoteItem(raw: Raw, sourceId: string, url: string, key: string, co
   raw.prepare(`INSERT INTO reconciliation_jobs_v2 (id, kind, run_id, observation_version_id, verification_batch_key, status, attempts, next_attempt_at, failure_category, diagnostic, created_at) VALUES (?, 'observation', ?, ?, NULL, 'pending', 0, ?, NULL, NULL, ?)`).run(jobId, runId, versionId, NOW, NOW)
 }
 
-async function makeApp() {
+async function makeApp(feeds: FeedContext = { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false }) {
   const repo = await createSqliteRepository(':memory:')
   const bus = createEventBus()
   const db = createDatabaseContext(repo.raw)
@@ -49,7 +52,7 @@ async function makeApp() {
   const acquisition = createAcquisition({ db, fetchFn: (async () => new Response('', { status: 200 })) as unknown as typeof fetch, lookupFn: publicLookup, now: () => NOW })
   const app = createApp({
     service, bus, token: 'ops', auth: makeAuth(repo), users: repo, adminEmails: new Set(),
-    feeds: { publicUrl: 'https://rsc.test', hubUrl: null, rssCloud: false },
+    feeds,
     sources: { service: createSourceService(repo, null), repo: repo.sources }, logical: { store, acquisition, now: () => NOW },
   })
   const materialize = (...ids: string[]) => db.write((tx) => { for (const id of ids) materializeLocalPost(tx, id) }) // parent-before-child order
@@ -242,63 +245,6 @@ test('migration 24 backfill marks an existing guest author\'s posts local-only',
   expect(flag('p2')).toBe(0)
 })
 
-// The PUSH twins. domain/push.ts builds fat-ping bodies from these repository
-// methods, not from projectLocalActivity — a guest post filtered out of the
-// PULLED feed but still present in the PUSHED one federates anyway, which is
-// exactly what happened live on 2026-08-18.
-test('the push-path feed queries exclude guest posts too', async () => {
-  const { repo, store } = await makeApp()
-  seedUser(repo.raw, 'u1', 'alice')
-  seedPost(repo.raw, { id: 'p1', author: 'u1', content: 'REGISTEREDBODY' })
-  seedGuest(repo.raw, 'g1', 'guest-abc')
-  const guest = (await repo.getUser('g1'))!
-  store.createLocalPost({ author: guest, content: 'GUESTBODY', replyToId: null, now: NOW, publicUrl: 'https://rsc.test' })
-
-  const firehoseBody = await repo.getRecentLocalPosts(50)
-  expect(firehoseBody.map((e) => e.content).join(' ')).toContain('REGISTEREDBODY')
-  expect(firehoseBody.map((e) => e.content).join(' ')).not.toContain('GUESTBODY')
-
-  expect(await repo.getPostsByAuthor('g1', 50)).toEqual([])
-})
-
-// --- DRIFT CANARY: the feed twins ---------------------------------------------
-// RSC builds its outbound feeds TWICE and the two paths share no predicate:
-//   pulled  → projectLocalActivity        (logical/projector.ts, via api/logical-routes/read.ts)
-//   pushed  → getRecentLocalPosts / getPostsByAuthor
-//             (storage/sqlite.ts, via domain/push.ts — the fat-ping bodies peers consume)
-// This seam has leaked TWICE in one milestone: feed_item_limit reached only the
-// pull path, and local_only (guest posts) reached only the pull path — shipped to
-// five instances before a live guest post showed 0 in the firehose and landed on
-// two peers anyway.
-//
-// Deliberately asserts AGREEMENT, not any specific rule: it does not encode
-// "guests are excluded", so it keeps catching the NEXT divergence, whatever the
-// rule turns out to be. Anyone filtering one path and not the other fails here.
-test('drift canary: the pulled and pushed feeds select exactly the same posts', async () => {
-  const { repo, store } = await makeApp()
-  seedUser(repo.raw, 'u1', 'alice')
-  seedGuest(repo.raw, 'g1', 'guest-abc')
-  const alice = (await repo.getUser('u1'))!
-  const guest = (await repo.getUser('g1'))!
-
-  // a mixed corpus: registered root + reply, a guest post, and a remote item
-  store.createLocalPost({ author: alice, content: 'A1', replyToId: null, now: '2026-01-01T00:00:00.000Z', publicUrl: 'https://rsc.test' })
-  const a2 = store.createLocalPost({ author: alice, content: 'A2', replyToId: null, now: '2026-01-02T00:00:00.000Z', publicUrl: 'https://rsc.test' })
-  store.createLocalPost({ author: alice, content: 'A3reply', replyToId: a2.id, now: '2026-01-03T00:00:00.000Z', publicUrl: 'https://rsc.test' })
-  store.createLocalPost({ author: guest, content: 'G1', replyToId: null, now: '2026-01-04T00:00:00.000Z', publicUrl: 'https://rsc.test' })
-  seedRemoteItem(repo.raw, 's1', 'https://feed.test/f', 'g-remote', 'REMOTEBODY')
-
-  const pulledFirehose = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit: 50 })).map((d) => d.id).sort()
-  const pushedFirehose = (await repo.getRecentLocalPosts(50)).map((e) => e.id).sort()
-  expect(pushedFirehose).toEqual(pulledFirehose)
-
-  for (const id of ['u1', 'g1']) {
-    const pulled = store.snapshot((tx) => tx.projectLocalActivity({ authorId: id, limit: 50 })).map((d) => d.id).sort()
-    const pushed = (await repo.getPostsByAuthor(id, 50)).map((p) => p.id).sort()
-    expect(pushed).toEqual(pulled)
-  }
-})
-
 // --- PARITY PIN (retire-TimelineEntry plan, Task 1) -------------------------
 // Pins the bytes of every PULLED outbound format over one adversarial corpus, so
 // moving the renderers onto LogicalItemDto must leave them unchanged. Never
@@ -376,4 +322,50 @@ test('parity pin: every pulled outbound format, byte for byte', async () => {
     ...remoteIds.map((id) => store.snapshot((tx) => tx.projectItem(id, ANON))!),
   ]
   expect(stable(JSON.stringify(items.map((d) => firehoseEntry(d, feeds)), null, 1))).toMatchSnapshot('firehose-v1 entries')
+})
+
+// --- PUSH == PULL --------------------------------------------------------------
+// The successor to the drift canary. RSC used to build its outbound feeds twice
+// (pull: the projector; push: v1 repository queries), and that seam leaked twice.
+// Push now renders through the same projector calls and renderers as the pull
+// routes. This pins that a subscriber's fat-ping body is byte-equal to what it
+// would fetch, for every self-hub topic. Any rule added to one path and not the
+// other fails here.
+async function selfHubApp() {
+  const config = loadConfig({ RSC_TOKEN: 't', RSC_AUTH_SECRET: 's', RSC_PUBLIC_URL: 'https://rsc.test', RSC_WEBSUB: 'self' })
+  const feeds = { publicUrl: config.publicUrl, hubUrl: hubLinkUrl(config.websub, config.publicUrl), rssCloud: config.rssCloud }
+  return { config, ...(await makeApp(feeds)) }
+}
+async function captureFatPings(ctx: Awaited<ReturnType<typeof selfHubApp>>, topics: Record<string, string>, event: { authorId: string; handle: string }) {
+  for (const [callback, topic] of Object.entries(topics)) {
+    await ctx.repo.upsertSubscription({ id: callback, protocol: 'websub', topic, callback, callbackHost: 'cb.test', secret: null, expiresAt: '2099-01-01T00:00:00.000Z', createdAt: NOW })
+  }
+  const bodies = new Map<string, string>()
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    bodies.set(String(url), String(init?.body))
+    return new Response('', { status: 200 })
+  }) as unknown as typeof fetch
+  await createPush({ repo: ctx.repo, config: ctx.config, store: ctx.store, fetchFn }).onLocalPost(event)
+  return bodies
+}
+
+test('push == pull: every fat-ping body is byte-equal to the pulled feed for its topic', async () => {
+  const ctx = await selfHubApp()
+  await parityCorpus(ctx.repo, ctx.store)
+  const topics = {
+    'https://cb.test/alice-xml': 'https://rsc.test/users/alice/feed.xml',
+    'https://cb.test/alice-json': 'https://rsc.test/users/alice/feed.json',
+    'https://cb.test/firehose': 'https://rsc.test/users/rss.xml',
+  }
+  const bodies = await captureFatPings(ctx, topics, { authorId: 'u1', handle: 'alice' })
+  for (const [callback, topic] of Object.entries(topics)) {
+    const pulled = await (await ctx.app.request(new URL(topic).pathname)).text()
+    expect([topic, bodies.get(callback)]).toEqual([topic, pulled])
+  }
+  // Remote replies count toward source:comments on the PUSH path too (was push.test O5):
+  // root has bob's local reply + two remote replies.
+  expect(bodies.get('https://cb.test/alice-xml')).toContain('<source:comments count="3"')
+  // Guests are local-only on the push path too (was 'the push-path feed queries exclude guest posts too').
+  expect(bodies.get('https://cb.test/firehose')).toContain('BOBREPLY') // delivered, not vacuous
+  for (const body of bodies.values()) expect(body).not.toContain('GUESTBODY')
 })

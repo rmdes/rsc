@@ -1028,8 +1028,7 @@ test('the WebSub fat-ping path is gated too: a hostile stored ref never reaches 
     inReplyToPostId: null, threadRootId: null, sourceName: null, sourceFeedUrl: null,
     contentMarkdown: null, editedAt: null, replyContextAuthor: null, replyContextSnippet: null,
   }
-  const user: Post extends never ? never : Parameters<typeof renderRssFeed>[0] =
-    { id: 'u1', kind: 'local', handle: 'alice', displayName: 'Alice', feedUrl: null, createdAt: NOW, authUserId: null }
+  const user: Parameters<typeof renderRssFeed>[0] = { handle: 'alice', displayName: 'Alice' }
   const xml = renderRssFeed(user, [hostile], CTX)
   expect(xml).toContain('body') // the item really rendered — not a vacuous pass
   expect(xml).not.toContain('javascript:')

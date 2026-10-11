@@ -1,5 +1,5 @@
 import type { Hono, Context } from 'hono'
-import { injectSourceComments, emittedGuid, logicalToFeedEntry, renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, commentsFeedUrl } from '../../domain/feed.ts'
+import { logicalToFeedEntry, renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectReplyCounts, feedChannel } from '../../domain/feed.ts'
 import type { LogicalStore } from '../../logical/store.ts'
 import type { Auth } from '../../auth.ts'
 import type { UserDirectory } from '../auth.ts'
@@ -137,19 +137,12 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     return Number.isInteger(n) && n >= 1 ? n : 50
   }
 
-  function injectComments(xml: string, items: LogicalItemDto[]): string {
-    if (!feeds.publicUrl) return xml
-    const pub = feeds.publicUrl
-    return injectSourceComments(xml, items.filter((d) => d.directReplyCount > 0)
-      .map((d) => ({ guid: emittedGuid(logicalToFeedEntry(d)), count: d.directReplyCount, feedUrl: commentsFeedUrl(pub, d.id) })))
-  }
-
   // The all-users firehose: origin=local WITHOUT the river predicate (transports
   // local replies). Static route — wins over /users/:handle/feed.xml.
   app.get('/users/rss.xml', async (c) => {
     const limit = await feedLimit()
     const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: null, limit }))
-    const xml = injectComments(renderFirehoseRss(items.map(logicalToFeedEntry), feeds), items)
+    const xml = injectReplyCounts(renderFirehoseRss(items.map(logicalToFeedEntry), feeds), items, feeds)
     return c.body(xml, 200, XML)
   })
 
@@ -171,9 +164,8 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     if (r instanceof Response) return r
     const limit = await feedLimit()
     const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit }))
-    const author = items[0]?.selectedAuthor
-    const user = { id: r.id, kind: 'local' as const, handle: (c.req.param('handle') ?? '').toLowerCase(), displayName: author && author.kind === 'local' ? author.displayName : (c.req.param('handle') ?? ''), feedUrl: null, createdAt: '', authUserId: null }
-    const xml = injectComments(renderRssFeed(user, items.map(logicalToFeedEntry), feeds), items)
+    const channel = feedChannel((c.req.param('handle') ?? '').toLowerCase(), items, c.req.param('handle') ?? '')
+    const xml = injectReplyCounts(renderRssFeed(channel, items.map(logicalToFeedEntry), feeds), items, feeds)
     return c.body(xml, 200, XML)
   })
 
@@ -182,9 +174,8 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     if (r instanceof Response) return r
     const limit = await feedLimit()
     const items = store.snapshot((tx) => tx.projectLocalActivity({ authorId: r.id, limit }))
-    const author = items[0]?.selectedAuthor
-    const user = { id: r.id, kind: 'local' as const, handle: (c.req.param('handle') ?? '').toLowerCase(), displayName: author && author.kind === 'local' ? author.displayName : (c.req.param('handle') ?? ''), feedUrl: null, createdAt: '', authUserId: null }
-    return c.body(renderJsonFeed(user, items.map(logicalToFeedEntry), feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
+    const channel = feedChannel((c.req.param('handle') ?? '').toLowerCase(), items, c.req.param('handle') ?? '')
+    return c.body(renderJsonFeed(channel, items.map(logicalToFeedEntry), feeds), 200, { 'content-type': 'application/feed+json; charset=utf-8' })
   })
 
   // Comments feed: bounded thread projector for policy/safety, but serializes
@@ -214,7 +205,7 @@ export function mountLogicalReadRoutes(app: Hono, deps: LogicalReadDeps): void {
     })
     if (!data) return c.json({ error: 'unknown post' }, 404)
     let xml = renderCommentsFeed(logicalToFeedEntry(data.item), data.replies.map(logicalToFeedEntry), feeds)
-    xml = injectComments(xml, data.replies)
+    xml = injectReplyCounts(xml, data.replies, feeds)
     return c.body(xml, 200, XML)
   })
 }
