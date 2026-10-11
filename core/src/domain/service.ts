@@ -162,7 +162,7 @@ export function createService(repo: Repository, bus: EventBus, publicUrl: string
       if (post.source !== 'local') return { error: 'remote' }
       logical.removeLocalPost({ postId: id, actor, now: new Date().toISOString() })
       const author = await repo.getUser(post.authorId)
-      bus.emitNewPost({ authorId: post.authorId, handle: (author as User).handle })
+      if (author) bus.emitNewPost({ authorId: post.authorId, handle: author.handle })
       return { ok: true }
     },
     getSetting(key: string) { return repo.getSetting(key) },

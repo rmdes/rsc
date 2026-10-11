@@ -42,7 +42,7 @@ export interface NewLocalUser { handle: string; displayName: string; authUserId?
 export interface NewRemoteUser { handle: string; displayName: string; feedUrl: string; feedType?: FeedType }
 // The JSON a local write returns (POST /posts, PATCH /posts/:id and their /me
 // twins): the stored post plus its author. A frozen wire shape — mcp/src/tools.ts
-// hand-declares it — so it changes only with the API.
+// reads post.id/post.url from it — so it changes only with the API.
 export type PostWithAuthor = Post & { author: User }
 
 export type PushProtocol = 'websub' | 'rsscloud'

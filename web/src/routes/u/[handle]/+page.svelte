@@ -95,8 +95,7 @@
 	<ul class="timeline">
 		{#each groups as { top: post, others } (post.threadRootId ?? post.id)}
 			<li class="post" class:remote={post.source === 'remote'} class:stacked={others.length > 0}>
-				<!-- aggregate lenses (e.g. @rsschat) carry a per-item author; the date
-				     permalink lives top-right like every byline, not in the action row -->
+				<!-- the date permalink lives top-right like every byline, not in the action row -->
 				<div class="byline">
 					<Avatar author={post.author} />
 					<a class="permalink" id="by-{post.id}" href="/post/{post.id}"><RelativeTime datetime={post.publishedAt} /></a>

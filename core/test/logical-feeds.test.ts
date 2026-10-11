@@ -368,4 +368,9 @@ test('push == pull: every fat-ping body is byte-equal to the pulled feed for its
   // Guests are local-only on the push path too (was 'the push-path feed queries exclude guest posts too').
   expect(bodies.get('https://cb.test/firehose')).toContain('BOBREPLY') // delivered, not vacuous
   for (const body of bodies.values()) expect(body).not.toContain('GUESTBODY')
+  // A guest-authored event pushes the guest's own (empty — local-only) feed, still byte-equal to the pull.
+  const guestBodies = await captureFatPings(ctx, { 'https://cb.test/guest-xml': 'https://rsc.test/users/guest-abc/feed.xml' }, { authorId: 'g1', handle: 'guest-abc' })
+  const guestPulled = await (await ctx.app.request('/users/guest-abc/feed.xml')).text()
+  expect(guestBodies.get('https://cb.test/guest-xml')).toBe(guestPulled)
+  expect(guestPulled).not.toContain('GUESTBODY')
 })
