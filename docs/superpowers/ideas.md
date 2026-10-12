@@ -2563,3 +2563,21 @@ strip), escaped `\u0000` in JSON Feed.
 change.
 
 **Status:** not specced.
+
+## Split `createLogicalStore` by consumer
+
+**Mechanism:** after the 2026-10-11 narrowing, every consumer's `Pick` alias
+shows near-disjoint groups: 8 local-write (`LocalWriteStore`), 15 ops
+(`OpsStore`), 6 push-row (`PushRowStore`), 3 scheduler (`SchedulerStore`), plus
+`snapshot` and the runtime-wired `Reconciler`, orphan and verification members.
+Each group could be its own factory over the same `DatabaseContext`. Two members
+are shared and a split must assign them an owner: `recordHealth` (ops +
+scheduler) and `deleteLocalAccount` (local-write + `AccountDeleter`).
+
+**Grounding:** `docs/superpowers/specs/2026-10-11-logicalstore-narrowing-design.md`.
+
+**Tradeoff:** a pure move with no behaviour gain. The debt review's stopping
+rule says to do it only when a concrete need appears, for example a group
+gaining its own lifecycle or tests wanting one group without the rest.
+
+**Status:** deferred, not specced.

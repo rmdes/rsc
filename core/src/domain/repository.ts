@@ -2,6 +2,9 @@ import type { User, Post, NewLocalUser, NewRemoteUser, Subscription, PushProtoco
 import type { LogicalStore } from '../logical/store.ts'
 import type { Cursor } from './source-repository.ts'
 
+// The one store call the auth-user sweeps make (cascading account deletion).
+export type AccountDeleter = Pick<LogicalStore, 'deleteLocalAccount'>
+
 export interface Repository {
   createLocalUser(u: NewLocalUser): Promise<User>
   createRemoteUser(u: NewRemoteUser): Promise<User>
@@ -26,7 +29,7 @@ export interface Repository {
   listActiveSubscriptions(topic: string, now: string): Promise<Subscription[]>
   countActiveSubscriptions(filter: { callbackHost?: string; topic?: string }, now: string): Promise<number>
   purgeExpiredSubscriptions(now: string): Promise<void>
-  sweepUnverifiedUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
-  sweepAnonymousUsers(ttlDays: number, logical?: LogicalStore): { swept: number }
+  sweepUnverifiedUsers(ttlDays: number, logical?: AccountDeleter): { swept: number }
+  sweepAnonymousUsers(ttlDays: number, logical?: AccountDeleter): { swept: number }
   sweepDeadSources(): { swept: number }
 }

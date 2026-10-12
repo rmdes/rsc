@@ -22,6 +22,13 @@ export interface LogicalRouteDeps {
   now?: () => string
 }
 
+// What the write/ops routes call on the store — the mount's own view of it.
+export type OpsStore = Pick<LogicalStore,
+  'checkAcquisitionCommand' | 'getAdminItemDetail' | 'getRun' | 'getRunProjection'
+  | 'hideItem' | 'ledgerRefusal' | 'listItemAudit' | 'listJobs' | 'listRuns'
+  | 'listSourceItems' | 'listTombstones' | 'purgeSource' | 'recordHealth'
+  | 'restoreItem' | 'unblockTombstone'>
+
 // The refresh command's request fingerprint inputs are EXACTLY [command, sourceId,
 // actor] (spec §6.2, review rev 1 C3). The commandId travels only in the JSON body.
 const REFRESH_COMMAND = 'acquisition.refresh'
@@ -103,7 +110,7 @@ function parsePage(c: Context, kind: 'run' | 'job'): { before: RunCursor | JobCu
   return { before, limit }
 }
 
-export function mountLogicalRoutes(app: Hono, deps: LogicalRouteDeps): void {
+export function mountLogicalRoutes(app: Hono, deps: Omit<LogicalRouteDeps, 'store'> & { store: OpsStore }): void {
   const { store, acquisition } = deps
   const now = deps.now ?? (() => new Date().toISOString())
   const refreshWaitMs = deps.refreshWaitMs ?? 5000

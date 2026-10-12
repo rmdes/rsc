@@ -6,6 +6,11 @@ import type { LogicalStore } from '../logical/store.ts'
 import { PostRemovedError, type RemovalActor } from '../logical/local.ts'
 import type { Cursor } from './source-repository.ts'
 
+// The local-write commands the service drives — all it calls on the store.
+export type LocalWriteStore = Pick<LogicalStore,
+  'createLocalPost' | 'replyTargetVisible' | 'editLocalPost' | 'removeLocalPost'
+  | 'deleteLocalAccount' | 'addLocalFollow' | 'removeLocalFollow' | 'updateUserProfile'>
+
 const HANDLE_RE = /^[a-z0-9-]{1,64}$/
 
 function normalizeHandle(handle: string): string {
@@ -14,7 +19,7 @@ function normalizeHandle(handle: string): string {
   return normalized
 }
 
-export function createService(repo: Repository, bus: EventBus, publicUrl: string | null, logical: LogicalStore) {
+export function createService(repo: Repository, bus: EventBus, publicUrl: string | null, logical: LocalWriteStore) {
   async function ensureLocalUser(handle: string, displayName: string): Promise<User> {
     const normalized = normalizeHandle(handle)
     for (let attempt = 0; attempt < 2; attempt++) {

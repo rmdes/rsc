@@ -1,7 +1,7 @@
 import type { Hono, Context } from 'hono'
 import { jsonWrite, isBadSourceUrl } from '../app.ts'
 import { HandleTakenError } from '../../domain/types.ts'
-import type { LogicalStore } from '../../logical/store.ts'
+import type { LogicalReader } from '../../logical/store.ts'
 import type { ProjectionViewer, PublicLocalAccount } from '../../logical/types.ts'
 import type { Auth } from '../../auth.ts'
 import type { UserDirectory } from '../auth.ts'
@@ -24,7 +24,7 @@ import type { ApiKeyCreation } from './shared.ts'
 // invariant collision this would cause).
 
 export interface PersonalApiDeps {
-  store: LogicalStore
+  store: LogicalReader
   auth: Auth
   users: UserDirectory
   service: Service

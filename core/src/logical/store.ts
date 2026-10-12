@@ -1,7 +1,6 @@
 import type { DatabaseContext, ReadTx } from './database.ts'
 import type {
-  LogicalReadTx, SourceModelV2Activation, LogicalItemDto, ClaimAcquisitionInput, ClaimAcquisitionResult,
-  CommitAcquisitionInput, FailAcquisitionInput, AcquisitionRun,
+  LogicalReadTx, SourceModelV2Activation, LogicalItemDto,
   AdminAcquisitionRun, AdminRunProjection, AdminReconciliationJobSummary, AdminPage,
   RunCursor, JobCursor, AdminFetchProjection, AdminReconciliationCounters, AdminAcquisitionCounters,
   ItemAuditEvent,
@@ -13,17 +12,17 @@ import { HandleTakenError } from '../domain/types.ts'
 import { assertHandleUnreserved } from './schema.ts'
 import { createLocalPost, editLocalPost, deleteLocalPost, removeLocalPost, deleteLocalAccount } from './local.ts'
 import type { RemovalActor } from './local.ts'
-import { claimAcquisition, commitAcquisition, failAcquisition, BOUNDS } from './acquisition.ts'
+import { BOUNDS } from './acquisition.ts'
 import { claimReconciliation, reconcileClaim, recordReconciliationFailure, deferVerification } from './reconcile.ts'
-import { scheduleVerification, resolveVerificationBatch } from './verification.ts'
+import { resolveVerificationBatch } from './verification.ts'
 import type { ResolveVerificationInput } from './types.ts'
-import { scheduleOrphanWork, claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
+import { claimOrphanWork, adoptOrphans, projectThread } from './threading.ts'
 import { projectItem, projectTimeline, projectHistory, projectLocalActivity, resolveLocalAccount, resolvePublisher, rankAttribution, itemOrdinaryVisible } from './projector.ts'
 import type { EvidenceLevel } from './projector.ts'
 import type { ProjectionViewer, TimelineQuery, LogicalTimelineEnvelope, LogicalHistoryEnvelope, LogicalThreadEnvelope, PublicLocalAccount, PublicPublisher } from './types.ts'
 import type { AdminItemDetail, AdminDeliveryRow, AdminClaimRow, AdminConflictRow, AdminSourceItemRow, TombstoneView } from './types.ts'
 import type { ReconciliationClaim, ReconcileClaimInput, ReconcileResult, RecordJobFailureInput } from './types.ts'
-import type { NewOrphanWork, OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
+import type { OrphanClaim, AdoptOrphansInput, AdoptOrphansResult } from './types.ts'
 import type { WriteTx } from './database.ts'
 import { encodeCursor } from '../domain/cursor.ts'
 import { clampLimit } from '../domain/source-repository.ts'
@@ -31,9 +30,9 @@ import { approvedInstancePrefixes, prefixUpperBound } from './membership.ts'
 import { rowToItemAuditEvent, hideItem, restoreItem } from './moderation.ts'
 import type { ItemAuditRow } from './moderation.ts'
 import type { ModerationCommandInput, ItemModerationResult } from './types.ts'
-import { scheduleFanout, claimFanout, processFanoutBatch } from './fanout.ts'
+import { claimFanout, processFanoutBatch } from './fanout.ts'
 import type { FanoutClaim, FanoutBatchResult } from './fanout.ts'
-import { purgeSource, removeSourceEvidence, isTombstoned, unblockTombstone } from './tombstones.ts'
+import { purgeSource, isTombstoned, unblockTombstone } from './tombstones.ts'
 import type { PurgeCommandInput, PurgeResult, UnblockCommandInput, UnblockResult } from './tombstones.ts'
 import { deriveRoot as adminDeriveRoot } from './roots.ts'
 
@@ -41,7 +40,7 @@ import { deriveRoot as adminDeriveRoot } from './roots.ts'
 // VP6: the concrete factory is exported and TS infers its type — no LogicalStore
 // interface). Task 2 realizes only the read seam's activation + journal-metadata
 // reads; later tasks widen both the snapshot callback shape and the store's
-// write methods (claimAcquisition, commitAcquisition, reconcileClaim, …).
+// write methods (reconcileClaim, purgeSource, …).
 
 // The subset of LogicalReadTx implemented so far, plus the Task 8 ordinary-read
 // projection seam (projectItem/projectTimeline/projectThread/projectHistory) and
@@ -453,20 +452,6 @@ export function createLogicalStore(db: DatabaseContext) {
         return { id: row.id, kind: row.kind, handle: row.handle, displayName: row.display_name, feedUrl: row.feed_url, createdAt: row.created_at, authUserId: row.auth_user_id, feedType: row.feed_type }
       })
     },
-    // Acquisition write seam (Task 4). The two-transaction protocol (spec §1.4)
-    // is driven by the acquisition engine: claim commits in its own db.write()
-    // before the acquisition-result db.write() (commit/fail). Each is one atomic
-    // transaction; the engine sequences them.
-    claimAcquisition(input: ClaimAcquisitionInput): ClaimAcquisitionResult {
-      return db.write((tx) => claimAcquisition(tx, input))
-    },
-    commitAcquisition(input: CommitAcquisitionInput): AcquisitionRun {
-      return db.write((tx) => commitAcquisition(tx, input))
-    },
-    failAcquisition(input: FailAcquisitionInput): AcquisitionRun {
-      return db.write((tx) => failAcquisition(tx, input))
-    },
-
     // --- reconciliation write seam (Task 6) -------------------------------
     // The in-process serial drain (reconcile.ts) drives these. claim + reconcile
     // are separate transactions per the two-transaction spirit (spec §2.3): claim
@@ -483,15 +468,12 @@ export function createLogicalStore(db: DatabaseContext) {
     },
 
     // --- bounded origin verification (Task 4, spec §7.1) ------------------
-    // scheduleVerification takes the caller's WriteTx so the check + batch job
-    // commit atomically inside V2 reconciliation's aggregate-claim transaction
-    // (the enqueue is called directly from reconcile.ts). deferVerification lets
-    // the SYNC drain un-claim a verification job (async fetch belongs to the async
-    // drain). resolveVerificationBatch is the Task-5 outcome-handling stub — Task 4
-    // performs the fetch and hands the parsed response here; today a no-op.
-    scheduleVerification(tx: WriteTx, input: { logicalItemId: string; sourceId: string; publisherFeedUrl: string; now: string }): void {
-      scheduleVerification(tx, input)
-    },
+    // The verification enqueue (verification.ts scheduleVerification) is called
+    // directly from reconcile.ts inside V2 reconciliation's aggregate-claim
+    // transaction. deferVerification lets the SYNC drain un-claim a verification
+    // job (async fetch belongs to the async drain). resolveVerificationBatch is the
+    // Task-5 outcome-handling stub — Task 4 performs the fetch and hands the parsed
+    // response here; today a no-op.
     deferVerification(jobId: string, now: string): void {
       db.write((tx) => deferVerification(tx, jobId, now))
     },
@@ -503,12 +485,10 @@ export function createLogicalStore(db: DatabaseContext) {
     },
 
     // --- orphan-work write seam (Task 7) ----------------------------------
-    // scheduleOrphanWork takes the caller's WriteTx so it commits atomically
-    // with the alias mint that triggers it (spec §4.2); claim + adopt run the
-    // continuous worker (driven by Task 10's runtime), each its own transaction.
-    scheduleOrphanWork(tx: WriteTx, input: NewOrphanWork): void {
-      scheduleOrphanWork(tx, input)
-    },
+    // The enqueue (threading.ts scheduleOrphanWork) commits inside its caller's
+    // write, atomically with the alias mint that triggers it (spec §4.2); claim +
+    // adopt run the continuous worker (driven by Task 10's runtime), each its own
+    // transaction.
     claimOrphanWork(_now: string): OrphanClaim | null {
       return db.write((tx) => claimOrphanWork(tx))
     },
@@ -565,14 +545,12 @@ export function createLogicalStore(db: DatabaseContext) {
     // --- purge + tombstones (Task 6, spec §5) -----------------------------
     // purgeSource is ONE ledger-backed BEGIN IMMEDIATE write: the tombstone +
     // alias copy, the FK-ordered evidence deletion, per-item reselect/delete/
-    // tombstone, and exactly one journal reset commit atomically. removeSourceEvidence
-    // is the shared step-4 helper (Task 7's cleanup reuses it inside its own write);
+    // tombstone, and exactly one journal reset commit atomically.
+    // tombstones.ts removeSourceEvidence is the shared step-4 helper (Task 7's
+    // cleanup calls it directly inside its own write);
     // isTombstoned is the resolution guard (Task 7's first caller).
     purgeSource(input: PurgeCommandInput): PurgeResult {
       return db.write((tx) => purgeSource(tx, input))
-    },
-    removeSourceEvidence(tx: WriteTx, input: { sourceId: string; now: string }): { ordinaryAffected: boolean } {
-      return removeSourceEvidence(tx, input)
     },
     isTombstoned(url: string): boolean {
       return db.read((tx) => isTombstoned(tx, url))
@@ -585,14 +563,11 @@ export function createLogicalStore(db: DatabaseContext) {
     },
 
     // --- policy fan-out (Task 3, spec §4.1) -------------------------------
-    // scheduleFanout takes the caller's WriteTx so the enqueue commits atomically
-    // with the transition's reset + generation advance (the real enqueue is in
-    // sqlite.ts, next to advancePolicyGeneration, calling the free fn directly).
+    // The enqueue (fanout.ts scheduleFanout) commits atomically with the
+    // transition's reset + generation advance — storage/source-sqlite.ts calls it
+    // directly, next to advancePolicyGeneration.
     // claim + processBatch drive the ONE V2 drain (reconcile.ts); each is its own
     // transaction, and a batch bounds the writer-lock hold of a full recompute.
-    scheduleFanout(tx: WriteTx, input: { sourceId: string; generation: number; now: string }): void {
-      scheduleFanout(tx, input)
-    },
     claimFanout(now: string): FanoutClaim | null {
       return db.write((tx) => claimFanout(tx, now))
     },
@@ -841,3 +816,7 @@ export function createLogicalStore(db: DatabaseContext) {
 }
 
 export type LogicalStore = ReturnType<typeof createLogicalStore>
+
+// The read seam alone — what a consumer that only projects needs (the pulled feed
+// routes, the personal API routes, push's fat-ping bodies).
+export type LogicalReader = Pick<LogicalStore, 'snapshot'>

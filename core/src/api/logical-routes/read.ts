@@ -1,6 +1,6 @@
 import type { Hono, Context } from 'hono'
 import { renderFirehoseRss, renderRssFeed, renderJsonFeed, renderCommentsFeed, injectReplyCounts, feedChannel } from '../../domain/feed.ts'
-import type { LogicalStore } from '../../logical/store.ts'
+import type { LogicalReader } from '../../logical/store.ts'
 import type { Auth } from '../../auth.ts'
 import type { UserDirectory } from '../auth.ts'
 import type { Service } from '../../domain/service.ts'
@@ -16,7 +16,7 @@ import { clampLimit, decodeBeforeCursor } from './shared.ts'
 // /post/:id/comments.xml) plus GET /post/:id (the v2-only single-item route).
 
 export interface LogicalReadDeps {
-  store: LogicalStore
+  store: LogicalReader
   auth: Auth
   users: UserDirectory
   service: Service
