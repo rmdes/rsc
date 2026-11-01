@@ -1,4 +1,4 @@
-FROM cloudron/base:5.1.0@sha256:1c0666c9abe9e2090d33686826d4e97769b799124573118d41e0d7485135748e
+FROM cloudron/base:6.0.1@sha256:7b1e729960c3ca312d26e886917ba89483241bba0219ff292858e10d9d5768ee
 
 # Node 22.x — core runs .ts via native type stripping (needs >=22.18).
 ARG NODE_VERSION=22.22.2
