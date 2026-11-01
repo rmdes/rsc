@@ -20,7 +20,7 @@
     "hono": "^4.13.13",
     "kysely": "^0.29.6",
     "microformats-parser": "^2.0.6",
-    "nodemailer": "10.0.15"
+    "nodemailer": "10.1.4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.0.0",
