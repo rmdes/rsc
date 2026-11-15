@@ -41,6 +41,6 @@
 		"sanitize-html": "^2.18.0",
 		"unified": "11.0.5",
 		"unist-util-visit": "5.1.0",
-		"zod": "^4.6.5"
+		"zod": "^4.6.7"
 	}
 }
